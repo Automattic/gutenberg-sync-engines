@@ -1,0 +1,22 @@
+{
+	"compilerOptions": {
+		"target": "esnext",
+		"module": "esnext",
+		"moduleResolution": "node",
+		"jsx": "react-jsx",
+		"strict": true,
+		"noEmit": true,
+		"esModuleInterop": true,
+		"skipLibCheck": true,
+		"forceConsistentCasingInFileNames": true,
+		"allowJs": true,
+		"checkJs": false,
+		"types": [ "@wordpress/element" ]
+	},
+	"include": [ "src/**/*" ],
+	"exclude": [
+		"node_modules",
+		"build",
+		"src/engines/intent-log/*.js"
+	]
+}

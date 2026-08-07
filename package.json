@@ -1,0 +1,29 @@
+{
+	"name": "gutenberg-sync-engines",
+	"version": "0.1.0",
+	"description": "Pluggable real-time collaboration engines and transports for the Gutenberg collaborative-editing framework.",
+	"license": "GPL-2.0-or-later",
+	"private": true,
+	"engines": {
+		"node": ">=20.10.0",
+		"npm": ">=10.2.3"
+	},
+	"devDependencies": {
+		"@wordpress/scripts": "^30.0.0",
+		"@wordpress/sync": "file:../workspaces/gutenberg/try-intent-log/packages/sync",
+		"typescript": "^5.5.0"
+	},
+	"scripts": {
+		"build": "wp-scripts build",
+		"start": "wp-scripts start",
+		"format": "wp-scripts format",
+		"lint:js": "wp-scripts lint-js src",
+		"lint:js:fix": "wp-scripts lint-js src --fix",
+		"lint:php": "composer lint",
+		"format:php": "composer format",
+		"test:unit:js": "wp-scripts test-unit-js",
+		"test:php": "wp-env run tests-cli --env-cwd=wp-content/plugins/gutenberg-sync-engines vendor/bin/phpunit",
+		"env:start": "wp-env start",
+		"env:stop": "wp-env stop"
+	}
+}

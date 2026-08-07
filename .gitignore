@@ -1,0 +1,16 @@
+# Dependencies
+/node_modules
+/vendor
+
+# Build output
+/build
+
+# Environment / tooling caches
+/.wp-env.override.json
+/.phpcs.cache
+/.eslintcache
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
