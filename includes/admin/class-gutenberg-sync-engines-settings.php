@@ -1,0 +1,283 @@
+<?php
+/**
+ * Gutenberg_Sync_Engines_Settings class
+ *
+ * @package GutenbergSyncEngines
+ */
+
+if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
+
+	/**
+	 * The Settings → Collaboration admin screen: choose the active sync
+	 * ENGINE and TRANSPORT.
+	 *
+	 * The engine choice is stored in the framework's own `wp_sync_engine`
+	 * option (read by WP_Sync_Engine_Registry). The transport choice is
+	 * stored here and fed to the framework through the
+	 * `wp_collaboration_transport` filter, so a single screen drives both
+	 * axes of the swappable stack.
+	 *
+	 * @since 0.1.0
+	 */
+	final class Gutenberg_Sync_Engines_Settings {
+		/**
+		 * Settings group / page slug.
+		 *
+		 * @since 0.1.0
+		 * @var string
+		 */
+		const PAGE = 'gutenberg-sync-engines';
+
+		/**
+		 * Option storing the active transport slug.
+		 *
+		 * @since 0.1.0
+		 * @var string
+		 */
+		const TRANSPORT_OPTION = 'gutenberg_sync_engines_transport';
+
+		/**
+		 * Registers the admin page, settings, and the transport filter.
+		 *
+		 * @since 0.1.0
+		 *
+		 * @return void
+		 */
+		public function register(): void {
+			add_action( 'admin_menu', array( $this, 'add_menu' ) );
+			add_action( 'admin_init', array( $this, 'register_settings' ) );
+
+			// Feed the stored transport choice to the framework.
+			add_filter(
+				'wp_collaboration_transport',
+				function ( $default_slug ) {
+					$stored = (string) get_option( self::TRANSPORT_OPTION, '' );
+					return '' !== $stored ? $stored : $default_slug;
+				}
+			);
+		}
+
+		/**
+		 * The engines this plugin provides, as slug => label. Filterable so
+		 * additional engine plugins can appear on the screen.
+		 *
+		 * @since 0.1.0
+		 *
+		 * @return array<string, string> Engine choices.
+		 */
+		public static function engine_choices(): array {
+			$choices = array(
+				'intent-log' => __( 'Intent log (server-authoritative; conflicts go to review)', 'gutenberg-sync-engines' ),
+				'yjs-relay'  => __( 'Yjs relay (client CRDT; naive relay)', 'gutenberg-sync-engines' ),
+			);
+
+			/**
+			 * Filters the sync engine choices shown on the settings screen.
+			 *
+			 * @since 0.1.0
+			 *
+			 * @param array<string, string> $choices Engine slug => label.
+			 */
+			return (array) apply_filters( 'gutenberg_sync_engines_engine_choices', $choices );
+		}
+
+		/**
+		 * The transport choices, read from the framework's transport registry
+		 * so every registered transport appears.
+		 *
+		 * @since 0.1.0
+		 *
+		 * @return array<string, string> Transport choices (slug => label).
+		 */
+		public static function transport_choices(): array {
+			$labels  = array(
+				'http-polling'      => __( 'HTTP short-polling (default)', 'gutenberg-sync-engines' ),
+				'http-long-polling' => __( 'HTTP long-polling (held open)', 'gutenberg-sync-engines' ),
+				'websocket'         => __( 'WebSocket (push; requires the sync-server daemon)', 'gutenberg-sync-engines' ),
+			);
+			$choices = array();
+
+			if ( function_exists( 'wp_get_collaboration_transport_registry' ) ) {
+				foreach ( array_keys( wp_get_collaboration_transport_registry()->get_transports() ) as $slug ) {
+					$choices[ $slug ] = $labels[ $slug ] ?? $slug;
+				}
+			}
+			if ( empty( $choices ) ) {
+				$choices = $labels;
+			}
+			return $choices;
+		}
+
+		/**
+		 * Adds the Settings → Collaboration submenu.
+		 *
+		 * @since 0.1.0
+		 *
+		 * @return void
+		 */
+		public function add_menu(): void {
+			add_options_page(
+				__( 'Collaboration', 'gutenberg-sync-engines' ),
+				__( 'Collaboration', 'gutenberg-sync-engines' ),
+				'manage_options',
+				self::PAGE,
+				array( $this, 'render_page' )
+			);
+		}
+
+		/**
+		 * Registers the engine + transport settings and their fields.
+		 *
+		 * @since 0.1.0
+		 *
+		 * @return void
+		 */
+		public function register_settings(): void {
+			register_setting(
+				self::PAGE,
+				'wp_sync_engine',
+				array(
+					'type'              => 'string',
+					'sanitize_callback' => array( $this, 'sanitize_engine' ),
+					'default'           => 'intent-log',
+					'show_in_rest'      => true,
+				)
+			);
+			register_setting(
+				self::PAGE,
+				self::TRANSPORT_OPTION,
+				array(
+					'type'              => 'string',
+					'sanitize_callback' => array( $this, 'sanitize_transport' ),
+					'default'           => 'http-polling',
+				)
+			);
+
+			add_settings_section(
+				'gutenberg_sync_engines_main',
+				__( 'Real-time collaboration', 'gutenberg-sync-engines' ),
+				array( $this, 'render_section_intro' ),
+				self::PAGE
+			);
+			add_settings_field(
+				'wp_sync_engine',
+				__( 'Sync engine', 'gutenberg-sync-engines' ),
+				array( $this, 'render_engine_field' ),
+				self::PAGE,
+				'gutenberg_sync_engines_main'
+			);
+			add_settings_field(
+				self::TRANSPORT_OPTION,
+				__( 'Transport', 'gutenberg-sync-engines' ),
+				array( $this, 'render_transport_field' ),
+				self::PAGE,
+				'gutenberg_sync_engines_main'
+			);
+		}
+
+		/**
+		 * Sanitizes the engine slug against the registered choices.
+		 *
+		 * @since 0.1.0
+		 *
+		 * @param string $value Submitted slug.
+		 * @return string A valid engine slug.
+		 */
+		public function sanitize_engine( $value ): string {
+			$value   = sanitize_key( (string) $value );
+			$choices = self::engine_choices();
+			return isset( $choices[ $value ] ) ? $value : (string) get_option( 'wp_sync_engine', 'intent-log' );
+		}
+
+		/**
+		 * Sanitizes the transport slug against the registered choices.
+		 *
+		 * @since 0.1.0
+		 *
+		 * @param string $value Submitted slug.
+		 * @return string A valid transport slug.
+		 */
+		public function sanitize_transport( $value ): string {
+			$value   = sanitize_key( (string) $value );
+			$choices = self::transport_choices();
+			return isset( $choices[ $value ] ) ? $value : 'http-polling';
+		}
+
+		/**
+		 * Section intro copy.
+		 *
+		 * @since 0.1.0
+		 *
+		 * @return void
+		 */
+		public function render_section_intro(): void {
+			echo '<p>' . esc_html__( 'Choose how concurrent edits are merged (engine) and how updates travel between editors (transport). Both apply site-wide.', 'gutenberg-sync-engines' ) . '</p>';
+		}
+
+		/**
+		 * Renders the engine <select>.
+		 *
+		 * @since 0.1.0
+		 *
+		 * @return void
+		 */
+		public function render_engine_field(): void {
+			$this->render_select( 'wp_sync_engine', self::engine_choices(), (string) get_option( 'wp_sync_engine', 'intent-log' ) );
+		}
+
+		/**
+		 * Renders the transport <select>.
+		 *
+		 * @since 0.1.0
+		 *
+		 * @return void
+		 */
+		public function render_transport_field(): void {
+			$this->render_select( self::TRANSPORT_OPTION, self::transport_choices(), (string) get_option( self::TRANSPORT_OPTION, 'http-polling' ) );
+		}
+
+		/**
+		 * Renders a labeled <select> for a setting.
+		 *
+		 * @since 0.1.0
+		 *
+		 * @param string                $name    Option name.
+		 * @param array<string, string> $choices Slug => label.
+		 * @param string                $current Current value.
+		 * @return void
+		 */
+		private function render_select( string $name, array $choices, string $current ): void {
+			echo '<select name="' . esc_attr( $name ) . '" id="' . esc_attr( $name ) . '">';
+			foreach ( $choices as $slug => $label ) {
+				printf(
+					'<option value="%s" %s>%s</option>',
+					esc_attr( $slug ),
+					selected( $current, $slug, false ),
+					esc_html( $label )
+				);
+			}
+			echo '</select>';
+		}
+
+		/**
+		 * Renders the settings page.
+		 *
+		 * @since 0.1.0
+		 *
+		 * @return void
+		 */
+		public function render_page(): void {
+			if ( ! current_user_can( 'manage_options' ) ) {
+				return;
+			}
+			echo '<div class="wrap">';
+			echo '<h1>' . esc_html( get_admin_page_title() ) . '</h1>';
+			echo '<form action="options.php" method="post">';
+			settings_fields( self::PAGE );
+			do_settings_sections( self::PAGE );
+			submit_button();
+			echo '</form>';
+			echo '</div>';
+		}
+	}
+}
