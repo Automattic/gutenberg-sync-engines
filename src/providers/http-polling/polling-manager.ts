@@ -20,8 +20,8 @@ import {
 	DISCONNECT_DIALOG_RETRY_MS,
 	MANUAL_RETRY_INTERVAL_MS,
 } from './config';
-import { ConnectionError, ConnectionErrorCode } from '../../errors';
-import type { EngineSessionCodec } from '../../engines/session';
+import { ConnectionError, ConnectionErrorCode } from '../../framework';
+import type { ConnectionStatus, EngineSessionCodec } from '@wordpress/sync';
 import {
 	installSyncDebug,
 	isSyncDebugEnabled,
@@ -29,7 +29,6 @@ import {
 	registerDebugSession,
 	unregisterDebugSession,
 } from '../../debug/inspector';
-import type { ConnectionStatus } from '../../types';
 import type {
 	AwarenessState,
 	SyncPayload,

@@ -21,7 +21,7 @@ import type {
 	EngineLocalUpdateListener,
 	EngineUpdate,
 	LocalAwarenessState,
-} from './session';
+} from '@wordpress/sync';
 
 /*
  * The intent-log engine's client half behind the transport-facing

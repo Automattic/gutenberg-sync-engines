@@ -7,7 +7,7 @@ import type { Awareness } from 'y-protocols/awareness';
 /**
  * Internal dependencies
  */
-import type { AwarenessState } from './session';
+import type { AwarenessState } from '@wordpress/sync';
 
 /*
  * Engine-agnostic bridging between the transport's plain-JSON awareness

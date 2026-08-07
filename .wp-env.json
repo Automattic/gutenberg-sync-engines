@@ -8,10 +8,7 @@
 	},
 	"env": {
 		"tests": {
-			"plugins": [
-				".",
-				"../workspaces/gutenberg/try-intent-log"
-			],
+			"plugins": [ ".", "../workspaces/gutenberg/try-intent-log" ],
 			"config": {
 				"WP_SYNC_FRAMEWORK_PLUGIN": "/var/www/html/wp-content/plugins/try-intent-log/gutenberg.php"
 			}

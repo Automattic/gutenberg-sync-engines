@@ -7,11 +7,11 @@ import apiFetch from '@wordpress/api-fetch';
  * Internal dependencies
  */
 import type {
+	AwarenessState,
 	ConnectionStatus,
 	EngineSessionCodec,
 	EngineUpdate,
-} from '../../types';
-import type { AwarenessState } from '../../engines/session';
+} from '@wordpress/sync';
 
 /**
  * A codec-driven WebSocket transport, symmetric with the HTTP polling

@@ -10,19 +10,16 @@ import {
 	createIntentLogSession,
 	INTENT_LOG_UPDATE_TYPES,
 	type IntentLogSession,
-} from '../engines/intent-log-session';
-import type { EngineUpdate } from '../engines/session';
+} from '../intent-log-session';
+import type { EngineUpdate } from '@wordpress/sync';
 // The engine core is the same code the deterministic simulator validates;
 // its in-memory server is the vector-pinned twin of WP_Intent_Log_Engine.
 import {
 	createServer,
 	serverDocAt,
 	serverIngestBatch,
-} from '../engines/intent-log/rebase.js';
-import {
-	canonicalJson,
-	createDocument,
-} from '../engines/intent-log/document.js';
+} from '../intent-log/rebase.js';
+import { canonicalJson, createDocument } from '../intent-log/document.js';
 
 const GENESIS_BLOCKS = [
 	{ syncId: 'p1', blockType: 'core/paragraph', text: 'Hello world' },

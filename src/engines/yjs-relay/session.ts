@@ -14,7 +14,7 @@ import type {
 	EngineLocalUpdateListener,
 	EngineSessionCodec,
 	EngineUpdate,
-} from '../session';
+} from '@wordpress/sync';
 import { applyServerAwarenessStates } from '../awareness-sync';
 import { SyncUpdateType } from '../../providers/http-polling/types';
 import {

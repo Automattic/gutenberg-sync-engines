@@ -23,16 +23,17 @@ import {
 } from './intent-log-session';
 import { mintSyncId } from './intent-log/sync-id.js';
 import { fieldToHtml } from './intent-log/rich-text.js';
-import { getProviderCreators } from '../providers';
+import { getProviderCreators } from '../framework';
 import type {
 	ObjectData,
 	ObjectID,
 	ObjectType,
+	ProviderCreator,
 	ProviderCreatorResult,
 	RecordHandlers,
 	SyncConfig,
 	SyncManager,
-} from '../types';
+} from '@wordpress/sync';
 
 /*
  * The intent-log SyncManager: the engine adapter surface core-data drives,
@@ -577,7 +578,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 
 		log( 'connecting', { key } );
 		state.providers = await Promise.all(
-			providerCreators.map( async ( create ) => {
+			providerCreators.map( async ( create: ProviderCreator ) => {
 				const provider = await create( {
 					objectType,
 					objectId,

@@ -12,22 +12,26 @@ import { addFilter, removeFilter } from '@wordpress/hooks';
  * Internal dependencies
  */
 import { Awareness } from 'y-protocols/awareness';
-import { createIntentLogManager } from '../engines/intent-log-manager';
+import { createIntentLogManager } from '../intent-log-manager';
 import {
 	INTENT_LOG_UPDATE_TYPES,
+	INTENT_LOG_ENGINE_SLUG,
+	INTENT_LOG_ENGINE_PROTOCOL,
 	type IntentLogSession,
-} from '../engines/intent-log-session';
+} from '../intent-log-session';
 import {
 	getEngineAdapters,
 	resetEngineAdaptersForTesting,
 	resolveEngineAdapter,
-	INTENT_LOG_ENGINE_SLUG,
-	INTENT_LOG_ENGINE_PROTOCOL,
-} from '../engines';
-import { createDocument } from '../engines/intent-log/document.js';
-import { resetProviderCreatorsForTesting } from '../providers';
-import type { EngineSessionCodec, EngineUpdate } from '../engines/session';
-import type { ProviderCreator, RecordHandlers } from '../types';
+	resetProviderCreatorsForTesting,
+} from '../../framework';
+import { createDocument } from '../intent-log/document.js';
+import type {
+	EngineSessionCodec,
+	EngineUpdate,
+	ProviderCreator,
+	RecordHandlers,
+} from '@wordpress/sync';
 
 /**
  * A capturing fake transport provider: records the codec it received and

@@ -4,7 +4,7 @@
 import { createHttpPollingProvider } from '../http-polling/http-polling-provider';
 import { setSyncApiPath } from '../http-polling/utils';
 import { setLongPollMode } from '../http-polling/polling-manager';
-import type { ProviderCreator } from '../../types';
+import type { ProviderCreator } from '@wordpress/sync';
 
 /**
  * REST route the long-poll transport holds open (its server counterpart is

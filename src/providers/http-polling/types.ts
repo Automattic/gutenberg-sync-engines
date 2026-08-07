@@ -6,7 +6,7 @@ import type {
 	EngineDisposition,
 	EngineUpdate,
 	LocalAwarenessState,
-} from '../../engines/session';
+} from '@wordpress/sync';
 
 export type { AwarenessState, LocalAwarenessState };
 

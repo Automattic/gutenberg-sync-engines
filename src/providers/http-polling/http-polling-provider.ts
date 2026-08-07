@@ -11,7 +11,7 @@ import type {
 	EngineSessionCodec,
 	ProviderCreator,
 	ProviderCreatorResult,
-} from '../../types';
+} from '@wordpress/sync';
 import { pollingManager } from './polling-manager';
 
 export interface ProviderOptions {

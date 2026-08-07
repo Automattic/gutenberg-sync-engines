@@ -24,10 +24,20 @@ module.exports = {
 		{
 			// The frozen JS engine core is a vendored cross-language contract
 			// (byte-matched against its PHP twin and JSON vectors); do not
-			// reformat or relint it here.
+			// reformat or relint it here. It targets a Node-style runtime with
+			// its own test harness and identifier minting, so give it the Node,
+			// jest, and modern-ES globals rather than this plugin's browser env.
 			files: [ 'src/engines/intent-log/**/*.js' ],
+			env: {
+				browser: true,
+				es2021: true,
+				jest: true,
+				node: true,
+			},
 			rules: {
 				'@wordpress/no-unused-vars-before-return': 'off',
+				'no-console': 'off',
+				'import/no-extraneous-dependencies': 'off',
 			},
 		},
 	],

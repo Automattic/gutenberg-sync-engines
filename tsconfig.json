@@ -3,6 +3,21 @@
 		"target": "esnext",
 		"module": "esnext",
 		"moduleResolution": "node",
+		"baseUrl": ".",
+		"paths": {
+			"@wordpress/sync": [
+				"../workspaces/gutenberg/try-intent-log/packages/sync/src"
+			],
+			"yjs": [
+				"../workspaces/gutenberg/try-intent-log/node_modules/yjs"
+			],
+			"y-protocols/*": [
+				"../workspaces/gutenberg/try-intent-log/node_modules/y-protocols/*"
+			],
+			"lib0/*": [
+				"../workspaces/gutenberg/try-intent-log/node_modules/lib0/*"
+			]
+		},
 		"jsx": "react-jsx",
 		"strict": true,
 		"noEmit": true,
@@ -14,9 +29,5 @@
 		"types": [ "@wordpress/element" ]
 	},
 	"include": [ "src/**/*" ],
-	"exclude": [
-		"node_modules",
-		"build",
-		"src/engines/intent-log/*.js"
-	]
+	"exclude": [ "node_modules", "build", "src/engines/intent-log/*.js" ]
 }
