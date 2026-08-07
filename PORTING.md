@@ -10,23 +10,28 @@ coordinated Gutenberg (`@wordpress/sync`) change to expose the framework's
 registration surface as unlockable private APIs and to stop shipping default
 engines/transports. This file tracks exactly what remains.
 
-## 1. Gutenberg (`@wordpress/sync`) — expose an unlockable surface
+## 1. Gutenberg (`@wordpress/sync`) — expose an unlockable surface — DONE
 
-Add a `privateApis` export (via `@wordpress/private-apis`, consent string as
-in `src/lock-unlock.ts`) exposing:
+`@wordpress/sync` already ships a `privateApis` export (via
+`@wordpress/private-apis`; `@wordpress/sync` is in the allowlist and there is
+no double-registration guard, so this plugin unlocks it by claiming the
+`@wordpress/sync` module name — see `src/lock-unlock.ts`). It now also
+exposes:
 
 - `registerSyncEngine( adapter: SyncEngineAdapter )` — appends to the engine
-  adapter registry (today `sync.engines` filter / `getDefaultEngineAdapters`).
+  adapter registry.
 - `registerSyncTransport( registration: TransportRegistration )` — appends to
-  the transport registry (today `sync.transports` filter).
-- The `EngineSessionCodec` base/type and its identity constants.
-- `createSyncManager` (the yjs adapter's manager factory) and the awareness
-  helpers (`createAwarenessDoc`, `applyServerAwarenessStates`).
-- The wire types + base64 helpers the providers use
-  (`SyncPayload`/`SyncResponse`, `uint8ArrayToBase64`, …).
+  the transport registry.
 
-And **remove the built-in registrations** so that, without this plugin, the
-registries are empty and RTC degrades to the post lock.
+(Plus the pre-existing `createSyncManager`, `resolveEngineAdapter`, etc. The
+`EngineSessionCodec` base/types are exported from the package types; the wire
+types/base64 helpers still need surfacing where the providers import them.)
+
+**Still pending:** remove the built-in default adapters/transports
+(`getDefaultEngineAdapters` / `getDefaultTransports`) so that, without this
+plugin, the registries are empty and RTC degrades to the post lock — this is
+the destabilizing step (it moves the adapter/provider code + jest suites out
+of `@wordpress/sync` into this plugin), done together with §2.
 
 ## 2. This plugin — rewrite relative imports to the framework
 
