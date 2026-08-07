@@ -124,6 +124,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 		private function register(): void {
 			add_filter( 'wp_sync_engines', array( $this, 'register_engines' ), 10, 2 );
 			add_filter( 'wp_sync_transports', array( $this, 'register_transports' ), 10, 3 );
+			add_action( 'enqueue_block_editor_assets', array( $this, 'enqueue_editor_assets' ) );
 
 			( new Gutenberg_Sync_Engines_Settings() )->register();
 		}
@@ -158,6 +159,40 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			$transports[] = new WP_HTTP_Long_Polling_Sync_Server( $storage, $engines );
 			$transports[] = new WP_WebSocket_Sync_Transport( $storage, $engines );
 			return $transports;
+		}
+
+		/**
+		 * Enqueues the intent-log block-identity stamper in the editor when
+		 * collaboration is enabled and intent-log is the active engine.
+		 *
+		 * The stamper fills `metadata.syncId` for blocks that lack one and
+		 * re-mints duplicates directly in the editor store, making block
+		 * identity durable. It is a raw script (no build), so it ships with
+		 * the engine and is enqueued directly. The compiled client engine
+		 * adapters/providers are enqueued separately once the client bundle
+		 * is wired (see PORTING.md).
+		 *
+		 * @since 0.1.0
+		 *
+		 * @return void
+		 */
+		public function enqueue_editor_assets(): void {
+			if ( function_exists( 'wp_is_collaboration_enabled' ) && ! wp_is_collaboration_enabled() ) {
+				return;
+			}
+			$storage = new WP_Sync_Post_Meta_Storage();
+			$engines = new WP_Sync_Engine_Registry( $storage );
+			if ( 'intent-log' !== $engines->get_engine_slug_for_room( '' ) ) {
+				return;
+			}
+			$stamper = GUTENBERG_SYNC_ENGINES_PATH . 'includes/engines/intent-log/sync-id.js';
+			wp_enqueue_script(
+				'gutenberg-sync-engines-intent-log-stamper',
+				GUTENBERG_SYNC_ENGINES_URL . 'includes/engines/intent-log/sync-id.js',
+				array( 'wp-data' ),
+				file_exists( $stamper ) ? (string) filemtime( $stamper ) : GUTENBERG_SYNC_ENGINES_VERSION,
+				true
+			);
 		}
 
 		/**
