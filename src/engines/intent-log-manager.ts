@@ -967,5 +967,13 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			}
 			entityStates.clear();
 		},
+
+		// Transport-agnostic retry: ask every live provider to retry after a
+		// connection error (wired to the editor's connection-error modal).
+		retry() {
+			for ( const [ , state ] of entityStates ) {
+				state.providers.forEach( ( provider ) => provider.retry?.() );
+			}
+		},
 	};
 }

@@ -154,6 +154,9 @@ export function createHttpPollingProvider(): ProviderCreator {
 			on: ( event, callback ) => {
 				provider.on( event, callback );
 			},
+			// Poll immediately, cancelling any backoff wait (all rooms share the
+			// one polling loop, so this coalesces across providers).
+			retry: () => pollingManager.retryNow(),
 		};
 	};
 }
