@@ -162,15 +162,19 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 		}
 
 		/**
-		 * Enqueues the intent-log block-identity stamper in the editor when
-		 * collaboration is enabled and intent-log is the active engine.
+		 * Enqueues the client engine/transport bundle in the editor when
+		 * collaboration is enabled, plus the intent-log block-identity stamper
+		 * when intent-log is the active engine.
+		 *
+		 * The bundle registers this plugin's engine adapters and transport
+		 * providers with the framework (`wp.sync`) at load time, so the client
+		 * can supply whichever engine the server announces. Without it the
+		 * framework ships only the inert Yjs relay and RTC stays disabled.
 		 *
 		 * The stamper fills `metadata.syncId` for blocks that lack one and
 		 * re-mints duplicates directly in the editor store, making block
-		 * identity durable. It is a raw script (no build), so it ships with
-		 * the engine and is enqueued directly. The compiled client engine
-		 * adapters/providers are enqueued separately once the client bundle
-		 * is wired (see PORTING.md).
+		 * identity durable. It is a raw script (no build), specific to the
+		 * intent-log engine.
 		 *
 		 * @since 0.1.0
 		 *
@@ -180,6 +184,20 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			if ( function_exists( 'wp_is_collaboration_enabled' ) && ! wp_is_collaboration_enabled() ) {
 				return;
 			}
+
+			$bundle = GUTENBERG_SYNC_ENGINES_PATH . 'build/sync-engines.js';
+			$asset  = GUTENBERG_SYNC_ENGINES_PATH . 'build/sync-engines.asset.php';
+			if ( file_exists( $bundle ) && file_exists( $asset ) ) {
+				$meta = require $asset;
+				wp_enqueue_script(
+					'gutenberg-sync-engines',
+					GUTENBERG_SYNC_ENGINES_URL . 'build/sync-engines.js',
+					isset( $meta['dependencies'] ) ? $meta['dependencies'] : array(),
+					isset( $meta['version'] ) ? $meta['version'] : GUTENBERG_SYNC_ENGINES_VERSION,
+					true
+				);
+			}
+
 			$storage = new WP_Sync_Post_Meta_Storage();
 			$engines = new WP_Sync_Engine_Registry( $storage );
 			if ( 'intent-log' !== $engines->get_engine_slug_for_room( '' ) ) {
