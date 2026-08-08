@@ -13,6 +13,7 @@ import { addFilter, removeFilter } from '@wordpress/hooks';
  */
 import { Awareness } from 'y-protocols/awareness';
 import { createIntentLogManager } from '../intent-log-manager';
+import { createIntentLogEngineAdapter } from '../intent-log-adapter';
 import {
 	INTENT_LOG_UPDATE_TYPES,
 	INTENT_LOG_ENGINE_SLUG,
@@ -21,6 +22,7 @@ import {
 } from '../intent-log-session';
 import {
 	getEngineAdapters,
+	registerSyncEngine,
 	resetEngineAdaptersForTesting,
 	resolveEngineAdapter,
 	resetProviderCreatorsForTesting,
@@ -113,7 +115,8 @@ describe( 'intent-log manager', () => {
 		return { manager, handlers, transport };
 	}
 
-	it( 'registers as a default engine adapter resolvable from the announcement', () => {
+	it( 'registers via registerSyncEngine and resolves from the announcement', () => {
+		registerSyncEngine( createIntentLogEngineAdapter() );
 		window._wpCollaborationSync = {
 			engine: INTENT_LOG_ENGINE_SLUG,
 			engineProtocol: INTENT_LOG_ENGINE_PROTOCOL,

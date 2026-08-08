@@ -23,6 +23,9 @@ export const registerSyncEngine = api.registerSyncEngine;
 export const registerSyncTransport = api.registerSyncTransport;
 export const getProviderCreators = api.getProviderCreators;
 export const createSyncManager = api.createSyncManager;
+// The framework's built-in Yjs relay engine, composed with createSyncManager by
+// this plugin's yjs-relay adapter until the Yjs stack moves here (PORTING.md §5).
+export const createYjsEngine = api.createYjsEngine;
 export const ConnectionError = api.ConnectionError;
 export const ConnectionErrorCode = api.ConnectionErrorCode;
 export const resolveEngineAdapter = api.resolveEngineAdapter;
