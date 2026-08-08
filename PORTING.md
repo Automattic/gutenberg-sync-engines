@@ -71,6 +71,18 @@ adapter's `createSessionCodec`. Consequences:
 - The yjs adapter's `createSessionCodec` field is effectively dead — nothing
   in `createSyncManager` invokes it.
 
+**Progress (steps 1-2 landed, framework commit `8af5069291e`):** the
+engine-neutral seam exists. `packages/sync/src/engines/engine.ts` defines
+`SyncEngine`/`EngineEntity`; `engines/yjs-relay/engine.ts` `createYjsEngine`
+holds the Yjs per-entity machinery lifted out of the manager; the manager's
+ENTITY path delegates to the injected engine (its `EntityState` holds an
+`EngineEntity`, not a `Y.Doc`). `createSyncManager(debug)` keeps its signature
+and defaults to the Yjs engine internally, so core-data/adapters are unchanged.
+Behavior-preserving: sync jest 402/402, yjs collaboration-sync e2e green.
+Remaining below (steps 3-4): route the collection path through the engine, flip
+`createSyncManager` to take the negotiated engine, and relocate `createYjsEngine`
+to the plugin.
+
 To fully honor "the plugin hosts the engines" for yjs-relay:
 
 1. Refactor `createSyncManager` to consume the resolved adapter's
