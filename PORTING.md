@@ -83,10 +83,27 @@ type (inherent to the public `getAwareness` contract). `createSyncManager(debug)
 keeps its signature and defaults to the Yjs engine internally, so
 core-data/adapters are unchanged. Behavior-preserving: sync jest 402/402 (entity
 + collection load covered), yjs collaboration-sync e2e green.
-Remaining (step 4): flip `createSyncManager` to take the server-negotiated engine
-(`createSyncManager(engine, {debug})`, updating the adapters' `createManager` +
-core-data), then relocate `createYjsEngine` to the plugin so the framework keeps
-only the generic shell + contracts.
+**Step 4a landed** (framework `901a2ba3370`, plugin `f0517a1`): `createSyncManager`
+is engine-neutral — `createSyncManager( engine, { debug } )`. The adapters compose
+it; the built-in yjs adapter and this plugin's yjs adapter both do
+`createManager: (debug) => createSyncManager( createYjsEngine(), { debug } )`.
+`createYjsEngine` is exposed through the framework private API (re-exported via
+`framework.ts`) so the plugin composes it. The vestigial
+`SyncEngineAdapter.createSessionCodec` is gone (the engine owns the codec).
+`manager.ts` is fully engine-agnostic. Behavior-preserving (sync jest 402/402,
+yjs collaboration-sync e2e green).
+
+**Remaining (step 4b — bigger than it looks):** relocate the whole Yjs stack to
+this plugin — `createYjsEngine` depends on `yjs-relay/session`, the CRDT utils
+(`createYjsDoc`/`initializeYjsDoc`/`markEntityAsSaved`/(de)serialize), the
+snapshot helpers, and the `CRDT_*` config keys — then empty the framework's
+`getDefaultEngineAdapters()` and un-expose `createYjsEngine`. This is a
+destabilizing cutover like the intent-log one (full build + e2e for both
+engines). NOTE a real design question first: yjs-relay is the *incumbent,
+deeply-integrated* reference engine — "RTC disabled without the plugin" already
+holds via the empty SERVER registries, so keeping yjs-relay as a framework
+built-in (and only intent-log + transports in the plugin) is a defensible end
+state that avoids relocating the entire Yjs implementation.
 
 To fully honor "the plugin hosts the engines" for yjs-relay:
 
