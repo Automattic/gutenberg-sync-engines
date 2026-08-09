@@ -93,19 +93,22 @@ it; the built-in yjs adapter and this plugin's yjs adapter both do
 `manager.ts` is fully engine-agnostic. Behavior-preserving (sync jest 402/402,
 yjs collaboration-sync e2e green).
 
-**Remaining (step 4b — bigger than it looks):** relocate the whole Yjs stack to
-this plugin — `createYjsEngine` depends on `yjs-relay/session`, the CRDT utils
-(`createYjsDoc`/`initializeYjsDoc`/`markEntityAsSaved`/(de)serialize), the
-snapshot helpers, and the `CRDT_*` config keys — then empty the framework's
-`getDefaultEngineAdapters()` and un-expose `createYjsEngine`. This is a
-destabilizing cutover like the intent-log one (full build + e2e for both
-engines). NOTE a real design question first: yjs-relay is the *incumbent,
-deeply-integrated* reference engine — "RTC disabled without the plugin" already
-holds via the empty SERVER registries, so keeping yjs-relay as a framework
-built-in (and only intent-log + transports in the plugin) is a defensible end
-state that avoids relocating the entire Yjs implementation.
+**Step 4b landed** (framework staged pending signing; plugin `b1e537f`): the
+whole Yjs stack now lives in this plugin under `src/engines/yjs-relay/`:
+`constants.ts` (CRDT wire keys), `doc.ts` (Y.Doc create/init/save/(de)serialize),
+`snapshot.ts`, and `engine.ts` (`createYjsEngine`, implementing the SPI) — plus
+the already-present `session.ts`/`awareness-sync.ts` and the relocated Yjs unit
+tests (doc/snapshot/manager). The yjs adapter composes `createSyncManager(
+createYjsEngine(), … )` with the LOCAL engine. The framework deleted its Yjs
+stack, `getDefaultEngineAdapters()` returns `[]`, `createYjsEngine` is no longer
+exposed, and `resolveEngineAdapter()` returns null with no announcement (no
+built-in fallback). **The framework ships no engine; both Yjs and intent-log
+come solely from this plugin.** Verified: framework sync jest 320/320, plugin
+367/367, tsc + lint clean, framework bundle contains no Yjs engine code, and
+both engines pass e2e (yjs 4/4, intent-log 20/20).
 
-To fully honor "the plugin hosts the engines" for yjs-relay:
+The engine-hosting split is now complete. Historical context on why 4b was the
+hard part:
 
 1. Refactor `createSyncManager` to consume the resolved adapter's
    `createSessionCodec` factory (and its doc/awareness construction) instead of
