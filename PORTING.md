@@ -107,7 +107,16 @@ come solely from this plugin.** Verified: framework sync jest 320/320, plugin
 367/367, tsc + lint clean, framework bundle contains no Yjs engine code, and
 both engines pass e2e (yjs 4/4, intent-log 20/20).
 
-The engine-hosting split is now complete. Historical context on why 4b was the
+**Transports relocated too** (framework change staged pending signing; this
+plugin unchanged — it already owned all three transports and registers them via
+`registerSyncTransport`). The framework deleted `providers/{http-polling,
+http-long-polling,websocket}/`, `getDefaultTransports()` returns `[]`, and
+`negotiateTransport()` no longer defaults to http-polling with no announcement.
+**The framework now ships neither engines nor transports** — only the generic
+manager shell, the engine + transport registries with negotiation, the SPI, and
+the shared `Y` export. Both engines pass e2e with this plugin's transports.
+
+The framework/plugin split is complete. Historical context on why 4b was the
 hard part:
 
 1. Refactor `createSyncManager` to consume the resolved adapter's
