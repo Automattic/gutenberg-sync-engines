@@ -7,3 +7,4 @@ export {
 	YJS_RELAY_ENGINE_PROTOCOL,
 } from './session';
 export type { YjsSessionOptions } from './session';
+export { createYjsEngine } from './engine';
