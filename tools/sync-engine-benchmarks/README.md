@@ -19,15 +19,31 @@ Two engines are registered today:
 **Cost** (both engines):
 
 - `service_us` — per-request service time of `handle_updates` (p50/p90/p99/
-  max/mean, reported in ms). Only storage is swapped for an in-memory
-  implementation, so this isolates *engine* CPU (the intent-log planner and
-  replay; the relay's append) from database I/O, which is the same
-  transport-level cost for either engine and would otherwise dominate.
-- `payload_bytes` — request and response sizes on the wire.
+  max/mean, reported in ms), measured with `hrtime()` and pooled across
+  measured repetitions (warmup reps are excluded). Storage is swapped for an
+  in-memory implementation, so this mostly isolates *engine* CPU (the
+  intent-log planner and replay; the relay's append) from database I/O —
+  with one deliberate exception: the intent log's ingest holds a per-room
+  MySQL `GET_LOCK` for the length of each request, so each of its samples
+  includes one lock/release pair of real DB round-trips (the relay pays
+  none). The reported `calibration` block times that lock pair and a bare
+  `SELECT 1` in the same environment so the number can be decomposed.
+- `read_us` / `idle_poll_us` — per-request time of `get_updates_since`,
+  split into catch-up reads (during and after the session) and idle polls
+  (nothing new to deliver). Idle polls dominate request volume in a live
+  deployment, so their cost is reported on its own.
+- `payload_bytes` — request and response sizes of the engine-level updates
+  payload (the transport envelope and awareness add overhead on top).
 - `storage.rows` / `storage.bytes` — how the room grows. This is measured
   exactly even though storage is in-memory, because growth is a real
-  differentiator: the intent log checkpoints and trims; a naive relay keeps
-  every update forever.
+  differentiator — but of a different KIND per engine: the intent log
+  checkpoints and trims on the server; the relay relies on a client to
+  compact (the engine nominates the lowest-id session member once the room
+  passes 50 rows). The runner plays that compactor's part — it submits a
+  synthetic full-state snapshot whenever a read answers `should_compact` —
+  so relay growth reflects a session with live clients, not an abandoned
+  room. `storage.compactions` counts those snapshots; their requests are
+  included in cost.
 
 **Quality** — policy-correct, and only where the server can observe it:
 
@@ -39,8 +55,12 @@ Two engines are registered today:
 - `lost_work` — edits that were dropped without being applied or preserved
   for review (a `voided` with a non-benign reason). The project's policy is
   *never lose work*; this asserts it. It is `0` in every scenario here.
-- `converged` — a fresh replica that reads the whole room materializes the
-  same content the server does.
+- `converged` — the materialized document matches the engine's own account
+  of the session: every `applied` edit's unique token appears in the content
+  exactly once, no `escalated` edit's token leaked into the content, the
+  block structure is intact, and each block's final attribute value is the
+  last applied write in server order. Failures are itemized in
+  `quality.convergence_failures`.
 
 For `yjs-relay`, quality is reported as **not server-observable**. The relay
 does its merge on the client; there is no PHP CRDT to score convergence or
@@ -62,13 +82,20 @@ review* (an outcome, not a demerit).
 | Slug                  | Shape                                                        |
 | --------------------- | ----------------------------------------------------------- |
 | `solo-typing`         | One editor, one document. Baseline cost, no contention.     |
+| `long-form`           | One editor, ~600 chars per paragraph (~5 KB at defaults). Does cost scale with document size? |
 | `parallel-paragraphs` | N editors, each in their own paragraph. Clean concurrency.  |
 | `contended-paragraph` | N editors restyling the SAME block. High escalation.        |
 | `mixed-newsroom`      | Mostly parallel, ~25% of rounds collide on one block.       |
+| `laggy-newsroom`      | Mixed newsroom, but the last client reads only every 10th round: stale bases, deep transforms, heavy catch-up reads. |
 
 Contention is modelled as concurrent writes to a versioned register (a
 block's alignment), because concurrent *text* inserts merge cleanly (the
 text interleaves — correct, not a conflict). Same seed ⇒ same workload.
+
+Clients author from the state observed at their own last read, so a laggy
+client's `baseSeq` genuinely lags the server head. After the rounds, every
+client catches up, then polls the idle room 25 times — the steady-state
+request a live deployment mostly serves.
 
 ## Running
 
@@ -77,30 +104,54 @@ the ingest lock), so run inside the environment under test via wp-cli.
 Options are bare `key=value` tokens — wp-cli would claim `--flags` itself.
 
 ```bash
-wp eval-file test/php/sync-engine-benchmarks/benchmark.php \
+wp eval-file tools/sync-engine-benchmarks/benchmark.php \
     engine=intent-log scenario=mixed-newsroom \
     rounds=200 clients=4 paragraphs=8 seed=42
 
 # Head-to-head: run both engines over the same scenario and seed.
 for e in intent-log yjs-relay; do
-  wp eval-file test/php/sync-engine-benchmarks/benchmark.php \
+  wp eval-file tools/sync-engine-benchmarks/benchmark.php \
       engine=$e scenario=contended-paragraph rounds=200 clients=4 seed=42
 done
 ```
 
-Add `json=out.json` to also write the full report.
+Under wp-env, the plugin is mounted at
+`wp-content/plugins/<checkout-dir-name>`:
+
+```bash
+npx wp-env run cli --env-cwd=wp-content/plugins/$(basename "$PWD") \
+    wp eval-file tools/sync-engine-benchmarks/benchmark.php engine=intent-log
+```
+
+Each run executes `reps=3` repetitions of the identical workload and
+discards `warmup=1` of them (autoload, opcache, and first-lock costs land
+there); timing percentiles pool the measured reps, and per-rep means with a
+stddev expose run-to-run spread. Counted metrics are asserted identical
+across reps. Add `json=out.json` to also write the full report, which
+includes an `environment` stanza (PHP/WP/DB versions, opcache) and the
+`calibration` block — always quote those when comparing runs from different
+machines.
 
 ## Reading the results
 
-Representative run (`mixed-newsroom`, 150 rounds, 4 clients, 8 paragraphs,
-600 requests):
+Representative run (`mixed-newsroom`, 150 rounds, 4 clients, 8 paragraphs;
+wp-env Docker, PHP 8.3 / MariaDB — quote your own `environment` +
+`calibration` stanzas with any numbers you report):
 
 | Metric              | intent-log       | yjs-relay              |
 | ------------------- | ---------------- | ---------------------- |
-| service ms (mean)   | ~0.67            | ~0.0004                |
-| service ms (p99)    | ~1.19            | ~0.001                 |
-| storage rows        | 296 (bounded)    | 600 (one per edit)     |
-| quality             | 480 applied, 114 to review, **0 lost**, converged | not observable |
+| service ms (mean)   | ~0.63 (incl. ~0.03 lock pair) | ~0.0005 (timer floor) |
+| service ms (p99)    | ~1.20            | ~0.006                 |
+| idle poll ms (mean) | ~0.0002          | ~0.0002                |
+| storage rows        | 296 (server checkpoints + trims) | 30 (11 scripted client compactions) |
+| quality             | 480 applied, 114 to review, **0 lost**, content-verified converged | not observable |
+
+Document-size scaling (`long-form`, ~5 KB document vs `solo-typing`'s
+near-empty one, same rounds): mean service ~0.36 ms vs ~0.28 ms — replay
+cost grows with document size, but modestly at this scale. The
+`laggy-newsroom` scenario (one client reading every 10th round) settles
+with more benign voids (26 vs 6) and heavier catch-up reads, and still
+loses nothing.
 
 The comparison the decision turns on:
 
@@ -110,9 +161,12 @@ The comparison the decision turns on:
   conflict surfaced for review. Under a `contended-paragraph` load (4
   editors on one block) it escalates ~74% and still loses nothing.
 - **yjs-relay** is a near-free relay, but the merge cost and conflict
-  outcome live on the client where the server cannot see them, and storage
-  grows one row per edit forever (no server-side compaction, because the
-  server has no document to snapshot).
+  outcome live on the client where the server cannot see them, and the
+  server cannot compact (it has no document to snapshot) — it depends on a
+  live client volunteering. With the scripted compactor, storage stays
+  bounded around the threshold; in a room whose clients leave or never
+  volunteer, it grows one row per edit forever. Both `storage.bytes` and
+  the snapshot sizes are synthetic on this path (see Limitations).
 
 ## Limitations
 
@@ -122,7 +176,21 @@ The comparison the decision turns on:
   on top of these engine adapters later.
 - **yjs quality is unmeasured here** by construction (no PHP CRDT), not by
   omission. A fair quality comparison would need a yjs client oracle.
+- **Relay payloads are synthetic.** Per-edit updates and compaction
+  snapshots are size-modelled blobs (a few dozen bytes per keystroke batch;
+  a snapshot proportional to accumulated document size), not real Yjs
+  binary. Relay `payload_bytes` and `storage.bytes` are therefore
+  order-of-magnitude estimates; `storage.rows` and the compaction cadence
+  are exact.
 - **In-memory storage** understates absolute per-request time (no real DB
-  round-trip) but keeps the *engine* comparison clean; storage growth is
-  exact. For end-to-end latency including MySQL, point the runner at
-  `WP_Sync_Post_Meta_Storage` instead.
+  round-trip for reads/writes) but keeps the *engine* comparison clean;
+  storage growth is exact. For end-to-end latency including MySQL, point
+  the runner at `WP_Sync_Post_Meta_Storage` instead.
+- **The intent-log ingest lock IS real DB I/O inside `service_us`** (one
+  `GET_LOCK`/`RELEASE_LOCK` pair per request), so its absolute timings move
+  with the environment's DB latency — a Docker MySQL and a local socket
+  differ by an order of magnitude. Use the `calibration.lock_pair_p50_ms`
+  figure to subtract it out, and never compare `service_us` across
+  environments without the `environment` + `calibration` stanzas.
+- **Relay service times sit near the timer floor** (single-digit µs): they
+  say "the relay's server cost is negligible", not anything more precise.

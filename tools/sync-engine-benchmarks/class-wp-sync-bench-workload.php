@@ -31,9 +31,11 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 		public static function scenarios(): array {
 			return array(
 				'solo-typing'         => 'One editor typing into one document (baseline cost, no contention).',
+				'long-form'           => 'One editor in a much LARGER document (does engine cost scale with document size?).',
 				'parallel-paragraphs' => 'Several editors, each in their own paragraph (clean concurrent merges).',
 				'contended-paragraph' => 'Several editors typing into the SAME paragraph (high escalation).',
 				'mixed-newsroom'      => 'Mostly parallel editing with occasional collisions.',
+				'laggy-newsroom'      => 'Mixed newsroom where the last client reads only every 10th round (stale bases, deep transforms, catch-up reads).',
 			);
 		}
 
@@ -57,11 +59,28 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 				return $modulo > 0 ? $hash % $modulo : 0;
 			};
 
+			// long-form pads every paragraph to ~600 chars, so the default 8
+			// paragraphs make a ~5 KB document (raise `paragraphs` for more) —
+			// against solo-typing's near-empty one, this shows whether engine
+			// cost scales with document size.
+			$filler = 'long-form' === $scenario
+				? str_repeat( ' lorem ipsum dolor sit amet consectetur adipiscing elit sed do', 9 )
+				: '';
+
 			$content_parts = array();
 			for ( $i = 0; $i < $paragraphs; $i++ ) {
-				$content_parts[] = "<!-- wp:paragraph -->\n<p>Paragraph " . ( $i + 1 ) . "</p>\n<!-- /wp:paragraph -->";
+				$content_parts[] = "<!-- wp:paragraph -->\n<p>Paragraph " . ( $i + 1 ) . $filler . "</p>\n<!-- /wp:paragraph -->";
 			}
 			$post_content = implode( "\n\n", $content_parts );
+
+			// Which rounds each client reads on: 1 = every round (the default
+			// lock-step model); k = only every k-th round (a laggy client whose
+			// baseSeq falls up to k rounds behind, forcing deeper transforms
+			// and bigger catch-up reads).
+			$read_every = array_fill( 0, max( 1, $clients ), 1 );
+			if ( 'laggy-newsroom' === $scenario && $clients > 1 ) {
+				$read_every[ $clients - 1 ] = 10;
+			}
 
 			// Two operation kinds drive the two settlement paths. Concurrent
 			// text inserts MERGE (the text interleaves — correct, not a
@@ -76,6 +95,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 
 				switch ( $scenario ) {
 					case 'solo-typing':
+					case 'long-form':
 						$edits[] = array(
 							'client'    => 0,
 							'paragraph' => $rand( $paragraphs ),
@@ -106,6 +126,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 						break;
 
 					case 'mixed-newsroom':
+					case 'laggy-newsroom':
 					default:
 						// ~25% of rounds collide (concurrent restyle of one
 						// block); the rest is clean parallel typing.
@@ -122,7 +143,10 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 				}
 
 				foreach ( $edits as $index => &$edit ) {
-					$edit['text']  = ' r' . $r . 'c' . $edit['client'] . '.' . $index;
+					// A unique, delimiter-terminated token per edit: the runner's
+					// convergence oracle counts these in the materialized content,
+					// so no token may be a substring of another (';' terminates).
+					$edit['text']  = ' r' . $r . 'c' . $edit['client'] . '.' . $index . ';';
 					$edit['align'] = 0 === ( ( $r + $edit['client'] ) % 2 ) ? 'wide' : 'full';
 				}
 				unset( $edit );
@@ -135,6 +159,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 				'post_content' => $post_content,
 				'paragraphs'   => $paragraphs,
 				'clients'      => $clients,
+				'read_every'   => $read_every,
 				'rounds'       => $round_list,
 			);
 		}

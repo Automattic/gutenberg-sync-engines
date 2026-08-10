@@ -4,7 +4,7 @@
  * get_post/serialize_block and a $wpdb for the ingest lock), so invoke it
  * through wp-cli's eval-file in the environment under test:
  *
- *   wp eval-file test/php/sync-engine-benchmarks/benchmark.php \
+ *   wp eval-file tools/sync-engine-benchmarks/benchmark.php \
  *       engine=intent-log scenario=mixed-newsroom \
  *       rounds=200 clients=4 paragraphs=8 seed=42 json=out.json
  *
@@ -58,35 +58,147 @@ $rounds      = (int) ( $wp_sync_bench_opts['rounds'] ?? 200 );
 $clients     = (int) ( $wp_sync_bench_opts['clients'] ?? 4 );
 $paragraphs  = (int) ( $wp_sync_bench_opts['paragraphs'] ?? 8 );
 $seed        = (int) ( $wp_sync_bench_opts['seed'] ?? 42 );
+$reps        = max( 1, (int) ( $wp_sync_bench_opts['reps'] ?? 3 ) );
+$warmup      = max( 0, min( (int) ( $wp_sync_bench_opts['warmup'] ?? 1 ), $reps - 1 ) );
 
 if ( ! array_key_exists( $scenario, WP_Sync_Bench_Workload::scenarios() ) ) {
 	fwrite( STDERR, "Unknown scenario: {$scenario}\n" );
 	fwrite( STDERR, 'Scenarios: ' . implode( ', ', array_keys( WP_Sync_Bench_Workload::scenarios() ) ) . "\n" );
 	exit( 1 );
 }
-
-$storage = new WP_Sync_Bench_Memory_Storage();
-if ( 'yjs-relay' === $engine_slug ) {
-	$engine = new WP_Yjs_Relay_Engine( $storage );
-} elseif ( 'intent-log' === $engine_slug ) {
-	$engine = new WP_Intent_Log_Engine( $storage );
-} else {
+if ( ! in_array( $engine_slug, array( 'intent-log', 'yjs-relay' ), true ) ) {
 	fwrite( STDERR, "Unknown engine: {$engine_slug} (intent-log | yjs-relay)\n" );
 	exit( 1 );
 }
 
-$workload = WP_Sync_Bench_Workload::build( $scenario, $seed, $rounds, $clients, $paragraphs );
-$post_id  = wp_insert_post(
-	array(
-		'post_type'    => 'post',
-		'post_status'  => 'draft',
-		'post_title'   => 'Sync benchmark',
-		'post_content' => $workload['post_content'],
-	)
+/**
+ * Times the environment's database round-trips so the intent-log service
+ * time can be decomposed: its handle_updates() holds a per-room MySQL
+ * GET_LOCK for the length of the request, so each timed request includes
+ * one lock/release pair of DB round-trips that the yjs relay does not pay.
+ *
+ * @return array db_rtt and lock_pair p50, in milliseconds.
+ */
+if ( ! function_exists( 'wp_sync_bench_calibrate' ) ) {
+	function wp_sync_bench_calibrate(): array {
+		global $wpdb;
+
+		$db_rtt    = array();
+		$lock_pair = array();
+		$lock_name = $wpdb->prefix . 'sync_bench_calibration';
+		for ( $i = 0; $i < 100; $i++ ) {
+			$start = hrtime( true );
+			$wpdb->get_var( 'SELECT 1' );
+			$db_rtt[] = ( hrtime( true ) - $start ) / 1e3;
+
+			$start = hrtime( true );
+			$wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, %d)', $lock_name, 5 ) );
+			$wpdb->query( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock_name ) );
+			$lock_pair[] = ( hrtime( true ) - $start ) / 1e3;
+		}
+
+		return array(
+			'db_rtt_p50_ms'    => WP_Sync_Bench_Runner::summary( $db_rtt )['p50'],
+			'lock_pair_p50_ms' => WP_Sync_Bench_Runner::summary( $lock_pair )['p50'],
+		);
+	}
+}
+
+// The workload is deterministic, so every repetition replays the identical
+// edit sequence: counted metrics (dispositions, storage, payloads) must not
+// move between reps, and timing gets independent samples. Warmup reps run
+// the same load but are excluded from timing (autoload, opcache, and the
+// first lock acquisition all land in rep 0).
+$wp_sync_bench_workload = WP_Sync_Bench_Workload::build( $scenario, $seed, $rounds, $clients, $paragraphs );
+
+$wp_sync_bench_series       = array(
+	'service_us'   => array(),
+	'read_us'      => array(),
+	'idle_poll_us' => array(),
+);
+$wp_sync_bench_rep_means    = array();
+$wp_sync_bench_fingerprints = array();
+$report                     = null;
+for ( $wp_sync_bench_rep = 0; $wp_sync_bench_rep < $reps; $wp_sync_bench_rep++ ) {
+	$storage = new WP_Sync_Bench_Memory_Storage();
+	$engine  = 'yjs-relay' === $engine_slug
+		? new WP_Yjs_Relay_Engine( $storage )
+		: new WP_Intent_Log_Engine( $storage );
+
+	$post_id = wp_insert_post(
+		array(
+			'post_type'    => 'post',
+			'post_status'  => 'draft',
+			'post_title'   => 'Sync benchmark',
+			'post_content' => $wp_sync_bench_workload['post_content'],
+		)
+	);
+
+	$report = WP_Sync_Bench_Runner::run( $engine, $storage, (int) $post_id, $wp_sync_bench_workload );
+	wp_delete_post( (int) $post_id, true );
+
+	$series = array();
+	foreach ( array_keys( $wp_sync_bench_series ) as $metric ) {
+		$series[ $metric ] = $report[ $metric . '_series' ];
+		unset( $report[ $metric . '_series' ] );
+	}
+
+	// Counted metrics must be identical across reps (deterministic workload);
+	// a mismatch means engine nondeterminism and is worth surfacing.
+	$wp_sync_bench_fingerprints[] = (string) wp_json_encode(
+		array( $report['quality']['dispositions'], $report['storage'], $report['payload_bytes'] )
+	);
+
+	if ( $wp_sync_bench_rep >= $warmup ) {
+		foreach ( $series as $metric => $samples ) {
+			$wp_sync_bench_series[ $metric ] = array_merge( $wp_sync_bench_series[ $metric ], $samples );
+		}
+		$wp_sync_bench_rep_means[] = count( $series['service_us'] ) > 0
+			? array_sum( $series['service_us'] ) / count( $series['service_us'] ) / 1000
+			: 0.0;
+	}
+}
+
+// Timing across measured reps: pooled percentiles + spread of rep means.
+foreach ( $wp_sync_bench_series as $metric => $samples ) {
+	$report[ $metric ] = WP_Sync_Bench_Runner::summary( $samples );
+}
+
+$wp_sync_bench_mean = array_sum( $wp_sync_bench_rep_means ) / count( $wp_sync_bench_rep_means );
+$wp_sync_bench_var  = 0.0;
+foreach ( $wp_sync_bench_rep_means as $m ) {
+	$wp_sync_bench_var += ( $m - $wp_sync_bench_mean ) ** 2;
+}
+$wp_sync_bench_stddev = count( $wp_sync_bench_rep_means ) > 1
+	? sqrt( $wp_sync_bench_var / ( count( $wp_sync_bench_rep_means ) - 1 ) )
+	: 0.0;
+
+$report['timing'] = array(
+	'timer'                     => 'hrtime',
+	'reps'                      => $reps,
+	'warmup_reps'               => $warmup,
+	'measured_reps'             => count( $wp_sync_bench_rep_means ),
+	'rep_mean_ms'               => array_map(
+		static function ( $m ) {
+			return round( $m, 4 );
+		},
+		$wp_sync_bench_rep_means
+	),
+	'rep_mean_stddev_ms'        => round( $wp_sync_bench_stddev, 4 ),
+	'deterministic_across_reps' => 1 === count( array_unique( $wp_sync_bench_fingerprints ) ),
 );
 
-$report = WP_Sync_Bench_Runner::run( $engine, $storage, (int) $post_id, $workload );
-wp_delete_post( (int) $post_id, true );
+$report['calibration'] = wp_sync_bench_calibrate();
+
+global $wp_version, $wpdb;
+$report['environment'] = array(
+	'php'     => PHP_VERSION,
+	'os'      => php_uname( 's' ) . ' ' . php_uname( 'm' ),
+	'wp'      => (string) $wp_version,
+	'db'      => $wpdb->db_server_info(),
+	'opcache' => function_exists( 'opcache_get_status' )
+		&& ! empty( ( opcache_get_status( false ) ?: array() )['opcache_enabled'] ),
+);
 
 $report['config'] = array(
 	'engine'     => $engine_slug,
@@ -95,12 +207,28 @@ $report['config'] = array(
 	'clients'    => $clients,
 	'paragraphs' => $paragraphs,
 	'seed'       => $seed,
+	'reps'       => $reps,
+	'warmup'     => $warmup,
 );
 
 $q = $report['quality'];
 printf( "\n== %s / %s ==\n", $report['engine'], $report['scenario'] );
-printf( "config: rounds=%d clients=%d paragraphs=%d seed=%d\n", $rounds, $clients, $paragraphs, $seed );
-printf( "requests: %d\n", $report['requests'] );
+printf( "config: rounds=%d clients=%d paragraphs=%d seed=%d reps=%d(+%d warmup)\n", $rounds, $clients, $paragraphs, $seed, $report['timing']['measured_reps'], $warmup );
+printf(
+	"environment: PHP %s / WP %s / %s / %s / opcache %s\n",
+	$report['environment']['php'],
+	$report['environment']['wp'],
+	$report['environment']['db'],
+	$report['environment']['os'],
+	$report['environment']['opcache'] ? 'on' : 'off'
+);
+printf(
+	"calibration: db rtt p50=%.4f ms, lock pair p50=%.4f ms%s\n",
+	$report['calibration']['db_rtt_p50_ms'],
+	$report['calibration']['lock_pair_p50_ms'],
+	'intent-log' === $engine_slug ? ' (each request below holds one lock pair)' : ''
+);
+printf( "requests: %d per rep\n", $report['requests'] );
 printf(
 	"service ms: p50=%.4f p90=%.4f p99=%.4f max=%.4f mean=%.4f\n",
 	$report['service_us']['p50'],
@@ -110,13 +238,33 @@ printf(
 	$report['service_us']['mean']
 );
 printf(
+	"rep means ms: %s (stddev %.4f)%s\n",
+	implode( ', ', array_map( 'strval', $report['timing']['rep_mean_ms'] ) ),
+	$report['timing']['rep_mean_stddev_ms'],
+	$report['timing']['deterministic_across_reps'] ? '' : ' — WARNING: counted metrics varied across reps'
+);
+printf(
+	"read ms: p50=%.4f p99=%.4f max=%.4f mean=%.4f\n",
+	$report['read_us']['p50'],
+	$report['read_us']['p99'],
+	$report['read_us']['max'],
+	$report['read_us']['mean']
+);
+printf(
+	"idle poll ms: p50=%.4f p99=%.4f max=%.4f mean=%.4f\n",
+	$report['idle_poll_us']['p50'],
+	$report['idle_poll_us']['p99'],
+	$report['idle_poll_us']['max'],
+	$report['idle_poll_us']['mean']
+);
+printf(
 	"payload bytes: req p50=%d max=%d / resp p50=%d max=%d\n",
 	$report['payload_bytes']['request_p50'],
 	$report['payload_bytes']['request_max'],
 	$report['payload_bytes']['response_p50'],
 	$report['payload_bytes']['response_max']
 );
-printf( "storage: rows=%d bytes=%d\n", $report['storage']['rows'], $report['storage']['bytes'] );
+printf( "storage: rows=%d bytes=%d compactions=%d\n", $report['storage']['rows'], $report['storage']['bytes'], $report['storage']['compactions'] );
 if ( $q['observable'] ) {
 	printf(
 		"quality: converged=%s applied=%d escalated=%d voided=%d escalation_rate=%.4f lost_work=%d\n",
@@ -127,6 +275,9 @@ if ( $q['observable'] ) {
 		$q['escalation_rate'],
 		$q['lost_work']
 	);
+	foreach ( $q['convergence_failures'] as $failure ) {
+		printf( "  convergence failure [%s]: %s\n", $failure['check'], $failure['detail'] );
+	}
 } else {
 	printf( "quality: NOT SERVER-OBSERVABLE (client-side CRDT merge)\n" );
 }
