@@ -9,9 +9,15 @@
 module.exports = {
 	root: true,
 	extends: [ 'plugin:@wordpress/eslint-plugin/recommended' ],
-	// Vendored third-party code (from the Yjs ecosystem) with its own
-	// eslint-disable directives targeting a different config; do not lint it.
-	ignorePatterns: [ 'src/engines/yjs-relay/y-utilities/**' ],
+	// The pinned Gutenberg subtree and generated output are never linted here;
+	// y-utilities is vendored third-party code (from the Yjs ecosystem) with
+	// its own eslint-disable directives targeting a different config.
+	ignorePatterns: [
+		'gutenberg/**',
+		'build/**',
+		'vendor/**',
+		'src/engines/yjs-relay/y-utilities/**',
+	],
 	settings: {
 		'import/resolver': {
 			node: {

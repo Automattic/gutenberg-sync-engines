@@ -1,0 +1,18 @@
+# This file replaces @wordpress/scripts' stock ignore file entirely, so it
+# must repeat the defaults (build, vendor) in addition to project entries.
+build
+vendor
+package-lock.json
+
+# Pinned Gutenberg subtree — formatted by its own tooling at the pin.
+gutenberg
+
+# Frozen cross-language intent-log core (byte-matched against its PHP twin
+# and JSON vectors); reformatting would break the contract.
+src/engines/intent-log
+
+# Vendored third-party code from the Yjs ecosystem.
+src/engines/yjs-relay/y-utilities
+
+# Playwright e2e output.
+artifacts
