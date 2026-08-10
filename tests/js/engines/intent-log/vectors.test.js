@@ -13,15 +13,18 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { canonicalJson } from '../document.js';
-import { createServer, serverDocAt, serverIngestBatch } from '../rebase.js';
-import { makeGenesisDoc } from '../simulator.js';
+import { canonicalJson } from '../../../../src/engines/intent-log/document.js';
+import {
+	createServer,
+	serverDocAt,
+	serverIngestBatch,
+} from '../../../../src/engines/intent-log/rebase.js';
+import { makeGenesisDoc } from '../../../../src/engines/intent-log/simulator.js';
 
 const vectors = JSON.parse(
 	readFileSync(
 		join(
 			dirname( fileURLToPath( import.meta.url ) ),
-			'..',
 			'test-vectors',
 			'planner.json'
 		),

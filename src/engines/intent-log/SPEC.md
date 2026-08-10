@@ -53,8 +53,9 @@ Invariants:
   in-flight edits.
 - IDs are opaque after minting. Nothing may parse meaning back out of them.
 
-`test-vectors/sync-id.json` is the frozen cross-language contract: the PHP
-implementation must reproduce these bytes exactly.
+`tests/js/engines/intent-log/test-vectors/sync-id.json` (mirrored at
+`tests/phpunit/test-vectors/`) is the frozen cross-language contract: the
+PHP implementation must reproduce these bytes exactly.
 
 Lifecycle: duplication remints; 1:1 transforms carry the ID; split keeps the
 ID on the first half and mints fresh for the second (stamping `syncParent`);
@@ -172,7 +173,8 @@ and per block, whether the author's local text frame has diverged from the
 server's, and escalates coordinates it cannot express (rules 5 and 6 below).
 Under the decided policy this is the correct trade: silently misplacing text
 is worse than asking for review. The `frame-conflict` regression test in
-`test/client.test.js` pins the misplacement this prevents.
+`tests/js/engines/intent-log/client.test.js` pins the misplacement this
+prevents.
 
 ## The batch planner (shared client/server core)
 
@@ -317,11 +319,11 @@ Checked by the deterministic simulator after every seeded schedule
   `actorId` through rebase; escalated proposals are attributed to their
   author. (Blame-fold oracle across split/merge provenance: follow-up.)
 
-Beyond the simulator, `test/merge-matrix.test.js` runs every ordered pair of
-vocabulary operations through real client replicas and asserts the same
-invariants pairwise (plus a bounded escalation rate), and
-`test/scenarios.test.js` pins exact merge semantics for the cases a human
-would reason about.
+Beyond the simulator, `tests/js/engines/intent-log/merge-matrix.test.js`
+runs every ordered pair of vocabulary operations through real client
+replicas and asserts the same invariants pairwise (plus a bounded
+escalation rate), and `tests/js/engines/intent-log/scenarios.test.js` pins
+exact merge semantics for the cases a human would reason about.
 
 ## Measured escalation profile
 
@@ -364,8 +366,8 @@ escalation rates need the divergence fixtures from the benchmark plan.
 
 Field text is PLAIN text: `rich-text.js` (JS) and `WP_Intent_Log_Rich_Text`
 (PHP twin) convert a block's inline HTML into `{ text, formats }` and back,
-frozen by `test-vectors/rich-text.json`. Formatting elements (em, strong,
-a, code, …) become spans whose format id encodes the tag and its sorted
+frozen by `tests/js/engines/intent-log/test-vectors/rich-text.json`.
+Formatting elements (em, strong, a, code, …) become spans whose format id encodes the tag and its sorted
 attributes (`tag` or `tag|{"attr":"value"}`); `<br>` is a newline; any
 other element (or a comment) collapses to ONE object replacement character
 (U+FFFC) whose span carries the raw source verbatim; unsupported or

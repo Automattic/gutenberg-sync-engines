@@ -9,7 +9,7 @@ if ( ! class_exists( 'WP_Intent_Log_Document' ) ) {
 
 	/**
 	 * The intent-log engine's document model and deterministic reducer — the
-	 * PHP twin of `prototypes/sync/src/document.js` and `reducer.js`.
+	 * PHP twin of `src/engines/intent-log/document.js` and `reducer.js`.
 	 *
 	 * A document is `array( 'root' => block[] )`; a block is an associative
 	 * array with syncId, blockType, attrs, attrVersions, fields (name =>
@@ -18,7 +18,7 @@ if ( ! class_exists( 'WP_Intent_Log_Document' ) ) {
 	 * document and never mutates its input.
 	 *
 	 * Twin discipline: this class must match the JS implementation exactly —
-	 * the frozen transcripts in `prototypes/sync/test-vectors/planner.json`
+	 * the frozen transcripts in `tests/phpunit/test-vectors/planner.json`
 	 * are the contract, and any behavior change must land in both languages
 	 * with regenerated vectors. Text offsets are UTF-16 CODE UNITS in both
 	 * languages (see text_length/text_slice): JS strings are UTF-16

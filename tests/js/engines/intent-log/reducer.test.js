@@ -6,9 +6,15 @@ import {
 	createDocument,
 	documentsEqual,
 	getBlock,
-} from '../document.js';
-import { IntentTypes, createIntent } from '../intents.js';
-import { applyIntent, replay } from '../reducer.js';
+} from '../../../../src/engines/intent-log/document.js';
+import {
+	IntentTypes,
+	createIntent,
+} from '../../../../src/engines/intent-log/intents.js';
+import {
+	applyIntent,
+	replay,
+} from '../../../../src/engines/intent-log/reducer.js';
 
 const ENVELOPE = { actorId: 'dana', baseSeq: 0 };
 

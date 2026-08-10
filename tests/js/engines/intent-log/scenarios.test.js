@@ -10,10 +10,25 @@
 
 import assert from 'node:assert/strict';
 
-import { canonicalJson, createDocument, getBlock } from '../document.js';
-import { IntentTypes, createIntent } from '../intents.js';
-import { createServer, serverDocAt, serverIngestBatch } from '../rebase.js';
-import { authorIntent, createClient, flushClient } from '../client.js';
+import {
+	canonicalJson,
+	createDocument,
+	getBlock,
+} from '../../../../src/engines/intent-log/document.js';
+import {
+	IntentTypes,
+	createIntent,
+} from '../../../../src/engines/intent-log/intents.js';
+import {
+	createServer,
+	serverDocAt,
+	serverIngestBatch,
+} from '../../../../src/engines/intent-log/rebase.js';
+import {
+	authorIntent,
+	createClient,
+	flushClient,
+} from '../../../../src/engines/intent-log/client.js';
 
 const baseDoc = () =>
 	createDocument( [

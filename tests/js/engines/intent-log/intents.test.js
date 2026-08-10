@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 
-import { IntentTypes, createIntent, withPayload } from '../intents.js';
+import {
+	IntentTypes,
+	createIntent,
+	withPayload,
+} from '../../../../src/engines/intent-log/intents.js';
 
 const ENVELOPE = { actorId: 'dana', baseSeq: 0 };
 

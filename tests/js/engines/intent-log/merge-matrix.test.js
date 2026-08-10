@@ -24,12 +24,26 @@
 
 import assert from 'node:assert/strict';
 
-import { canonicalJson, createDocument } from '../document.js';
-import { IntentTypes, createIntent } from '../intents.js';
-import { replay } from '../reducer.js';
-import { ESCALATION_REASONS, createServer, serverDocAt } from '../rebase.js';
-import { authorIntent, createClient, flushClient } from '../client.js';
-import { verifyEffect } from '../simulator.js';
+import {
+	canonicalJson,
+	createDocument,
+} from '../../../../src/engines/intent-log/document.js';
+import {
+	IntentTypes,
+	createIntent,
+} from '../../../../src/engines/intent-log/intents.js';
+import { replay } from '../../../../src/engines/intent-log/reducer.js';
+import {
+	ESCALATION_REASONS,
+	createServer,
+	serverDocAt,
+} from '../../../../src/engines/intent-log/rebase.js';
+import {
+	authorIntent,
+	createClient,
+	flushClient,
+} from '../../../../src/engines/intent-log/client.js';
+import { verifyEffect } from '../../../../src/engines/intent-log/simulator.js';
 
 const baseDoc = () =>
 	createDocument( [

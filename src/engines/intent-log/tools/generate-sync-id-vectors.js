@@ -1,10 +1,16 @@
 /**
- * Regenerates test-vectors/sync-id.json from the reference implementation.
+ * Regenerates the frozen sync-id vectors from the reference implementation.
  * The vectors are FROZEN once committed: regeneration is only legitimate if
  * the spec itself changes, and any change must be ported to every other
  * implementation (PHP) in the same change set.
  *
- * Usage: node tools/generate-sync-id-vectors.js > test-vectors/sync-id.json
+ * From the repo root (write BOTH copies — the vector-parity Jest suite
+ * fails if they diverge):
+ *
+ *   node src/engines/intent-log/tools/generate-sync-id-vectors.js \
+ *     > tests/js/engines/intent-log/test-vectors/sync-id.json
+ *   cp tests/js/engines/intent-log/test-vectors/sync-id.json \
+ *     tests/phpunit/test-vectors/sync-id.json
  */
 
 import { canonicalGenesisInput, genesisSyncId } from '../sync-id.js';

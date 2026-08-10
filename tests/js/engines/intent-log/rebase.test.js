@@ -1,8 +1,18 @@
 import assert from 'node:assert/strict';
 
-import { createDocument, getBlock } from '../document.js';
-import { IntentTypes, createIntent } from '../intents.js';
-import { createServer, serverDocAt, serverIngestBatch } from '../rebase.js';
+import {
+	createDocument,
+	getBlock,
+} from '../../../../src/engines/intent-log/document.js';
+import {
+	IntentTypes,
+	createIntent,
+} from '../../../../src/engines/intent-log/intents.js';
+import {
+	createServer,
+	serverDocAt,
+	serverIngestBatch,
+} from '../../../../src/engines/intent-log/rebase.js';
 
 const baseDoc = () =>
 	createDocument( [

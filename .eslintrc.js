@@ -42,9 +42,10 @@ module.exports = {
 		{
 			// The frozen JS engine core is a vendored cross-language contract
 			// (byte-matched against its PHP twin and JSON vectors); do not
-			// reformat or relint it here. It targets a Node-style runtime with
-			// its own test harness and identifier minting, so give it the Node,
-			// jest, and modern-ES globals rather than this plugin's browser env.
+			// reformat or relint it here. It targets a Node-style runtime
+			// (its harness lives in tests/js/engines/intent-log/, its vector
+			// generators in tools/), so give it the Node and modern-ES
+			// globals rather than this plugin's browser env.
 			files: [ 'src/engines/intent-log/**/*.js' ],
 			env: {
 				browser: true,

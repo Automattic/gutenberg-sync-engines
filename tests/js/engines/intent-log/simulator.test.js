@@ -1,8 +1,17 @@
 import assert from 'node:assert/strict';
 
-import { canonicalJson, getBlock } from '../document.js';
-import { IntentTypes, createIntent } from '../intents.js';
-import { createServer, serverDocAt } from '../rebase.js';
+import {
+	canonicalJson,
+	getBlock,
+} from '../../../../src/engines/intent-log/document.js';
+import {
+	IntentTypes,
+	createIntent,
+} from '../../../../src/engines/intent-log/intents.js';
+import {
+	createServer,
+	serverDocAt,
+} from '../../../../src/engines/intent-log/rebase.js';
 import {
 	authorRandomIntent,
 	makeClient,
@@ -10,8 +19,8 @@ import {
 	mulberry32,
 	runSimulation,
 	syncClient,
-} from '../simulator.js';
-import { genesisSyncId } from '../sync-id.js';
+} from '../../../../src/engines/intent-log/simulator.js';
+import { genesisSyncId } from '../../../../src/engines/intent-log/sync-id.js';
 
 const REVISION = { postId: 10, revisionId: 100 };
 

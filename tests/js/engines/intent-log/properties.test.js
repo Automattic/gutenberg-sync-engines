@@ -7,11 +7,25 @@
 
 import assert from 'node:assert/strict';
 
-import { canonicalJson, createDocument } from '../document.js';
-import { createIntent, IntentTypes } from '../intents.js';
-import { applyIntent } from '../reducer.js';
-import { createServer, serverDocAt, serverIngestBatch } from '../rebase.js';
-import { authorIntent, createClient, flushClient } from '../client.js';
+import {
+	canonicalJson,
+	createDocument,
+} from '../../../../src/engines/intent-log/document.js';
+import {
+	createIntent,
+	IntentTypes,
+} from '../../../../src/engines/intent-log/intents.js';
+import { applyIntent } from '../../../../src/engines/intent-log/reducer.js';
+import {
+	createServer,
+	serverDocAt,
+	serverIngestBatch,
+} from '../../../../src/engines/intent-log/rebase.js';
+import {
+	authorIntent,
+	createClient,
+	flushClient,
+} from '../../../../src/engines/intent-log/client.js';
 
 const envelope = ( actorId, baseSeq, extra = {} ) => ( {
 	actorId,

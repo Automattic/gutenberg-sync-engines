@@ -11,7 +11,7 @@ import {
 	encodeFormat,
 	fieldToHtml,
 	htmlToField,
-} from '../rich-text.js';
+} from '../../../../src/engines/intent-log/rich-text.js';
 
 const OBJ = '￼';
 

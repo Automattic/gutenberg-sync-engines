@@ -4,8 +4,8 @@ import {
 	canonicalGenesisInput,
 	genesisSyncId,
 	mintSyncId,
-} from '../sync-id.js';
-import FROZEN from '../test-vectors/sync-id.json';
+} from '../../../../src/engines/intent-log/sync-id.js';
+import FROZEN from './test-vectors/sync-id.json';
 
 test( 'genesis matches every frozen cross-language vector', () => {
 	for ( const vector of FROZEN.vectors ) {

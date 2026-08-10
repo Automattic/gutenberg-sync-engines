@@ -10,12 +10,12 @@
  */
 class Tests_Collaboration_WpIntentLogRichText extends WP_UnitTestCase {
 	/**
-	 * Loads the frozen vectors from the sync package.
+	 * Loads the frozen vectors from the PHP-side copy in this suite.
 	 *
 	 * @return array Decoded vectors.
 	 */
 	private static function load_vectors(): array {
-		$path = dirname( __DIR__, 2 ) . '/includes/engines/intent-log/test-vectors/rich-text.json';
+		$path = __DIR__ . '/test-vectors/rich-text.json';
 		if ( ! file_exists( $path ) ) {
 			self::fail( "Missing vector file: $path" );
 		}

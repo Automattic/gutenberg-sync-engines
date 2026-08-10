@@ -11,13 +11,13 @@
  */
 class Tests_Collaboration_WpIntentLogPlanner extends WP_UnitTestCase {
 	/**
-	 * Loads a frozen vector file from the sync prototype.
+	 * Loads a frozen vector file from the PHP-side copy in this suite.
 	 *
 	 * @param string $name Vector file name.
 	 * @return array Decoded vectors.
 	 */
 	private static function load_vectors( string $name ): array {
-		$path = dirname( __DIR__, 2 ) . '/includes/engines/intent-log/test-vectors/' . $name;
+		$path = __DIR__ . '/test-vectors/' . $name;
 		if ( ! file_exists( $path ) ) {
 			self::fail( "Missing vector file: $path" );
 		}

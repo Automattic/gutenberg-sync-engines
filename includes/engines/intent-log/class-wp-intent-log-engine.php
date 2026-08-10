@@ -10,9 +10,9 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 	/**
 	 * The intent-log sync engine: a server-sequenced log of typed intents
 	 * with server-side rebase, per-intent dispositions, and an escalation
-	 * lane — the server half of the architecture prototyped in
-	 * `packages/sync/src/engines/intent-log/` and planned in
-	 * `prototypes/sync/ARCHITECTURE.md`.
+	 * lane — the server half of the engine whose client core lives in
+	 * `src/engines/intent-log/` and is specified in
+	 * `src/engines/intent-log/SPEC.md`.
 	 *
 	 * Wire protocol over the transport's typed updates:
 	 *

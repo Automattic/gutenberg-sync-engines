@@ -9,11 +9,12 @@ if ( ! class_exists( 'WP_Intent_Log_Rich_Text' ) ) {
 
 	/**
 	 * Rich-text codec: inline HTML ↔ array( 'text', 'formats' ) fields — the
-	 * PHP twin of `packages/sync/src/engines/intent-log/rich-text.js`.
+	 * PHP twin of `src/engines/intent-log/rich-text.js`.
 	 *
 	 * The plain-text side of a field is THE text coordinate space (UTF-16
 	 * code units), so this class must match the JS implementation
-	 * byte-for-byte; `test-vectors/rich-text.json` freezes the contract.
+	 * byte-for-byte; `tests/phpunit/test-vectors/rich-text.json` freezes the
+	 * contract.
 	 * Regenerate vectors only alongside a deliberate codec change, in both
 	 * languages together.
 	 *

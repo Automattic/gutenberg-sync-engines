@@ -41,7 +41,9 @@ The framework/plugin split is complete: the framework ships **neither** engines
   - `engines/intent-log/` — the **frozen cross-language core** (byte-matched
     against its PHP twin + JSON vectors). Excluded from lint/format. `genesisSyncId`
     lives at `src/engines/intent-log/sync-id.js`. Don't casually edit — changes
-    must stay in lockstep with the PHP core and test vectors.
+    must stay in lockstep with the PHP core and test vectors. Its Jest harness
+    lives in `tests/js/engines/intent-log/`; its vector generators stay here in
+    `tools/`.
   - `engines/yjs-relay/` — the Yjs engine + its `undo.ts` + vendored
     `y-utilities/` (ignored by eslint).
   - `providers/{http-polling,http-long-polling,websocket}/` — transports.
@@ -49,12 +51,15 @@ The framework/plugin split is complete: the framework ships **neither** engines
     the framework runtime the adapters use.
 - `gutenberg/` — a **pinned, squashed git subtree of Gutenberg** (source only;
   see below). Mounted by `.wp-env.json` as the runtime framework.
-- `tests/` — all tests: `tests/phpunit/` (PHPUnit, boots via
+- `tests/` — ALL tests and fixtures: `tests/phpunit/` (PHPUnit, boots via
   `tests/bootstrap.php`), `tests/js/` (Jest unit tests + setup files, mirroring
-  `src/`), `tests/e2e/` (Playwright specs + config; see Testing). The one
-  exception is `src/engines/intent-log/test/` — the frozen core's own test
-  harness stays with the core (it byte-matches the PHP twin and resolves
-  `../test-vectors` via `import.meta.url`).
+  `src/`; `tests/js/engines/intent-log/` is the frozen core's harness),
+  `tests/e2e/` (Playwright specs + config; see Testing). The frozen intent-log
+  vectors exist as TWO deliberate copies — `tests/js/engines/intent-log/
+  test-vectors/` (replayed by Jest) and `tests/phpunit/test-vectors/` (replayed
+  by PHPUnit) — kept byte-identical by `tests/js/engines/intent-log/
+  vector-parity.test.js`; regenerate with the `src/engines/intent-log/tools/`
+  scripts and always update both.
 - `PORTING.md` — historical record of the client-side split (mostly DONE).
 
 ## The `gutenberg/` subtree
@@ -96,8 +101,8 @@ cd gutenberg && npm install --ignore-scripts && npm run build && cd ..
 ## Environment
 
 ```bash
-npm run env:start         # wp-env: Gutenberg subtree + this plugin
-npm run env:stop
+npm run env start         # wp-env: Gutenberg subtree + this plugin
+npm run env stop
 ```
 
 Dev site <http://localhost:8888>, tests site <http://localhost:8889>.
@@ -117,7 +122,7 @@ npm run test:e2e          # Playwright: two-browser collaboration
 points Jest at a live framework checkout instead when co-developing (tsconfig
 paths stay pinned to the subtree).
 
-`test:php` and `test:e2e` need a running env (`npm run env:start`) with the
+`test:php` and `test:e2e` need a running env (`npm run env start`) with the
 subtree built. For e2e also run `npx playwright install chromium` once. If the
 tests site isn't on `:8889` (auto-port / override), pass
 `WP_BASE_URL=http://localhost:<tests-port>`. Beware: if ANOTHER project's
@@ -127,7 +132,7 @@ everywhere, so auth even succeeds); the first visible failure is
 `activatePlugin( 'gutenberg' )` in global-setup dying with
 "Unexpected end of JSON input". Always pass `WP_BASE_URL` in that case.
 
-Current green baseline: **Jest 369**, **PHPUnit 128 (545 assertions)**,
+Current green baseline: **Jest 373**, **PHPUnit 133 (562 assertions)**,
 **e2e 20/20** (occasional save-notice flake under full-suite load; green solo).
 
 ## Gotchas (each of these has bitten — don't rediscover them)

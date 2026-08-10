@@ -9,7 +9,7 @@ if ( ! class_exists( 'WP_Intent_Log_Planner' ) ) {
 
 	/**
 	 * The intent-log engine's batch planner — the PHP twin of
-	 * `prototypes/sync/src/rebase.js` (and `sync-id.js` for genesis
+	 * `src/engines/intent-log/rebase.js` (and `sync-id.js` for genesis
 	 * identity).
 	 *
 	 * plan_batch() is THE shared deterministic core: a pure function of
@@ -18,8 +18,10 @@ if ( ! class_exists( 'WP_Intent_Log_Planner' ) ) {
 	 * proposal lane, and which void. The server commits a plan at ingest; a
 	 * caught-up JS client runs the same planner over its log copy to predict
 	 * dispositions — so this implementation must match the JS one exactly.
-	 * The frozen transcripts in `prototypes/sync/test-vectors/planner.json`
-	 * and the identity vectors in `sync-id.json` are the contract.
+	 * The frozen transcripts in `tests/phpunit/test-vectors/planner.json`
+	 * and the identity vectors in `sync-id.json` are the contract (the JS
+	 * harness replays an identical copy under
+	 * `tests/js/engines/intent-log/test-vectors/`).
 	 *
 	 * @since 7.2.0
 	 * @access private

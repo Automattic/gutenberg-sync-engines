@@ -2,7 +2,13 @@
  * Generates frozen cross-language planner vectors: complete server-side
  * ingest transcripts the PHP twin must reproduce exactly.
  *
- *   node tools/generate-planner-vectors.js > test-vectors/planner.json
+ * From the repo root (write BOTH copies — the vector-parity Jest suite
+ * fails if they diverge):
+ *
+ *   node src/engines/intent-log/tools/generate-planner-vectors.js \
+ *     > tests/js/engines/intent-log/test-vectors/planner.json
+ *   cp tests/js/engines/intent-log/test-vectors/planner.json \
+ *     tests/phpunit/test-vectors/planner.json
  *
  * Each case records the genesis revision descriptor, every
  * serverIngestBatch call in order, the expected disposition for every

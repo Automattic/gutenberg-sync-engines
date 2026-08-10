@@ -1,7 +1,13 @@
 /**
  * Generates frozen cross-language rich-text codec vectors.
  *
- *   node tools/generate-rich-text-vectors.js > test-vectors/rich-text.json
+ * From the repo root (write BOTH copies — the vector-parity Jest suite
+ * fails if they diverge):
+ *
+ *   node src/engines/intent-log/tools/generate-rich-text-vectors.js \
+ *     > tests/js/engines/intent-log/test-vectors/rich-text.json
+ *   cp tests/js/engines/intent-log/test-vectors/rich-text.json \
+ *     tests/phpunit/test-vectors/rich-text.json
  *
  * Each html case records htmlToField()'s output and its serialization; each
  * field case records fieldToHtml() and the reparse (span normalization).
