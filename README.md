@@ -46,8 +46,8 @@ rather than corruption. See Gutenberg's
 The plugin registers via:
 
 - PHP: the `wp_sync_engines` and `wp_sync_transports` filters.
-- JS: the `sync.engines` and `sync.transports` filters, consuming
-  `@wordpress/sync`'s unlockable private APIs.
+- JS: `registerSyncEngine` / `registerSyncTransport`, unlocked from
+  `@wordpress/sync`'s private APIs.
 
 ## Development
 
@@ -65,14 +65,18 @@ npm run build             # Build this plugin's client bundle
 
 # Build the vendored Gutenberg once, so wp-env serves working editor assets.
 # (The subtree is committed as source only; its build output is not.)
-cd gutenberg && npm install && npm run build && cd ..
+# Jest and `npm run typecheck` also resolve @wordpress/sync + yjs from this
+# build. `--ignore-scripts` is required: Gutenberg's `prepare` hook (husky)
+# errors inside a subtree, and the lifecycle outputs it skips are regenerated
+# by `npm run build`.
+cd gutenberg && npm install --ignore-scripts && npm run build && cd ..
 ```
 
 ### Environment
 
 ```bash
-npm run env:start         # Start WordPress (Gutenberg subtree + this plugin)
-npm run env:stop          # Stop it
+npm run env start         # Start WordPress (Gutenberg subtree + this plugin)
+npm run env stop          # Stop it
 ```
 
 The dev site is <http://localhost:8888> (tests site <http://localhost:8889>).
@@ -93,7 +97,7 @@ npm run format            # Prettier (@wordpress/prettier-config)
 ### Tests
 
 ```bash
-npm run test:unit:js      # Jest — engines/providers + frozen-core vectors
+npm run test:js           # Jest — engines/providers + frozen-core vectors
 npm run test:php          # PHPUnit in the wp-env tests container (loads the
                           # Gutenberg subtree as the framework, then the plugin)
 npm run test:e2e          # Playwright — two-browser collaboration against the
@@ -101,20 +105,34 @@ npm run test:e2e          # Playwright — two-browser collaboration against the
 ```
 
 `npm run test:php` and `npm run test:e2e` require a running environment
-(`npm run env:start`) with the Gutenberg subtree built (see Setup).
+(`npm run env start`) with the Gutenberg subtree built (see Setup).
 
 The e2e specs reuse the Gutenberg subtree's collaboration fixtures, so they
 must run against a single copy of `@playwright/test`; `pretest:e2e`
 deduplicates the subtree's copy against this plugin's automatically. They run
 against the tests site (`:8889`); if it landed on a different port (auto-port,
 or an override), point them there with `WP_BASE_URL`, e.g.
-`WP_BASE_URL=http://localhost:8891 npm run test:e2e`.
+`WP_BASE_URL=http://localhost:8890 npm run test:e2e`. If a *different*
+project's wp-env holds `:8889`, always pass `WP_BASE_URL` — Playwright's
+web-server check would otherwise silently reuse that foreign site.
 
 `@wordpress/sync` is **externalized** at build time (the WordPress
 dependency-extraction plugin maps `@wordpress/*` imports to the `wp.*`
 runtime globals and adds them as script dependencies), so the plugin ships
 no copy of the framework; the `file:` devDependency exists only for local
 type-checking against the Gutenberg checkout.
+
+### Benchmarks and tools
+
+- `tests/benchmarks/` — a server-side engine benchmark harness: it drives both
+  engines through the production ingest/read seam and reports service-time
+  percentiles, payload and storage growth, and (for intent-log) merge-quality
+  metrics. See `tests/benchmarks/README.md` for how to run it and how to read
+  the numbers.
+- `tests/tools/` — Node CLI utilities: a long-running intent-log simulator
+  sweep (`node tests/tools/sweep.js`), a manual two-tab sync observer against
+  a live environment (`node tests/tools/observe-two-tab-sync.mjs`), and the
+  frozen-core test-vector generators.
 
 ### Coding standards
 

@@ -1,7 +1,7 @@
 /**
  * Manual two-tab sync observer for the intent-log engine.
  *
- *   WP_BASE_URL=http://localhost:8891 node observe-two-tab-sync.mjs [scenario]
+ *   node tests/tools/observe-two-tab-sync.mjs [scenario]
  *
  * Drives two logged-in tabs (same user) against a freshly created post on a
  * LIVE environment — including dev bundles, which jest and the minified e2e
@@ -11,11 +11,13 @@
  *
  * Requires: the env's admin login (WP_USERNAME/WP_PASSWORD, default
  * admin/password), collaboration enabled, wp_sync_engine=intent-log, and
- * `@playwright/test` resolvable (run from the repo root).
+ * `@playwright/test` resolvable (run from the repo root). WP_BASE_URL
+ * defaults to the wp-env tests site (http://localhost:8889); override it
+ * when the env landed on another port.
  */
 import { chromium } from '@playwright/test';
 
-const BASE = process.env.WP_BASE_URL ?? 'http://localhost:8891';
+const BASE = process.env.WP_BASE_URL ?? 'http://localhost:8889';
 const USER = process.env.WP_USERNAME ?? 'admin';
 const PASS = process.env.WP_PASSWORD ?? 'password';
 const scenario = process.argv[ 2 ] ?? 'type';

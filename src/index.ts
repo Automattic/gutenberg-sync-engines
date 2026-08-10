@@ -4,9 +4,9 @@
  *
  * The framework exposes its registration surface through UNLOCKABLE PRIVATE
  * APIs. This plugin unlocks them with the shared consent string and adds:
- *   - engine adapters (intent-log, yjs-relay) via `sync.engines`
+ *   - engine adapters (intent-log, yjs-relay) via `registerSyncEngine`
  *   - transport providers (http-polling, http-long-polling, websocket) via
- *     `sync.transports`
+ *     `registerSyncTransport`
  *
  * With this plugin inactive the framework registers nothing, so a session
  * finds no engine/transport to negotiate and the editor falls back to the

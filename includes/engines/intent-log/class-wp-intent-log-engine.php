@@ -40,8 +40,15 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 	 * per-tab client id preserves the planner's one-session-per-actor
 	 * authoring model. Client-sent actorId values are ignored.
 	 *
-	 * Prototype simplifications (Phase 2a): no compaction (the log replays
-	 * from genesis; maybe_compact is a no-op), and genesis/materialization
+	 * Compaction: a checkpoint snapshot row is appended once
+	 * `wp_sync_intent_log_checkpoint_interval` intent rows (default 100)
+	 * accumulate since the previous checkpoint; history below the previous
+	 * checkpoint is then trimmed and recorded as the room floor. Clients
+	 * whose cursor falls below the floor bootstrap again from the retained
+	 * checkpoint snapshot, and unresolved proposals below the trim are
+	 * re-appended so review work survives (see maybe_checkpoint()).
+	 *
+	 * Remaining prototype simplification (Phase 2a): genesis/materialization
 	 * map a block's inner HTML opaquely onto the engine's `content` field —
 	 * rich-text-coordinate capture is the client bridge's job.
 	 *

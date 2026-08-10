@@ -1,7 +1,7 @@
 /**
  * Long-running oracle sweep, beyond what the test suite runs per commit.
  *
- *   node tools/sweep.js [seedCount] [steps] [clients]
+ *   node tests/tools/sweep.js [seedCount] [steps] [clients]
  *
  * Runs `seedCount` seeded schedules (seeds 1..N) at `steps` steps each and
  * fails loudly on any oracle violation. Prints disposition and escalation
