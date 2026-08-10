@@ -12,22 +12,22 @@ import { addFilter, removeFilter } from '@wordpress/hooks';
  * Internal dependencies
  */
 import { Awareness } from 'y-protocols/awareness';
-import { createIntentLogManager } from '../intent-log-manager';
-import { createIntentLogEngineAdapter } from '../intent-log-adapter';
+import { createIntentLogManager } from '../../../src/engines/intent-log-manager';
+import { createIntentLogEngineAdapter } from '../../../src/engines/intent-log-adapter';
 import {
 	INTENT_LOG_UPDATE_TYPES,
 	INTENT_LOG_ENGINE_SLUG,
 	INTENT_LOG_ENGINE_PROTOCOL,
 	type IntentLogSession,
-} from '../intent-log-session';
+} from '../../../src/engines/intent-log-session';
 import {
 	getEngineAdapters,
 	registerSyncEngine,
 	resetEngineAdaptersForTesting,
 	resolveEngineAdapter,
 	resetProviderCreatorsForTesting,
-} from '../../framework';
-import { createDocument } from '../intent-log/document.js';
+} from '../../../src/framework';
+import { createDocument } from '../../../src/engines/intent-log/document.js';
 import type {
 	EngineSessionCodec,
 	EngineUpdate,

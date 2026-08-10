@@ -17,8 +17,8 @@ import apiFetch from '@wordpress/api-fetch';
 /**
  * Internal dependencies
  */
-import { SyncUpdateType } from '../types';
-import { MAX_UPDATE_SIZE_IN_BYTES } from '../config';
+import { SyncUpdateType } from '../../../../src/providers/http-polling/types';
+import { MAX_UPDATE_SIZE_IN_BYTES } from '../../../../src/providers/http-polling/config';
 import {
 	base64ToUint8Array,
 	createSyncUpdate,
@@ -27,7 +27,7 @@ import {
 	postSyncUpdate,
 	rotateWindow,
 	uint8ArrayToBase64,
-} from '../utils';
+} from '../../../../src/providers/http-polling/utils';
 
 const mockApiFetch = jest.mocked( apiFetch );
 const SERVER_MAX_UPDATE_DATA_SIZE_IN_BYTES = 1024 * 1024;

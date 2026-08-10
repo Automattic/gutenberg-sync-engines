@@ -49,8 +49,12 @@ The framework/plugin split is complete: the framework ships **neither** engines
     the framework runtime the adapters use.
 - `gutenberg/` — a **pinned, squashed git subtree of Gutenberg** (source only;
   see below). Mounted by `.wp-env.json` as the runtime framework.
-- `tests/` — PHPUnit (`tests/bootstrap.php`, `tests/phpunit/`).
-- `test/e2e/` — Playwright specs + config (see Testing).
+- `tests/` — all tests: `tests/phpunit/` (PHPUnit, boots via
+  `tests/bootstrap.php`), `tests/js/` (Jest unit tests + setup files, mirroring
+  `src/`), `tests/e2e/` (Playwright specs + config; see Testing). The one
+  exception is `src/engines/intent-log/test/` — the frozen core's own test
+  harness stays with the core (it byte-matches the PHP twin and resolves
+  `../test-vectors` via `import.meta.url`).
 - `PORTING.md` — historical record of the client-side split (mostly DONE).
 
 ## The `gutenberg/` subtree
@@ -136,7 +140,7 @@ Current green baseline: **Jest 369**, **PHPUnit 128 (545 assertions)**,
   copy → Playwright "two instances" error. `pretest:e2e` rimrafs the subtree's
   copy so fixtures resolve up to this plugin's. The runner is `playwright test`
   **directly** — NOT `wp-scripts test-e2e` (v30's is the jest+puppeteer runner).
-- **e2e global setup is plugin-local** (`test/e2e/config/global-setup.ts`): auth,
+- **e2e global setup is plugin-local** (`tests/e2e/config/global-setup.ts`): auth,
   clean state, and — critically — `activatePlugin('gutenberg')` +
   `activatePlugin('gutenberg-sync-engines')`, because wp-env leaves both INACTIVE
   on the *tests* site. Without that, collaboration never turns on
@@ -153,9 +157,9 @@ Current green baseline: **Jest 369**, **PHPUnit 128 (545 assertions)**,
 ## Coding standards
 
 - PHP: `composer lint` / `composer format` (PHPCS: WordPress-Core/Extra/Docs +
-  PHPCompatibilityWP). JS/TS: `npm run lint:js` (lints `src`) + `npm run format`
-  (`@wordpress/prettier-config`). e2e specs live outside `src`; lint them with
-  `wp-scripts lint-js test/e2e` when you touch them.
+  PHPCompatibilityWP). JS/TS: `npm run lint:js` (lints `src` and `tests`,
+  including the e2e specs) + `npm run format`
+  (`@wordpress/prettier-config`).
 - The frozen `src/engines/intent-log/**` core and vendored
   `src/engines/yjs-relay/y-utilities/**` are excluded from lint/format — leave
   them alone unless deliberately syncing the cross-language contract.

@@ -8,8 +8,11 @@ import { describe, expect, it } from '@jest/globals';
 /**
  * Internal dependencies
  */
-import { docContainsSnapshot, encodeDocSnapshot } from '../snapshot';
-import { createYjsDoc } from '../doc';
+import {
+	docContainsSnapshot,
+	encodeDocSnapshot,
+} from '../../../../src/engines/yjs-relay/snapshot';
+import { createYjsDoc } from '../../../../src/engines/yjs-relay/doc';
 
 describe( 'encodeDocSnapshot / docContainsSnapshot', () => {
 	const TEXT_KEY = 'text';

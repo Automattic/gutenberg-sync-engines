@@ -28,6 +28,6 @@
 		"checkJs": false,
 		"types": [ "@wordpress/element" ]
 	},
-	"include": [ "src/**/*" ],
+	"include": [ "src/**/*", "tests/js/**/*" ],
 	"exclude": [ "node_modules", "build", "src/engines/intent-log/*.js" ]
 }

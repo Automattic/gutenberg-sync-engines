@@ -11,19 +11,22 @@ import {
 	deriveIntents,
 	engineDocumentToBlocks,
 	type BridgeBlock,
-} from '../intent-log-bridge';
+} from '../../../src/engines/intent-log-bridge';
 import {
 	createIntentLogSession,
 	INTENT_LOG_UPDATE_TYPES,
-} from '../intent-log-session';
-import { createDocument, canonicalJson } from '../intent-log/document.js';
-import { htmlToField } from '../intent-log/rich-text.js';
+} from '../../../src/engines/intent-log-session';
+import {
+	createDocument,
+	canonicalJson,
+} from '../../../src/engines/intent-log/document.js';
+import { htmlToField } from '../../../src/engines/intent-log/rich-text.js';
 import {
 	createServer,
 	serverDocAt,
 	serverIngestBatch,
-} from '../intent-log/rebase.js';
-import type { EngineDocument } from '../intent-log/engine-types';
+} from '../../../src/engines/intent-log/rebase.js';
+import type { EngineDocument } from '../../../src/engines/intent-log/engine-types';
 
 const paragraph = (
 	syncId: string,

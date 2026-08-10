@@ -3,7 +3,8 @@
  */
 import { describe, expect, it, jest } from '@jest/globals';
 
-type SyncConfig = typeof import('../config');
+type SyncConfig =
+	typeof import('../../../../src/providers/http-polling/config');
 
 function loadConfigWithFilteredIntervals(
 	filteredIntervals: Record< string, unknown >
@@ -24,7 +25,7 @@ function loadConfigWithFilteredIntervals(
 		} ),
 	} ) );
 
-	return require( '../config' ) as SyncConfig;
+	return require( '../../../../src/providers/http-polling/config' ) as SyncConfig;
 }
 
 describe( 'http-polling config', () => {

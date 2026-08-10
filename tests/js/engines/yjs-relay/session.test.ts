@@ -8,12 +8,12 @@ import { Awareness } from 'y-protocols/awareness';
 /**
  * Internal dependencies
  */
-import { createYjsSessionCodec } from '../session';
-import { SyncUpdateType } from '../../../providers/http-polling/types';
+import { createYjsSessionCodec } from '../../../../src/engines/yjs-relay/session';
+import { SyncUpdateType } from '../../../../src/providers/http-polling/types';
 import {
 	base64ToUint8Array,
 	uint8ArrayToBase64,
-} from '../../../providers/http-polling/utils';
+} from '../../../../src/providers/http-polling/utils';
 
 describe( 'createYjsSessionCodec', () => {
 	it( 'exposes the document clientID as the session clientId', () => {

@@ -31,6 +31,15 @@ module.exports = {
 			parser: '@typescript-eslint/parser',
 		},
 		{
+			// The Jest setup files use the framework globals directly (the
+			// tests themselves import from @jest/globals instead).
+			files: [ 'tests/js/**/*.js' ],
+			env: {
+				es2021: true,
+				jest: true,
+			},
+		},
+		{
 			// The frozen JS engine core is a vendored cross-language contract
 			// (byte-matched against its PHP twin and JSON vectors); do not
 			// reformat or relint it here. It targets a Node-style runtime with

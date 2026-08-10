@@ -16,10 +16,12 @@ const defaultConfig = require( '@wordpress/scripts/config/jest-unit.config.js' )
 // left to normal resolution so their package `exports` pick the CommonJS build
 // Jest can load; being stateless, a duplicate of them is harmless as long as
 // they bind to the one shared `yjs`.
-const FRAMEWORK_ROOT = path.resolve(
-	__dirname,
-	'../workspaces/gutenberg/try-intent-log'
-);
+// Resolvable from the primary checkout by default; override from git
+// worktrees (where the relative default breaks), mirroring the PHP
+// bootstrap's WP_SYNC_FRAMEWORK_PLUGIN env override.
+const FRAMEWORK_ROOT =
+	process.env.WP_SYNC_FRAMEWORK_ROOT ||
+	path.resolve( __dirname, '../workspaces/gutenberg/try-intent-log' );
 const FRAMEWORK_MODULES = path.join( FRAMEWORK_ROOT, 'node_modules' );
 const SYNC_SRC = path.join( FRAMEWORK_ROOT, 'packages/sync/src' );
 

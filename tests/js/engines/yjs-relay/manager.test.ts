@@ -26,14 +26,14 @@ import {
 	createSyncManager,
 	resetProviderCreatorsForTesting,
 	LOCAL_EDITOR_ORIGIN,
-} from '../../../framework';
-import { createYjsEngine } from '../engine';
+} from '../../../../src/framework';
+import { createYjsEngine } from '../../../../src/engines/yjs-relay/engine';
 import {
 	CRDT_RECORD_MAP_KEY,
 	CRDT_STATE_MAP_KEY,
 	CRDT_STATE_MAP_SAVED_AT_KEY as SAVED_AT_KEY,
 	CRDT_STATE_MAP_SAVED_BY_KEY as SAVED_BY_KEY,
-} from '../constants';
+} from '../../../../src/engines/yjs-relay/constants';
 // eslint-disable-next-line import/no-unresolved -- Provided at runtime as wp.sync.
 import type {
 	CRDTDoc,
@@ -43,7 +43,7 @@ import type {
 	RecordHandlers,
 	SyncConfig,
 } from '@wordpress/sync';
-import { serializeCrdtDoc } from '../doc';
+import { serializeCrdtDoc } from '../../../../src/engines/yjs-relay/doc';
 
 // The manager reads provider creators through the `sync.providers` filter; the
 // tests inject a fake transport creator that way (there is no default

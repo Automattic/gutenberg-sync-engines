@@ -7,8 +7,8 @@ import { afterEach, describe, expect, it, jest } from '@jest/globals';
 /**
  * Internal dependencies
  */
-import { LOCAL_EDITOR_ORIGIN } from '../../../framework';
-import { createUndoManager } from '../undo';
+import { LOCAL_EDITOR_ORIGIN } from '../../../../src/framework';
+import { createUndoManager } from '../../../../src/engines/yjs-relay/undo';
 
 describe( 'SyncUndoManager', () => {
 	const docs: Y.Doc[] = [];
