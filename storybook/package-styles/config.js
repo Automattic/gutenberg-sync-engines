@@ -1,0 +1,125 @@
+/**
+ * Internal dependencies
+ */
+import blockEditorLtr from '../package-styles/block-editor-ltr.lazy.scss?inline';
+import blockEditorRtl from '../package-styles/block-editor-rtl.lazy.scss?inline';
+import blockLibraryLtr from '../package-styles/block-library-ltr.lazy.scss?inline';
+import blockLibraryRtl from '../package-styles/block-library-rtl.lazy.scss?inline';
+import componentsLtr from '../package-styles/components-ltr.lazy.scss?inline';
+import componentsRtl from '../package-styles/components-rtl.lazy.scss?inline';
+import editorLtr from '../package-styles/editor-ltr.lazy.scss?inline';
+import editorRtl from '../package-styles/editor-rtl.lazy.scss?inline';
+import formatLibraryLtr from '../package-styles/format-library-ltr.lazy.scss?inline';
+import formatLibraryRtl from '../package-styles/format-library-rtl.lazy.scss?inline';
+import editSiteLtr from '../package-styles/edit-site-ltr.lazy.scss?inline';
+import editSiteRtl from '../package-styles/edit-site-rtl.lazy.scss?inline';
+import dataviewsLtr from '../package-styles/dataviews-ltr.lazy.scss?inline';
+import dataviewsRtl from '../package-styles/dataviews-rtl.lazy.scss?inline';
+import fieldsLtr from '../package-styles/fields-ltr.lazy.scss?inline';
+import fieldsRtl from '../package-styles/fields-rtl.lazy.scss?inline';
+import mediaFieldsLtr from '../package-styles/media-fields-ltr.lazy.scss?inline';
+import mediaFieldsRtl from '../package-styles/media-fields-rtl.lazy.scss?inline';
+import designTokens from '../package-styles/design-tokens.lazy.scss?inline';
+
+/**
+ * Stylesheets to lazy load when the story's context.componentId matches the
+ * componentIdMatcher regex.
+ *
+ * To prevent problematically overscoped styles in a package stylesheet
+ * from leaking into stories for other packages, we should explicitly declare
+ * stylesheet dependencies for each story group.
+ */
+const CONFIG = [
+	{
+		componentIdMatcher: /^playground-/,
+		ltr: [
+			componentsLtr,
+			blockEditorLtr,
+			blockLibraryLtr,
+			formatLibraryLtr,
+		],
+		rtl: [
+			componentsRtl,
+			blockEditorRtl,
+			blockLibraryRtl,
+			formatLibraryRtl,
+		],
+	},
+	{
+		componentIdMatcher: /^blockeditor-/,
+		ltr: [ componentsLtr, blockEditorLtr ],
+		rtl: [ componentsRtl, blockEditorRtl ],
+	},
+	{
+		componentIdMatcher: /^editsite-/,
+		ltr: [ componentsLtr, editSiteLtr ],
+		rtl: [ componentsRtl, editSiteRtl ],
+	},
+	{
+		componentIdMatcher: /^components-/,
+		ltr: [ componentsLtr ],
+		rtl: [ componentsRtl ],
+	},
+	{
+		componentIdMatcher: /^editor-/,
+		ltr: [ componentsLtr, editorLtr ],
+		rtl: [ componentsRtl, editorRtl ],
+	},
+	{
+		componentIdMatcher: /^icons-/,
+		ltr: [ componentsLtr ],
+		rtl: [ componentsRtl ],
+	},
+	{
+		componentIdMatcher: /^dataviews-/,
+		ltr: [ designTokens, componentsLtr, dataviewsLtr ],
+		rtl: [ designTokens, componentsRtl, dataviewsRtl ],
+	},
+	{
+		// The DataForm stories include a `richtext` control, which renders
+		// format UI from `@wordpress/format-library` and the inline link
+		// popover (`LinkControl`) from `@wordpress/block-editor`. Stack those
+		// styles on top of the `dataviews-` set above (all matching entries
+		// apply); the control's own styles ship with `@wordpress/components`.
+		componentIdMatcher: /^dataviews-dataform/,
+		ltr: [ blockEditorLtr, formatLibraryLtr ],
+		rtl: [ blockEditorRtl, formatLibraryRtl ],
+	},
+	{
+		componentIdMatcher: /^fields-/,
+		ltr: [ componentsLtr, dataviewsLtr, fieldsLtr, mediaFieldsLtr ],
+		rtl: [ componentsRtl, dataviewsRtl, fieldsRtl, mediaFieldsRtl ],
+	},
+	{
+		componentIdMatcher: /^admin-ui-/,
+		ltr: [ designTokens, componentsLtr ],
+		rtl: [ designTokens, componentsRtl ],
+	},
+	{
+		componentIdMatcher: /^grid-/,
+		ltr: [ designTokens ],
+		rtl: [ designTokens ],
+	},
+	{
+		componentIdMatcher: /^tokens-/,
+		ltr: [ designTokens ],
+		rtl: [ designTokens ],
+	},
+	{
+		componentIdMatcher: /^mediaeditor-/,
+		ltr: [ componentsLtr ],
+		rtl: [ componentsRtl ],
+	},
+	{
+		componentIdMatcher: /^design-system-/,
+		ltr: [ designTokens ],
+		rtl: [ designTokens ],
+	},
+	{
+		componentIdMatcher: /^design-system-patterns-/,
+		ltr: [ componentsLtr, dataviewsLtr ],
+		rtl: [ componentsRtl, dataviewsRtl ],
+	},
+];
+
+export default CONFIG;

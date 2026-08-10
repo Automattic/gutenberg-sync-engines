@@ -1,0 +1,20 @@
+{
+	"$schema": "https://json.schemastore.org/tsconfig.json",
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"types": [ "node" ]
+	},
+	"exclude": [
+		// The intent-log engine core graduated from prototypes/sync with
+		// generic JSDoc types; behavior is pinned by its jest suites and the
+		// frozen cross-language vectors. Proper typing lands with the Phase 2
+		// engine adapter, which is when TS consumers first import it.
+		"src/engines/intent-log"
+	],
+	"references": [
+		{ "path": "../api-fetch" },
+		{ "path": "../hooks" },
+		{ "path": "../private-apis" },
+		{ "path": "../undo-manager" }
+	]
+}
