@@ -1,17 +1,10 @@
 {
-	"$schema": "https://schemas.wp.org/trunk/wp-env.json",
-	"core": null,
-	"plugins": [ "." ],
+	"$schema": "./gutenberg/schemas/json/wp-env.json",
+	"core": "WordPress/WordPress",
+	"plugins": [ "./gutenberg", "." ],
+	"themes": [ "./gutenberg/test/emptytheme" ],
 	"config": {
 		"WP_DEBUG": true,
 		"SCRIPT_DEBUG": true
-	},
-	"env": {
-		"tests": {
-			"plugins": [ ".", "../workspaces/gutenberg/try-intent-log" ],
-			"config": {
-				"WP_SYNC_FRAMEWORK_PLUGIN": "/var/www/html/wp-content/plugins/try-intent-log/gutenberg.php"
-			}
-		}
 	}
 }

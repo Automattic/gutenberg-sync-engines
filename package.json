@@ -10,7 +10,9 @@
 	},
 	"devDependencies": {
 		"@jest/globals": "^29.7.0",
+		"@playwright/test": "^1.62.1",
 		"@wordpress/api-fetch": "^7.51.0",
+		"@wordpress/e2e-test-utils-playwright": "^1.51.0",
 		"@wordpress/scripts": "^30.0.0",
 		"babel-plugin-transform-import-meta": "^2.3.3",
 		"@wordpress/sync": "file:../workspaces/gutenberg/try-intent-log/packages/sync",
@@ -29,6 +31,7 @@
 		"lint:php": "composer lint",
 		"format:php": "composer format",
 		"test:unit:js": "wp-scripts test-unit-js",
+		"test:e2e": "playwright test --config test/e2e/playwright.config.ts",
 		"test:php": "wp-env run tests-cli --env-cwd=wp-content/plugins/gutenberg-sync-engines vendor/bin/phpunit",
 		"env:start": "wp-env start",
 		"env:stop": "wp-env stop"
