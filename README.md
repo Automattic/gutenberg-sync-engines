@@ -76,8 +76,10 @@ npm run env:stop          # Stop it
 ```
 
 The dev site is <http://localhost:8888> (tests site <http://localhost:8889>).
-To run alongside another wp-env instance, override the ports, e.g.
-`WP_ENV_PORT=8890 WP_ENV_TESTS_PORT=8891 npm run env:start`.
+`autoPort` is enabled, so when those ports are busy — e.g. another wp-env
+instance is running — wp-env automatically picks free ones and prints the URLs
+it chose on startup. To force specific ports instead, set
+`WP_ENV_PORT` / `WP_ENV_TESTS_PORT`.
 
 ### Quality
 
@@ -104,8 +106,9 @@ npm run test:e2e          # Playwright — two-browser collaboration against the
 The e2e specs reuse the Gutenberg subtree's collaboration fixtures, so they
 must run against a single copy of `@playwright/test`; `pretest:e2e`
 deduplicates the subtree's copy against this plugin's automatically. They run
-against the tests site (`:8889`); if you overrode the ports, point them there
-with `WP_BASE_URL`, e.g. `WP_BASE_URL=http://localhost:8891 npm run test:e2e`.
+against the tests site (`:8889`); if it landed on a different port (auto-port,
+or an override), point them there with `WP_BASE_URL`, e.g.
+`WP_BASE_URL=http://localhost:8891 npm run test:e2e`.
 
 `@wordpress/sync` is **externalized** at build time (the WordPress
 dependency-extraction plugin maps `@wordpress/*` imports to the `wp.*`

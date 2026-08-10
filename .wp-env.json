@@ -3,6 +3,7 @@
 	"core": "WordPress/WordPress",
 	"plugins": [ "./gutenberg", "." ],
 	"themes": [ "./gutenberg/test/emptytheme" ],
+	"autoPort": true,
 	"config": {
 		"WP_DEBUG": true,
 		"SCRIPT_DEBUG": true

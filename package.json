@@ -13,7 +13,7 @@
 		"@playwright/test": "^1.62.1",
 		"@wordpress/api-fetch": "^7.51.0",
 		"@wordpress/e2e-test-utils-playwright": "^1.51.0",
-		"@wordpress/env": "^10.0.0",
+		"@wordpress/env": "^11.11.0",
 		"@wordpress/scripts": "^30.0.0",
 		"babel-plugin-transform-import-meta": "^2.3.3",
 		"@wordpress/sync": "file:../workspaces/gutenberg/try-intent-log/packages/sync",
@@ -21,6 +21,9 @@
 		"typescript": "^5.5.0",
 		"y-protocols": "^1.0.7",
 		"yjs": "^13.6.29"
+	},
+	"overrides": {
+		"@wordpress/env": "^11.11.0"
 	},
 	"scripts": {
 		"build": "wp-scripts build",
