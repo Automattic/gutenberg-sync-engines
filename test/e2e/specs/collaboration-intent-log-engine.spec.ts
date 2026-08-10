@@ -6,7 +6,10 @@ import type { RequestUtils } from '@wordpress/e2e-test-utils-playwright';
 /**
  * Internal dependencies
  */
-import { test, expect } from '../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures';
+import {
+	test,
+	expect,
+} from '../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures';
 // The engine's deterministic genesis id function (vector-pinned against the
 // PHP twin) — imported directly so the spec asserts EXACT id agreement.
 import { genesisSyncId } from '../../../src/engines/intent-log/sync-id.js';
@@ -1037,6 +1040,7 @@ test.describe( 'Collaboration - intent-log engine', () => {
 		// Anchor selection on the exact word regardless of layout: select
 		// "World" via the store for precision.
 		await page1.evaluate( () => {
+			// eslint-disable-next-line @wordpress/no-global-get-selection -- Browser-context DOM code inside page.evaluate, not editor React.
 			const selectAll = window.getSelection();
 			const block = document.querySelector(
 				'[data-type="core/paragraph"]'

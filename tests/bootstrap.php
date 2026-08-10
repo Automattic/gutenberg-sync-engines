@@ -6,9 +6,11 @@
  * collaborative-editing FRAMEWORK (the WP_Sync_* contracts, registries, and
  * REST transport routes that ship in Gutenberg / WordPress core). The
  * framework must therefore load BEFORE this plugin — both are required in on
- * `muplugins_loaded` below. The framework's plugin entry path is taken from
- * the `WP_SYNC_FRAMEWORK_PLUGIN` env var (the bundled `.wp-env.json` points
- * it at the mapped Gutenberg plugin); adjust it for other environments.
+ * `muplugins_loaded` below. The framework's plugin entry path resolves from,
+ * in order: the `WP_SYNC_FRAMEWORK_PLUGIN` env var, a same-named constant, or
+ * — for the bundled `.wp-env.json`, which mounts the pinned Gutenberg subtree
+ * as the `gutenberg` plugin — the conventional `WP_PLUGIN_DIR/gutenberg`
+ * path. Override the env var to point at a different Gutenberg checkout.
  *
  * @package GutenbergSyncEngines
  */
@@ -27,6 +29,13 @@ tests_add_filter(
 	'muplugins_loaded',
 	static function () {
 		$framework = getenv( 'WP_SYNC_FRAMEWORK_PLUGIN' );
+		if ( ! $framework && defined( 'WP_SYNC_FRAMEWORK_PLUGIN' ) ) {
+			$framework = WP_SYNC_FRAMEWORK_PLUGIN;
+		}
+		if ( ! $framework ) {
+			// The bundled .wp-env.json mounts the Gutenberg subtree here.
+			$framework = WP_PLUGIN_DIR . '/gutenberg/gutenberg.php';
+		}
 		if ( $framework && file_exists( $framework ) ) {
 			require $framework;
 		}

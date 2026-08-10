@@ -19,12 +19,10 @@ import { defineConfig, devices } from '@playwright/test';
 // eslint-disable-next-line import/no-unresolved -- Provided by @wordpress/scripts.
 import baseConfig from '@wordpress/scripts/config/playwright.config.js';
 
-// Reuse Gutenberg's e2e global setup (admin auth) from the vendored subtree.
+// A trimmed, plugin-local global setup (auth + clean state) — see its header
+// for why we don't reuse the subtree's monorepo-suite-specific one.
 const globalSetup = fileURLToPath(
-	new URL(
-		'../../gutenberg/test/e2e/config/global-setup.ts',
-		'file:' + __filename
-	).href
+	new URL( './config/global-setup.ts', 'file:' + __filename ).href
 );
 
 export default defineConfig( {

@@ -25,6 +25,10 @@ const SYNC_SRC = path.join( FRAMEWORK_ROOT, 'packages/sync/src' );
 
 module.exports = {
 	...defaultConfig,
+	// Discover ONLY this plugin's own tests. The pinned Gutenberg subtree in
+	// `gutenberg/` carries thousands of the monorepo's own test files; without
+	// this restriction Jest would recurse into it and run (and fail) them.
+	roots: [ '<rootDir>/src', '<rootDir>/tests' ],
 	// The frozen cross-language vector replay locates its fixture through
 	// `import.meta.url`; Jest runs CommonJS, so transform it away with the same
 	// plugin the framework's build uses. Overriding `transform` (rather than

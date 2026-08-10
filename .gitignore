@@ -9,7 +9,11 @@
 /.wp-env.override.json
 /.phpcs.cache
 /.eslintcache
+/.phpunit.result.cache
 *.log
+
+# Playwright e2e output (traces, screenshots, reports)
+/artifacts
 
 # OS / editor
 .DS_Store

@@ -51,18 +51,61 @@ The plugin registers via:
 
 ## Development
 
-Requires the Gutenberg collaborative-editing framework at runtime.
+This plugin requires the Gutenberg collaborative-editing framework at runtime.
+That framework is vendored as a **pinned git subtree** in `gutenberg/` (mounted
+by `.wp-env.json`), so the local WordPress environment runs the exact Gutenberg
+the engines were built against — no separate checkout needed.
+
+### Setup
 
 ```bash
-composer install          # PHP tooling (PHPCS/WPCS, PHPUnit polyfills)
-npm install               # JS tooling (@wordpress/scripts)
+composer install          # PHP tooling (PHPCS/WPCS, PHPUnit + polyfills)
+npm install               # JS tooling (@wordpress/scripts, wp-env, Playwright)
+npm run build             # Build this plugin's client bundle
 
+# Build the vendored Gutenberg once, so wp-env serves working editor assets.
+# (The subtree is committed as source only; its build output is not.)
+cd gutenberg && npm install && npm run build && cd ..
+```
+
+### Environment
+
+```bash
+npm run env:start         # Start WordPress (Gutenberg subtree + this plugin)
+npm run env:stop          # Stop it
+```
+
+The dev site is <http://localhost:8888> (tests site <http://localhost:8889>).
+To run alongside another wp-env instance, override the ports, e.g.
+`WP_ENV_PORT=8890 WP_ENV_TESTS_PORT=8891 npm run env:start`.
+
+### Quality
+
+```bash
 composer lint             # PHPCS (mirrors wordpress-develop)
 composer format           # PHPCBF
 npm run lint:js           # ESLint (mirrors Gutenberg)
 npm run format            # Prettier (@wordpress/prettier-config)
-npm run build             # Build the client bundle
 ```
+
+### Tests
+
+```bash
+npm run test:unit:js      # Jest — engines/providers + frozen-core vectors
+npm run test:php          # PHPUnit in the wp-env tests container (loads the
+                          # Gutenberg subtree as the framework, then the plugin)
+npm run test:e2e          # Playwright — two-browser collaboration against the
+                          # running env (needs `npx playwright install chromium`)
+```
+
+`npm run test:php` and `npm run test:e2e` require a running environment
+(`npm run env:start`) with the Gutenberg subtree built (see Setup).
+
+The e2e specs reuse the Gutenberg subtree's collaboration fixtures, so they
+must run against a single copy of `@playwright/test`; `pretest:e2e`
+deduplicates the subtree's copy against this plugin's automatically. They run
+against the tests site (`:8889`); if you overrode the ports, point them there
+with `WP_BASE_URL`, e.g. `WP_BASE_URL=http://localhost:8891 npm run test:e2e`.
 
 `@wordpress/sync` is **externalized** at build time (the WordPress
 dependency-extraction plugin maps `@wordpress/*` imports to the `wp.*`
