@@ -42,8 +42,8 @@ The framework/plugin split is complete: the framework ships **neither** engines
     against its PHP twin + JSON vectors). Excluded from lint/format. `genesisSyncId`
     lives at `src/engines/intent-log/sync-id.js`. Don't casually edit — changes
     must stay in lockstep with the PHP core and test vectors. Its Jest harness
-    lives in `tests/js/engines/intent-log/`; its vector generators stay here in
-    `tools/`.
+    lives in `tests/js/engines/intent-log/`; its vector generators in
+    `tests/tools/`.
   - `engines/yjs-relay/` — the Yjs engine + its `undo.ts` + vendored
     `y-utilities/` (ignored by eslint).
   - `providers/{http-polling,http-long-polling,websocket}/` — transports.
@@ -51,15 +51,18 @@ The framework/plugin split is complete: the framework ships **neither** engines
     the framework runtime the adapters use.
 - `gutenberg/` — a **pinned, squashed git subtree of Gutenberg** (source only;
   see below). Mounted by `.wp-env.json` as the runtime framework.
-- `tests/` — ALL tests and fixtures: `tests/phpunit/` (PHPUnit, boots via
-  `tests/bootstrap.php`), `tests/js/` (Jest unit tests + setup files, mirroring
-  `src/`; `tests/js/engines/intent-log/` is the frozen core's harness),
-  `tests/e2e/` (Playwright specs + config; see Testing). The frozen intent-log
-  vectors exist as TWO deliberate copies — `tests/js/engines/intent-log/
-  test-vectors/` (replayed by Jest) and `tests/phpunit/test-vectors/` (replayed
-  by PHPUnit) — kept byte-identical by `tests/js/engines/intent-log/
-  vector-parity.test.js`; regenerate with the `src/engines/intent-log/tools/`
-  scripts and always update both.
+- `tests/` — ALL tests, fixtures, and test tooling: `tests/phpunit/` (PHPUnit,
+  boots via `tests/bootstrap.php`), `tests/js/` (Jest unit tests + setup files,
+  mirroring `src/`; `tests/js/engines/intent-log/` is the frozen core's
+  harness), `tests/e2e/` (Playwright specs + config; see Testing),
+  `tests/benchmarks/` (the sync-engine benchmark harness, run via `wp
+  eval-file tests/benchmarks/benchmark.php`; see its README), and
+  `tests/tools/` (Node CLI scripts: vector generators, the simulator sweep,
+  the manual two-tab observer). The frozen intent-log vectors exist as TWO
+  deliberate copies — `tests/js/engines/intent-log/test-vectors/` (replayed by
+  Jest) and `tests/phpunit/test-vectors/` (replayed by PHPUnit) — kept
+  byte-identical by `tests/js/engines/intent-log/vector-parity.test.js`;
+  regenerate with the `tests/tools/` scripts and always update both.
 - `PORTING.md` — historical record of the client-side split (mostly DONE).
 
 ## The `gutenberg/` subtree
@@ -194,7 +197,7 @@ Current green baseline: **Jest 373**, **PHPUnit 133 (562 assertions)**,
 ## Known issues / out of scope
 
 - `composer lint` currently reports ~275 errors + ~29 warnings in the plugin's
-  own `includes/`, `tests/`, `tools/` PHP — pre-existing standards debt, not yet
+  own `includes/` and `tests/` PHP — pre-existing standards debt, not yet
   addressed. `composer format` auto-fixes a handful.
 - Intent-log has **no collaborative undo** yet (leaves the manager undefined; WP
   global undo applies). The designed fix is inverse-intent undo. yjs-relay

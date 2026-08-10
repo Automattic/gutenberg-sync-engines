@@ -5,7 +5,7 @@
  * From the repo root (write BOTH copies — the vector-parity Jest suite
  * fails if they diverge):
  *
- *   node src/engines/intent-log/tools/generate-planner-vectors.js \
+ *   node tests/tools/generate-planner-vectors.js \
  *     > tests/js/engines/intent-log/test-vectors/planner.json
  *   cp tests/js/engines/intent-log/test-vectors/planner.json \
  *     tests/phpunit/test-vectors/planner.json
@@ -23,11 +23,21 @@
  * machine yields identical output.
  */
 
-import { canonicalJson } from '../document.js';
-import { createServer, serverDocAt, serverIngestBatch } from '../rebase.js';
-import { makeGenesisDoc, runSimulation } from '../simulator.js';
-import { createIntent, IntentTypes } from '../intents.js';
-import { genesisSyncId } from '../sync-id.js';
+import { canonicalJson } from '../../src/engines/intent-log/document.js';
+import {
+	createServer,
+	serverDocAt,
+	serverIngestBatch,
+} from '../../src/engines/intent-log/rebase.js';
+import {
+	makeGenesisDoc,
+	runSimulation,
+} from '../../src/engines/intent-log/simulator.js';
+import {
+	createIntent,
+	IntentTypes,
+} from '../../src/engines/intent-log/intents.js';
+import { genesisSyncId } from '../../src/engines/intent-log/sync-id.js';
 
 const CASES = [];
 

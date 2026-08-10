@@ -7,13 +7,16 @@
  * From the repo root (write BOTH copies — the vector-parity Jest suite
  * fails if they diverge):
  *
- *   node src/engines/intent-log/tools/generate-sync-id-vectors.js \
+ *   node tests/tools/generate-sync-id-vectors.js \
  *     > tests/js/engines/intent-log/test-vectors/sync-id.json
  *   cp tests/js/engines/intent-log/test-vectors/sync-id.json \
  *     tests/phpunit/test-vectors/sync-id.json
  */
 
-import { canonicalGenesisInput, genesisSyncId } from '../sync-id.js';
+import {
+	canonicalGenesisInput,
+	genesisSyncId,
+} from '../../src/engines/intent-log/sync-id.js';
 
 const CASES = [
 	{ revision: { postId: 1, revisionId: 1 }, path: [] },

@@ -104,13 +104,13 @@ the ingest lock), so run inside the environment under test via wp-cli.
 Options are bare `key=value` tokens — wp-cli would claim `--flags` itself.
 
 ```bash
-wp eval-file tools/sync-engine-benchmarks/benchmark.php \
+wp eval-file tests/benchmarks/benchmark.php \
     engine=intent-log scenario=mixed-newsroom \
     rounds=200 clients=4 paragraphs=8 seed=42
 
 # Head-to-head: run both engines over the same scenario and seed.
 for e in intent-log yjs-relay; do
-  wp eval-file tools/sync-engine-benchmarks/benchmark.php \
+  wp eval-file tests/benchmarks/benchmark.php \
       engine=$e scenario=contended-paragraph rounds=200 clients=4 seed=42
 done
 ```
@@ -120,7 +120,7 @@ Under wp-env, the plugin is mounted at
 
 ```bash
 npx wp-env run cli --env-cwd=wp-content/plugins/$(basename "$PWD") \
-    wp eval-file tools/sync-engine-benchmarks/benchmark.php engine=intent-log
+    wp eval-file tests/benchmarks/benchmark.php engine=intent-log
 ```
 
 Each run executes `reps=3` repetitions of the identical workload and

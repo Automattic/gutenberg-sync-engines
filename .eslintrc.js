@@ -44,7 +44,7 @@ module.exports = {
 			// (byte-matched against its PHP twin and JSON vectors); do not
 			// reformat or relint it here. It targets a Node-style runtime
 			// (its harness lives in tests/js/engines/intent-log/, its vector
-			// generators in tools/), so give it the Node and modern-ES
+			// generators in tests/tools/), so give it the Node and modern-ES
 			// globals rather than this plugin's browser env.
 			files: [ 'src/engines/intent-log/**/*.js' ],
 			env: {
@@ -55,6 +55,19 @@ module.exports = {
 			},
 			rules: {
 				'@wordpress/no-unused-vars-before-return': 'off',
+				'no-console': 'off',
+				'import/no-extraneous-dependencies': 'off',
+			},
+		},
+		{
+			// Node CLI scripts (vector generators, simulator sweep, manual
+			// two-tab observer) — they print to stdout by design.
+			files: [ 'tests/tools/**/*.{js,mjs}' ],
+			env: {
+				es2021: true,
+				node: true,
+			},
+			rules: {
 				'no-console': 'off',
 				'import/no-extraneous-dependencies': 'off',
 			},

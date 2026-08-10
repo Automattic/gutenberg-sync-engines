@@ -4,7 +4,7 @@
  * From the repo root (write BOTH copies — the vector-parity Jest suite
  * fails if they diverge):
  *
- *   node src/engines/intent-log/tools/generate-rich-text-vectors.js \
+ *   node tests/tools/generate-rich-text-vectors.js \
  *     > tests/js/engines/intent-log/test-vectors/rich-text.json
  *   cp tests/js/engines/intent-log/test-vectors/rich-text.json \
  *     tests/phpunit/test-vectors/rich-text.json
@@ -19,7 +19,10 @@
  * languages together.
  */
 
-import { fieldToHtml, htmlToField } from '../rich-text.js';
+import {
+	fieldToHtml,
+	htmlToField,
+} from '../../src/engines/intent-log/rich-text.js';
 
 const HTML_CASES = [
 	'',

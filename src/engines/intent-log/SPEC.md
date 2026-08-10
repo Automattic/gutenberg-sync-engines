@@ -293,7 +293,7 @@ resolutions and server-emitted update types from clients remain 400s.
 ## Validation oracles
 
 Checked by the deterministic simulator after every seeded schedule
-(`npm run sweep` for the long-running version):
+(`node tests/tools/sweep.js` for the long-running version):
 
 - **Convergence**: after all outboxes drain, every client's acked AND
   optimistic documents equal a fresh replay of the server log.

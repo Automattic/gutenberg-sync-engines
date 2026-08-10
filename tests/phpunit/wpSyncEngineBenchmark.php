@@ -15,7 +15,7 @@
 class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 	public static function set_up_before_class() {
 		parent::set_up_before_class();
-		$base = dirname( __DIR__, 2 ) . '/tools/sync-engine-benchmarks/';
+		$base = dirname( __DIR__ ) . '/benchmarks/';
 		require_once $base . 'class-wp-sync-bench-memory-storage.php';
 		require_once $base . 'class-wp-sync-bench-workload.php';
 		require_once $base . 'class-wp-sync-bench-runner.php';

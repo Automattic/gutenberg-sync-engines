@@ -4,7 +4,7 @@
  * get_post/serialize_block and a $wpdb for the ingest lock), so invoke it
  * through wp-cli's eval-file in the environment under test:
  *
- *   wp eval-file tools/sync-engine-benchmarks/benchmark.php \
+ *   wp eval-file tests/benchmarks/benchmark.php \
  *       engine=intent-log scenario=mixed-newsroom \
  *       rounds=200 clients=4 paragraphs=8 seed=42 json=out.json
  *
