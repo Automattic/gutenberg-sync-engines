@@ -14,7 +14,3 @@
 
 # Playwright e2e output (traces, screenshots, reports)
 /artifacts
-
-# OS / editor
-.DS_Store
-Thumbs.db
