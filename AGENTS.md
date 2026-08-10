@@ -120,7 +120,12 @@ paths stay pinned to the subtree).
 `test:php` and `test:e2e` need a running env (`npm run env:start`) with the
 subtree built. For e2e also run `npx playwright install chromium` once. If the
 tests site isn't on `:8889` (auto-port / override), pass
-`WP_BASE_URL=http://localhost:<tests-port>`.
+`WP_BASE_URL=http://localhost:<tests-port>`. Beware: if ANOTHER project's
+wp-env holds `:8889`, Playwright's webServer check sees the port alive and
+silently reuses that foreign site (wp-env credentials are identical
+everywhere, so auth even succeeds); the first visible failure is
+`activatePlugin( 'gutenberg' )` in global-setup dying with
+"Unexpected end of JSON input". Always pass `WP_BASE_URL` in that case.
 
 Current green baseline: **Jest 369**, **PHPUnit 128 (545 assertions)**,
 **e2e 20/20** (occasional save-notice flake under full-suite load; green solo).
