@@ -56,7 +56,9 @@ The framework/plugin split is complete: the framework ships **neither** engines
   mirroring `src/`; `tests/js/engines/intent-log/` is the frozen core's
   harness), `tests/e2e/` (Playwright specs + config; see Testing),
   `tests/benchmarks/` (the sync-engine benchmark harness, run via `wp
-  eval-file tests/benchmarks/benchmark.php`; see its README), and
+  eval-file tests/benchmarks/benchmark.php`, plus the browser-driven
+  transport benchmark in `tests/benchmarks/transport/`; see their READMEs),
+  and
   `tests/tools/` (Node CLI scripts: vector generators, the simulator sweep,
   the manual two-tab observer). The frozen intent-log vectors exist as TWO
   deliberate copies — `tests/js/engines/intent-log/test-vectors/` (replayed by
@@ -176,6 +178,12 @@ Current green baseline: **Jest 373**, **PHPUnit 133 (562 assertions)**,
   via `POST /wp/v2/settings` — both only work with the plugins active.
 - **Subtree build layout** (Gutenberg 23.x): built package JS lands at
   `gutenberg/build/scripts/<pkg>/`, not `gutenberg/build/<pkg>/`.
+- **Worktrees mount the plugin twice in wp-env:** `.wp-env.json` maps `.` to
+  `wp-content/plugins/gutenberg-sync-engines` AND lists `.` in `plugins`,
+  which also mounts it under the checkout's directory name. In the canonical
+  checkout both paths coincide; in a worktree they don't, and activating both
+  copies is a fatal `Cannot redeclare gutenberg_sync_engines_bootstrap()`.
+  Activate only `gutenberg-sync-engines`; deactivate the directory-name copy.
 
 ## Coding standards
 

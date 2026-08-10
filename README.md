@@ -129,6 +129,9 @@ type-checking against the Gutenberg checkout.
   percentiles, payload and storage growth, and (for intent-log) merge-quality
   metrics. See `tests/benchmarks/README.md` for how to run it and how to read
   the numbers.
+- `tests/benchmarks/transport/` — a transport experience benchmark: two real
+  browser clients measure edit-to-visible propagation latency and wire
+  traffic (editing + idle) per transport. See its README.
 - `tests/tools/` — Node CLI utilities: a long-running intent-log simulator
   sweep (`node tests/tools/sweep.js`), a manual two-tab sync observer against
   a live environment (`node tests/tools/observe-two-tab-sync.mjs`), and the
