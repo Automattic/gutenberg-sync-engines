@@ -35,6 +35,7 @@ import {
 	YJS_RELAY_ENGINE_PROTOCOL,
 	YJS_RELAY_ENGINE_SLUG,
 } from './session';
+import { createUndoManager } from './undo';
 
 /**
  * The incumbent Yjs relay engine: it syncs entities as Yjs CRDT documents.
@@ -50,6 +51,10 @@ export function createYjsEngine(): SyncEngine {
 	return {
 		slug: YJS_RELAY_ENGINE_SLUG,
 		protocolVersion: YJS_RELAY_ENGINE_PROTOCOL,
+		// The Yjs engine's sync-aware undo manager (Yjs tracks changes across
+		// per-entity docs; each peer gets its own stack). Exposed as
+		// SyncManager.undoManager.
+		createUndoManager,
 		createEntity( { syncConfig, objectType, objectId } ): EngineEntity {
 			const ydoc = createYjsDoc( { objectType } );
 			const recordMap = ydoc.getMap( CRDT_RECORD_MAP_KEY );
