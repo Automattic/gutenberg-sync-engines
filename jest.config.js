@@ -8,20 +8,21 @@ const path = require( 'path' );
  */
 const defaultConfig = require( '@wordpress/scripts/config/jest-unit.config.js' );
 
-// The framework (`@wordpress/sync`) is a sibling checkout. At runtime WordPress
-// provides it (and Yjs) as `wp.sync`; under Jest there is no such global, so we
-// resolve the framework from the sibling checkout and pin `yjs` itself to the
-// framework's SINGLE copy so the plugin and the framework share one Yjs
-// instance (https://github.com/yjs/yjs/issues/438). y-protocols and lib0 are
-// left to normal resolution so their package `exports` pick the CommonJS build
-// Jest can load; being stateless, a duplicate of them is harmless as long as
-// they bind to the one shared `yjs`.
-// Resolvable from the primary checkout by default; override from git
-// worktrees (where the relative default breaks), mirroring the PHP
+// At runtime WordPress provides the framework (`@wordpress/sync`) and Yjs as
+// `wp.sync`; under Jest there is no such global, so we resolve the framework
+// from the pinned Gutenberg subtree in `./gutenberg` — the same copy wp-env
+// and e2e run against — and pin `yjs` itself to the framework's SINGLE copy so
+// the plugin and the framework share one Yjs instance
+// (https://github.com/yjs/yjs/issues/438). y-protocols and lib0 are left to
+// normal resolution so their package `exports` pick the CommonJS build Jest
+// can load; being stateless, a duplicate of them is harmless as long as they
+// bind to the one shared `yjs`. Requires the subtree to be installed and
+// built (see Setup in AGENTS.md). Set WP_SYNC_FRAMEWORK_ROOT to test against
+// a live framework checkout instead (co-development), mirroring the PHP
 // bootstrap's WP_SYNC_FRAMEWORK_PLUGIN env override.
 const FRAMEWORK_ROOT =
 	process.env.WP_SYNC_FRAMEWORK_ROOT ||
-	path.resolve( __dirname, '../workspaces/gutenberg/try-intent-log' );
+	path.resolve( __dirname, 'gutenberg' );
 const FRAMEWORK_MODULES = path.join( FRAMEWORK_ROOT, 'node_modules' );
 const SYNC_SRC = path.join( FRAMEWORK_ROOT, 'packages/sync/src' );
 

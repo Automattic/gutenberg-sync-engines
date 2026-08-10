@@ -1,44 +1,44 @@
 {
-	"name": "gutenberg-sync-engines",
-	"version": "0.1.0",
-	"description": "Pluggable real-time collaboration engines and transports for the Gutenberg collaborative-editing framework.",
-	"license": "GPL-2.0-or-later",
-	"private": true,
-	"engines": {
-		"node": ">=20.10.0",
-		"npm": ">=10.2.3"
-	},
-	"devDependencies": {
-		"@jest/globals": "^29.7.0",
-		"@playwright/test": "^1.62.1",
-		"@wordpress/api-fetch": "^7.51.0",
-		"@wordpress/e2e-test-utils-playwright": "^1.51.0",
-		"@wordpress/env": "^11.11.0",
-		"@wordpress/scripts": "^30.0.0",
-		"babel-plugin-transform-import-meta": "^2.3.3",
-		"@wordpress/sync": "file:../workspaces/gutenberg/try-intent-log/packages/sync",
-		"lib0": "^0.2.99",
-		"typescript": "^5.5.0",
-		"y-protocols": "^1.0.7",
-		"yjs": "^13.6.29"
-	},
-	"overrides": {
-		"@wordpress/env": "^11.11.0"
-	},
-	"scripts": {
-		"build": "wp-scripts build",
-		"typecheck": "tsc --noEmit",
-		"start": "wp-scripts start",
-		"format": "wp-scripts format",
-		"lint:js": "wp-scripts lint-js src tests",
-		"lint:js:fix": "wp-scripts lint-js src tests --fix",
-		"lint:php": "composer lint",
-		"format:php": "composer format",
-		"test:unit:js": "wp-scripts test-unit-js",
-		"pretest:e2e": "rimraf gutenberg/node_modules/@playwright/test gutenberg/node_modules/playwright",
-		"test:e2e": "playwright test --config tests/e2e/playwright.config.ts",
-		"test:php": "wp-env run tests-cli --env-cwd=wp-content/plugins/gutenberg-sync-engines vendor/bin/phpunit",
-		"env:start": "wp-env start",
-		"env:stop": "wp-env stop"
-	}
+  "name": "gutenberg-sync-engines",
+  "version": "0.1.0",
+  "description": "Pluggable real-time collaboration engines and transports for the Gutenberg collaborative-editing framework.",
+  "license": "GPL-2.0-or-later",
+  "private": true,
+  "engines": {
+    "node": ">=20.10.0",
+    "npm": ">=10.2.3"
+  },
+  "devDependencies": {
+    "@jest/globals": "^29.7.0",
+    "@playwright/test": "^1.62.1",
+    "@wordpress/api-fetch": "^7.51.0",
+    "@wordpress/e2e-test-utils-playwright": "^1.51.0",
+    "@wordpress/env": "^11.11.0",
+    "@wordpress/scripts": "^30.0.0",
+    "babel-plugin-transform-import-meta": "^2.3.3",
+    "@wordpress/sync": "file:./gutenberg/packages/sync",
+    "lib0": "^0.2.99",
+    "typescript": "^5.5.0",
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.29"
+  },
+  "overrides": {
+    "@wordpress/env": "^11.11.0"
+  },
+  "scripts": {
+    "build": "wp-scripts build",
+    "typecheck": "tsc --noEmit",
+    "start": "wp-scripts start",
+    "format": "wp-scripts format",
+    "lint:js": "wp-scripts lint-js src tests",
+    "lint:js:fix": "wp-scripts lint-js src tests --fix",
+    "lint:php": "composer lint",
+    "format:php": "composer format",
+    "test:js": "wp-scripts test-unit-js",
+    "pretest:e2e": "rimraf gutenberg/node_modules/@playwright/test gutenberg/node_modules/playwright",
+    "test:e2e": "playwright test --config tests/e2e/playwright.config.ts",
+    "test:php": "wp-env run tests-cli --env-cwd=wp-content/plugins/gutenberg-sync-engines vendor/bin/phpunit",
+    "env:start": "wp-env start",
+    "env:stop": "wp-env stop"
+  }
 }

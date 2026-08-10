@@ -5,18 +5,10 @@
 		"moduleResolution": "node",
 		"baseUrl": ".",
 		"paths": {
-			"@wordpress/sync": [
-				"../workspaces/gutenberg/try-intent-log/packages/sync/src"
-			],
-			"yjs": [
-				"../workspaces/gutenberg/try-intent-log/node_modules/yjs"
-			],
-			"y-protocols/*": [
-				"../workspaces/gutenberg/try-intent-log/node_modules/y-protocols/*"
-			],
-			"lib0/*": [
-				"../workspaces/gutenberg/try-intent-log/node_modules/lib0/*"
-			]
+			"@wordpress/sync": [ "./gutenberg/packages/sync/src" ],
+			"yjs": [ "./gutenberg/node_modules/yjs" ],
+			"y-protocols/*": [ "./gutenberg/node_modules/y-protocols/*" ],
+			"lib0/*": [ "./gutenberg/node_modules/lib0/*" ]
 		},
 		"jsx": "react-jsx",
 		"strict": true,
