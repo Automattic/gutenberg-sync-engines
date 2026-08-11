@@ -777,6 +777,53 @@ describe( 'polling-manager', () => {
 			expect( collectionRoom!.updates ).toEqual( [] );
 		} );
 
+		it( 'flushes updates while solo for sessions with the syncWhileSolo capability', async () => {
+			// Intent-log opts out of the solo queue pause: ingest is
+			// idempotent by intentId, and flushing every poll bounds the
+			// unsent-work window to one poll interval.
+			mockPostSyncUpdate.mockResolvedValue( {
+				rooms: [
+					{
+						room: 'test-room',
+						end_cursor: 1,
+						awareness: { 1: {} },
+						updates: [],
+					},
+				],
+			} );
+
+			const session = {
+				...createMockSession( 1 ),
+				syncWhileSolo: true as const,
+			};
+			pollingManager.registerRoom( {
+				room: 'test-room',
+				session,
+				log: jest.fn(),
+				onStatusChange: jest.fn(),
+			} );
+
+			// First poll: solo. The queue starts UNPAUSED, so even the
+			// initial updates go out.
+			await jest.advanceTimersByTimeAsync( 0 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
+
+			// Typed while still solo.
+			const onLocalUpdate = getOnLocalUpdate( session );
+			const typed = createMockUpdate( 3 );
+			onLocalUpdate( typed, 3 );
+
+			// Next solo poll carries the update — no collaborator needed.
+			await jest.advanceTimersByTimeAsync( 4000 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+			const payload = mockPostSyncUpdate.mock.calls[ 1 ][ 0 ] as {
+				rooms: Array< {
+					updates: Array< { type: string; data: string } >;
+				} >;
+			};
+			expect( payload.rooms[ 0 ].updates ).toContainEqual( typed );
+		} );
+
 		it( 'sends accumulated collection room updates after collaborator detection', async () => {
 			// First poll: no collaborators.
 			mockPostSyncUpdate.mockResolvedValue( {

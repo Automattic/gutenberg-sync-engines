@@ -131,6 +131,15 @@ export interface IntentLogSession extends EngineSessionCodec {
 	actorId: string;
 
 	/**
+	 * Transport capability: flush queued updates even with no collaborator
+	 * present. Intent ingest is idempotent by intentId and rows are tiny,
+	 * so sending while solo is safe — and it shrinks the window in which a
+	 * terminal transport error can destroy unsent local work from the whole
+	 * solo session down to one poll interval.
+	 */
+	syncWhileSolo: true;
+
+	/**
 	 * Authors one intent against the optimistic document, applies it
 	 * locally, and queues it for the transport. Throws before the snapshot
 	 * arrives (there is no document to author against).
@@ -265,6 +274,7 @@ export function createIntentLogSession(
 		clientId,
 		engineSlug: INTENT_LOG_ENGINE_SLUG,
 		engineProtocol: INTENT_LOG_ENGINE_PROTOCOL,
+		syncWhileSolo: true,
 
 		// ---- EngineSessionCodec (transport-facing) ----
 

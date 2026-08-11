@@ -988,8 +988,19 @@ function registerRoom( {
 	// the inspector is enabled).
 	registerDebugSession( room, session );
 
-	// Note: Queue is initially paused. Call .resume() to unpause.
+	// Note: Queue is initially paused (no update traffic while solo).
+	// Engines whose ingest is idempotent and cheap opt out via the codec's
+	// `syncWhileSolo` capability (intent-log does): their updates flush on
+	// every poll, so unsent local work at risk from a terminal transport
+	// error is bounded by one poll interval instead of the whole solo
+	// session.
 	const updateQueue = createUpdateQueue( session.getInitialUpdates() );
+	if (
+		( session as EngineSessionCodec & { syncWhileSolo?: boolean } )
+			.syncWhileSolo
+	) {
+		updateQueue.resume();
+	}
 
 	/**
 	 * Connection limits are enforced on the first entity to be loaded for sync.
