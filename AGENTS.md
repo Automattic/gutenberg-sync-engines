@@ -85,7 +85,7 @@ The framework/plugin split is complete: the framework ships **neither** engines
   `specs/websocket-only/` are the transport-specific suites relocated from the
   framework, `plugins/` holds the test WebSocket provider fixture plugin,
   `bin/` the y-websocket sync-server daemon + the `rtc:ws`/`rtc:http` dev
-  switcher; see Testing),
+  switcher for the real websocket transport; see Testing),
   `tests/benchmarks/` (the sync-engine benchmark harness, run via `wp
   eval-file tests/benchmarks/benchmark.php`, plus the browser-driven
   transport benchmark in `tests/benchmarks/transport/`; see their READMEs),
@@ -205,8 +205,27 @@ server lane. `.wp-env.json` maps `tests/e2e/plugins` (this fixture) and
 sync-connection-error-filter) as plugin dirs. `@y/websocket-server` is pinned
 EXACTLY to 0.1.1 — 0.1.5 switched to the yjs-14 (`@y/y`) family and its daemon
 crashes (`store.getClock is not a function`) when a 13.x client connects.
-`npm run rtc:ws` / `npm run rtc:http` switch a local dev session onto/off the
-test WebSocket transport (manual two-window testing).
+`npm run rtc:ws` is the one-command start for the REAL websocket transport
+(manual two-window testing): it ensures wp-env is running, activates the
+right plugins, selects the websocket transport, and runs the
+`wp collaboration sync-server` daemon in the wp-env cli container with port
+8787 published to the host (wp-env alone cannot publish extra ports, and
+the daemon must bind 0.0.0.0 — a loopback-bound daemon is unreachable even
+through a published port). `npm run rtc:http` switches the site back to
+HTTP polling and stops the daemon. `--detach` starts the daemon in the
+background and exits; to auto-start it with every `wp-env start`, put this
+in the gitignored `.wp-env.override.json`:
+
+```json
+{
+	"lifecycleScripts": {
+		"afterStart": "node tests/e2e/bin/rtc-dev.mjs --mode=websockets --detach || true"
+	}
+}
+```
+
+(The `|| true` keeps a daemon failure from failing `wp-env start` itself;
+the diagnosis still prints in the spinner output.)
 
 ## Gotchas (each of these has bitten — don't rediscover them)
 
@@ -264,7 +283,11 @@ test WebSocket transport (manual two-window testing).
   which also mounts it under the checkout's directory name. In the canonical
   checkout both paths coincide; in a worktree they don't, and activating both
   copies is a fatal `Cannot redeclare gutenberg_sync_engines_bootstrap()`.
-  Activate only `gutenberg-sync-engines`; deactivate the directory-name copy.
+  Keep the DIRECTORY-NAME copy active and the `gutenberg-sync-engines` copy
+  inactive: `wp-env start` re-activates the plugins-list (directory-name)
+  copy on EVERY start, so the reverse arrangement fatals — and aborts the
+  start — the next time the env starts. `npm run rtc:ws` enforces the
+  surviving arrangement automatically.
 
 ## Coding standards
 

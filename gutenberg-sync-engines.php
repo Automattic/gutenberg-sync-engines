@@ -18,6 +18,20 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+/*
+ * In a git worktree, wp-env mounts this plugin TWICE (under the checkout's
+ * directory name and as gutenberg-sync-engines), and both copies can end up
+ * activated — wp-env re-activates its plugins list on every start. Loading
+ * a second copy used to be a fatal redeclare; instead, let the first loaded
+ * copy win and make any other mount a no-op. (The bootstrap declaration
+ * below must stay inside its function_exists guard: PHP early-binds
+ * unconditional top-level functions at COMPILE time, before this return
+ * could run.)
+ */
+if ( function_exists( 'gutenberg_sync_engines_bootstrap' ) ) {
+	return;
+}
+
 define( 'GUTENBERG_SYNC_ENGINES_VERSION', '0.1.0' );
 define( 'GUTENBERG_SYNC_ENGINES_PATH', plugin_dir_path( __FILE__ ) );
 define( 'GUTENBERG_SYNC_ENGINES_URL', plugin_dir_url( __FILE__ ) );
@@ -34,7 +48,9 @@ require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/class-gutenberg-sync-engine
  *
  * @return void
  */
-function gutenberg_sync_engines_bootstrap() {
-	Gutenberg_Sync_Engines_Plugin::instance()->boot();
+if ( ! function_exists( 'gutenberg_sync_engines_bootstrap' ) ) {
+	function gutenberg_sync_engines_bootstrap() {
+		Gutenberg_Sync_Engines_Plugin::instance()->boot();
+	}
 }
 add_action( 'plugins_loaded', 'gutenberg_sync_engines_bootstrap' );
