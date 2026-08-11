@@ -12,7 +12,7 @@ gutenberg
 src/engines/intent-log
 
 # Vendored third-party code from the Yjs ecosystem.
-src/engines/yjs-relay/y-utilities
+src/engines/yjs/y-utilities
 
 # Playwright e2e output.
 artifacts

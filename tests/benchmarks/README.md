@@ -9,16 +9,18 @@ matter of evidence.
 Engines are resolved through the framework's registry (the
 `wp_sync_engines` filter), so **any engine registered by an active plugin is
 benchmarkable by slug** — run with an unknown slug to list what's
-registered. This plugin registers three:
+registered. This plugin registers two:
 
 - **`intent-log`** (`WP_Intent_Log_Engine`) — server-authoritative: the
   server transforms each edit against the log, so it can report exactly how
   every edit settled.
-- **`yjs-relay`** (`WP_Yjs_Relay_Engine`) — a dumb relay: the merge happens
-  in each client's CRDT, so the server never sees the outcome.
 - **`yjs-server`** (`WP_Yjs_Server_Engine`) — server-authoritative CRDT:
   the server (via the vendored y-php) merges every update into a canonical
   room document, compacts by itself, and materializes post content.
+
+(A third engine, `yjs-relay` — a dumb relay whose merge happened in each
+client's CRDT — has been removed; historical numbers for it remain below
+as context.)
 
 The runner has three authoring profiles. It speaks to intent-log in typed
 intents (and scores quality with the disposition-based oracle). It speaks
@@ -94,8 +96,9 @@ that is the policy difference with intent-log, reported honestly: the same
 contended workload that intent-log sends to review, yjs-server silently
 last-writer-wins.
 
-For `yjs-relay`, quality is reported as **not server-observable**. The relay
-does its merge on the client; there is no PHP CRDT in the loop to score
+For an engine that merges on the client (the retired `yjs-relay` did, and
+the opaque-relay fallback profile models one), quality is reported as
+**not server-observable**: there is no PHP CRDT in the loop to score
 convergence or conflict outcome, so the harness says so rather than
 inventing a number.
 
@@ -141,7 +144,7 @@ wp eval-file tests/benchmarks/benchmark.php \
     rounds=200 clients=4 paragraphs=8 seed=42
 
 # Head-to-head: run both engines over the same scenario and seed.
-for e in intent-log yjs-relay; do
+for e in intent-log yjs-server; do
   wp eval-file tests/benchmarks/benchmark.php \
       engine=$e scenario=contended-paragraph rounds=200 clients=4 seed=42
 done
@@ -186,7 +189,7 @@ Representative run (`mixed-newsroom`, 150 rounds, 4 clients, 8 paragraphs;
 wp-env Docker, PHP 8.3 / MariaDB — quote your own `environment` +
 `calibration` stanzas with any numbers you report):
 
-| Metric              | intent-log       | yjs-relay              | yjs-server             |
+| Metric              | intent-log       | yjs-relay (retired)    | yjs-server             |
 | ------------------- | ---------------- | ---------------------- | ---------------------- |
 | service ms (mean)   | ~0.64 (incl. ~0.03 lock pair) | ~0.0005 (timer floor) | ~33 (canonical-doc load/merge/save per ingest) |
 | service ms (p99)    | ~1.25            | ~0.008                 | ~83                    |
@@ -208,13 +211,13 @@ The comparison the decision turns on:
   gives a server-side, policy-correct quality signal — nothing lost, every
   conflict surfaced for review. Under a `contended-paragraph` load (4
   editors on one block) it escalates ~74% and still loses nothing.
-- **yjs-relay** is a near-free relay, but the merge cost and conflict
-  outcome live on the client where the server cannot see them, and the
-  server cannot compact (it has no document to snapshot) — it depends on a
-  live client volunteering. With the scripted compactor, storage stays
-  bounded around the threshold; in a room whose clients leave or never
-  volunteer, it grows one row per edit forever. Both `storage.bytes` and
-  the snapshot sizes are synthetic on this path (see Limitations).
+- **yjs-relay (retired)** was a near-free relay, but the merge cost and
+  conflict outcome lived on the client where the server could not see
+  them, and the server could not compact (it had no document to snapshot)
+  — it depended on a live client volunteering. In a room whose clients
+  left or never volunteered, storage grew one row per edit forever. Its
+  `storage.bytes` and snapshot sizes in the table are synthetic (see
+  Limitations).
 - **yjs-server** buys back the relay's missing server authority (bounded
   storage without client help, observable convergence, materialization)
   while keeping CRDT merge semantics and needing NO ingest lock — but at
@@ -231,14 +234,14 @@ The comparison the decision turns on:
   time and growth, not tail latency under a saturated worker pool. The
   DE-RTC harness's multi-process request-queue simulation could be layered
   on top of these engine adapters later.
-- **yjs-relay quality is unmeasured here** by construction (its merge runs
-  in browser clients, outside the harness), not by omission. This
-  limitation no longer applies to yjs-server: its profile IS the y-php
-  client oracle.
-- **Relay payloads are synthetic.** Per-edit updates and compaction
+- **Opaque-relay quality is unmeasured here** by construction (a
+  client-merging engine's merge runs in browser clients, outside the
+  harness), not by omission. This limitation does not apply to yjs-server:
+  its profile IS the y-php client oracle.
+- **Opaque-relay payloads are synthetic.** Per-edit updates and compaction
   snapshots are size-modelled blobs (a few dozen bytes per keystroke batch;
   a snapshot proportional to accumulated document size), not real Yjs
-  binary. Relay `payload_bytes` and `storage.bytes` are therefore
+  binary. On that profile `payload_bytes` and `storage.bytes` are therefore
   order-of-magnitude estimates; `storage.rows` and the compaction cadence
   are exact.
 - **In-memory storage** understates absolute per-request time (no real DB
@@ -251,5 +254,6 @@ The comparison the decision turns on:
   differ by an order of magnitude. Use the `calibration.lock_pair_p50_ms`
   figure to subtract it out, and never compare `service_us` across
   environments without the `environment` + `calibration` stanzas.
-- **Relay service times sit near the timer floor** (single-digit µs): they
-  say "the relay's server cost is negligible", not anything more precise.
+- **Opaque-relay service times sit near the timer floor** (single-digit
+  µs): they say "an append-only relay's server cost is negligible", not
+  anything more precise.

@@ -69,7 +69,6 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		public static function engine_choices(): array {
 			$choices = array(
 				'intent-log' => __( 'Intent log (server-authoritative; conflicts go to review)', 'gutenberg-sync-engines' ),
-				'yjs-relay'  => __( 'Yjs relay (client CRDT; naive relay)', 'gutenberg-sync-engines' ),
 				'yjs-server' => __( 'Yjs server (server-authoritative CRDT; server merges and compacts)', 'gutenberg-sync-engines' ),
 			);
 

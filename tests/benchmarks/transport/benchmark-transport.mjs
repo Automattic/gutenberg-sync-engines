@@ -25,7 +25,7 @@
  *   transport=  http-polling | http-long-polling | websocket | current
  *               Switched via the Settings → Collaboration screen and
  *               restored afterwards. Default: current (no switch).
- *   engine=     intent-log | yjs-relay | current (default: current)
+ *   engine=     intent-log | yjs-server | current (default: current)
  *   trials=     measured token round-trips (default 30)
  *   warmup=     unmeasured leading trials (default 3)
  *   idle=       seconds of idle-traffic measurement (default 30, 0 skips)

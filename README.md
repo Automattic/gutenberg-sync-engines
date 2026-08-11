@@ -22,7 +22,9 @@ Engines (how concurrent edits merge):
 - **intent-log** — a server-authoritative log of typed intents; concurrent
   edits merge by transform, genuine conflicts are set aside for review, and
   no work is silently lost.
-- **yjs-relay** — a naive relay of opaque Yjs CRDT updates (the incumbent).
+- **yjs-server** — a server-authoritative CRDT: the vendored y-php library
+  merges every update into a canonical room document server-side, compacts
+  by itself, and materializes post content.
 
 Transports (how updates move):
 

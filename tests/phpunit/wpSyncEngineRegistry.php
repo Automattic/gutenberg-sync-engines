@@ -38,6 +38,22 @@ class Tests_Collaboration_WpSyncEngineRegistry extends WP_Test_REST_TestCase {
 		parent::set_up();
 		wp_set_current_user( self::$editor_id );
 
+		// Register the opaque-relay TEST FIXTURE engine and make it the
+		// site's active engine: the lineage/fencing machinery under test is
+		// engine-agnostic and needs an engine that accepts arbitrary opaque
+		// bytes. The filter and option are rolled back per-test by the WP
+		// test framework.
+		add_filter(
+			'wp_sync_engines',
+			static function ( array $engines, WP_Sync_Storage $storage ): array {
+				$engines[] = new Test_Opaque_Relay_Engine( $storage );
+				return $engines;
+			},
+			10,
+			2
+		);
+		update_option( 'wp_sync_engine', Test_Opaque_Relay_Engine::SLUG );
+
 		global $wp_rest_server;
 		$wp_rest_server = new Spy_REST_Server();
 		do_action( 'rest_api_init', $wp_rest_server );
@@ -65,7 +81,7 @@ class Tests_Collaboration_WpSyncEngineRegistry extends WP_Test_REST_TestCase {
 				'updates'   => array(
 					array(
 						'data' => base64_encode( 'update-bytes' ),
-						'type' => WP_Yjs_Relay_Engine::UPDATE_TYPE_UPDATE,
+						'type' => Test_Opaque_Relay_Engine::UPDATE_TYPE_UPDATE,
 					),
 				),
 			),
@@ -77,19 +93,23 @@ class Tests_Collaboration_WpSyncEngineRegistry extends WP_Test_REST_TestCase {
 		return $request;
 	}
 
-	public function test_registry_registers_yjs_relay_by_default() {
+	public function test_registry_registers_yjs_server_by_default() {
+		delete_option( 'wp_sync_engine' );
 		$registry = new WP_Sync_Engine_Registry( new WP_Sync_Post_Meta_Storage() );
 
-		$engine = $registry->get_engine( WP_Yjs_Relay_Engine::SLUG );
-		$this->assertInstanceOf( 'WP_Yjs_Relay_Engine', $engine );
-		$this->assertSame( WP_Yjs_Relay_Engine::SLUG, $registry->get_engine_slug_for_room( 'postType/post:1' ) );
+		$engine = $registry->get_engine( WP_Yjs_Server_Engine::SLUG );
+		$this->assertInstanceOf( 'WP_Yjs_Server_Engine', $engine );
+		// The framework's conventional default slug (yjs-relay) is not
+		// registered, so the registry falls back to the first registered
+		// engine: yjs-server.
+		$this->assertSame( WP_Yjs_Server_Engine::SLUG, $registry->get_engine_slug_for_room( 'postType/post:1' ) );
 	}
 
 	public function test_registry_falls_back_to_default_for_unknown_configured_engine() {
 		update_option( 'wp_sync_engine', 'engine-that-does-not-exist' );
 		$registry = new WP_Sync_Engine_Registry( new WP_Sync_Post_Meta_Storage() );
 
-		$this->assertSame( WP_Yjs_Relay_Engine::SLUG, $registry->get_engine_slug_for_room( 'postType/post:1' ) );
+		$this->assertSame( WP_Yjs_Server_Engine::SLUG, $registry->get_engine_slug_for_room( 'postType/post:1' ) );
 		delete_option( 'wp_sync_engine' );
 	}
 
@@ -112,9 +132,9 @@ class Tests_Collaboration_WpSyncEngineRegistry extends WP_Test_REST_TestCase {
 		$registry = new WP_Sync_Engine_Registry( new WP_Sync_Post_Meta_Storage() );
 
 		$this->assertSame( 'stub-engine', $registry->get_engine_slug_for_room( 'stub/room' ) );
-		$this->assertSame( WP_Yjs_Relay_Engine::SLUG, $registry->get_engine_slug_for_room( 'postType/post:1' ) );
+		$this->assertSame( Test_Opaque_Relay_Engine::SLUG, $registry->get_engine_slug_for_room( 'postType/post:1' ) );
 		$this->assertContains( 'stub_update', $registry->get_all_update_types() );
-		$this->assertContains( WP_Yjs_Relay_Engine::UPDATE_TYPE_UPDATE, $registry->get_all_update_types() );
+		$this->assertContains( Test_Opaque_Relay_Engine::UPDATE_TYPE_UPDATE, $registry->get_all_update_types() );
 
 		remove_filter( 'wp_sync_engines', $register );
 		remove_filter( 'wp_sync_engine_for_room', $select );
@@ -123,8 +143,8 @@ class Tests_Collaboration_WpSyncEngineRegistry extends WP_Test_REST_TestCase {
 	public function test_matching_engine_stamp_is_accepted() {
 		$request  = $this->build_request(
 			array(
-				'engine'          => WP_Yjs_Relay_Engine::SLUG,
-				'engine_protocol' => WP_Yjs_Relay_Engine::PROTOCOL_VERSION,
+				'engine'          => Test_Opaque_Relay_Engine::SLUG,
+				'engine_protocol' => Test_Opaque_Relay_Engine::PROTOCOL_VERSION,
 			)
 		);
 		$response = rest_get_server()->dispatch( $request );
@@ -146,8 +166,8 @@ class Tests_Collaboration_WpSyncEngineRegistry extends WP_Test_REST_TestCase {
 	public function test_wrong_engine_protocol_is_rejected_with_409() {
 		$request  = $this->build_request(
 			array(
-				'engine'          => WP_Yjs_Relay_Engine::SLUG,
-				'engine_protocol' => WP_Yjs_Relay_Engine::PROTOCOL_VERSION + 1,
+				'engine'          => Test_Opaque_Relay_Engine::SLUG,
+				'engine_protocol' => Test_Opaque_Relay_Engine::PROTOCOL_VERSION + 1,
 			)
 		);
 		$response = rest_get_server()->dispatch( $request );
@@ -163,7 +183,7 @@ class Tests_Collaboration_WpSyncEngineRegistry extends WP_Test_REST_TestCase {
 		$response = rest_get_server()->dispatch( $this->build_request() );
 		$this->assertSame( 200, $response->get_status() );
 
-		$this->assertSame( WP_Yjs_Relay_Engine::SLUG, $storage->get_room_engine( $room ) );
+		$this->assertSame( Test_Opaque_Relay_Engine::SLUG, $storage->get_room_engine( $room ) );
 	}
 
 	public function test_read_only_request_does_not_stamp_lineage() {
@@ -194,13 +214,13 @@ class Tests_Collaboration_WpSyncEngineRegistry extends WP_Test_REST_TestCase {
 			$this->build_request(
 				array(
 					'room'   => $room,
-					'engine' => WP_Yjs_Relay_Engine::SLUG,
+					'engine' => Test_Opaque_Relay_Engine::SLUG,
 				)
 			)
 		);
 		$this->assertSame( 200, $write->get_status() );
 		$storage = new WP_Sync_Post_Meta_Storage();
-		$this->assertSame( WP_Yjs_Relay_Engine::SLUG, $storage->get_room_engine( $room ) );
+		$this->assertSame( Test_Opaque_Relay_Engine::SLUG, $storage->get_room_engine( $room ) );
 
 		// The site switches engines. A client speaking the NEW engine must
 		// not be fenced forever on this global, rebuildable room: it resets
@@ -226,7 +246,7 @@ class Tests_Collaboration_WpSyncEngineRegistry extends WP_Test_REST_TestCase {
 			$this->assertNotEmpty( $rows );
 			$this->assertSame( WP_Yjs_Server_Engine::UPDATE_TYPE_SNAPSHOT, $rows[0]['type'] );
 			foreach ( $rows as $row ) {
-				$this->assertNotSame( WP_Yjs_Relay_Engine::UPDATE_TYPE_SYNC_STEP1, $row['type'] );
+				$this->assertNotSame( Test_Opaque_Relay_Engine::UPDATE_TYPE_SYNC_STEP1, $row['type'] );
 			}
 		} finally {
 			delete_option( 'wp_sync_engine' );
@@ -238,7 +258,7 @@ class Tests_Collaboration_WpSyncEngineRegistry extends WP_Test_REST_TestCase {
 
 		// A relay client writes real content to the post's room.
 		$write = rest_get_server()->dispatch(
-			$this->build_request( array( 'engine' => WP_Yjs_Relay_Engine::SLUG ) )
+			$this->build_request( array( 'engine' => Test_Opaque_Relay_Engine::SLUG ) )
 		);
 		$this->assertSame( 200, $write->get_status() );
 
@@ -259,7 +279,7 @@ class Tests_Collaboration_WpSyncEngineRegistry extends WP_Test_REST_TestCase {
 			);
 			$this->assertErrorResponse( 'rest_sync_engine_mismatch', $response, 409 );
 			$this->assertSame(
-				WP_Yjs_Relay_Engine::SLUG,
+				Test_Opaque_Relay_Engine::SLUG,
 				( new WP_Sync_Post_Meta_Storage() )->get_room_engine( $room )
 			);
 		} finally {
@@ -274,7 +294,7 @@ class Tests_Collaboration_WpSyncEngineRegistry extends WP_Test_REST_TestCase {
 			$this->build_request(
 				array(
 					'room'   => $room,
-					'engine' => WP_Yjs_Relay_Engine::SLUG,
+					'engine' => Test_Opaque_Relay_Engine::SLUG,
 				)
 			)
 		);
@@ -288,13 +308,13 @@ class Tests_Collaboration_WpSyncEngineRegistry extends WP_Test_REST_TestCase {
 				$this->build_request(
 					array(
 						'room'   => $room,
-						'engine' => WP_Yjs_Relay_Engine::SLUG,
+						'engine' => Test_Opaque_Relay_Engine::SLUG,
 					)
 				)
 			);
 			$this->assertErrorResponse( 'rest_sync_engine_mismatch', $response, 409 );
 			$this->assertSame(
-				WP_Yjs_Relay_Engine::SLUG,
+				Test_Opaque_Relay_Engine::SLUG,
 				( new WP_Sync_Post_Meta_Storage() )->get_room_engine( $room )
 			);
 		} finally {
@@ -318,8 +338,8 @@ class Tests_Collaboration_WpSyncEngineRegistry extends WP_Test_REST_TestCase {
 		$this->assertWPError( $response->as_error() );
 		$data = $response->as_error()->get_error_data();
 
-		$this->assertSame( WP_Yjs_Relay_Engine::SLUG, $data['engine'] );
-		$this->assertSame( WP_Yjs_Relay_Engine::PROTOCOL_VERSION, $data['engine_protocol'] );
+		$this->assertSame( Test_Opaque_Relay_Engine::SLUG, $data['engine'] );
+		$this->assertSame( Test_Opaque_Relay_Engine::PROTOCOL_VERSION, $data['engine_protocol'] );
 		$this->assertSame( 'postType/post:' . self::$post_id, $data['room'] );
 	}
 }

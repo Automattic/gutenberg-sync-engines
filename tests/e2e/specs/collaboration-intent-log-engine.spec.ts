@@ -21,7 +21,8 @@ import { genesisSyncId } from '../../../src/engines/intent-log/sync-id.js';
  * server announces it; clients resolve the intent-log adapter) and exercise
  * the full stack: capture bridge → session → polling transport →
  * WP_Intent_Log_Engine → back. The suite restores the default engine when
- * done so the remaining collaboration specs keep exercising the yjs relay.
+ * done so the remaining collaboration specs keep exercising the site
+ * default (yjs-server, the first registered engine).
  */
 
 async function setSyncEngine(
@@ -1255,7 +1256,7 @@ test.describe( 'Collaboration - intent-log engine', () => {
 		const { page2 } = collaborationUtils;
 		const page1 = editor.page;
 
-		// The site's engine changes back to the default (yjs-relay) while
+		// The site's engine changes back to the default (yjs-server) while
 		// both tabs are mid-session. Their polls still stamp intent-log, so
 		// the server fences them with 409 rest_sync_engine_mismatch and the
 		// clients must fall into the unrecoverable-mismatch modal — not an

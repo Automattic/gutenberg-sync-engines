@@ -10,8 +10,9 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 	/**
 	 * The server-authoritative Yjs sync engine.
 	 *
-	 * Where the yjs-relay engine stores opaque client blobs and lets the
-	 * merge happen in each client's CRDT, this engine understands Yjs on the
+	 * Where a naive relay engine (like the retired yjs-relay) stores opaque
+	 * client blobs and lets the merge happen in each client's CRDT, this
+	 * engine understands Yjs on the
 	 * server (via the vendored y-php library): it maintains a canonical
 	 * room document, merges every incoming update into it, performs
 	 * compaction itself, and can materialize the document back to post

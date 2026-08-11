@@ -1,9 +1,11 @@
 /**
- * Yjs-relay CRDT document constants.
+ * Yjs CRDT document constants.
  *
- * These define the on-the-wire/on-disk shape of a yjs-relay document and MUST
- * stay byte-identical to any peer speaking the yjs-relay engine (they used to
- * live in `@wordpress/sync`'s `config.ts`; the yjs engine owns them now).
+ * These define the on-the-wire/on-disk shape of a Yjs sync document and MUST
+ * stay byte-identical across every peer speaking a Yjs engine — originally
+ * the yjs-relay engine (retired), now yjs-server, whose room documents carry
+ * the same schema (they used to live in `@wordpress/sync`'s `config.ts`; this
+ * module owns them now).
  */
 
 /** Version of the CRDT document schema. */

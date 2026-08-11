@@ -18,7 +18,7 @@ if ( ! class_exists( 'WP_HTTP_Long_Polling_Sync_Server' ) ) {
 	 * — crucially — drives rooms through the SAME WP_Sync_Engine seam. The
 	 * "is anything waiting for this client?" peek goes through the engine's
 	 * `get_updates_since`, so the transport stays engine-agnostic (intent-log
-	 * and yjs-relay both work unchanged).
+	 * and yjs-server both work unchanged).
 	 *
 	 * Capacity note: each held request occupies a PHP worker for up to the
 	 * wait budget. Deployments enabling this transport must size worker pools

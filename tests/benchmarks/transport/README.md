@@ -48,7 +48,7 @@ Arguments are bare `key=value` tokens (the engine benchmark's convention):
 | ------------ | --------- | --------------------------------------------------- |
 | `transport=` | `current` | Transport to measure; switched via the Settings →   |
 |              |           | Collaboration screen and restored afterwards.       |
-| `engine=`    | `current` | Engine to measure under (`intent-log`/`yjs-relay`). |
+| `engine=`    | `current` | Engine to measure under (`intent-log`/`yjs-server`). |
 | `trials=`    | `30`      | Measured token round-trips.                         |
 | `warmup=`    | `3`       | Unmeasured leading trials.                          |
 | `idle=`      | `30`      | Idle-phase seconds (`0` skips the phase).           |
@@ -92,7 +92,7 @@ Known caveat: as of 2026-08-11 the **intent-log engine mangles live typing
 over the websocket transport** (characters drop/reorder in the author's own
 window — the per-keystroke frame cadence exposes a client-session race that
 the HTTP transports' ~1 s batching masks). Benchmark the websocket transport
-under `engine=yjs-relay` until that is fixed.
+under `engine=yjs-server` until that is fixed.
 
 ## Reading the numbers
 

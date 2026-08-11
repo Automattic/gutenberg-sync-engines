@@ -40,12 +40,10 @@ interface StackItemEvent {
  * CRDT documents (one per entity) and giving each peer their own undo/redo stack
  * without conflicts.
  *
- * This is the **Yjs engine's** undo manager, and the last piece of Yjs code in
- * this package. It is wired through the engine SPI (`SyncEngine.createUndoManager`):
- * the generic manager falls back to it until the Yjs engine — now in the
- * Gutenberg Sync Engines plugin — provides its own, at which point this file and
- * `y-utilities/` move there. The intent-log engine will provide a different
- * implementation (inverse intents). See `prototypes/sync/ARCHITECTURE.md`.
+ * This is the shared **Yjs undo manager**, wired through the engine SPI
+ * (`SyncEngine.createUndoManager`). It originated in the retired yjs-relay
+ * engine and is used by yjs-server today. The intent-log engine will provide
+ * a different implementation (inverse intents).
  */
 export function createUndoManager(): SyncUndoManager {
 	const undoMetaHandlers = new Map< Y.Doc, UndoMetaHandlers >();

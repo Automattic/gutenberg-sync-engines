@@ -14,7 +14,7 @@ import {
 	markEntityAsSaved,
 	serializeCrdtDoc,
 	deserializeCrdtDoc,
-} from '../../../../src/engines/yjs-relay/doc';
+} from '../../../../src/engines/yjs/doc';
 import {
 	CRDT_DOC_META_PERSISTENCE_KEY,
 	CRDT_DOC_VERSION,
@@ -22,7 +22,7 @@ import {
 	CRDT_STATE_MAP_SAVED_AT_KEY as SAVED_AT_KEY,
 	CRDT_STATE_MAP_SAVED_BY_KEY as SAVED_BY_KEY,
 	CRDT_STATE_MAP_VERSION_KEY as VERSION_KEY,
-} from '../../../../src/engines/yjs-relay/constants';
+} from '../../../../src/engines/yjs/constants';
 
 describe( 'utils', () => {
 	describe( 'createYjsDoc', () => {

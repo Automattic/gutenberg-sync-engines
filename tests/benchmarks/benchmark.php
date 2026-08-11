@@ -15,9 +15,9 @@
  * intent log reports full cost AND policy-correct quality (applied /
  * escalated-for-review / lost); yjs-server reports full cost AND
  * CRDT-oracle quality (all-client convergence, lossless text, register
- * agreement) over real y-php-authored payloads; the yjs relay reports cost
- * only — its merge runs on the client, so the server cannot score quality
- * (shown as unobservable, never faked). See README.md.
+ * agreement) over real y-php-authored payloads. An engine that merges on
+ * the client (like the retired yjs-relay) reports cost only — the server
+ * cannot score quality (shown as unobservable, never faked). See README.md.
  *
  * @package gutenberg
  */
@@ -85,7 +85,8 @@ if ( ! in_array( $engine_slug, $wp_sync_bench_engine_slugs, true ) ) {
  * Times the environment's database round-trips so the intent-log service
  * time can be decomposed: its handle_updates() holds a per-room MySQL
  * GET_LOCK for the length of the request, so each timed request includes
- * one lock/release pair of DB round-trips that the yjs relay does not pay.
+ * one lock/release pair of DB round-trips that lock-free engines (e.g.
+ * yjs-server's ingest) do not pay.
  *
  * @return array db_rtt and lock_pair p50, in milliseconds.
  */
@@ -289,7 +290,7 @@ if ( $q['observable'] ) {
 } else {
 	printf( "quality: NOT SERVER-OBSERVABLE (client-side CRDT merge)\n" );
 }
-if ( 'opaque-relay' === ( $report['profile'] ?? '' ) && 'yjs-relay' !== $engine_slug ) {
+if ( 'opaque-relay' === ( $report['profile'] ?? '' ) ) {
 	printf(
 		"note: engine '%s' has no dedicated authoring profile — driven with relay-convention opaque updates ('update'/'compaction'); if the engine rejects them, the dispositions/storage counts above reflect that.\n",
 		$engine_slug

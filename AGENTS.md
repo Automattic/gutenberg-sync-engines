@@ -18,12 +18,14 @@ the editor falls back to the classic exclusive post lock.
 This plugin provides:
 
 - **Engines:** `intent-log` (server-authoritative log of typed intents; merges
-  by transform, sets genuine conflicts aside for review), `yjs-relay` (naive
-  relay of opaque Yjs CRDT updates, the incumbent), and `yjs-server`
+  by transform, sets genuine conflicts aside for review) and `yjs-server`
   (server-authoritative CRDT: the vendored y-php library merges every update
   into a canonical room document server-side, compacts by itself, and
-  materializes post content — lock-free ingest, relay-compatible client
-  machinery).
+  materializes post content — lock-free ingest). yjs-server is registered
+  first, making it the effective site default (the framework's registry falls
+  back to the first registered engine — its conventional `yjs-relay` default
+  slug refers to the RETIRED naive-relay engine, removed from this plugin;
+  yjs-server inherited its client CRDT machinery and wire format).
 - **Transports:** `http-polling` (default), `http-long-polling`, `websocket`.
 
 It registers through the framework's extension points: PHP `wp_sync_engines` /
@@ -38,7 +40,7 @@ The framework/plugin split is complete: the framework ships **neither** engines
 ## Repo layout
 
 - `gutenberg-sync-engines.php` — plugin entry.
-- `includes/` — server PHP: `engines/{intent-log,yjs-relay,yjs-server}/`,
+- `includes/` — server PHP: `engines/{intent-log,yjs-server}/`,
   `transports/{...,websocket/}`, `admin/` (the Collaboration settings screen),
   and `lib/`:
   - `lib/y-php/` — **vendored y-php** (PHP port of Yjs 13.6.31), imported
@@ -65,8 +67,10 @@ The framework/plugin split is complete: the framework ships **neither** engines
     must stay in lockstep with the PHP core and test vectors. Its Jest harness
     lives in `tests/js/engines/intent-log/`; its vector generators in
     `tests/tools/`.
-  - `engines/yjs-relay/` — the Yjs engine + its `undo.ts` + vendored
-    `y-utilities/` (ignored by eslint).
+  - `engines/yjs/` — the shared Yjs client modules (CRDT doc schema,
+    snapshot helpers, `undo.ts`, vendored `y-utilities/` — the latter ignored
+    by eslint), inherited from the retired yjs-relay engine and used by
+    yjs-server.
   - `providers/{http-polling,http-long-polling,websocket}/` — transports.
   - `framework.ts` — unlocks `@wordpress/sync` private APIs once and re-exports
     the framework runtime the adapters use.
@@ -168,16 +172,15 @@ everywhere, so auth even succeeds); the first visible failure is
 `activatePlugin( 'gutenberg' )` in global-setup dying with
 "Unexpected end of JSON input". Always pass `WP_BASE_URL` in that case.
 
-Current green baseline: **Jest 390**, **PHPUnit 147 (647 assertions)**,
-**e2e 25/25** (occasional flake under full-suite load — a save notice or a
-fixture login navigation; green solo), plus the vendored y-php library's own
-conformance suite (**428 tests**, run separately — see `includes/lib/`
-above). CI (`.github/workflows/ci.yml`) certifies all suites on pushes to
-`main` and PRs; the e2e job leans on the base config's 2-retries-in-CI to
-absorb the flake.
-Current green baseline: **Jest 373**, **PHPUnit 133 (562 assertions)**,
-**e2e 24/24** (occasional save-notice flake under full-suite load; green solo),
-**e2e:websocket 1/1**.
+Current green baseline: **Jest 339**, **PHPUnit 148 (659 assertions)**,
+**e2e 29/29** (occasional flake under full-suite load — a save notice or a
+fixture login navigation; green solo), **e2e:websocket 1 skipped** (see
+below — the peer-relay WS fixture needs a client-merging engine and none
+remains), plus the
+vendored y-php library's own conformance suite (**428 tests**, run
+separately — see `includes/lib/` above). CI (`.github/workflows/ci.yml`)
+certifies all suites on pushes to `main` and PRs; the e2e job leans on the
+base config's 2-retries-in-CI to absorb the flake.
 
 The transport-specific e2e suites live here (relocated from the framework):
 `tests/e2e/specs/http-only/` runs in the default suite; `tests/e2e/specs/
@@ -186,9 +189,16 @@ websocket-only/` runs only under `test:e2e:websocket`
 starts `tests/e2e/bin/rtc-test-ws-sync-server.mjs` as a second webServer, and
 global-setup builds + activates the test WS provider plugin from
 `tests/e2e/plugins/rtc-websocket-provider/`; the default suite deactivates it).
-The fixture plugin implements the engine-generic session-codec provider
-contract by relaying opaque `EngineUpdate` envelopes through a per-room Y.Doc
-over y-websocket. `.wp-env.json` maps `tests/e2e/plugins` (this fixture) and
+The fixture plugin implements the session-codec provider contract by
+relaying opaque `EngineUpdate` envelopes through a per-room Y.Doc over
+y-websocket — a pure PEER relay with no WP server in the loop, which only
+demonstrates collaboration under a client-merging engine. Since the
+yjs-relay engine was removed, its one spec is `test.fixme`-skipped: both
+remaining engines are server-authoritative (yjs-server clients wait for the
+server's genesis snapshot, so nothing syncs over a serverless relay).
+Re-enable by pointing the suite at the plugin's real websocket transport
+(the `wp collaboration sync-server` PHP daemon) or giving the fixture a
+server lane. `.wp-env.json` maps `tests/e2e/plugins` (this fixture) and
 `gutenberg/packages/e2e-tests/plugins` (framework fixtures like
 sync-connection-error-filter) as plugin dirs. `@y/websocket-server` is pinned
 EXACTLY to 0.1.1 — 0.1.5 switched to the yjs-14 (`@y/y`) family and its daemon
@@ -261,7 +271,7 @@ test WebSocket transport (manual two-window testing).
   including the e2e specs) + `npm run format`
   (`@wordpress/prettier-config`).
 - The frozen `src/engines/intent-log/**` core and vendored
-  `src/engines/yjs-relay/y-utilities/**` are excluded from lint/format — leave
+  `src/engines/yjs/y-utilities/**` are excluded from lint/format — leave
   them alone unless deliberately syncing the cross-language contract.
 
 ## Commits / PRs
@@ -277,18 +287,21 @@ test WebSocket transport (manual two-window testing).
   own `includes/` and `tests/` PHP — pre-existing standards debt, not yet
   addressed. `composer format` auto-fixes a handful.
 - Intent-log has **no collaborative undo** yet (leaves the manager undefined; WP
-  global undo applies). The designed fix is inverse-intent undo. yjs-relay
-  provides undo via `src/engines/yjs-relay/undo.ts` (yjs-server shares it).
+  global undo applies). The designed fix is inverse-intent undo. yjs-server
+  provides undo via the shared `src/engines/yjs/undo.ts`.
 - **yjs-server known gaps** (docs/engine-comparison.md has the full list):
   ingest cost is real y-php CPU (~30 ms/edit at benchmark sizes — the
   canonical doc is decoded/merged/re-encoded per request), no kses/capability
-  lane yet, no review lane (register conflicts LWW silently), and
+  lane yet, no review lane (register conflicts LWW silently), no
+  document-size gate for later joiners (the retired relay's client-side
+  genesis tripped the framework size guard for every visitor; with server
+  genesis only the oversized author's own tab is fenced), and
   materialization carries the same Phase-2a wrapper simplification as
   intent-log. Genesis blocks must set `isValid: true` or the editor renders
   them as invalid-content recovery blocks (has bitten).
 - **Intent-log echo race:** editor pushes racing live keystrokes can corrupt
   canvas text (observed under load; worst over websocket's per-keystroke
-  cadence — benchmark that transport under yjs-relay meanwhile). Deferring or
+  cadence — benchmark that transport under yjs-server meanwhile). Deferring or
   gating pushes is NOT a fix: capture treats the editor tree as full testimony
   against the current document, so a deferred push makes the next capture
   author intents reverting the un-pushed remote content. The designed fix is

@@ -16,23 +16,19 @@ import type {
 /**
  * Internal dependencies
  *
- * The yjs-server engine shares the relay's CRDT document schema (the wire
- * documents interoperate byte-for-byte), so the doc/schema helpers are
- * imported from the relay module rather than duplicated.
+ * The CRDT document schema (and undo) live in the shared `engines/yjs/`
+ * module, inherited from the retired yjs-relay engine — the wire documents
+ * interoperate byte-for-byte with that lineage.
  */
 import {
 	CRDT_RECORD_MAP_KEY,
 	CRDT_STATE_MAP_KEY,
 	CRDT_STATE_MAP_SAVED_AT_KEY as SAVED_AT_KEY,
 	CRDT_STATE_MAP_VERSION_KEY as VERSION_KEY,
-} from '../yjs-relay/constants';
-import {
-	createYjsDoc,
-	markEntityAsSaved,
-	serializeCrdtDoc,
-} from '../yjs-relay/doc';
-import { docContainsSnapshot, encodeDocSnapshot } from '../yjs-relay/snapshot';
-import { createUndoManager } from '../yjs-relay/undo';
+} from '../yjs/constants';
+import { createYjsDoc, markEntityAsSaved, serializeCrdtDoc } from '../yjs/doc';
+import { docContainsSnapshot, encodeDocSnapshot } from '../yjs/snapshot';
+import { createUndoManager } from '../yjs/undo';
 import {
 	createYjsServerSessionCodec,
 	YJS_SERVER_ENGINE_PROTOCOL,

@@ -3,7 +3,7 @@
 The default sync transport: a periodic `POST /wp-sync/v1/updates` that batches
 typed updates and awareness for every open room into a single request. The
 transport is **engine-neutral** — it moves `{ type, data }` updates opaquely
-and delegates their meaning to the active engine (intent-log, yjs-relay, or a
+and delegates their meaning to the active engine (intent-log, yjs-server, or a
 third-party engine) on the server.
 
 ## Architecture
@@ -146,5 +146,5 @@ update queue.
   session is live.
 - Historical compaction fields (`should_compact`, `compaction_request`)
   remain on the wire for compatibility but the policy is engine-owned now
-  (yjs-relay nominates a client compactor; intent-log checkpoints
-  server-side).
+  (yjs-server and intent-log both checkpoint server-side; the retired
+  yjs-relay engine nominated a client compactor).

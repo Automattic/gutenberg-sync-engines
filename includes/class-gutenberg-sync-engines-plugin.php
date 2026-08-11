@@ -97,7 +97,6 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			require_once $engines . 'intent-log/class-wp-intent-log-planner.php';
 			require_once $engines . 'intent-log/class-wp-intent-log-rich-text.php';
 			require_once $engines . 'intent-log/class-wp-intent-log-engine.php';
-			require_once $engines . 'yjs-relay/class-wp-yjs-relay-engine.php';
 			require_once $engines . 'yjs-server/class-wp-yjs-server-engine.php';
 
 			$transports = GUTENBERG_SYNC_ENGINES_PATH . 'includes/transports/';
@@ -141,7 +140,10 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 		 * @return WP_Sync_Engine[] Engines including this plugin's.
 		 */
 		public function register_engines( array $engines, WP_Sync_Storage $storage ): array {
-			$engines[] = new WP_Yjs_Relay_Engine( $storage );
+			// Order matters: the framework's registry falls back to the FIRST
+			// registered engine when the configured slug (or its conventional
+			// 'yjs-relay' default) is not registered, so yjs-server is the
+			// effective site default.
 			$engines[] = new WP_Yjs_Server_Engine( $storage );
 			$engines[] = new WP_Intent_Log_Engine( $storage );
 			return $engines;
@@ -197,7 +199,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 		 * The bundle registers this plugin's engine adapters and transport
 		 * providers with the framework (`wp.sync`) at load time, so the client
 		 * can supply whichever engine the server announces. Without it the
-		 * framework ships only the inert Yjs relay and RTC stays disabled.
+		 * framework has no engines or transports and RTC stays disabled.
 		 *
 		 * The stamper fills `metadata.syncId` for blocks that lack one and
 		 * re-mints duplicates directly in the editor store, making block

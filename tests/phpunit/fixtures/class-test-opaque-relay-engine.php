@@ -1,37 +1,42 @@
 <?php
 /**
- * WP_Yjs_Relay_Engine class
+ * Test_Opaque_Relay_Engine class
  *
  * @package gutenberg
  */
 
-if ( ! class_exists( 'WP_Yjs_Relay_Engine' ) ) {
+if ( ! class_exists( 'Test_Opaque_Relay_Engine' ) ) {
 
 	/**
-	 * The Yjs relay sync engine.
+	 * TEST FIXTURE: a naive opaque-relay sync engine.
 	 *
-	 * Stores opaque Yjs update payloads (sync_step1/sync_step2/update) and
-	 * coordinates client-driven compaction: the lowest-client-id session
-	 * member is nominated to send a `compaction` update (a full state
-	 * snapshot) once the room's update count crosses a threshold. Merge
-	 * semantics live entirely in the clients (Y.applyUpdate); the server
+	 * This is the retired production yjs-relay engine, preserved verbatim
+	 * (renamed, new slug) as the reference "dumbest possible engine" for
+	 * exercising engine-AGNOSTIC machinery: the transport's row
+	 * store-and-forward mechanics and the registry's lineage
+	 * stamping/fencing. Those tests need an engine that accepts arbitrary
+	 * opaque bytes without validating them — a real engine (yjs-server,
+	 * intent-log) inspects payloads and would conflate engine behavior with
+	 * the machinery under test.
+	 *
+	 * Behavior summary: stores opaque payloads (sync_step1/sync_step2/
+	 * update) and coordinates client-driven compaction — the
+	 * lowest-client-id session member is nominated to send a `compaction`
+	 * update (a full state snapshot) once the room's update count crosses a
+	 * threshold. Merge semantics live entirely in the clients; the server
 	 * relays and never interprets payload bytes.
 	 *
-	 * This class is a code motion of the engine-specific half of the original
-	 * WP_HTTP_Polling_Sync_Server, extracted so engines are swappable behind
-	 * WP_Sync_Engine without transport changes.
-	 *
-	 * @since 7.2.0
-	 * @access private
+	 * Registered per-test via the `wp_sync_engines` filter; never in
+	 * production code.
 	 */
-	class WP_Yjs_Relay_Engine implements WP_Sync_Engine {
+	class Test_Opaque_Relay_Engine implements WP_Sync_Engine {
 		/**
 		 * Engine slug.
 		 *
 		 * @since 7.2.0
 		 * @var string
 		 */
-		const SLUG = 'yjs-relay';
+		const SLUG = 'test-opaque-relay';
 
 		/**
 		 * Engine protocol version. Bump on breaking changes to update payload

@@ -27,7 +27,8 @@ export const ConnectionError = api.ConnectionError;
 export const ConnectionErrorCode = api.ConnectionErrorCode;
 export const resolveEngineAdapter = api.resolveEngineAdapter;
 
-// Origin marker for editor-originated updates (used by the yjs-relay tests).
+// Origin marker for editor-originated updates (used by the yjs undo manager
+// and its tests).
 export const LOCAL_EDITOR_ORIGIN = api.LOCAL_EDITOR_ORIGIN;
 
 // Test-support: reset the shared framework registries between unit tests.

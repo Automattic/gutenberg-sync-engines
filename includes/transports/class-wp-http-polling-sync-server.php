@@ -68,8 +68,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 * Threshold used to signal clients to send a compaction update.
 		 *
 		 * @since 7.0.0
-		 * @deprecated 7.2.0 Compaction policy is engine-owned. Use
-		 *             WP_Yjs_Relay_Engine::COMPACTION_THRESHOLD.
+		 * @deprecated 7.2.0 Compaction policy is engine-owned.
 		 * @var int
 		 */
 		const COMPACTION_THRESHOLD = 50;
@@ -102,8 +101,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 * Sync update type: compaction.
 		 *
 		 * @since 7.0.0
-		 * @deprecated 7.2.0 Update types are engine-owned. Use
-		 *             WP_Yjs_Relay_Engine::UPDATE_TYPE_COMPACTION.
+		 * @deprecated 7.2.0 Update types are engine-owned.
 		 * @var string
 		 */
 		const UPDATE_TYPE_COMPACTION = 'compaction';
@@ -112,8 +110,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 * Sync update type: sync step 1.
 		 *
 		 * @since 7.0.0
-		 * @deprecated 7.2.0 Update types are engine-owned. Use
-		 *             WP_Yjs_Relay_Engine::UPDATE_TYPE_SYNC_STEP1.
+		 * @deprecated 7.2.0 Update types are engine-owned.
 		 * @var string
 		 */
 		const UPDATE_TYPE_SYNC_STEP1 = 'sync_step1';
@@ -122,8 +119,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 * Sync update type: sync step 2.
 		 *
 		 * @since 7.0.0
-		 * @deprecated 7.2.0 Update types are engine-owned. Use
-		 *             WP_Yjs_Relay_Engine::UPDATE_TYPE_SYNC_STEP2.
+		 * @deprecated 7.2.0 Update types are engine-owned.
 		 * @var string
 		 */
 		const UPDATE_TYPE_SYNC_STEP2 = 'sync_step2';
@@ -132,8 +128,8 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 * Sync update type: regular update.
 		 *
 		 * @since 7.0.0
-		 * @deprecated 7.2.0 Update types are engine-owned. Use
-		 *             WP_Yjs_Relay_Engine::UPDATE_TYPE_UPDATE.
+		 * @deprecated 7.2.0 Update types are engine-owned. See
+		 *             WP_Yjs_Server_Engine::UPDATE_TYPE_UPDATE.
 		 * @var string
 		 */
 		const UPDATE_TYPE_UPDATE = 'update';

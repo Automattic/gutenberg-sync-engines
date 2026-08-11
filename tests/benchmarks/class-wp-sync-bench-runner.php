@@ -19,8 +19,9 @@
  * (escalated), or a benign idempotent/stale void — and asserts NO edit was
  * lost. That inverts the old DE-RTC harness's "silent-merge retention"
  * score, which rewarded exactly the last-write-wins behaviour this project
- * rejects. The yjs relay does its merge on the client, so the server cannot
- * observe quality here — reported honestly as unavailable, not faked.
+ * rejects. An engine that merges on the client (the retired yjs-relay did)
+ * gives the server nothing to observe — quality is reported honestly as
+ * unavailable, not faked.
  *
  * @package gutenberg
  */
@@ -215,13 +216,14 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 							),
 						);
 					} else {
-						// Opaque-relay profile (yjs-relay and any engine
-						// without a dedicated authoring profile): an opaque
+						// Opaque-relay profile (any engine without a
+						// dedicated authoring profile): an opaque
 						// client-computed update of comparable size (a real
 						// yjs update for a few inserted chars). The literal
-						// 'update'/'compaction' types are the relay
-						// convention; an engine that rejects them will show
-						// it in the dispositions/storage counts.
+						// 'update'/'compaction' types are the retired
+						// yjs-relay engine's convention; an engine that
+						// rejects them will show it in the
+						// dispositions/storage counts.
 						$updates = array(
 							array(
 								'type' => 'update',

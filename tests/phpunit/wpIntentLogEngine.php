@@ -844,7 +844,7 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 	}
 
 	public function test_room_lineage_fences_an_engine_flip_with_409() {
-		// Write under intent-log, then flip the site back to yjs-relay.
+		// Write under intent-log, then flip the site to yjs-server.
 		$this->poll(
 			array(
 				self::intent_update(
@@ -862,7 +862,7 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 				),
 			)
 		);
-		update_option( 'wp_sync_engine', 'yjs-relay' );
+		update_option( 'wp_sync_engine', 'yjs-server' );
 
 		$response = $this->poll(
 			array(

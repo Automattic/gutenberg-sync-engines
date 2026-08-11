@@ -115,42 +115,6 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 		$this->assertTrue( $report['quality']['converged'] );
 	}
 
-	public function test_relay_reports_quality_as_unobservable_but_measures_cost() {
-		$workload = WP_Sync_Bench_Workload::build( 'parallel-paragraphs', 7, 8, 3, 4 );
-		$post_id  = self::factory()->post->create(
-			array( 'post_content' => $workload['post_content'] )
-		);
-		$storage  = new WP_Sync_Bench_Memory_Storage();
-		$engine   = new WP_Yjs_Relay_Engine( $storage );
-
-		$report = WP_Sync_Bench_Runner::run( $engine, $storage, $post_id, $workload );
-
-		$this->assertSame( 'yjs-relay', $report['engine'] );
-		// The relay merges on the client: the server cannot score quality.
-		$this->assertFalse( $report['quality']['observable'] );
-		$this->assertNull( $report['quality']['converged'] );
-		// Cost and growth ARE measured.
-		$this->assertGreaterThan( 0, $report['requests'] );
-		$this->assertGreaterThan( 0, $report['storage']['rows'] );
-	}
-
-	public function test_relay_scripted_compactor_bounds_storage() {
-		// 40 rounds x 3 clients = 120 updates, past the 50-row threshold.
-		$workload = WP_Sync_Bench_Workload::build( 'parallel-paragraphs', 7, 40, 3, 4 );
-		$post_id  = self::factory()->post->create(
-			array( 'post_content' => $workload['post_content'] )
-		);
-		$storage  = new WP_Sync_Bench_Memory_Storage();
-		$engine   = new WP_Yjs_Relay_Engine( $storage );
-
-		$report = WP_Sync_Bench_Runner::run( $engine, $storage, $post_id, $workload );
-
-		// The nominated client compacted at least once, and the room stayed
-		// bounded instead of keeping all 120 edit rows.
-		$this->assertGreaterThan( 0, $report['storage']['compactions'] );
-		$this->assertLessThan( 120, $report['storage']['rows'] );
-	}
-
 	public function test_convergence_oracle_accepts_matching_content() {
 		$content = "<!-- wp:paragraph {\"align\":\"wide\"} -->\n<p> r0c0.0;Paragraph 1</p>\n<!-- /wp:paragraph -->";
 

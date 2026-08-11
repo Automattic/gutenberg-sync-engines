@@ -11,13 +11,16 @@ import type {
 export type { AwarenessState, LocalAwarenessState };
 
 /**
- * Update types of the Yjs relay engine (see engines/yjs-relay):
+ * Well-known update types on the wire (originally defined by the retired
+ * yjs-relay engine; yjs-server still speaks `update`):
  * - sync_step1: State vector announcement
  * - sync_step2: Acknowledgment, missing updates response
  * - update: Regular document update (persisted until save)
  * - compaction: Merged updates using Y.mergeUpdates replacing all prior updates
  *
  * The transport does not interpret these; it moves typed updates opaquely.
+ * `compaction` still matters to the queue: restore() drops compaction rows
+ * rather than re-queueing them.
  */
 export enum SyncUpdateType {
 	COMPACTION = 'compaction',

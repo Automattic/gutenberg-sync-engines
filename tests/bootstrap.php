@@ -40,6 +40,9 @@ tests_add_filter(
 			require $framework;
 		}
 		require dirname( __DIR__ ) . '/gutenberg-sync-engines.php';
+		// Test fixture engine (naive opaque relay) used by the transport and
+		// registry machinery tests; registered per-test, never in production.
+		require __DIR__ . '/phpunit/fixtures/class-test-opaque-relay-engine.php';
 	}
 );
 

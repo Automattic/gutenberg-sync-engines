@@ -17,6 +17,24 @@ class Tests_Collaboration_WpHttpPollingSyncServer extends WP_Test_REST_Controlle
 	protected static int $tag_id;
 	protected static int $comment_id;
 
+	/**
+	 * Registers the opaque-relay TEST FIXTURE engine on the registry filter.
+	 *
+	 * These tests exercise the transport's engine-agnostic store-and-forward
+	 * mechanics with arbitrary opaque payloads, which a real engine
+	 * (yjs-server, intent-log) would validate and reject. Re-added at the
+	 * top of every set_up — see the comment there for the hook-snapshot
+	 * timing this dances around.
+	 *
+	 * @param WP_Sync_Engine[] $engines Engines to register.
+	 * @param WP_Sync_Storage  $storage Storage backend.
+	 * @return WP_Sync_Engine[] Engines including the fixture.
+	 */
+	public static function register_fixture_engine( array $engines, WP_Sync_Storage $storage ): array {
+		$engines[] = new Test_Opaque_Relay_Engine( $storage );
+		return $engines;
+	}
+
 	public static function wpSetUpBeforeClass( WP_UnitTest_Factory $factory ) {
 		self::$editor_id     = $factory->user->create( array( 'role' => 'editor' ) );
 		self::$subscriber_id = $factory->user->create( array( 'role' => 'subscriber' ) );
@@ -27,12 +45,17 @@ class Tests_Collaboration_WpHttpPollingSyncServer extends WP_Test_REST_Controlle
 
 		// Enable option in setUpBeforeClass to ensure REST routes are registered.
 		update_option( 'wp_collaboration_enabled', 1 );
+
+		// Make the fixture the active engine. Committed here (outside the
+		// per-test transaction) so it holds for every test in the class.
+		update_option( 'wp_sync_engine', Test_Opaque_Relay_Engine::SLUG );
 	}
 
 	public static function wpTearDownAfterClass() {
 		self::delete_user( self::$editor_id );
 		self::delete_user( self::$subscriber_id );
 		delete_option( 'wp_collaboration_enabled' );
+		delete_option( 'wp_sync_engine' );
 		wp_delete_post( self::$post_id, true );
 		wp_delete_term( self::$category_id, 'category' );
 		wp_delete_term( self::$tag_id, 'post_tag' );
@@ -40,6 +63,14 @@ class Tests_Collaboration_WpHttpPollingSyncServer extends WP_Test_REST_Controlle
 	}
 
 	public function set_up() {
+		// The fixture filter must be (re-)added BEFORE parent::set_up():
+		// the controller testcase's set_up creates the REST server and fires
+		// `rest_api_init`, which constructs the engine registry — and the WP
+		// test framework's tear_down restores hooks to a run-global snapshot
+		// that predates this class, wiping any class-level filter after
+		// every test.
+		add_filter( 'wp_sync_engines', array( self::class, 'register_fixture_engine' ), 10, 2 );
+
 		parent::set_up();
 
 		// Enable option for tests.
