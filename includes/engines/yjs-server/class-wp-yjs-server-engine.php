@@ -800,6 +800,10 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 			$yblock = new \Yjs\Types\YMap();
 			$yblock->set( 'name', $name );
 			$yblock->set( 'clientId', $client_id );
+			// Editor-authored blocks carry isValid from the parser; without
+			// it, the dispatched block renders as "invalid content" in
+			// recovery mode and cannot be edited.
+			$yblock->set( 'isValid', true );
 			$yblock->set( 'attributes', $attributes );
 			$yblock->set( 'innerBlocks', $inner );
 			if ( array() !== $children ) {
