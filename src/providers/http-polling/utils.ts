@@ -92,6 +92,11 @@ export function createUpdateQueue(
 		clear(): void {
 			updates.splice( 0, updates.length );
 		},
+		drain(): SyncUpdate[] {
+			// Unlike get()/take(), ignores the paused state: teardown needs
+			// the unsent backlog so it can be reported, not silently lost.
+			return updates.splice( 0, updates.length );
+		},
 		get(): SyncUpdate[] {
 			if ( isPaused ) {
 				return [];

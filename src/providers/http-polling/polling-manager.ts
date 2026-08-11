@@ -1064,8 +1064,24 @@ function registerRoom( {
 	}
 
 	function unregister(): void {
+		// Never destroy unsent local work silently: report what is being
+		// discarded and give the session a chance to surface it to the
+		// user before it is gone.
+		const unsent = updateQueue.drain();
+		if ( unsent.length > 0 ) {
+			log(
+				`Discarding ${ unsent.length } unsent sync update(s) at room teardown`,
+				{ types: unsent.map( ( update ) => update.type ) },
+				'error',
+				true // force
+			);
+			(
+				session as EngineSessionCodec & {
+					onUpdatesDiscarded?: ( updates: SyncUpdate[] ) => void;
+				}
+			 ).onUpdatesDiscarded?.( unsent );
+		}
 		session.destroy();
-		updateQueue.clear();
 	}
 
 	const roomState: RoomState = {

@@ -73,6 +73,8 @@ export interface UpdateQueue {
 	add: ( update: SyncUpdate ) => void;
 	addBulk: ( updates: SyncUpdate[] ) => void;
 	clear: () => void;
+	/** Returns AND removes all queued updates, paused or not (teardown). */
+	drain: () => SyncUpdate[];
 	get: () => SyncUpdate[];
 	pause: () => void;
 	peek: () => SyncUpdate[];

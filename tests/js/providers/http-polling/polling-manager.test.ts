@@ -1636,6 +1636,71 @@ describe( 'polling-manager', () => {
 		} );
 	} );
 
+	describe( 'unsent updates at unregister', () => {
+		it( 'reports discarded updates through onUpdatesDiscarded and a forced log', async () => {
+			mockPostSyncUpdate.mockResolvedValue( syncResponse );
+			const session = {
+				...createMockSession( 1 ),
+				onUpdatesDiscarded: jest.fn(),
+			};
+			const log = jest.fn();
+			pollingManager.registerRoom( {
+				room: 'test-room',
+				session,
+				log,
+				onStatusChange: jest.fn(),
+			} );
+			await jest.advanceTimersByTimeAsync( 0 );
+
+			// Solo: the queue is paused, so this update is never sent.
+			const typed = createMockUpdate( 3 );
+			getOnLocalUpdate( session )( typed, 3 );
+
+			pollingManager.unregisterRoom( 'test-room' );
+
+			expect( session.onUpdatesDiscarded ).toHaveBeenCalledTimes( 1 );
+			const discarded = session.onUpdatesDiscarded.mock
+				.calls[ 0 ][ 0 ] as Array< { type: string } >;
+			expect( discarded ).toContainEqual( typed );
+			expect( log ).toHaveBeenCalledWith(
+				expect.stringContaining( 'Discarding' ),
+				expect.objectContaining( {
+					types: expect.arrayContaining( [ 'update' ] ),
+				} ),
+				'error',
+				true
+			);
+			expect( session.destroy ).toHaveBeenCalled();
+		} );
+
+		it( 'stays silent when nothing was queued', async () => {
+			mockPostSyncUpdate.mockResolvedValue( syncResponse );
+			const session = {
+				...createMockSession( 1 ),
+				getInitialUpdates: jest.fn( () => [] ),
+				onUpdatesDiscarded: jest.fn(),
+			};
+			const log = jest.fn();
+			pollingManager.registerRoom( {
+				room: 'test-room',
+				session,
+				log,
+				onStatusChange: jest.fn(),
+			} );
+			await jest.advanceTimersByTimeAsync( 0 );
+
+			pollingManager.unregisterRoom( 'test-room' );
+
+			expect( session.onUpdatesDiscarded ).not.toHaveBeenCalled();
+			expect( log ).not.toHaveBeenCalledWith(
+				expect.stringContaining( 'Discarding' ),
+				expect.anything(),
+				'error',
+				true
+			);
+		} );
+	} );
+
 	describe( 'forbidden error handling', () => {
 		it( 'silently unregisters only the forbidden room on a 403', async () => {
 			// Respond with two rooms on the first poll.

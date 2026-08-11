@@ -212,6 +212,17 @@ export interface IntentLogSession extends EngineSessionCodec {
 	 * capture.
 	 */
 	onReset: ( listener: () => void ) => void;
+
+	/**
+	 * Transport teardown hook: the transport calls this when it discards
+	 * unsent updates at room unregistration (a terminal error dropped the
+	 * room). The updates will never reach the server; listeners registered
+	 * via onDiscard surface the loss to the user.
+	 */
+	onUpdatesDiscarded: ( updates: EngineUpdate[] ) => void;
+
+	/** Subscribes to unsent-update discards (see onUpdatesDiscarded). */
+	onDiscard: ( listener: ( updates: EngineUpdate[] ) => void ) => void;
 }
 
 /**
@@ -245,6 +256,7 @@ export function createIntentLogSession(
 		( proposal: IntentLogProposal ) => void
 	>();
 	const resetListeners = new Set< () => void >();
+	const discardListeners = new Set< ( updates: EngineUpdate[] ) => void >();
 
 	const notifyChange = () => {
 		changeListeners.forEach( ( listener ) => listener() );
@@ -433,7 +445,12 @@ export function createIntentLogSession(
 			dispositionListeners.clear();
 			proposalListeners.clear();
 			resetListeners.clear();
+			discardListeners.clear();
 			proposalsChangeListeners.clear();
+		},
+
+		onUpdatesDiscarded: ( updates ) => {
+			discardListeners.forEach( ( listener ) => listener( updates ) );
 		},
 
 		// ---- Bridge/dev surface ----
@@ -504,6 +521,9 @@ export function createIntentLogSession(
 		},
 		onReset: ( listener ) => {
 			resetListeners.add( listener );
+		},
+		onDiscard: ( listener ) => {
+			discardListeners.add( listener );
 		},
 	};
 }

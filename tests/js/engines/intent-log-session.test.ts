@@ -1,7 +1,7 @@
 /**
  * External dependencies
  */
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 
 /**
  * Internal dependencies
@@ -399,5 +399,23 @@ describe( 'intent-log session codec', () => {
 		expect( session.getLocalAwareness() ).toEqual( { user: 'alice' } );
 		session.applyRemoteAwareness( { 22: { user: 'bob' } } );
 		expect( session.getPeers() ).toEqual( { 22: { user: 'bob' } } );
+	} );
+
+	it( 'declares syncWhileSolo and relays transport discards to onDiscard listeners', () => {
+		const session = makeSession( 1, 11 );
+		// Ingest is idempotent by intentId, so solo flushing is safe — and
+		// it keeps unsent local work off the terminal-unregister cliff.
+		expect( session.syncWhileSolo ).toBe( true );
+
+		const listener = jest.fn();
+		session.onDiscard( listener );
+		const discarded = [ { type: 'intent', data: '{}' } ];
+		session.onUpdatesDiscarded( discarded );
+		expect( listener ).toHaveBeenCalledWith( discarded );
+
+		// destroy() detaches listeners; later discards are no-ops.
+		session.destroy();
+		session.onUpdatesDiscarded( discarded );
+		expect( listener ).toHaveBeenCalledTimes( 1 );
 	} );
 } );

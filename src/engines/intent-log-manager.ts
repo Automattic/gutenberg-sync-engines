@@ -426,6 +426,47 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			log( 'session reset from server checkpoint', { key } );
 		} );
 
+		session.onDiscard( ( updates ) => {
+			/*
+			 * The transport dropped the room with unsent updates (terminal
+			 * error: lost permission, engine mismatch, a limit). The content
+			 * is still in the editor but will never sync — surface the loss
+			 * instead of letting it stay silent. The editor keeps the post
+			 * dirty, so saving preserves the work through the classic path.
+			 */
+			// eslint-disable-next-line no-console
+			console.error(
+				'[gutenberg-sync-engines] Real-time sync stopped with unsent changes:',
+				updates.map( ( update ) => update.type )
+			);
+			// Duck-typed runtime global: the manager deliberately avoids a
+			// module dependency on the data registry; outside wp-admin (unit
+			// tests) this is a no-op.
+			const wpGlobal = (
+				window as Window & {
+					wp?: {
+						data?: {
+							dispatch?: ( store: string ) => {
+								createErrorNotice?: (
+									message: string,
+									options?: Record< string, unknown >
+								) => void;
+							};
+						};
+					};
+				}
+			 ).wp;
+			wpGlobal?.data
+				?.dispatch?.( 'core/notices' )
+				?.createErrorNotice?.(
+					'Real-time collaboration stopped before your latest changes were sent. They are still in this editor — save the post to keep them.',
+					{
+						id: 'gutenberg-sync-engines-discarded-updates',
+						isDismissible: true,
+					}
+				);
+		} );
+
 		/*
 		 * Escalation notices derive from the SETTLED open-proposal list, on
 		 * a microtask after the delivery batch: a bootstrap replay delivers
