@@ -104,6 +104,18 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		const UPDATE_TYPE_SNAPSHOT = 'snapshot';
 
 		/**
+		 * The Yjs clientID used for server-authored genesis items. A fixed
+		 * value keeps the genesis build fully deterministic (the lock-free
+		 * concurrent-genesis guarantee) AND byte-stable across rooms and
+		 * benchmark repetitions. Above the editor's pseudo-random client id
+		 * range (0..1e9), below 2^31.
+		 *
+		 * @since 0.2.0
+		 * @var int
+		 */
+		const GENESIS_CLIENT_ID = 2000000000;
+
+		/**
 		 * Room meta key: canonical document snapshot + the log cursor it
 		 * reflects (`{ doc: <base64 V2>, cursor: int }`).
 		 *
@@ -334,7 +346,9 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				}
 			}
 
-			$this->save_canonical( $room, $doc );
+			// $after_bytes IS the canonical encoding at the new head — reuse
+			// it rather than encoding the document a third time.
+			$this->save_canonical( $room, $doc, base64_encode( $after_bytes ) );
 			$this->maybe_checkpoint( $room, $client_id, $doc );
 
 			return array( 'dispositions' => $dispositions );
@@ -515,11 +529,14 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
-		 * @param string          $room Room identifier.
-		 * @param \Yjs\Utils\Doc $doc  Canonical document.
+		 * @param string          $room       Room identifier.
+		 * @param \Yjs\Utils\Doc $doc        Canonical document.
+		 * @param string|null     $doc_base64 Pre-encoded state (base64 V2), to
+		 *                                    avoid re-encoding when the caller
+		 *                                    already has it.
 		 * @return void
 		 */
-		private function save_canonical( string $room, \Yjs\Utils\Doc $doc ): void {
+		private function save_canonical( string $room, \Yjs\Utils\Doc $doc, ?string $doc_base64 = null ): void {
 			if ( ! method_exists( $this->storage, 'set_room_meta' ) ) {
 				return;
 			}
@@ -535,7 +552,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				$room,
 				self::META_DOC,
 				array(
-					'doc'    => \Yjs\encodeStateAsUpdateV2( $doc )->toBase64(),
+					'doc'    => $doc_base64 ?? \Yjs\encodeStateAsUpdateV2( $doc )->toBase64(),
 					'cursor' => $cursor,
 				)
 			);
@@ -639,7 +656,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		 * @return true|WP_Error True on success.
 		 */
 		private function initialize_room( string $room, \Yjs\Utils\Doc $doc ) {
-			$doc->clientID = ( crc32( 'yjs-server:' . $room ) & 0x7fffffff ) | 1;
+			$doc->clientID = self::GENESIS_CLIENT_ID;
 
 			$post     = null;
 			$parsed   = WP_Sync_Config::parse_room( $room );

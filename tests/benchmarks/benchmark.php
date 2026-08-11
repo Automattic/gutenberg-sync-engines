@@ -11,11 +11,13 @@
  * (Pass options as bare `key=value` tokens — wp-cli would claim `--flags`
  * as its own parameters.)
  *
- * Compare engines by running both slugs over the same scenario/seed. The
+ * Compare engines by running the slugs over the same scenario/seed. The
  * intent log reports full cost AND policy-correct quality (applied /
- * escalated-for-review / lost); the yjs relay reports cost only — its merge
- * runs on the client, so the server cannot score quality (shown as
- * unobservable, never faked). See README.md.
+ * escalated-for-review / lost); yjs-server reports full cost AND
+ * CRDT-oracle quality (all-client convergence, lossless text, register
+ * agreement) over real y-php-authored payloads; the yjs relay reports cost
+ * only — its merge runs on the client, so the server cannot score quality
+ * (shown as unobservable, never faked). See README.md.
  *
  * @package gutenberg
  */
