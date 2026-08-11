@@ -83,20 +83,38 @@ function attachCounters( page ) {
 		requests: 0,
 		requestBytes: 0,
 		responseBytes: 0,
+		// Data-plane requests only (/updates, /long-poll) — `requests`
+		// also counts auxiliary routes like /ws-token, whose retry loop
+		// must not read as a live session.
+		dataRequests: 0,
 		longPollRequests: 0,
 		wsFramesSent: 0,
 		wsFramesReceived: 0,
 		wsBytesSent: 0,
 		wsBytesReceived: 0,
 	};
-	const isSync = ( url ) => url.includes( 'wp-sync/v1' );
+	// Decode before matching: on plain-permalink sites REST routes travel
+	// URL-encoded (`index.php?rest_route=%2Fwp-sync%2Fv1%2Fupdates`).
+	const decoded = ( url ) => {
+		try {
+			return decodeURIComponent( url );
+		} catch {
+			return url;
+		}
+	};
+	const isSync = ( url ) => decoded( url ).includes( 'wp-sync/v1' );
 	page.on( 'request', ( request ) => {
-		if ( ! isSync( request.url() ) ) {
+		const url = decoded( request.url() );
+		if ( ! url.includes( 'wp-sync/v1' ) ) {
 			return;
 		}
 		c.requests += 1;
 		c.requestBytes += request.postDataBuffer()?.length ?? 0;
-		if ( request.url().includes( '/long-poll' ) ) {
+		if ( url.includes( '/updates' ) ) {
+			c.dataRequests += 1;
+		}
+		if ( url.includes( '/long-poll' ) ) {
+			c.dataRequests += 1;
 			c.longPollRequests += 1;
 		}
 	} );
@@ -355,27 +373,46 @@ async function main() {
 
 		const countersA = attachCounters( pageA );
 
-		// Helper: wait until a window's sync session is live. HTTP transports
-		// poll repeatedly; a working websocket session makes a single
-		// ws-token request and then talks in frames — count both.
+		// Helper: wait until a window's sync session is live — gated on
+		// DATA-PLANE traffic only (/updates, /long-poll POSTs or socket
+		// frames). Auxiliary requests must not count: a dead websocket
+		// setup retries /ws-token forever, which would read as "live".
 		const waitForSyncTraffic = async ( page, counters, label ) => {
 			const deadline = Date.now() + 30000;
 			const live = () => {
 				const c = counters.snapshot();
 				return (
-					c.requests >= 2 || c.wsFramesSent + c.wsFramesReceived >= 2
+					c.dataRequests >= 2 ||
+					c.wsFramesSent + c.wsFramesReceived >= 2
 				);
 			};
 			while ( ! live() ) {
 				if ( Date.now() > deadline ) {
 					throw new Error(
 						`Window ${ label } never started syncing (no ` +
-							'/wp-sync/v1/ traffic in 30s). Is collaboration ' +
-							'enabled and are both plugins active?'
+							'/wp-sync/v1/ data traffic in 30s). Is ' +
+							'collaboration enabled, are both plugins ' +
+							'active, and — for websocket — is the daemon ' +
+							'reachable?'
 					);
 				}
 				await page.waitForTimeout( 250 );
 			}
+		};
+
+		// Identifies the transport a counter set has actually used.
+		const observeTransport = ( counters ) => {
+			const c = counters.snapshot();
+			if ( c.wsFramesSent + c.wsFramesReceived > 0 ) {
+				return 'websocket';
+			}
+			if ( c.longPollRequests > 0 ) {
+				return 'http-long-polling';
+			}
+			if ( c.dataRequests > 0 ) {
+				return 'http-polling';
+			}
+			return 'none';
 		};
 
 		// Window A creates a fresh post.
@@ -419,6 +456,19 @@ async function main() {
 		// Let awareness register both clients: the update queues resume and
 		// the transport switches to its with-collaborators cadence.
 		await pageA.waitForTimeout( 3000 );
+
+		// Verify the NEGOTIATED transport before measuring anything: a
+		// WP_COLLABORATION_TRANSPORT constant/env override or a failed
+		// negotiation must fail the run up front, not caveat it afterwards.
+		const negotiated = observeTransport( countersA );
+		if ( negotiated !== settings.active.transport ) {
+			throw new Error(
+				`Requested transport "${ settings.active.transport }" but ` +
+					`the session negotiated "${ negotiated }" — check for a ` +
+					'WP_COLLABORATION_TRANSPORT constant/env override on ' +
+					'the site, or a failed client negotiation.'
+			);
+		}
 
 		// Window A types the anchor paragraph; window B must receive it
 		// through the sync stack — this gates on collaboration working.
@@ -542,6 +592,13 @@ async function main() {
 				`warmup=${ WARMUP } post=${ postId }`
 		);
 
+		// The anchor paragraph, refocused before every insert: ambient
+		// focus does not reliably survive the anchor gate (theme/editor
+		// differences), and an unfocused insertText lands nowhere.
+		const anchorParagraph = canvasA
+			.locator( '[data-type="core/paragraph"]' )
+			.last();
+
 		const trialStart = Date.now();
 		const startA = countersA.snapshot();
 		const startB = countersB.snapshot();
@@ -556,6 +613,8 @@ async function main() {
 			await pageB.evaluate( ( t ) => {
 				window.__benchTokens = [ t ];
 			}, token );
+			await anchorParagraph.click();
+			await pageA.keyboard.press( 'End' );
 			await pageA.keyboard.insertText( ` ${ token }` );
 			const sentAt = await pageA
 				.waitForFunction(
@@ -614,24 +673,9 @@ async function main() {
 			};
 		}
 
-		// Self-label the transport from the traffic actually observed.
-		const finalA = countersA.snapshot();
-		let observedTransport = 'none';
-		if ( finalA.wsFramesSent + finalA.wsFramesReceived > 0 ) {
-			observedTransport = 'websocket';
-		} else if ( finalA.longPollRequests > 0 ) {
-			observedTransport = 'http-long-polling';
-		} else if ( finalA.requests > 0 ) {
-			observedTransport = 'http-polling';
-		}
-		if ( observedTransport !== settings.active.transport ) {
-			console.warn(
-				`WARNING: requested transport "${ settings.active.transport }" ` +
-					`but observed "${ observedTransport }" on the wire — a ` +
-					'WP_COLLABORATION_TRANSPORT constant/env override on the ' +
-					'site, or a failed negotiation, is likely.'
-			);
-		}
+		// Self-label the transport from the traffic actually observed
+		// (verified against the requested transport before trials above).
+		const observedTransport = observeTransport( countersA );
 
 		latencies.sort( ( x, y ) => x - y );
 		const mean =
@@ -737,6 +781,13 @@ async function main() {
 }
 
 main().catch( ( error ) => {
-	console.error( String( error?.stack ?? error ) );
+	// Message first: the failure paths append diagnostic context to it
+	// after the stack string was captured.
+	console.error( String( error?.message ?? error ) );
+	if ( error?.stack ) {
+		console.error(
+			String( error.stack ).split( '\n' ).slice( 1 ).join( '\n' )
+		);
+	}
 	process.exit( 1 );
 } );
