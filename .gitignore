@@ -4,6 +4,7 @@
 
 # Build output
 /build
+/tests/e2e/plugins/rtc-websocket-provider/build
 
 # Environment / tooling caches
 /.wp-env.override.json

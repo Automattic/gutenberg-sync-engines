@@ -54,7 +54,11 @@ The framework/plugin split is complete: the framework ships **neither** engines
 - `tests/` — ALL tests, fixtures, and test tooling: `tests/phpunit/` (PHPUnit,
   boots via `tests/bootstrap.php`), `tests/js/` (Jest unit tests + setup files,
   mirroring `src/`; `tests/js/engines/intent-log/` is the frozen core's
-  harness), `tests/e2e/` (Playwright specs + config; see Testing),
+  harness), `tests/e2e/` (Playwright specs + config; `specs/http-only/` and
+  `specs/websocket-only/` are the transport-specific suites relocated from the
+  framework, `plugins/` holds the test WebSocket provider fixture plugin,
+  `bin/` the y-websocket sync-server daemon + the `rtc:ws`/`rtc:http` dev
+  switcher; see Testing),
   `tests/benchmarks/` (the sync-engine benchmark harness, run via `wp
   eval-file tests/benchmarks/benchmark.php`, plus the browser-driven
   transport benchmark in `tests/benchmarks/transport/`; see their READMEs),
@@ -121,9 +125,11 @@ URLs it chose. Force ports with `WP_ENV_PORT` / `WP_ENV_TESTS_PORT`.
 ## Testing
 
 ```bash
-npm run test:js           # Jest: engines/providers + frozen-core vectors
-npm run test:php          # PHPUnit in the wp-env tests container
-npm run test:e2e          # Playwright: two-browser collaboration
+npm run test:js             # Jest: engines/providers + frozen-core vectors
+npm run test:php            # PHPUnit in the wp-env tests container
+npm run test:e2e            # Playwright: two-browser collaboration (+ http-only)
+npm run test:e2e:websocket  # Playwright: websocket-only suite (test WS provider
+                            # plugin + y-websocket daemon, auto-started)
 ```
 
 `test:js` and `npm run typecheck` resolve `@wordpress/sync`/`yjs` from the
@@ -141,11 +147,26 @@ everywhere, so auth even succeeds); the first visible failure is
 `activatePlugin( 'gutenberg' )` in global-setup dying with
 "Unexpected end of JSON input". Always pass `WP_BASE_URL` in that case.
 
-Current green baseline: **Jest 378**, **PHPUnit 133 (562 assertions)**,
-**e2e 20/20** (occasional flake under full-suite load — a save notice or a
-fixture login navigation; green solo). CI (`.github/workflows/ci.yml`)
-certifies all three suites on pushes to `main` and PRs; the e2e job leans on
-the base config's 2-retries-in-CI to absorb the flake.
+Current green baseline: **Jest 373**, **PHPUnit 133 (562 assertions)**,
+**e2e 24/24** (occasional save-notice flake under full-suite load; green solo),
+**e2e:websocket 1/1**.
+
+The transport-specific e2e suites live here (relocated from the framework):
+`tests/e2e/specs/http-only/` runs in the default suite; `tests/e2e/specs/
+websocket-only/` runs only under `test:e2e:websocket`
+(`playwright.rtc-websocket.config.ts` sets `GUTENBERG_RTC_TEST_WS_PROVIDER=1`,
+starts `tests/e2e/bin/rtc-test-ws-sync-server.mjs` as a second webServer, and
+global-setup builds + activates the test WS provider plugin from
+`tests/e2e/plugins/rtc-websocket-provider/`; the default suite deactivates it).
+The fixture plugin implements the engine-generic session-codec provider
+contract by relaying opaque `EngineUpdate` envelopes through a per-room Y.Doc
+over y-websocket. `.wp-env.json` maps `tests/e2e/plugins` (this fixture) and
+`gutenberg/packages/e2e-tests/plugins` (framework fixtures like
+sync-connection-error-filter) as plugin dirs. `@y/websocket-server` is pinned
+EXACTLY to 0.1.1 — 0.1.5 switched to the yjs-14 (`@y/y`) family and its daemon
+crashes (`store.getClock is not a function`) when a 13.x client connects.
+`npm run rtc:ws` / `npm run rtc:http` switch a local dev session onto/off the
+test WebSocket transport (manual two-window testing).
 
 ## Gotchas (each of these has bitten — don't rediscover them)
 
@@ -177,8 +198,10 @@ the base config's 2-retries-in-CI to absorb the flake.
   `activatePlugin('gutenberg-sync-engines')`, because wp-env leaves both INACTIVE
   on the *tests* site. Without that, collaboration never turns on
   (`_wpCollaborationEnabled` stays false) and sessions time out. We deliberately
-  do NOT reuse the subtree's global-setup (it deactivates a Gutenberg test plugin
-  this env doesn't map and provisions the RTC websocket daemon).
+  do NOT reuse the subtree's global-setup (it deactivates a Gutenberg test
+  plugin this env doesn't need touched). Ours also runs the WS-provider setup
+  (`tests/e2e/config/rtc-websocket-setup.ts`), gated on
+  `GUTENBERG_RTC_TEST_WS_PROVIDER`.
 - **Collaboration gate:** `wp_is_collaboration_allowed() &&
   get_option('wp_collaboration_enabled')`. Tests flip that option via the
   writing-options form (the fixture's `setCollaboration`) and set `wp_sync_engine`

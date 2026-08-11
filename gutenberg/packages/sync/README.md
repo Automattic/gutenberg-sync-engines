@@ -2,7 +2,7 @@
 
 Sync entity data between peers for real-time collaboration using [CRDT](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) documents.
 
-This package provides the syncing layer for real-time collaboration in the WordPress editor. It is built on [Yjs](https://docs.yjs.dev/), a CRDT implementation that enables multiple users to edit shared data concurrently without conflicts.
+This package provides the engine-neutral syncing layer for real-time collaboration in the WordPress editor: the sync manager shell, the engine and transport registries with client/server negotiation, and the engine SPI. Sync engines and transports themselves are registered by plugins. The package also exports a shared instance of [Yjs](https://docs.yjs.dev/) (`Y`) so Yjs-based engines and providers can share one CRDT runtime.
 
 See [CODE.md](./CODE.md) for architecture details.
 
@@ -28,10 +28,6 @@ In general, awareness for core entity types is implemented by the `core-data` pa
 
 Undocumented declaration.
 
-### AwarenessState
-
-Undocumented declaration.
-
 ### EngineCollection
 
 Undocumented declaration.
@@ -52,27 +48,11 @@ Undocumented declaration.
 
 Undocumented declaration.
 
-### EngineLocalUpdateListener
-
-Undocumented declaration.
-
-### EngineSessionCodec
-
-Undocumented declaration.
-
 ### EngineSessionCodec
 
 Undocumented declaration.
 
 ### EngineUpdate
-
-Undocumented declaration.
-
-### EngineUpdate
-
-Undocumented declaration.
-
-### LocalAwarenessState
 
 Undocumented declaration.
 

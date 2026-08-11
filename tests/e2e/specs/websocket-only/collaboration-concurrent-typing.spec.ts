@@ -6,7 +6,10 @@ import type { Locator, Page } from '@playwright/test';
 /**
  * Internal dependencies
  */
-import { test, expect } from '../fixtures';
+import {
+	test,
+	expect,
+} from '../../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures';
 
 const USER_A_TEXT =
 	'123456789012345678901234567890123456789012345678901234567890';

@@ -92,10 +92,9 @@ export function createSyncManager(
 	 *
 	 * In contrast, the `SyncUndoManager` only manages undo/redo for entities that
 	 * **are being synced by this sync manager**. The `addRecord` method is still
-	 * called in the code linked above, but it is a no-op. Yjs automatically tracks
-	 * changes to entities via the associated CRDT doc:
-	 *
-	 * https://github.com/WordPress/gutenberg/blob/b63451e26e3c91b6bb291a2f9994722e3850417e/packages/sync/src/undo-manager.ts#L42-L48
+	 * called in the code linked above, but it is a no-op. The engine-provided
+	 * undo manager tracks changes itself (e.g. the Yjs engine observes its CRDT
+	 * doc).
 	 *
 	 * This means that if at least one entity is being synced, then undo/redo
 	 * operations will be **restricted to synced entities only.**

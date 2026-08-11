@@ -17,9 +17,13 @@
     "@wordpress/scripts": "^30.0.0",
     "babel-plugin-transform-import-meta": "^2.3.3",
     "@wordpress/sync": "file:./gutenberg/packages/sync",
+    "@y/websocket-server": "0.1.1",
+    "esbuild": "^0.27.2",
     "lib0": "^0.2.99",
     "typescript": "^5.5.0",
+    "ws": "^8.18.3",
     "y-protocols": "^1.0.7",
+    "y-websocket": "^3.0.0",
     "yjs": "^13.6.29"
   },
   "overrides": {
@@ -34,8 +38,12 @@
     "lint:js:fix": "npm run lint:js -- --fix",
     "lint:php": "composer lint",
     "pretest:e2e": "rimraf gutenberg/node_modules/@playwright/test gutenberg/node_modules/playwright",
+    "pretest:e2e:websocket": "rimraf gutenberg/node_modules/@playwright/test gutenberg/node_modules/playwright",
+    "rtc:http": "node ./tests/e2e/bin/rtc-dev.mjs --mode=http",
+    "rtc:ws": "node ./tests/e2e/bin/rtc-dev.mjs --mode=websockets",
     "start": "wp-scripts start",
     "test:e2e": "playwright test --config tests/e2e/playwright.config.ts",
+    "test:e2e:websocket": "playwright test --config tests/e2e/playwright.rtc-websocket.config.ts",
     "test:js": "wp-scripts test-unit-js",
     "test:php": "wp-env run tests-cli --env-cwd=wp-content/plugins/gutenberg-sync-engines vendor/bin/phpunit",
     "typecheck": "tsc --noEmit"

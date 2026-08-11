@@ -30,6 +30,9 @@ export default defineConfig( {
 	testDir: './specs',
 	globalSetup,
 	workers: 1,
+	// WebSocket-transport specs need the test WS provider + sync server and
+	// run only under playwright.rtc-websocket.config.ts.
+	testIgnore: '**/specs/websocket-only/**',
 	webServer: {
 		...baseConfig.webServer,
 		// Start this plugin's wp-env (Gutenberg subtree + this plugin).

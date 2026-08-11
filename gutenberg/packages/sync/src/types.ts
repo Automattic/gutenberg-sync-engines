@@ -15,14 +15,6 @@ import type { Awareness } from 'y-protocols/awareness';
 import type { EngineSessionCodec } from './engines/session';
 import type { ConnectionError } from './errors';
 
-export type {
-	AwarenessState,
-	EngineLocalUpdateListener,
-	EngineSessionCodec,
-	EngineUpdate,
-	LocalAwarenessState,
-} from './engines/session';
-
 /* globalThis */
 declare global {
 	interface Window {
@@ -39,16 +31,9 @@ declare global {
 }
 
 export type CRDTDoc = Y.Doc;
-export type AwarenessID = string;
 export type EntityID = string;
 export type ObjectID = string;
 export type ObjectType = string;
-
-// An origin is a value passed by the transactor to identify the source of a
-// change. It can be any value, and is not used internally by Yjs. Origins are
-// preserved locally, while a remote change will have the provider instance as
-// its origin.
-export type Origin = any;
 
 // Object data represents any entity record. There are not any expectations that
 // can hold on its shape, beyond a record with string keys and unknown values.
