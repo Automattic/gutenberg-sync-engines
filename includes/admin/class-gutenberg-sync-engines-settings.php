@@ -45,6 +45,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 */
 		public function register(): void {
 			add_action( 'admin_menu', array( $this, 'add_menu' ) );
+			add_action( 'init', array( $this, 'register_options' ) );
 			add_action( 'admin_init', array( $this, 'register_settings' ) );
 
 			// Feed the stored transport choice to the framework.
@@ -126,20 +127,35 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		}
 
 		/**
-		 * Registers the engine + transport settings and their fields.
+		 * Registers the engine + transport options.
+		 *
+		 * Hooked to `init` (not `admin_init`) so the options are registered
+		 * during REST requests too: `show_in_rest` makes the engine swap
+		 * scriptable (`POST /wp/v2/settings`, e2e fixtures), and REST never
+		 * runs `admin_init`. This is the sole registration of
+		 * `wp_sync_engine` — the framework does not register it.
+		 *
+		 * `wp_sync_engine` deliberately has NO registered default and only
+		 * `sanitize_key` sanitization, mirroring the framework registration
+		 * this replaces. A registered default is poison here: it makes
+		 * `update_option( 'wp_sync_engine', <that-default> )` a silent no-op
+		 * (the old-value lookup reports the default, so nothing is written)
+		 * while WP_Sync_Engine_Registry — which passes its own explicit
+		 * fallback to `get_option()` — never sees it. And unknown slugs are
+		 * harmless: the registry falls back to its default engine.
 		 *
 		 * @since 0.1.0
 		 *
 		 * @return void
 		 */
-		public function register_settings(): void {
+		public function register_options(): void {
 			register_setting(
 				self::PAGE,
 				'wp_sync_engine',
 				array(
 					'type'              => 'string',
-					'sanitize_callback' => array( $this, 'sanitize_engine' ),
-					'default'           => 'intent-log',
+					'description'       => __( 'Collaborative editing sync engine', 'gutenberg-sync-engines' ),
+					'sanitize_callback' => 'sanitize_key',
 					'show_in_rest'      => true,
 				)
 			);
@@ -149,10 +165,19 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				array(
 					'type'              => 'string',
 					'sanitize_callback' => array( $this, 'sanitize_transport' ),
-					'default'           => 'http-polling',
 				)
 			);
+		}
 
+		/**
+		 * Registers the settings screen sections and fields (admin only —
+		 * the settings-field helpers exist only in wp-admin).
+		 *
+		 * @since 0.1.0
+		 *
+		 * @return void
+		 */
+		public function register_settings(): void {
 			add_settings_section(
 				'gutenberg_sync_engines_main',
 				__( 'Real-time collaboration', 'gutenberg-sync-engines' ),
@@ -173,20 +198,6 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				self::PAGE,
 				'gutenberg_sync_engines_main'
 			);
-		}
-
-		/**
-		 * Sanitizes the engine slug against the registered choices.
-		 *
-		 * @since 0.1.0
-		 *
-		 * @param string $value Submitted slug.
-		 * @return string A valid engine slug.
-		 */
-		public function sanitize_engine( $value ): string {
-			$value   = sanitize_key( (string) $value );
-			$choices = self::engine_choices();
-			return isset( $choices[ $value ] ) ? $value : (string) get_option( 'wp_sync_engine', 'intent-log' );
 		}
 
 		/**

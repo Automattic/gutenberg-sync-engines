@@ -20,12 +20,6 @@ import type { SyncManager } from './types';
  * the announced slug up here and refuses to join when it cannot provide it.
  * Swapping engines is therefore a server-side configuration change — clients
  * follow the announcement.
- *
- * Phase note: today an adapter yields the full SyncManager, because the
- * only engine (the Yjs relay) and the manager are one and the same. When a
- * second engine lands, this interface grows a session-level contract and
- * the manager becomes engine-neutral; the registry and handshake below are
- * already engine-count-agnostic.
  */
 export interface SyncEngineAdapter {
 	/** Engine slug, matching the server engine's slug (e.g. 'yjs-relay'). */
@@ -34,8 +28,8 @@ export interface SyncEngineAdapter {
 	/**
 	 * Engine protocol version. Must equal the server engine's protocol
 	 * version for the client to join. This is the WIRE/semantics version —
-	 * distinct from CRDT_DOC_VERSION, which versions the persisted document
-	 * schema.
+	 * distinct from any persisted-document schema version an engine may
+	 * maintain internally.
 	 */
 	protocolVersion: number;
 
@@ -59,11 +53,9 @@ export interface AnnouncedSync {
 }
 
 /*
- * Engine identity constants (slug + protocol version, matching the PHP
- * engine classes) are defined in each engine's session module so codecs can
- * stamp their own identity, and re-exported here as the public surface. Only
- * the built-in Yjs relay is defined here; plugin engines (e.g. intent-log)
- * carry their own identity constants and register through registerSyncEngine.
+ * Memoized adapter registry: the merged view of the `sync.engines` filter
+ * and imperative `registerSyncEngine` registrations, keyed by slug.
+ * Invalidated whenever a new adapter registers.
  */
 let engineAdapters: Record< string, SyncEngineAdapter > | null = null;
 

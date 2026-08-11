@@ -27,6 +27,7 @@
 
 ### Internal
 
+-   Remove residue left behind by the engine/transport extraction: the debug inspector (`debug/inspector.ts`, an unreferenced byte-identical duplicate of the copy the Gutenberg Sync Engines plugin owns), six unused Yjs document-schema constants in `config.ts` (owned by the plugin's Yjs engine), the unused `AwarenessID` / `Origin` types, a redundant type re-export block, stale comments referencing the deleted `undo-manager.ts`, and the unused `lib0` / `@wordpress/api-fetch` dependencies.
 -   Extract the Yjs relay engine logic out of the HTTP polling transport into an engine session codec (`src/engines/yjs-relay/`). Transport providers now receive an engine-generic session codec via `ProviderCreatorOptions.session` instead of `ydoc`/`awareness`, so transports no longer depend on Yjs. No wire-format or behavior change.
 -   Session codecs stamp their engine identity (`engine` / `engine_protocol`) on every sync request so the server can fence a stale tab speaking the wrong engine before storing its updates, and the HTTP polling transport handles the server's 409 `rest_sync_engine_mismatch` by dropping the affected room into a disconnected state with the new `ENGINE_MISMATCH` connection error code instead of retrying.
 -   `RecordHandlers` gains an optional `onEscalation` callback; the intent-log manager reports engine escalations through it (with local/remote attribution) instead of logging to the console.
