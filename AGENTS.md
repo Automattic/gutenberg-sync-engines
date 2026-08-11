@@ -141,8 +141,11 @@ everywhere, so auth even succeeds); the first visible failure is
 `activatePlugin( 'gutenberg' )` in global-setup dying with
 "Unexpected end of JSON input". Always pass `WP_BASE_URL` in that case.
 
-Current green baseline: **Jest 373**, **PHPUnit 133 (562 assertions)**,
-**e2e 20/20** (occasional save-notice flake under full-suite load; green solo).
+Current green baseline: **Jest 378**, **PHPUnit 133 (562 assertions)**,
+**e2e 20/20** (occasional flake under full-suite load — a save notice or a
+fixture login navigation; green solo). CI (`.github/workflows/ci.yml`)
+certifies all three suites on pushes to `main` and PRs; the e2e job leans on
+the base config's 2-retries-in-CI to absorb the flake.
 
 ## Gotchas (each of these has bitten — don't rediscover them)
 

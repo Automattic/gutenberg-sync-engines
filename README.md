@@ -121,6 +121,10 @@ or an override), point them there with `WP_BASE_URL`, e.g.
 project's wp-env holds `:8889`, always pass `WP_BASE_URL` — Playwright's
 web-server check would otherwise silently reuse that foreign site.
 
+CI (`.github/workflows/ci.yml`) runs lint + typecheck + Jest, PHPUnit
+under wp-env, and the Playwright suite on every push to `main` and every
+pull request.
+
 `@wordpress/sync` is **externalized** at build time (the WordPress
 dependency-extraction plugin maps `@wordpress/*` imports to the `wp.*`
 runtime globals and adds them as script dependencies), so the plugin ships

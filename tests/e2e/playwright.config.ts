@@ -33,7 +33,10 @@ export default defineConfig( {
 	webServer: {
 		...baseConfig.webServer,
 		// Start this plugin's wp-env (Gutenberg subtree + this plugin).
-		command: 'npm run env:start',
+		// Rarely runs: reuseExistingServer is true, so an already-running
+		// env on the port is used as-is (see the AGENTS.md warning about a
+		// FOREIGN wp-env holding the port).
+		command: 'npm run env start',
 	},
 	projects: [
 		{
