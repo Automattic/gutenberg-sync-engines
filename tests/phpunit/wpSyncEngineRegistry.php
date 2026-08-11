@@ -186,6 +186,122 @@ class Tests_Collaboration_WpSyncEngineRegistry extends WP_Test_REST_TestCase {
 		$this->assertErrorResponse( 'rest_sync_engine_mismatch', $response, 409 );
 	}
 
+	public function test_engine_switch_resets_collection_room_for_new_engine_clients() {
+		$room = 'taxonomy/wp_pattern_category';
+
+		// Stamp the room under the relay: a relay client writes to it.
+		$write = rest_get_server()->dispatch(
+			$this->build_request(
+				array(
+					'room'   => $room,
+					'engine' => WP_Yjs_Relay_Engine::SLUG,
+				)
+			)
+		);
+		$this->assertSame( 200, $write->get_status() );
+		$storage = new WP_Sync_Post_Meta_Storage();
+		$this->assertSame( WP_Yjs_Relay_Engine::SLUG, $storage->get_room_engine( $room ) );
+
+		// The site switches engines. A client speaking the NEW engine must
+		// not be fenced forever on this global, rebuildable room: it resets
+		// and re-derives under yjs-server instead.
+		update_option( 'wp_sync_engine', WP_Yjs_Server_Engine::SLUG );
+		try {
+			$response = rest_get_server()->dispatch(
+				$this->build_request(
+					array(
+						'room'            => $room,
+						'engine'          => WP_Yjs_Server_Engine::SLUG,
+						'engine_protocol' => WP_Yjs_Server_Engine::PROTOCOL_VERSION,
+						'updates'         => array(),
+					)
+				)
+			);
+			$this->assertSame( 200, $response->get_status() );
+
+			// The room was reset and re-genesised under the new engine: the
+			// relay rows are gone and lineage moved on.
+			$this->assertSame( WP_Yjs_Server_Engine::SLUG, $storage->get_room_engine( $room ) );
+			$rows = $response->get_data()['rooms'][0]['updates'];
+			$this->assertNotEmpty( $rows );
+			$this->assertSame( WP_Yjs_Server_Engine::UPDATE_TYPE_SNAPSHOT, $rows[0]['type'] );
+			foreach ( $rows as $row ) {
+				$this->assertNotSame( WP_Yjs_Relay_Engine::UPDATE_TYPE_SYNC_STEP1, $row['type'] );
+			}
+		} finally {
+			delete_option( 'wp_sync_engine' );
+		}
+	}
+
+	public function test_engine_switch_keeps_post_entity_rooms_fenced() {
+		$room = 'postType/post:' . self::$post_id;
+
+		// A relay client writes real content to the post's room.
+		$write = rest_get_server()->dispatch(
+			$this->build_request( array( 'engine' => WP_Yjs_Relay_Engine::SLUG ) )
+		);
+		$this->assertSame( 200, $write->get_status() );
+
+		// After the switch, even a client speaking the new engine is fenced:
+		// per-post rooms can hold unsaved collaborative content and degrade
+		// to the post lock by design.
+		update_option( 'wp_sync_engine', WP_Yjs_Server_Engine::SLUG );
+		try {
+			$response = rest_get_server()->dispatch(
+				$this->build_request(
+					array(
+						'room'            => $room,
+						'engine'          => WP_Yjs_Server_Engine::SLUG,
+						'engine_protocol' => WP_Yjs_Server_Engine::PROTOCOL_VERSION,
+						'updates'         => array(),
+					)
+				)
+			);
+			$this->assertErrorResponse( 'rest_sync_engine_mismatch', $response, 409 );
+			$this->assertSame(
+				WP_Yjs_Relay_Engine::SLUG,
+				( new WP_Sync_Post_Meta_Storage() )->get_room_engine( $room )
+			);
+		} finally {
+			delete_option( 'wp_sync_engine' );
+		}
+	}
+
+	public function test_stale_tab_never_triggers_a_room_reset() {
+		$room = 'taxonomy/wp_pattern_category';
+
+		$write = rest_get_server()->dispatch(
+			$this->build_request(
+				array(
+					'room'   => $room,
+					'engine' => WP_Yjs_Relay_Engine::SLUG,
+				)
+			)
+		);
+		$this->assertSame( 200, $write->get_status() );
+
+		// The site switched, but this tab still speaks the OLD engine: it is
+		// fenced by the client-stamp check and must not reset anything.
+		update_option( 'wp_sync_engine', WP_Yjs_Server_Engine::SLUG );
+		try {
+			$response = rest_get_server()->dispatch(
+				$this->build_request(
+					array(
+						'room'   => $room,
+						'engine' => WP_Yjs_Relay_Engine::SLUG,
+					)
+				)
+			);
+			$this->assertErrorResponse( 'rest_sync_engine_mismatch', $response, 409 );
+			$this->assertSame(
+				WP_Yjs_Relay_Engine::SLUG,
+				( new WP_Sync_Post_Meta_Storage() )->get_room_engine( $room )
+			);
+		} finally {
+			delete_option( 'wp_sync_engine' );
+		}
+	}
+
 	public function test_lineage_stamp_does_not_overwrite() {
 		$room    = 'postType/post:' . self::$post_id . ':lineage';
 		$storage = new WP_Sync_Post_Meta_Storage();
