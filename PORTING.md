@@ -6,9 +6,12 @@ complete and self-contained: it registers through the framework's existing
 changes.
 
 The client half is **relocated, buildable, type-checked, and fully tested**
-against the framework consumed as the runtime `wp.sync` global. What remains is
-the destabilizing *framework* cutover — removing the client code that still
-lives in `@wordpress/sync` as a duplicate — which is deferred (see §5).
+against the framework consumed as the runtime `wp.sync` global. The
+destabilizing *framework* cutover — removing the client code that once lived in
+`@wordpress/sync` as a duplicate — has since landed as well (see §5): the
+framework ships neither engines nor transports; both come solely from this
+plugin. This document is now a historical record; the current test baseline
+and day-to-day operational guidance live in `AGENTS.md`.
 
 ## 1. Gutenberg (`@wordpress/sync`) — expose an unlockable surface — DONE
 
@@ -40,25 +43,30 @@ PHP enqueues the built bundle and the `sync-id.js` genesis stamper.
 
 ## 4. Client tests — DONE
 
-All adapter/provider/frozen-core jest suites live under `src/**/test/` and pass
-via `wp-scripts test-unit-js` (298 tests / 20 suites). `jest.config.js`
-resolves the framework from the sibling checkout, dedupes the single-instance
+All adapter/provider/frozen-core jest suites live under `tests/js/` (mirroring
+`src/`) and pass via `wp-scripts test-unit-js` (378 tests at the current
+baseline; see `AGENTS.md`). `jest.config.js` resolves the framework from the
+pinned `gutenberg/` subtree — `WP_SYNC_FRAMEWORK_ROOT` points it at a live
+framework checkout instead for co-development — dedupes the single-instance
 packages, and polyfills the globals jsdom omits.
 
-## 5. Remaining: framework cutover — DEFERRED (Option A)
+## 5. Framework cutover — DONE (was: deferred, Option A)
 
-Not yet done: strip `@wordpress/sync`'s built-in defaults
+The cutover: strip `@wordpress/sync`'s built-in defaults
 (`getDefaultEngineAdapters` / the default transports) to empty and delete the
-client code that now lives here as a duplicate, so that without this plugin the
+client code that lived there as a duplicate, so that without this plugin the
 client registries are empty (RTC already degrades to the post lock because the
-*server* registries are empty by default). This is the destabilizing step and
-its full proof is the cross-repo browser e2e (the sibling plugin mounted into
-Gutenberg's e2e wp-env).
+*server* registries are empty by default). This was the destabilizing step.
+Its proof was originally scoped as a cross-repo browser e2e (the sibling
+plugin mounted into Gutenberg's e2e wp-env); the e2e suite has since moved
+into this repo and runs against the pinned `gutenberg/` subtree.
 
-**Decision (Option A, for now):** relocate/remove only the **intent-log**
-client duplicate and keep **yjs-relay** in the framework. Rationale below.
+**Decision (Option A, at the time):** relocate/remove only the **intent-log**
+client duplicate first and keep **yjs-relay** in the framework. That
+restriction was later lifted — the steps below moved the whole Yjs stack (and
+the transports) here.
 
-### TODO — refactor `createSyncManager` to be engine-neutral, then extract yjs-relay
+### DONE — refactor `createSyncManager` to be engine-neutral, then extract yjs-relay
 
 `@wordpress/sync`'s `manager.ts` `createSyncManager()` is **not** engine-neutral
 today: it **hardcodes `createYjsSessionCodec({ awareness, doc: ydoc })`**
@@ -93,7 +101,8 @@ it; the built-in yjs adapter and this plugin's yjs adapter both do
 `manager.ts` is fully engine-agnostic. Behavior-preserving (sync jest 402/402,
 yjs collaboration-sync e2e green).
 
-**Step 4b landed** (framework staged pending signing; plugin `b1e537f`): the
+**Step 4b landed** (framework change captured at the `gutenberg/` subtree pin;
+plugin `b1e537f`): the
 whole Yjs stack now lives in this plugin under `src/engines/yjs-relay/`:
 `constants.ts` (CRDT wire keys), `doc.ts` (Y.Doc create/init/save/(de)serialize),
 `snapshot.ts`, and `engine.ts` (`createYjsEngine`, implementing the SPI) — plus
@@ -107,7 +116,8 @@ come solely from this plugin.** Verified: framework sync jest 320/320, plugin
 367/367, tsc + lint clean, framework bundle contains no Yjs engine code, and
 both engines pass e2e (yjs 4/4, intent-log 20/20).
 
-**Transports relocated too** (framework change staged pending signing; this
+**Transports relocated too** (framework change captured at the `gutenberg/`
+subtree pin; this
 plugin unchanged — it already owned all three transports and registers them via
 `registerSyncTransport`). The framework deleted `providers/{http-polling,
 http-long-polling,websocket}/`, `getDefaultTransports()` returns `[]`, and
@@ -131,5 +141,6 @@ hard part:
 4. Then apply §5's default-strip + client-code deletion for **both** engines
    and verify via the cross-repo e2e.
 
-Until then, yjs-relay stays in the framework as deep-integration client code,
-and only intent-log + the pluggable transports are sole-homed here.
+(Until step 4b landed, yjs-relay stayed in the framework as deep-integration
+client code, and only intent-log + the pluggable transports were sole-homed
+here.)
