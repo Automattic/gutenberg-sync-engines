@@ -140,14 +140,27 @@ cd gutenberg && npm install --ignore-scripts && npm run build && cd ..
 
 ## Environment
 
+Two SEPARATE wp-env configs (the split the env 11 deprecation asks for; both
+set `testsEnvironment: false`, so each starts a single site):
+
 ```bash
-npm run env start         # wp-env: Gutenberg subtree + this plugin
-npm run env stop
+npm run env start         # DEV env (.wp-env.json): Gutenberg subtree + this
+                          # plugin, http://localhost:8888. Its afterStart
+                          # lifecycle hook auto-starts the websocket sync
+                          # daemon (detached, --mode=daemon: the site's
+                          # transport selection is NOT touched).
+npm run env:tests start   # TESTS env (.wp-env.tests.json): same mounts,
+                          # http://localhost:8889, no lifecycle hook. This is
+                          # what test:php / test:e2e / CI target.
+npm run env stop          # (env:tests stop for the tests env)
 ```
 
-Dev site <http://localhost:8888>, tests site <http://localhost:8889>.
-`autoPort` is on, so when those are busy wp-env picks free ports and prints the
-URLs it chose. Force ports with `WP_ENV_PORT` / `WP_ENV_TESTS_PORT`.
+`autoPort` is on, so when a port is busy wp-env picks a free one and prints
+the URL it chose. Force ports with `WP_ENV_PORT`. Each config has its own
+work dir under `~/.wp-env` (the tests one carries a `-tests-` segment), so
+the two environments are fully independent — separate databases included.
+Personal overrides go in `.wp-env.override.json` /
+`.wp-env.tests.override.json` (both gitignored).
 
 ## Testing
 
@@ -164,8 +177,10 @@ npm run test:e2e:websocket  # Playwright: websocket-only suite (test WS provider
 points Jest at a live framework checkout instead when co-developing (tsconfig
 paths stay pinned to the subtree).
 
-`test:php` and `test:e2e` need a running env (`npm run env start`) with the
-subtree built. For e2e also run `npx playwright install chromium` once. If the
+`test:php` and `test:e2e` need the running TESTS env (`npm run env:tests
+start`) with the subtree built; both target `.wp-env.tests.json` (test:php
+runs PHPUnit in that env's cli container, Playwright's webServer starts that
+env when 8889 is not already serving). For e2e also run `npx playwright install chromium` once. If the
 tests site isn't on `:8889` (auto-port / override), pass
 `WP_BASE_URL=http://localhost:<tests-port>`. Beware: if ANOTHER project's
 wp-env holds `:8889`, Playwright's webServer check sees the port alive and
@@ -206,26 +221,22 @@ sync-connection-error-filter) as plugin dirs. `@y/websocket-server` is pinned
 EXACTLY to 0.1.1 — 0.1.5 switched to the yjs-14 (`@y/y`) family and its daemon
 crashes (`store.getClock is not a function`) when a 13.x client connects.
 `npm run rtc:ws` is the one-command start for the REAL websocket transport
-(manual two-window testing): it ensures wp-env is running, activates the
-right plugins, selects the websocket transport, and runs the
+(manual two-window testing): it ensures the dev wp-env is running, activates
+the right plugins, selects the websocket transport, and runs the
 `wp collaboration sync-server` daemon in the wp-env cli container with port
 8787 published to the host (wp-env alone cannot publish extra ports, and
 the daemon must bind 0.0.0.0 — a loopback-bound daemon is unreachable even
 through a published port). `npm run rtc:http` switches the site back to
-HTTP polling and stops the daemon. `--detach` starts the daemon in the
-background and exits; to auto-start it with every `wp-env start`, put this
-in the gitignored `.wp-env.override.json`:
+HTTP polling and stops the daemon.
 
-```json
-{
-	"lifecycleScripts": {
-		"afterStart": "node tests/e2e/bin/rtc-dev.mjs --mode=websockets --detach || true"
-	}
-}
-```
-
-(The `|| true` keeps a daemon failure from failing `wp-env start` itself;
-the diagnosis still prints in the spinner output.)
+The DEV config's `afterStart` lifecycle hook runs the same script as
+`--mode=daemon --detach || true`: every `npm run env start` brings the
+daemon up automatically WITHOUT touching the site's transport selection
+(`|| true` keeps a daemon failure from failing the start itself; the
+diagnosis still prints in the spinner output). The daemon binds host port
+8787 under a fixed container name, so with several checkouts/worktrees the
+most recently started dev env owns it. The tests config has no hook — CI
+and the test suites never start a daemon.
 
 ## Gotchas (each of these has bitten — don't rediscover them)
 
@@ -235,10 +246,11 @@ the diagnosis still prints in the spinner output.)
 - **wp-env is a devDep here.** `@wordpress/scripts` does NOT bundle it. It's
   pinned to `@wordpress/env@^11` (for auto-port) with a top-level `overrides`
   entry, because scripts@30 only *optionally* peer-depends on env 10 — the
-  override clears the ERESOLVE without `--legacy-peer-deps`. env 11 prints a
-  harmless tests-environment deprecation warning; do NOT add
-  `testsEnvironment: false` (it disables the tests site `test:php`/`test:e2e`
-  need).
+  override clears the ERESOLVE without `--legacy-peer-deps`. Both configs
+  set `testsEnvironment: false` — the tests site lives in its own config
+  (`.wp-env.tests.json`), NOT in `.wp-env.json`'s deprecated combined mode.
+  A dev-shaped env still mounts the phpunit library (`/wordpress-phpunit`)
+  in its cli service, which is what lets `test:php` run there.
 - **PHPUnit version:** composer pins `phpunit/phpunit:^9.6`. WordPress's test
   bootstrap calls `parseTestMethodAnnotations()`, removed in PHPUnit 10; letting
   `yoast/phpunit-polyfills` pull 10 makes every PHP test error.

@@ -3,7 +3,7 @@
 /**
  * Local RTC transport switcher.
  *
- * Two modes, selected by --mode=<websockets|http>:
+ * Three modes, selected by --mode=<websockets|daemon|http>:
  *
  *   websockets: one-command start for the real websocket transport. Ensures
  *   wp-env is running, points the site at the websocket transport, and runs
@@ -14,23 +14,25 @@
  *   through a published port). Open two browser windows on the dev site and
  *   edit the same post to collaborate over the socket.
  *
+ *   daemon: run the daemon WITHOUT changing what the site has selected — no
+ *   transport or collaboration option is touched (the plugin-copy fixup
+ *   still runs; the daemon command cannot exist without it). This is the
+ *   mode `.wp-env.json` runs (detached) from its afterStart lifecycle
+ *   script, so the daemon is always available after `wp-env start` while
+ *   the site's transport choice stays whatever it was. A daemon serving a
+ *   site that has HTTP polling selected is idle and harmless.
+ *
  *   http: switch the site back to the HTTP polling transport and stop the
  *   daemon (if running).
  *
  * --detach starts the daemon container in the background and exits once it
- * answers its health check, instead of staying attached. That makes the
- * websockets mode usable as a wp-env afterStart lifecycle script — put this
- * in .wp-env.override.json (gitignored, personal) to have the daemon start
- * automatically with `wp-env start`:
+ * answers its health check, instead of staying attached. The daemon binds
+ * host port 8787 under a fixed container name, so across multiple wp-env
+ * checkouts (worktrees) the most recently started environment owns it.
  *
- *   {
- *     "lifecycleScripts": {
- *       "afterStart": "node tests/e2e/bin/rtc-dev.mjs --mode=websockets --detach || true"
- *     }
- *   }
- *
- * (The `|| true` keeps a daemon failure — e.g. an unbuilt subtree — from
- * failing `wp-env start` itself; the diagnosis still prints.)
+ * (In the lifecycle script, `|| true` keeps a daemon failure — e.g. an
+ * unbuilt subtree — from failing `wp-env start` itself; the diagnosis
+ * still prints.)
  *
  * The serverless peer-relay test WebSocket provider this script used to
  * manage is only useful to client-merging engines; since the yjs-relay
@@ -72,9 +74,9 @@ function getArg( name ) {
 
 function parseMode() {
 	const mode = getArg( 'mode' ) || 'websockets';
-	if ( mode !== 'websockets' && mode !== 'http' ) {
+	if ( ! [ 'websockets', 'daemon', 'http' ].includes( mode ) ) {
 		throw new Error(
-			`Unknown --mode=${ mode }. Expected "websockets" or "http".`
+			`Unknown --mode=${ mode }. Expected "websockets", "daemon", or "http".`
 		);
 	}
 	return mode;
@@ -311,7 +313,7 @@ async function ensurePluginsReady() {
 	}
 }
 
-async function runWebSocketsMode() {
+async function runWebSocketsMode( mode ) {
 	let workDirectory = null;
 	try {
 		workDirectory = wpEnvWorkDirectory();
@@ -335,18 +337,25 @@ async function runWebSocketsMode() {
 
 	await ensurePluginsReady();
 
-	process.stdout.write(
-		'Deactivating the e2e test provider plugin (if active)... '
-	);
-	await runWpCli( [ 'plugin', 'deactivate', TEST_PROVIDER_PLUGIN_SLUG ], {
-		allowFailure: true,
-	} );
-	process.stdout.write( 'done\n' );
+	if ( 'websockets' === mode ) {
+		process.stdout.write(
+			'Deactivating the e2e test provider plugin (if active)... '
+		);
+		await runWpCli( [ 'plugin', 'deactivate', TEST_PROVIDER_PLUGIN_SLUG ], {
+			allowFailure: true,
+		} );
+		process.stdout.write( 'done\n' );
 
-	process.stdout.write( 'Selecting the websocket transport... ' );
-	await runWpCli( [ 'option', 'update', 'wp_collaboration_enabled', '1' ] );
-	await runWpCli( [ 'option', 'update', TRANSPORT_OPTION, 'websocket' ] );
-	process.stdout.write( 'done\n' );
+		process.stdout.write( 'Selecting the websocket transport... ' );
+		await runWpCli( [
+			'option',
+			'update',
+			'wp_collaboration_enabled',
+			'1',
+		] );
+		await runWpCli( [ 'option', 'update', TRANSPORT_OPTION, 'websocket' ] );
+		process.stdout.write( 'done\n' );
+	}
 
 	// A previous daemon (crashed terminal, orphaned run) would still hold
 	// the published port; replace it.
@@ -396,8 +405,10 @@ async function runWebSocketsMode() {
 			);
 		}
 		process.stdout.write(
-			`RTC ready on the websocket transport (daemon detached, reachable at ws://localhost:${ PORT }).\n` +
-				`Open two windows at http://localhost:${ sitePort }/wp-admin and edit the same post.\n` +
+			`Websocket sync daemon running detached at ws://localhost:${ PORT }.\n` +
+				( 'websockets' === mode
+					? `RTC is on the websocket transport: open two windows at http://localhost:${ sitePort }/wp-admin and edit the same post.\n`
+					: 'The site transport selection was left untouched; `npm run rtc:ws` switches the site onto the websocket transport.\n' ) +
 				'Stop the daemon with `npm run rtc:http` (or `docker rm -f ' +
 				DAEMON_CONTAINER_NAME +
 				'`).\n'
@@ -429,8 +440,10 @@ async function runWebSocketsMode() {
 		( healthy ) => {
 			if ( healthy ) {
 				process.stdout.write(
-					`\nRTC ready on the websocket transport (daemon reachable at ws://localhost:${ PORT }).\n` +
-						`Open two windows at http://localhost:${ sitePort }/wp-admin and edit the same post.\n` +
+					`\nWebsocket sync daemon reachable at ws://localhost:${ PORT }.\n` +
+						( 'websockets' === mode
+							? `RTC is on the websocket transport: open two windows at http://localhost:${ sitePort }/wp-admin and edit the same post.\n`
+							: 'The site transport selection was left untouched; `npm run rtc:ws` switches the site onto the websocket transport.\n' ) +
 						'Press Ctrl+C to stop the daemon; `npm run rtc:http` stops it AND switches the site back to HTTP polling.\n\n'
 				);
 			} else if ( daemon.exitCode === null ) {
@@ -470,11 +483,11 @@ async function runHttpMode() {
 
 async function main() {
 	const mode = parseMode();
-	if ( mode === 'websockets' ) {
-		await runWebSocketsMode();
+	if ( 'http' === mode ) {
+		await runHttpMode();
 		return;
 	}
-	await runHttpMode();
+	await runWebSocketsMode( mode );
 }
 
 main().catch( ( error ) => {

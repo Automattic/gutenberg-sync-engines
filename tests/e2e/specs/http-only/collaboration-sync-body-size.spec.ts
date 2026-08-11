@@ -1,4 +1,9 @@
 /**
+ * WordPress dependencies
+ */
+import type { RequestUtils } from '@wordpress/e2e-test-utils-playwright';
+
+/**
  * Internal dependencies
  */
 import {
@@ -27,7 +32,49 @@ function isSyncUpdateRequest( url: string ): boolean {
 	);
 }
 
+/**
+ * Pins the engine for this suite (and restores the default afterwards).
+ *
+ * The test's subject is multi-room body-size BATCHING, which needs an
+ * engine whose sessions author updates for background entity-record edits.
+ * yjs-server does; intent-log's v1 scope does not (its capture follows the
+ * open editor), so under the site default this spec would wait forever for
+ * updates that never come. Pinning also removes a latent order dependence
+ * on whichever engine a previous suite left selected.
+ *
+ * @param {RequestUtils} requestUtils Playwright request utils.
+ * @param {string|null}  engine       Engine slug, or null to restore.
+ */
+async function setSyncEngine(
+	requestUtils: RequestUtils,
+	engine: string | null
+) {
+	if ( null === engine ) {
+		// Nulling an already-absent option 500s (see the engine specs'
+		// identical helper): restore only while our flip is in effect.
+		const settings = await requestUtils.rest( {
+			path: '/wp/v2/settings',
+		} );
+		if ( 'yjs-server' !== settings.wp_sync_engine ) {
+			return;
+		}
+	}
+	await requestUtils.rest( {
+		method: 'POST',
+		path: '/wp/v2/settings',
+		data: { wp_sync_engine: engine },
+	} );
+}
+
 test.describe( 'Collaboration sync body size', () => {
+	test.beforeEach( async ( { requestUtils } ) => {
+		await setSyncEngine( requestUtils, 'yjs-server' );
+	} );
+
+	test.afterAll( async ( { requestUtils } ) => {
+		await setSyncEngine( requestUtils, null );
+	} );
+
 	test( 'keeps multi-room sync polls under the body-size limit', async ( {
 		collaborationUtils,
 		requestUtils,

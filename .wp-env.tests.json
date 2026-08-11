@@ -8,20 +8,17 @@
   "themes": [
     "./gutenberg/test/emptytheme"
   ],
-  "port": 8888,
+  "port": 8889,
   "autoPort": true,
   "testsEnvironment": false,
   "config": {
-    "WP_DEBUG": true,
-    "SCRIPT_DEBUG": true,
+    "WP_DEBUG": false,
+    "SCRIPT_DEBUG": false,
     "WP_SYNC_WEBSOCKET_HOST": "localhost"
   },
   "mappings": {
     "wp-content/plugins/gutenberg-sync-engines": ".",
     "wp-content/plugins/gutenberg-test-plugins": "./gutenberg/packages/e2e-tests/plugins",
     "wp-content/plugins/sync-engines-test-plugins": "./tests/e2e/plugins"
-  },
-  "lifecycleScripts": {
-    "afterStart": "node tests/e2e/bin/rtc-dev.mjs --mode=daemon --detach || true"
   }
 }
