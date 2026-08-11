@@ -563,6 +563,18 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 *    one room would be mutual garbage — the lineage check makes the
 		 *    swap scenario degrade to a post lock instead of corruption.
 		 *
+		 * One healing exception to check 2: a room that holds no per-post
+		 * entity content (collection and taxonomy rooms — rebuildable
+		 * change-feeds over durable database state, e.g.
+		 * `taxonomy/wp_pattern_category`) is RESET instead of fenced when a
+		 * client that provably speaks the newly-resolved engine arrives.
+		 * Those rooms are global and permanent, so without the reset a
+		 * site-level engine switch would leave them conflicted forever —
+		 * there is no "new post, new room" escape hatch and no post lock to
+		 * degrade to. Per-post entity rooms keep the strict fence: they can
+		 * hold unsaved collaborative content, and their sessions degrade to
+		 * the post lock by design.
+		 *
 		 * @since 7.2.0
 		 *
 		 * @param WP_Sync_Engine       $engine       Engine resolved for the room.
@@ -581,8 +593,14 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 			} else {
 				$lineage = $this->storage->get_room_engine( $room );
 				if ( null !== $lineage && $lineage !== $engine->get_slug() ) {
-					$mismatch = $lineage;
-				} elseif ( null === $lineage && count( $updates ) > 0 ) {
+					if ( $this->reset_switched_room( $room, $room_request, $engine->get_slug() ) ) {
+						do_action( 'qm/debug', "wp-sync: reset room {$room} (lineage {$lineage} superseded by {$engine->get_slug()})" );
+						$lineage = null;
+					} else {
+						$mismatch = $lineage;
+					}
+				}
+				if ( null === $mismatch && null === $lineage && count( $updates ) > 0 ) {
 					// First write fixes the room's engine lineage. Failure to
 					// stamp is not fatal: the next write retries.
 					$this->storage->set_room_engine( $room, $engine->get_slug() );
@@ -608,6 +626,82 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 					'engine_protocol' => $engine->get_protocol_version(),
 				)
 			);
+		}
+
+		/**
+		 * Resets a room whose stored lineage was superseded by a site-level
+		 * engine switch, when that is safe. See check_engine_mismatch() for
+		 * the policy; the conditions are:
+		 *
+		 * - The requesting client PROVABLY speaks the newly-resolved engine
+		 *   (its request stamps that exact slug — a stale tab or an old
+		 *   client that stamps nothing never triggers a reset).
+		 * - The room is not a per-post entity room (those can hold unsaved
+		 *   collaborative content and keep the strict fence). Collection and
+		 *   taxonomy rooms are rebuildable from durable database state.
+		 * - The storage supports a reset: either its own `reset_room()`
+		 *   (feature-detected for future backends) or the framework's
+		 *   postmeta storage, whose room state all lives as meta rows on a
+		 *   dedicated storage post keyed by md5(room). The rows are deleted
+		 *   directly (the storage class itself uses direct queries for these
+		 *   keys, bypassing meta caches) rather than deleting the storage
+		 *   post, which the storage caches per-request by id.
+		 *
+		 * @since 0.2.0
+		 *
+		 * @global wpdb $wpdb WordPress database abstraction object.
+		 *
+		 * @param string               $room          Room identifier.
+		 * @param array<string, mixed> $room_request  The room's request payload.
+		 * @param string               $resolved_slug Engine slug the server resolved.
+		 * @return bool Whether the room was reset.
+		 */
+		private function reset_switched_room( string $room, array $room_request, string $resolved_slug ): bool {
+			if ( ( $room_request['engine'] ?? null ) !== $resolved_slug ) {
+				return false;
+			}
+
+			$parsed = WP_Sync_Config::parse_room( $room );
+			if ( null !== $parsed && 'postType' === $parsed['entity_kind'] && ! empty( $parsed['object_id'] ) ) {
+				return false;
+			}
+
+			if ( method_exists( $this->storage, 'reset_room' ) ) {
+				return (bool) $this->storage->reset_room( $room );
+			}
+
+			if ( ! ( $this->storage instanceof WP_Sync_Post_Meta_Storage ) ) {
+				return false;
+			}
+
+			$storage_posts = get_posts(
+				array(
+					'post_type'      => WP_Sync_Post_Meta_Storage::POST_TYPE,
+					'post_status'    => 'publish',
+					'name'           => md5( $room ),
+					'posts_per_page' => 1,
+					'fields'         => 'ids',
+				)
+			);
+			$storage_post  = reset( $storage_posts );
+			if ( ! is_int( $storage_post ) || $storage_post <= 0 ) {
+				// No storage post: nothing stored, nothing to reset.
+				return true;
+			}
+
+			global $wpdb;
+			$deleted = $wpdb->query(
+				$wpdb->prepare(
+					"DELETE FROM {$wpdb->postmeta} WHERE post_id = %d AND ( meta_key IN ( %s, %s, %s ) OR meta_key LIKE %s )",
+					$storage_post,
+					WP_Sync_Post_Meta_Storage::SYNC_UPDATE_META_KEY,
+					WP_Sync_Post_Meta_Storage::ENGINE_META_KEY,
+					WP_Sync_Post_Meta_Storage::AWARENESS_META_KEY,
+					$wpdb->esc_like( 'wp_sync_room_meta_' ) . '%'
+				)
+			);
+
+			return false !== $deleted;
 		}
 
 		/**

@@ -236,6 +236,17 @@ test WebSocket transport (manual two-window testing).
   via `POST /wp/v2/settings` — both only work with the plugins active.
 - **Subtree build layout** (Gutenberg 23.x): built package JS lands at
   `gutenberg/build/scripts/<pkg>/`, not `gutenberg/build/<pkg>/`.
+- **Engine switches vs room lineage:** rooms are stamped with the engine
+  that first wrote them, and the transport 409s mismatches
+  (`rest_sync_engine_mismatch`). Global collection/taxonomy rooms (e.g.
+  `taxonomy/wp_pattern_category`) outlive any engine flip, so the polling
+  transport RESETS those rooms (rows + lineage + room meta) when a client
+  speaking the newly-selected engine arrives — they're rebuildable
+  change-feeds. Per-post entity rooms keep the strict fence (they can hold
+  unsaved collaborative content; sessions degrade to the post lock).
+  Related trap: the postmeta storage's `get_cursor()`/`get_update_count()`
+  are per-request caches refreshed ONLY by `get_updates_after_cursor()` —
+  never gate genesis (or anything) on them before a read has run.
 - **Worktrees mount the plugin twice in wp-env:** `.wp-env.json` maps `.` to
   `wp-content/plugins/gutenberg-sync-engines` AND lists `.` in `plugins`,
   which also mounts it under the checkout's directory name. In the canonical

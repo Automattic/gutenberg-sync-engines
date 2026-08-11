@@ -371,11 +371,6 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		 * @return array Room response data.
 		 */
 		public function get_updates_since( string $room, int $client_id, int $cursor, array $context ): array { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable -- $context is part of the WP_Sync_Engine contract.
-			// Ensure genesis exists so first pollers receive the snapshot.
-			if ( 0 === $this->storage->get_cursor( $room ) ) {
-				$this->load_room( $room );
-			}
-
 			if ( $cursor > 0 && method_exists( $this->storage, 'get_room_meta' ) ) {
 				$floor = $this->storage->get_room_meta( $room, self::META_FLOOR );
 				if ( is_numeric( $floor ) && $cursor < (int) $floor ) {
@@ -383,7 +378,24 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				}
 			}
 
-			$rows          = $this->storage->get_updates_after_cursor( $room, $cursor );
+			$rows = $this->storage->get_updates_after_cursor( $room, $cursor );
+
+			/*
+			 * Ensure genesis exists so first pollers receive the snapshot.
+			 * The check runs AFTER the read because the storage's update
+			 * count is a per-request cache that only that read refreshes: a
+			 * cold cache reads 0 for rooms full of rows (making a
+			 * before-the-read check trigger a needless O(doc) load on every
+			 * request's first poll), and a warm one reads stale non-zero for
+			 * a room the transport just reset after an engine switch. Fresh
+			 * count of zero = the room truly has no rows: initialize it and
+			 * re-read so this response carries the genesis snapshot.
+			 */
+			if ( 0 === $this->storage->get_update_count( $room ) ) {
+				$this->room_docs[ $room ] = null;
+				$this->load_room( $room );
+				$rows = $this->storage->get_updates_after_cursor( $room, $cursor );
+			}
 			$typed_updates = array();
 			foreach ( $rows as $row ) {
 				if ( self::UPDATE_TYPE_UPDATE === $row['type'] && $client_id === $row['client_id'] ) {
