@@ -210,6 +210,16 @@ Current green baseline: **Jest 373**, **PHPUnit 133 (562 assertions)**,
 - Intent-log has **no collaborative undo** yet (leaves the manager undefined; WP
   global undo applies). The designed fix is inverse-intent undo. yjs-relay
   provides undo via `src/engines/yjs-relay/undo.ts`.
+- **Intent-log echo race:** editor pushes racing live keystrokes can corrupt
+  canvas text (observed under load; worst over websocket's per-keystroke
+  cadence — benchmark that transport under yjs-relay meanwhile). Deferring or
+  gating pushes is NOT a fix: capture treats the editor tree as full testimony
+  against the current document, so a deferred push makes the next capture
+  author intents reverting the un-pushed remote content. The designed fix is
+  capturing against the editor's last-observed document state (author at that
+  base seq; the engine transform merges) — a session/bridge redesign. See the
+  KNOWN LIMITATION comment at the delayed re-push in
+  `src/engines/intent-log-manager.ts`.
 
 ## Deep history
 

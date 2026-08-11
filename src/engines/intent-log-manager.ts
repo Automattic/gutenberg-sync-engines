@@ -812,6 +812,23 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				 * interaction. One delayed re-dispatch of the same state
 				 * closes that window; if the first push stuck, the repeat
 				 * is a no-op for the editor.
+				 *
+				 * KNOWN LIMITATION (observed as text corruption under load,
+				 * worst over the websocket transport's per-keystroke
+				 * cadence): pushes racing live keystrokes can clobber the
+				 * editor tree, and the next capture then authors
+				 * destructive diffs from the mixed tree. Do NOT fix this by
+				 * deferring/gating pushes (e.g. on isTyping): capture diffs
+				 * the CURRENT document against the tree and treats the tree
+				 * as full testimony, so any push deferral makes the next
+				 * capture author intents REVERTING the un-pushed remote
+				 * content — field-text diffs have no never-displayed
+				 * protection the way block-level removableIds does. The
+				 * system depends on push-before-next-capture ordering. The
+				 * real fix is capturing against the document state the
+				 * editor last OBSERVED (author at that base seq; the
+				 * engine's transform machinery merges), which is a
+				 * session/bridge redesign.
 				 */
 				const pushSeq = ++state.pushSeq;
 				setTimeout( () => {
