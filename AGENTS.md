@@ -21,11 +21,13 @@ This plugin provides:
   by transform, sets genuine conflicts aside for review) and `yjs-server`
   (server-authoritative CRDT: the vendored y-php library merges every update
   into a canonical room document server-side, compacts by itself, and
-  materializes post content — lock-free ingest). yjs-server is registered
-  first, making it the effective site default (the framework's registry falls
-  back to the first registered engine — its conventional `yjs-relay` default
-  slug refers to the RETIRED naive-relay engine, removed from this plugin;
-  yjs-server inherited its client CRDT machinery and wire format).
+  materializes post content — lock-free ingest; it inherited the retired
+  naive-relay yjs-relay engine's client CRDT machinery and wire format).
+  The framework's conventional default engine
+  (`WP_Sync_Engine_Registry::DEFAULT_ENGINE`) is **intent-log** — that's
+  what runs when the `wp_sync_engine` option is unset. Registration order
+  only matters when a CONFIGURED slug isn't registered (misconfiguration
+  degrades to the first registered engine: yjs-server).
 - **Transports:** `http-polling` (default), `http-long-polling`, `websocket`.
 
 It registers through the framework's extension points: PHP `wp_sync_engines` /

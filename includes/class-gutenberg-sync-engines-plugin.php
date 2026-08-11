@@ -140,10 +140,11 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 		 * @return WP_Sync_Engine[] Engines including this plugin's.
 		 */
 		public function register_engines( array $engines, WP_Sync_Storage $storage ): array {
-			// Order matters: the framework's registry falls back to the FIRST
-			// registered engine when the configured slug (or its conventional
-			// 'yjs-relay' default) is not registered, so yjs-server is the
-			// effective site default.
+			// The framework's conventional default is intent-log
+			// (WP_Sync_Engine_Registry::DEFAULT_ENGINE), used when the
+			// wp_sync_engine option is unset. Registration order only
+			// matters as the fallback when a CONFIGURED slug is not
+			// registered (misconfiguration degrades to the first engine).
 			$engines[] = new WP_Yjs_Server_Engine( $storage );
 			$engines[] = new WP_Intent_Log_Engine( $storage );
 			return $engines;

@@ -20,21 +20,16 @@ if ( ! class_exists( 'WP_Sync_Engine_Registry' ) ) {
 	 */
 	class WP_Sync_Engine_Registry {
 		/**
-		 * Default engine slug when no selection is configured.
-		 *
-		 * @since 7.2.0
-		 * @var string
-		 */
-		/**
 		 * Conventional default engine slug (used when the `wp_sync_engine`
 		 * option is unset). Only takes effect if a plugin has registered an
-		 * engine by this slug; otherwise the registry stays empty and RTC is
-		 * disabled.
+		 * engine by this slug; otherwise the registry falls back to the
+		 * first registered engine, or stays empty (RTC disabled) when no
+		 * engine plugin is active.
 		 *
 		 * @since 7.2.0
 		 * @var string
 		 */
-		const DEFAULT_ENGINE = 'yjs-relay';
+		const DEFAULT_ENGINE = 'intent-log';
 
 		/**
 		 * Registered engines by slug.

@@ -93,22 +93,23 @@ class Tests_Collaboration_WpSyncEngineRegistry extends WP_Test_REST_TestCase {
 		return $request;
 	}
 
-	public function test_registry_registers_yjs_server_by_default() {
+	public function test_registry_defaults_to_intent_log_when_option_unset() {
 		delete_option( 'wp_sync_engine' );
 		$registry = new WP_Sync_Engine_Registry( new WP_Sync_Post_Meta_Storage() );
 
-		$engine = $registry->get_engine( WP_Yjs_Server_Engine::SLUG );
-		$this->assertInstanceOf( 'WP_Yjs_Server_Engine', $engine );
-		// The framework's conventional default slug (yjs-relay) is not
-		// registered, so the registry falls back to the first registered
-		// engine: yjs-server.
-		$this->assertSame( WP_Yjs_Server_Engine::SLUG, $registry->get_engine_slug_for_room( 'postType/post:1' ) );
+		$engine = $registry->get_engine( WP_Intent_Log_Engine::SLUG );
+		$this->assertInstanceOf( 'WP_Intent_Log_Engine', $engine );
+		// The framework's conventional default slug (intent-log) is
+		// registered by this plugin, so it wins with no option set.
+		$this->assertSame( WP_Intent_Log_Engine::SLUG, $registry->get_engine_slug_for_room( 'postType/post:1' ) );
 	}
 
-	public function test_registry_falls_back_to_default_for_unknown_configured_engine() {
+	public function test_registry_falls_back_to_first_registered_for_unknown_configured_engine() {
 		update_option( 'wp_sync_engine', 'engine-that-does-not-exist' );
 		$registry = new WP_Sync_Engine_Registry( new WP_Sync_Post_Meta_Storage() );
 
+		// A configured-but-unregistered slug degrades to the FIRST
+		// registered engine (yjs-server), not the conventional default.
 		$this->assertSame( WP_Yjs_Server_Engine::SLUG, $registry->get_engine_slug_for_room( 'postType/post:1' ) );
 		delete_option( 'wp_sync_engine' );
 	}

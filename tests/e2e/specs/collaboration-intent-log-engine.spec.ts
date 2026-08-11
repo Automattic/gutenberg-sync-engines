@@ -21,8 +21,8 @@ import { genesisSyncId } from '../../../src/engines/intent-log/sync-id.js';
  * server announces it; clients resolve the intent-log adapter) and exercise
  * the full stack: capture bridge → session → polling transport →
  * WP_Intent_Log_Engine → back. The suite restores the default engine when
- * done so the remaining collaboration specs keep exercising the site
- * default (yjs-server, the first registered engine).
+ * done (intent-log is also the framework's conventional default, so with
+ * the option unset the remaining collaboration specs exercise it too).
  */
 
 async function setSyncEngine(
@@ -32,13 +32,15 @@ async function setSyncEngine(
 	if ( null === engine ) {
 		// Nulling an already-absent option 500s (rest_invalid_stored_value:
 		// the settings controller validates the stored value first, and an
-		// absent row reads as `false`). Restore only when our flip is still
-		// in effect — e.g. the engine-flip spec already deleted the option
-		// mid-test.
+		// absent row reads as `false`). Restore only when one of THIS
+		// suite's flips is still in effect ('intent-log' from beforeEach,
+		// 'yjs-server' from the engine-flip spec).
 		const settings = await requestUtils.rest( {
 			path: '/wp/v2/settings',
 		} );
-		if ( 'intent-log' !== settings.wp_sync_engine ) {
+		if (
+			! [ 'intent-log', 'yjs-server' ].includes( settings.wp_sync_engine )
+		) {
 			return;
 		}
 	}
@@ -1256,12 +1258,13 @@ test.describe( 'Collaboration - intent-log engine', () => {
 		const { page2 } = collaborationUtils;
 		const page1 = editor.page;
 
-		// The site's engine changes back to the default (yjs-server) while
-		// both tabs are mid-session. Their polls still stamp intent-log, so
+		// The site's engine changes to yjs-server while both tabs are
+		// mid-session. (Deleting the option is no longer a flip: intent-log
+		// IS the framework default.) Their polls still stamp intent-log, so
 		// the server fences them with 409 rest_sync_engine_mismatch and the
 		// clients must fall into the unrecoverable-mismatch modal — not an
-		// endless 409 retry loop.
-		await setSyncEngine( requestUtils, null );
+		// endless 409 retry loop. The suite's afterAll deletes the option.
+		await setSyncEngine( requestUtils, 'yjs-server' );
 
 		for ( const page of [ page1, page2 ] ) {
 			await expect(

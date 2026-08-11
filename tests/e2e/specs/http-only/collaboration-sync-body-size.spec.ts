@@ -11,10 +11,13 @@ const EXTRA_POST_COUNT = 40;
 const LARGE_FIELD_SIZE = 450 * 1024;
 const MAX_SYNC_BODY_SIZE = 16 * 1024 * 1024;
 
-// One room per extra post record, plus the baseline rooms the editor always
-// registers when opening a post (the primary post plus its collection rooms,
-// e.g. root/comment).
-const EXPECTED_ROOMS = EXTRA_POST_COUNT + 4;
+// One room per extra post record, plus at least the primary post's own
+// room. How many ADDITIONAL baseline rooms register is engine-dependent
+// (collection rooms — post lists, taxonomies, comments — register under
+// CRDT engines but are a no-op under intent-log's v1 scope), so this is a
+// floor, not an exact census: the test's subject is multi-room body-size
+// batching, not room bookkeeping.
+const MIN_EXPECTED_ROOMS = EXTRA_POST_COUNT + 1;
 
 function isSyncUpdateRequest( url: string ): boolean {
 	const decodedUrl = decodeURIComponent( url );
@@ -123,7 +126,7 @@ test.describe( 'Collaboration sync body size', () => {
 					),
 				{ timeout: 20000 }
 			)
-			.toBe( EXPECTED_ROOMS );
+			.toBeGreaterThanOrEqual( MIN_EXPECTED_ROOMS );
 
 		await page.evaluate(
 			( { ids, largeFieldSize } ) => {
