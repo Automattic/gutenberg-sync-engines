@@ -16,10 +16,21 @@ conclusion. Read it alongside the two benchmark harnesses
 - **yjs-relay** — the clients own the document: the server stores and
   forwards opaque CRDT updates, and every client's Yjs instance merges
   them; the incumbent design, and the baseline to beat.
+- **yjs-server** — the server owns the document AND it is a CRDT: the
+  vendored y-php library merges every update into a canonical room
+  document server-side, the server compacts by itself and materializes
+  post content, while clients keep the relay's exact CRDT machinery
+  (same wire documents, same undo).
 
 ## One architectural choice drives everything
 
-Where the merge happens decides almost every other property:
+Where the merge happens decides almost every other property — and
+yjs-server deliberately sits in the middle: server-side authority over a
+CRDT merge. It gains the relay's lock-free ingest and lossless text
+merging plus the intent log's observability, bounded storage, and
+materialization; it does NOT gain the intent log's conflict *policy*
+(register conflicts still resolve silently, last-writer-wins) and it pays
+the cost of rebuilding the canonical document in PHP on every ingest.
 
 - **Merging on the server (intent-log)** costs server CPU and a per-room
   ingest lock, and in exchange the server can *observe* outcomes: per-edit
@@ -39,36 +50,42 @@ tables below are how the price shows up.
 
 ## Feature parity
 
-| Area | intent-log | yjs-relay |
-| --- | --- | --- |
-| Conflict handling | Transform on the server; genuine conflicts park in the editor's review panel (escalation notice, marker chip, durable resolutions — e2e-verified) | Silent CRDT auto-merge; no conflict concept |
-| Collaborative undo | **Not yet** — WP's global undo applies (can undo a peer's work); designed fix is inverse intents | Per-peer undo manager (`src/engines/yjs-relay/undo.ts`) |
-| Refresh/offline recovery | Server materializes the document; queued intents are memory-only. Solo edits flush every poll (`syncWhileSolo`), and discarded unsent work surfaces an editor notice | CRDT doc serialized with the entity; survives refresh |
-| Error recovery | Exact re-send; ingest is idempotent by intentId | Full-state recovery update (deltas are not idempotent server-side) |
-| History compaction | Server checkpoints every 100 intent rows and trims | Client-nominated at 50 rows; **an abandoned room never compacts** |
-| Capability enforcement | At ingest (kses lane; escalation for `unfiltered_html`-gated content) | At save only; the relay cannot inspect payloads |
-| Synced entity properties | Whitelist (currently the title) | Whatever the sync config maps into the CRDT |
-| Presence/awareness | Yes (shared Yjs-free awareness doc) | Yes (Yjs awareness) |
-| Server observability | Dispositions, debug envelope, benchmark quality metrics | None by design |
-| Wire format | Small human-readable JSON intents | Opaque base64 binary |
+| Area | intent-log | yjs-relay | yjs-server |
+| --- | --- | --- | --- |
+| Conflict handling | Transform on the server; genuine conflicts park in the editor's review panel (escalation notice, marker chip, durable resolutions — e2e-verified) | Silent CRDT auto-merge; no conflict concept | Silent CRDT auto-merge, but ON THE SERVER — outcomes observable, still no review lane |
+| Collaborative undo | **Not yet** — WP's global undo applies (can undo a peer's work); designed fix is inverse intents | Per-peer undo manager (`src/engines/yjs-relay/undo.ts`) | Same per-peer undo manager (shared with the relay) |
+| Refresh/offline recovery | Server materializes the document; queued intents are memory-only. Solo edits flush every poll (`syncWhileSolo`), and discarded unsent work surfaces an editor notice | CRDT doc serialized with the entity; survives refresh | Server holds the canonical doc; a rejoining client re-bootstraps from the retained snapshot + tail and uploads its own state idempotently |
+| Error recovery | Exact re-send; ingest is idempotent by intentId | Full-state recovery update (deltas are not idempotent server-side) | Full-state recovery update, IDEMPOTENT server-side (the server diffs out what it already has — redelivery settles as a benign `already-merged` void) |
+| History compaction | Server checkpoints every 100 intent rows and trims | Client-nominated at 50 rows; **an abandoned room never compacts** | Server checkpoints every 100 rows and trims — abandoned rooms stay bounded |
+| Genesis | Server, from post content | First client, from its parsed editor record (the "initialization problem") | Server, from post content — deterministic build, so racing initializers merge idempotently |
+| Capability enforcement | At ingest (kses lane; escalation for `unfiltered_html`-gated content) | At save only; the relay cannot inspect payloads | **Not yet** — the server CAN decode content (the prerequisite the relay lacks), but the per-update kses lane is undesigned; see Known gaps |
+| Synced entity properties | Whitelist (currently the title) | Whatever the sync config maps into the CRDT | Same as relay (shared sync config path) |
+| Presence/awareness | Yes (shared Yjs-free awareness doc) | Yes (Yjs awareness) | Yes (Yjs awareness, relayed opaquely — the server does not decode it) |
+| Server observability | Dispositions, debug envelope, benchmark quality metrics | None by design | Per-update dispositions, CRDT convergence oracle, materialization |
+| Materialize to post_content | Yes (server-side) | No — needs a live client to save | Yes (server-side, from the canonical doc) |
+| Wire format | Small human-readable JSON intents | Opaque base64 binary | Opaque base64 binary (V2) + JSON snapshot rows |
 
 ## Host-facing resource profile
 
-| Concern | intent-log | yjs-relay |
-| --- | --- | --- |
-| Per-ingest CPU | Replay from checkpoint + transform planning | ~zero (append) |
-| Locking | Per-room MySQL `GET_LOCK` serializes ingest (5 s timeout; contenders get a retryable 503). One real lock round-trip pair inside every timed request — the engine benchmark's `calibration` block exists to subtract it | None |
-| Idle reads | Cheap by design (rows after cursor; no reconstruction) | Cheap |
-| Storage growth | Bounded: checkpoint + trim every 100 rows | Bounded only while clients are present; abandoned rooms grow until someone returns |
-| Row contents | JSON intents (~200 B typical) + periodic full-document checkpoint rows | Base64 updates + full-state compaction rows that scale with document size |
+| Concern | intent-log | yjs-relay | yjs-server |
+| --- | --- | --- | --- |
+| Per-ingest CPU | Replay from checkpoint + transform planning | ~zero (append) | Load + merge + re-encode the canonical y-php doc — the dominant cost, tens of ms at benchmark document sizes, scales with document size |
+| Locking | Per-room MySQL `GET_LOCK` serializes ingest (5 s timeout; contenders get a retryable 503). One real lock round-trip pair inside every timed request — the engine benchmark's `calibration` block exists to subtract it | None | None — CRDT merge needs no total order; the update log is the source of truth and a lost canonical-save race is repaired from it on the next load |
+| Idle reads | Cheap by design (rows after cursor; no reconstruction) | Cheap | Cheap (the canonical doc is never touched on the read path) |
+| Storage growth | Bounded: checkpoint + trim every 100 rows | Bounded only while clients are present; abandoned rooms grow until someone returns | Bounded: server checkpoint + trim every 100 rows, no client needed |
+| Row contents | JSON intents (~200 B typical) + periodic full-document checkpoint rows | Base64 updates + full-state compaction rows that scale with document size | Base64 V2 diffs (server strips what it already had) + full-state snapshot rows, plus the canonical doc in room meta |
 
 Reference numbers from one dev machine (wp-env, Docker MariaDB, Aug 2026 —
 regenerate locally, and never compare across machines without the
-harnesses' `environment` stanzas): intent-log service time ~0.5 ms p50 per
+harnesses' `environment` stanzas): intent-log service time ~0.6 ms p50 per
 edit including the lock pair; yjs-relay sits at the timer floor
-(single-digit µs — read it as "negligible", nothing more precise). Relay
-payload/storage *bytes* in the engine benchmark are synthetic size models;
-its row counts and compaction cadence are exact.
+(single-digit µs — read it as "negligible", nothing more precise);
+yjs-server ~29 ms p50 / ~33 ms mean per edit (roughly 50× intent-log —
+pure y-php CPU: the canonical document is decoded, merged, and re-encoded
+in PHP on every ingest). Relay payload/storage *bytes* in the engine
+benchmark are synthetic size models; its row counts and compaction cadence
+are exact. yjs-server payload/storage bytes are REAL (its benchmark
+profile authors genuine Yjs updates through y-php).
 
 ## Transports are a separate axis
 
@@ -99,10 +116,33 @@ noise under intent-log), with one exception noted below.
   as a URL query parameter; plaintext `ws://` must never leave a dev box).
 - **yjs-relay quality is unmeasurable at the server** — that is a fact
   about the architecture, not a benchmark omission. A fair quality
-  comparison would need a client-side Yjs oracle.
+  comparison would need a client-side Yjs oracle. (yjs-server's benchmark
+  profile IS such an oracle, built on y-php.)
 - **Abandoned yjs-relay rooms never compact.** For a host, that is an
   unbounded-growth liability that needs a cron/cleanup story before
-  production use.
+  production use. (yjs-server compacts server-side and does not share it.)
+- **yjs-server ingest cost is real and scales with document size.** Every
+  ingest decodes, merges, and re-encodes the canonical document in pure
+  PHP (~30 ms at benchmark sizes vs intent-log's ~0.6 ms). Before
+  production use this needs either an incremental canonical-maintenance
+  strategy, y-php optimization, or acceptance of the latency at target
+  document sizes — run `long-form` benchmarks at YOUR sizes first.
+- **yjs-server has no kses/capability lane yet.** The prerequisite the
+  relay structurally lacks is now present (the server can decode and
+  inspect CRDT content), but per-update capability enforcement is not
+  designed or built. Until it is, yjs-server's content-security posture
+  equals the relay's (enforcement at save only).
+- **yjs-server has no review lane.** Register conflicts (two editors
+  restyling the same block) resolve by deterministic CRDT last-writer-wins,
+  silently — observable in dispositions, but not surfaced to humans. That
+  is the central *policy* difference with intent-log, unchanged from the
+  relay.
+- **yjs-server materialization mirrors intent-log's Phase 2a
+  simplification**: rich-text content maps opaquely onto a block's single
+  wrapper element (genesis wrappers kept server-side; per-type defaults
+  for blocks born in-session). Complex sourced attributes beyond the
+  content field don't round-trip through server materialization yet —
+  the same class of gap intent-log carries.
 
 ## Bottom line
 
@@ -115,6 +155,14 @@ noise under intent-log), with one exception noted below.
   host can actually monitor — intent-log buys that for roughly half a
   millisecond of serialized server work per edit, with collaborative undo
   and the echo-race fix as the open engineering items.
+- If the priority is **CRDT merge semantics with server authority** —
+  lossless text merging and per-peer undo like the relay, but with
+  server-side genesis, bounded storage without client help, observable
+  convergence, materialization, and lock-free ingest — yjs-server now
+  provides it, at a real price: tens of milliseconds of y-php CPU per
+  edit at benchmark document sizes, no review lane, and the kses lane
+  still to build. It is the measurement platform for deciding whether
+  server-side Yjs can be made cheap enough, not yet a production default.
 - Transport choice is independent and mostly a hosting decision: polling
   works everywhere at ~1.7 s perceived latency, long-polling roughly
   triples responsiveness for the price of held PHP workers, and websocket

@@ -18,8 +18,12 @@ the editor falls back to the classic exclusive post lock.
 This plugin provides:
 
 - **Engines:** `intent-log` (server-authoritative log of typed intents; merges
-  by transform, sets genuine conflicts aside for review) and `yjs-relay` (naive
-  relay of opaque Yjs CRDT updates, the incumbent).
+  by transform, sets genuine conflicts aside for review), `yjs-relay` (naive
+  relay of opaque Yjs CRDT updates, the incumbent), and `yjs-server`
+  (server-authoritative CRDT: the vendored y-php library merges every update
+  into a canonical room document server-side, compacts by itself, and
+  materializes post content — lock-free ingest, relay-compatible client
+  machinery).
 - **Transports:** `http-polling` (default), `http-long-polling`, `websocket`.
 
 It registers through the framework's extension points: PHP `wp_sync_engines` /
@@ -34,8 +38,25 @@ The framework/plugin split is complete: the framework ships **neither** engines
 ## Repo layout
 
 - `gutenberg-sync-engines.php` — plugin entry.
-- `includes/` — server PHP: `engines/{intent-log,yjs-relay}/`,
-  `transports/{...,websocket/}`, `admin/` (the Collaboration settings screen).
+- `includes/` — server PHP: `engines/{intent-log,yjs-relay,yjs-server}/`,
+  `transports/{...,websocket/}`, `admin/` (the Collaboration settings screen),
+  and `lib/`:
+  - `lib/y-php/` — **vendored y-php** (PHP port of Yjs 13.6.31), imported
+    verbatim from <https://github.com/alecgeatches/y-php> (MIT; upstream
+    commit recorded in the import commit). Excluded from our phpcs (it
+    deliberately mirrors JS Yjs style and carries its own configs). Its own
+    conformance suite runs in CI:
+    `composer --working-dir=includes/lib/y-php install && composer
+    --working-dir=includes/lib/y-php test` (~4 s, no WordPress needed).
+    Treat it like the frozen intent-log core: don't casually edit — its
+    contract is byte-parity with JS Yjs, enforced by translated upstream
+    tests + fixtures generated from the real JS implementation.
+  - `lib/yjs/tests/compatibility.tests.js` — single fixture file from JS
+    Yjs v13.6.31 (MIT), vendored at the sibling path y-php's
+    CompatibilityTest expects.
+  - `lib/y-php-loader.php` — lazy runtime loader (PSR-4 autoloader +
+    Composer-`files` equivalents) so the plugin can use y-php without a
+    Composer autoloader.
 - `src/` — client JS/TS (webpack entry `src/index.ts` → `build/sync-engines.js`,
   externalizes `@wordpress/sync`→`wp.sync` and `yjs`→`wp.sync.Y`):
   - `engines/intent-log/` — the **frozen cross-language core** (byte-matched
@@ -147,6 +168,13 @@ everywhere, so auth even succeeds); the first visible failure is
 `activatePlugin( 'gutenberg' )` in global-setup dying with
 "Unexpected end of JSON input". Always pass `WP_BASE_URL` in that case.
 
+Current green baseline: **Jest 390**, **PHPUnit 147 (647 assertions)**,
+**e2e 25/25** (occasional flake under full-suite load — a save notice or a
+fixture login navigation; green solo), plus the vendored y-php library's own
+conformance suite (**428 tests**, run separately — see `includes/lib/`
+above). CI (`.github/workflows/ci.yml`) certifies all suites on pushes to
+`main` and PRs; the e2e job leans on the base config's 2-retries-in-CI to
+absorb the flake.
 Current green baseline: **Jest 373**, **PHPUnit 133 (562 assertions)**,
 **e2e 24/24** (occasional save-notice flake under full-suite load; green solo),
 **e2e:websocket 1/1**.
@@ -239,7 +267,14 @@ test WebSocket transport (manual two-window testing).
   addressed. `composer format` auto-fixes a handful.
 - Intent-log has **no collaborative undo** yet (leaves the manager undefined; WP
   global undo applies). The designed fix is inverse-intent undo. yjs-relay
-  provides undo via `src/engines/yjs-relay/undo.ts`.
+  provides undo via `src/engines/yjs-relay/undo.ts` (yjs-server shares it).
+- **yjs-server known gaps** (docs/engine-comparison.md has the full list):
+  ingest cost is real y-php CPU (~30 ms/edit at benchmark sizes — the
+  canonical doc is decoded/merged/re-encoded per request), no kses/capability
+  lane yet, no review lane (register conflicts LWW silently), and
+  materialization carries the same Phase-2a wrapper simplification as
+  intent-log. Genesis blocks must set `isValid: true` or the editor renders
+  them as invalid-content recovery blocks (has bitten).
 - **Intent-log echo race:** editor pushes racing live keystrokes can corrupt
   canvas text (observed under load; worst over websocket's per-keystroke
   cadence — benchmark that transport under yjs-relay meanwhile). Deferring or

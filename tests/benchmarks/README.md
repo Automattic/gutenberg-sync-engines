@@ -9,20 +9,30 @@ matter of evidence.
 Engines are resolved through the framework's registry (the
 `wp_sync_engines` filter), so **any engine registered by an active plugin is
 benchmarkable by slug** — run with an unknown slug to list what's
-registered. This plugin registers two:
+registered. This plugin registers three:
 
 - **`intent-log`** (`WP_Intent_Log_Engine`) — server-authoritative: the
   server transforms each edit against the log, so it can report exactly how
   every edit settled.
 - **`yjs-relay`** (`WP_Yjs_Relay_Engine`) — a dumb relay: the merge happens
   in each client's CRDT, so the server never sees the outcome.
+- **`yjs-server`** (`WP_Yjs_Server_Engine`) — server-authoritative CRDT:
+  the server (via the vendored y-php) merges every update into a canonical
+  room document, compacts by itself, and materializes post content.
 
-The runner speaks to intent-log in typed intents (and scores quality);
-every other engine gets the **opaque-relay profile** — relay-convention
-`update`/`compaction` blobs with quality reported as not server-observable.
-A third-party relay-style engine benchmarks meaningfully out of the box; an
-engine with its own wire vocabulary will void the generic updates, and the
-dispositions/storage counts will show that rather than fake a result.
+The runner has three authoring profiles. It speaks to intent-log in typed
+intents (and scores quality with the disposition-based oracle). It speaks
+to yjs-server in **real Yjs**: each simulated client holds a y-php
+document, authors genuine incremental V2 updates (text inserts into the
+paragraph's content Y.Text; align set on the attributes Y.Map — exactly
+what the editor's session codec sends), and applies read responses into its
+document; payload and storage bytes are therefore REAL for this engine, and
+quality is scored with a CRDT oracle (see below). Every other engine gets
+the **opaque-relay profile** — relay-convention `update`/`compaction` blobs
+with quality reported as not server-observable. A third-party relay-style
+engine benchmarks meaningfully out of the box; an engine with its own wire
+vocabulary will void the generic updates, and the dispositions/storage
+counts will show that rather than fake a result.
 
 ## What it measures
 
@@ -72,10 +82,22 @@ dispositions/storage counts will show that rather than fake a result.
   last applied write in server order. Failures are itemized in
   `quality.convergence_failures`.
 
+For `yjs-server`, quality is scored with a **CRDT oracle** matched to CRDT
+semantics: after full catch-up every simulated client's document must be
+identical (the convergence guarantee), every applied text token must appear
+in the server-materialized content exactly once (text merges are lossless —
+nothing lost), the block structure must be intact, and the materialized
+attribute registers must equal the converged CRDT value. Attribute
+conflicts resolve by CRDT rules (deterministic, but NOT server arrival
+order) rather than escalating, so `escalated` is always 0 for this engine —
+that is the policy difference with intent-log, reported honestly: the same
+contended workload that intent-log sends to review, yjs-server silently
+last-writer-wins.
+
 For `yjs-relay`, quality is reported as **not server-observable**. The relay
-does its merge on the client; there is no PHP CRDT to score convergence or
-conflict outcome here, so the harness says so rather than inventing a
-number.
+does its merge on the client; there is no PHP CRDT in the loop to score
+convergence or conflict outcome, so the harness says so rather than
+inventing a number.
 
 ### Why not a "merge retention" score
 
@@ -164,13 +186,13 @@ Representative run (`mixed-newsroom`, 150 rounds, 4 clients, 8 paragraphs;
 wp-env Docker, PHP 8.3 / MariaDB — quote your own `environment` +
 `calibration` stanzas with any numbers you report):
 
-| Metric              | intent-log       | yjs-relay              |
-| ------------------- | ---------------- | ---------------------- |
-| service ms (mean)   | ~0.63 (incl. ~0.03 lock pair) | ~0.0005 (timer floor) |
-| service ms (p99)    | ~1.20            | ~0.006                 |
-| idle poll ms (mean) | ~0.0002          | ~0.0002                |
-| storage rows        | 296 (server checkpoints + trims) | 30 (11 scripted client compactions) |
-| quality             | 480 applied, 114 to review, **0 lost**, content-verified converged | not observable |
+| Metric              | intent-log       | yjs-relay              | yjs-server             |
+| ------------------- | ---------------- | ---------------------- | ---------------------- |
+| service ms (mean)   | ~0.64 (incl. ~0.03 lock pair) | ~0.0005 (timer floor) | ~33 (canonical-doc load/merge/save per ingest) |
+| service ms (p99)    | ~1.25            | ~0.008                 | ~83                    |
+| idle poll ms (mean) | ~0.0003          | ~0.0002                | ~0.0003                |
+| storage rows        | 296 (server checkpoints + trims) | 30 (11 scripted client compactions) | 102 (server checkpoints + trims; no client help) |
+| quality             | 480 applied, 114 to review, **0 lost**, content-verified converged | not observable | 600 applied, **0 lost**, all-client CRDT convergence verified |
 
 Document-size scaling (`long-form`, ~5 KB document vs `solo-typing`'s
 near-empty one, same rounds): mean service ~0.36 ms vs ~0.28 ms — replay
@@ -193,6 +215,15 @@ The comparison the decision turns on:
   bounded around the threshold; in a room whose clients leave or never
   volunteer, it grows one row per edit forever. Both `storage.bytes` and
   the snapshot sizes are synthetic on this path (see Limitations).
+- **yjs-server** buys back the relay's missing server authority (bounded
+  storage without client help, observable convergence, materialization)
+  while keeping CRDT merge semantics and needing NO ingest lock — but at
+  the price of loading, merging, and re-encoding the canonical y-php
+  document on every ingest: tens of ms per request at this document size
+  in pure PHP, roughly 50× intent-log's transform. Its idle polls and
+  reads stay as cheap as the relay's (pure row reads — the canonical doc
+  is never touched on the read path). That ingest cost scales with
+  document size, so `long-form` runs matter before drawing conclusions.
 
 ## Limitations
 
@@ -200,8 +231,10 @@ The comparison the decision turns on:
   time and growth, not tail latency under a saturated worker pool. The
   DE-RTC harness's multi-process request-queue simulation could be layered
   on top of these engine adapters later.
-- **yjs quality is unmeasured here** by construction (no PHP CRDT), not by
-  omission. A fair quality comparison would need a yjs client oracle.
+- **yjs-relay quality is unmeasured here** by construction (its merge runs
+  in browser clients, outside the harness), not by omission. This
+  limitation no longer applies to yjs-server: its profile IS the y-php
+  client oracle.
 - **Relay payloads are synthetic.** Per-edit updates and compaction
   snapshots are size-modelled blobs (a few dozen bytes per keystroke batch;
   a snapshot proportional to accumulated document size), not real Yjs

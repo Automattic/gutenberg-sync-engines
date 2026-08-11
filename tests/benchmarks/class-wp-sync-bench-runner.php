@@ -60,6 +60,16 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 			$room      = 'postType/post:' . $post_id;
 			$slug      = $engine->get_slug();
 			$is_intent = 'intent-log' === $slug;
+			// yjs-server gets a REAL-Yjs authoring profile: each simulated
+			// client holds a y-php document and submits genuine incremental
+			// V2 updates, so payload/storage bytes are real and quality is
+			// server-observable (see verify_crdt_convergence). Every other
+			// non-intent engine keeps the opaque-relay profile.
+			$is_yjs = 'yjs-server' === $slug;
+			if ( $is_yjs ) {
+				require_once dirname( __DIR__, 2 ) . '/includes/lib/y-php-loader.php';
+				gutenberg_sync_engines_load_y_php();
+			}
 
 			// Prime genesis (a read at cursor 0 initializes the room) and note
 			// the starting head. The intent log's head is the log length; the
@@ -72,6 +82,22 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 
 			$client_count = max( 1, (int) $workload['clients'] );
 			$read_cursor  = array_fill( 0, $client_count, 0 );  // Storage cursor each client has consumed.
+
+			// yjs-server: bootstrap each client's document from the genesis
+			// snapshot (an untimed setup read — the intent-log profile has no
+			// equivalent timed join read either). Deterministic clientIDs keep
+			// counted metrics identical across repetitions.
+			$ydocs = array();
+			if ( $is_yjs ) {
+				for ( $client = 0; $client < $client_count; $client++ ) {
+					$doc           = new \Yjs\Utils\Doc();
+					$doc->clientID = 1000 + $client;
+					$bootstrap     = $engine->get_updates_since( $room, $client, 0, array() );
+					self::apply_yjs_rows( $doc, $bootstrap['updates'] );
+					$read_cursor[ $client ] = (int) $bootstrap['end_cursor'];
+					$ydocs[ $client ]       = $doc;
+				}
+			}
 
 			// Relay reads carry an awareness roster so the engine can nominate
 			// a compactor (the lowest client id) — in production this is the
@@ -166,6 +192,28 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 								),
 							),
 						);
+					} elseif ( $is_yjs ) {
+						// Real-Yjs profile: the edit happens in the client's
+						// own CRDT document, and the submitted update is the
+						// genuine incremental V2 encoding of it (everything
+						// past the pre-edit state vector) — exactly what the
+						// editor's session codec sends. Authoring is untimed;
+						// only the server call below is measured.
+						$doc       = $ydocs[ $client ];
+						$sv_before = \Yjs\encodeStateVector( $doc );
+						$paragraph = (int) $edit['paragraph'];
+						$block     = $doc->getMap( 'document' )->get( 'blocks' )->get( $paragraph );
+						if ( 'attr' === ( $edit['op'] ?? 'text' ) ) {
+							$block->get( 'attributes' )->set( 'align', $edit['align'] );
+						} else {
+							$block->get( 'attributes' )->get( 'content' )->insert( 0, $edit['text'] );
+						}
+						$updates = array(
+							array(
+								'type' => 'update',
+								'data' => \Yjs\encodeStateAsUpdateV2( $doc, $sv_before )->toBase64(),
+							),
+						);
 					} else {
 						// Opaque-relay profile (yjs-relay and any engine
 						// without a dedicated authoring profile): an opaque
@@ -231,6 +279,17 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 									'status' => $status,
 								);
 							}
+						} elseif ( $is_yjs && 'attr' !== ( $edit['op'] ?? 'text' ) ) {
+							// Text merges are lossless under CRDT rules, so
+							// every applied token must appear in the
+							// materialized document. Attribute registers
+							// resolve by CRDT conflict rules (NOT server
+							// order), so their oracle is the converged client
+							// documents, checked after the session.
+							$expected_texts[] = array(
+								'text'   => (string) $edit['text'],
+								'status' => $status,
+							);
 						}
 					}
 				}
@@ -254,11 +313,16 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 					// against the server head as of this point.
 					$observed_head[ $client ]     = $head;
 					$observed_versions[ $client ] = $attr_version;
+					if ( $is_yjs ) {
+						// Applying the delivered rows into the client CRDT is
+						// client work — untimed, like authoring.
+						self::apply_yjs_rows( $ydocs[ $client ], $response['updates'] ?? array() );
+					}
 
 					// The nominated relay client answers should_compact with a
 					// full-state snapshot at its cursor — a real, timed request
 					// the deployed protocol makes (compaction is not free).
-					if ( ! $is_intent && ! empty( $response['should_compact'] ) ) {
+					if ( ! $is_intent && ! $is_yjs && ! empty( $response['should_compact'] ) ) {
 						$compaction   = array(
 							array(
 								'type' => 'compaction',
@@ -287,6 +351,9 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 				$read_us[]              = ( hrtime( true ) - $start ) / 1e3;
 				$response_b[]           = strlen( (string) wp_json_encode( $response['updates'] ?? array() ) );
 				$read_cursor[ $client ] = (int) ( $response['end_cursor'] ?? $read_cursor[ $client ] );
+				if ( $is_yjs ) {
+					self::apply_yjs_rows( $ydocs[ $client ], $response['updates'] ?? array() );
+				}
 			}
 			for ( $i = 0; $i < self::IDLE_POLLS_PER_CLIENT; $i++ ) {
 				for ( $client = 0; $client < $client_count; $client++ ) {
@@ -313,15 +380,30 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 					$expected_align
 				);
 				$converged            = array() === $convergence_failures;
+			} elseif ( $is_yjs ) {
+				$server_content       = (string) $engine->materialize( $room );
+				$convergence_failures = self::verify_crdt_convergence(
+					$server_content,
+					(int) $workload['paragraphs'],
+					$expected_texts,
+					$ydocs
+				);
+				$converged            = array() === $convergence_failures;
 			}
 
 			$total_edits = count( $service_us );
+			$profile     = 'opaque-relay';
+			if ( $is_intent ) {
+				$profile = 'intent-log';
+			} elseif ( $is_yjs ) {
+				$profile = 'yjs-server';
+			}
 			return array(
 				'engine'              => $slug,
 				// Authoring profile: how the runner speaks to the engine.
 				// Engines without a dedicated profile get the relay-style
 				// opaque updates and unobservable quality.
-				'profile'             => $is_intent ? 'intent-log' : 'opaque-relay',
+				'profile'             => $profile,
 				'scenario'            => $workload['scenario'],
 				'rounds'              => count( $workload['rounds'] ),
 				'clients'             => $client_count,
@@ -345,7 +427,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 					'compactions' => $compactions,
 				),
 				'quality'             => array(
-					'observable'           => $is_intent,
+					'observable'           => $is_intent || $is_yjs,
 					'converged'            => $converged,
 					'convergence_failures' => array_slice( $convergence_failures, 0, 5 ),
 					'dispositions'         => $dispositions,
@@ -427,6 +509,147 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 			}
 
 			return $failures;
+		}
+
+		/**
+		 * Applies a room response's rows to a client-side y-php document
+		 * (snapshot rows carry `{ doc: <base64 V2> }`; update rows carry the
+		 * base64 V2 update directly).
+		 *
+		 * @param \Yjs\Utils\Doc $doc  Client document.
+		 * @param array           $rows Typed rows from get_updates_since().
+		 */
+		private static function apply_yjs_rows( $doc, array $rows ): void {
+			foreach ( $rows as $row ) {
+				if ( 'snapshot' === ( $row['type'] ?? '' ) ) {
+					$decoded = json_decode( (string) $row['data'], true );
+					if ( is_array( $decoded ) && is_string( $decoded['doc'] ?? null ) ) {
+						\Yjs\applyUpdateV2( $doc, \Yjs\Lib0\Buffer::fromBase64( $decoded['doc'] ) );
+					}
+				} elseif ( 'update' === ( $row['type'] ?? '' ) ) {
+					\Yjs\applyUpdateV2( $doc, \Yjs\Lib0\Buffer::fromBase64( (string) $row['data'] ) );
+				}
+			}
+		}
+
+		/**
+		 * Checks CRDT convergence: after full catch-up, every client's
+		 * document must be identical (the CRDT guarantee), the server's
+		 * materialized content must carry every applied text token exactly
+		 * once (text merges are lossless — nothing lost), keep the block
+		 * structure intact, and agree with the converged documents on each
+		 * attribute register. Attribute conflicts resolve by CRDT rules
+		 * (deterministic, but NOT server arrival order), so the oracle for
+		 * them is the converged client state, not the submission log.
+		 *
+		 * @param string $content         Materialized post content.
+		 * @param int    $paragraph_count Paragraphs the document started with.
+		 * @param array  $expected_texts  List of array( 'text', 'status' ).
+		 * @param array  $ydocs           Caught-up client documents.
+		 * @return array Failures (empty when converged).
+		 */
+		public static function verify_crdt_convergence( string $content, int $paragraph_count, array $expected_texts, array $ydocs ): array {
+			if ( '' === $content ) {
+				return array(
+					array(
+						'check'  => 'materialize',
+						'detail' => 'materialized content is empty',
+					),
+				);
+			}
+
+			$failures = array();
+
+			// All clients converged to the same document.
+			$fingerprints = array();
+			foreach ( $ydocs as $client => $doc ) {
+				$fingerprints[ $client ] = wp_json_encode(
+					self::normalize_for_compare( $doc->getMap( 'document' )->toJSON() )
+				);
+			}
+			if ( count( array_unique( $fingerprints ) ) > 1 ) {
+				$failures[] = array(
+					'check'  => 'client-convergence',
+					'detail' => 'client documents diverged after full catch-up',
+				);
+			}
+
+			$blocks = array_values(
+				array_filter(
+					parse_blocks( $content ),
+					static function ( $block ) {
+						return 'core/paragraph' === ( $block['blockName'] ?? null );
+					}
+				)
+			);
+			if ( count( $blocks ) !== $paragraph_count ) {
+				$failures[] = array(
+					'check'  => 'structure',
+					'detail' => sprintf( 'expected %d paragraph blocks, found %d', $paragraph_count, count( $blocks ) ),
+				);
+			}
+
+			foreach ( $expected_texts as $entry ) {
+				$found = substr_count( $content, $entry['text'] );
+				if ( 'applied' === $entry['status'] && 1 !== $found ) {
+					$failures[] = array(
+						'check'  => 'applied-text',
+						'detail' => sprintf( "applied token '%s' found %d times (expected exactly 1)", $entry['text'], $found ),
+					);
+				}
+			}
+
+			// The materialized attribute registers match the converged CRDT
+			// state (client 0 is representative once client convergence held).
+			$reference = reset( $ydocs );
+			if ( $reference ) {
+				$yblocks = $reference->getMap( 'document' )->get( 'blocks' );
+				for ( $i = 0; $i < min( $paragraph_count, count( $blocks ) ); $i++ ) {
+					$expected = null;
+					try {
+						$expected = $yblocks->get( $i )->get( 'attributes' )->get( 'align' );
+					} catch ( \Throwable $e ) {
+						$expected = null;
+					}
+					if ( ! is_string( $expected ) ) {
+						// A never-set key comes back as y-php's UndefinedValue
+						// singleton: an absent register.
+						$expected = null;
+					}
+					$actual = $blocks[ $i ]['attrs']['align'] ?? null;
+					if ( $actual !== $expected ) {
+						$failures[] = array(
+							'check'  => 'attr-register',
+							'detail' => sprintf( "paragraph %d align is '%s', converged CRDT value is '%s'", $i, (string) $actual, (string) $expected ),
+						);
+					}
+				}
+			}
+
+			return $failures;
+		}
+
+		/**
+		 * Normalizes y-php toJSON() output for comparison: stdClass becomes
+		 * a key-sorted array recursively, so map key iteration order (which
+		 * can differ between replicas) does not affect equality.
+		 *
+		 * @param mixed $value JSON value.
+		 * @return mixed Normalized value.
+		 */
+		private static function normalize_for_compare( $value ) {
+			if ( $value instanceof \stdClass ) {
+				$value = (array) $value;
+			}
+			if ( is_array( $value ) ) {
+				foreach ( $value as $key => $item ) {
+					$value[ $key ] = self::normalize_for_compare( $item );
+				}
+				if ( array_keys( $value ) !== range( 0, count( $value ) - 1 ) ) {
+					ksort( $value );
+				}
+			}
+			return $value;
 		}
 
 		/**

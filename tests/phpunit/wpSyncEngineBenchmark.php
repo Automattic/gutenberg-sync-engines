@@ -207,4 +207,87 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 		$c = WP_Sync_Bench_Workload::build( 'mixed-newsroom', 124, 10, 3, 5 );
 		$this->assertNotSame( $a['rounds'], $c['rounds'] );
 	}
+
+	/**
+	 * Runs a workload for one scenario against the yjs-server engine
+	 * (the real-Yjs authoring profile).
+	 *
+	 * @param string $scenario Scenario slug.
+	 * @param int    $rounds   Rounds.
+	 * @param int    $clients  Clients.
+	 * @return array Report.
+	 */
+	private function run_yjs_server( string $scenario, int $rounds = 8, int $clients = 3 ): array {
+		$workload = WP_Sync_Bench_Workload::build( $scenario, 7, $rounds, $clients, 4 );
+		$post_id  = self::factory()->post->create(
+			array( 'post_content' => $workload['post_content'] )
+		);
+		$storage  = new WP_Sync_Bench_Memory_Storage();
+		$engine   = new WP_Yjs_Server_Engine( $storage );
+		return WP_Sync_Bench_Runner::run( $engine, $storage, $post_id, $workload );
+	}
+
+	public function test_yjs_server_gets_the_real_yjs_profile_and_observable_quality() {
+		$report = $this->run_yjs_server( 'parallel-paragraphs' );
+
+		$this->assertSame( 'yjs-server', $report['engine'] );
+		$this->assertSame( 'yjs-server', $report['profile'] );
+		// The server merges, so quality IS observable — the relay's
+		// structural limitation does not apply here.
+		$this->assertTrue( $report['quality']['observable'] );
+		$this->assertTrue( $report['quality']['converged'] );
+		$this->assertSame( array(), $report['quality']['convergence_failures'] );
+		$this->assertSame( 0, $report['quality']['lost_work'] );
+		// Clean parallel edits all merge.
+		$this->assertSame( $report['requests'], $report['quality']['dispositions']['applied'] );
+		// Real Yjs payloads, real storage bytes.
+		$this->assertGreaterThan( 0, $report['payload_bytes']['request_p50'] );
+		$this->assertGreaterThan( 0, $report['storage']['bytes'] );
+	}
+
+	public function test_yjs_server_contended_paragraph_merges_silently_and_converges() {
+		$report = $this->run_yjs_server( 'contended-paragraph' );
+
+		// The CRDT auto-merges register conflicts (last-writer-wins by CRDT
+		// rules) instead of escalating — the policy difference with
+		// intent-log, reported honestly: zero escalations, still converged,
+		// no text lost.
+		$this->assertSame( 0, $report['quality']['dispositions']['escalated'] );
+		$this->assertSame( 0.0, $report['quality']['escalation_rate'] );
+		$this->assertTrue( $report['quality']['converged'] );
+		$this->assertSame( array(), $report['quality']['convergence_failures'] );
+		$this->assertSame( 0, $report['quality']['lost_work'] );
+	}
+
+	public function test_yjs_server_laggy_clients_converge() {
+		// The laggy client reads every 10th round: it authors from stale
+		// state and its catch-up reads replay deep tails.
+		$report = $this->run_yjs_server( 'laggy-newsroom', 30, 4 );
+
+		$this->assertTrue( $report['quality']['converged'] );
+		$this->assertSame( array(), $report['quality']['convergence_failures'] );
+		$this->assertSame( 0, $report['quality']['lost_work'] );
+	}
+
+	public function test_yjs_server_checkpoints_bound_storage_without_client_help() {
+		$interval = static function () {
+			return 20;
+		};
+		add_filter( 'wp_sync_yjs_server_checkpoint_interval', $interval );
+
+		try {
+			// 40 rounds x 3 clients = 120 updates against a 20-row interval.
+			$report = $this->run_yjs_server( 'parallel-paragraphs', 40, 3 );
+
+			// No client compactions (should_compact never fires)…
+			$this->assertSame( 0, $report['storage']['compactions'] );
+			// …yet the room stays bounded: the server checkpointed and
+			// trimmed by itself.
+			$this->assertLessThan( 60, $report['storage']['rows'] );
+			$this->assertTrue( $report['quality']['converged'] );
+			$this->assertSame( 0, $report['quality']['lost_work'] );
+		} finally {
+			remove_filter( 'wp_sync_yjs_server_checkpoint_interval', $interval );
+		}
+	}
 }

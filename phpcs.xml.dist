@@ -9,6 +9,9 @@
 	<exclude-pattern>/build/*</exclude-pattern>
 	<!-- The pinned Gutenberg subtree is vendored runtime, not this plugin's code. -->
 	<exclude-pattern>/gutenberg/*</exclude-pattern>
+	<!-- Vendored y-php library (deliberately mirrors JS Yjs, not WPCS; it
+	     carries its own phpcs.xml.dist). -->
+	<exclude-pattern>/includes/lib/y-php/*</exclude-pattern>
 	<!-- Frozen JS engine core + vectors are not PHP. -->
 	<exclude-pattern>*/engines/intent-log/*.js</exclude-pattern>
 
@@ -43,6 +46,7 @@
 				     keep their framework-canonical WP_* names. -->
 				<element value="WP_Intent_Log"/>
 				<element value="WP_Yjs_Relay"/>
+				<element value="WP_Yjs_Server"/>
 				<element value="WP_HTTP_Polling"/>
 				<element value="WP_HTTP_Long_Polling"/>
 				<element value="WP_WebSocket"/>
