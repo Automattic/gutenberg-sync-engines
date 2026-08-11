@@ -65,6 +65,10 @@ The framework/plugin split is complete: the framework ships **neither** engines
   Jest) and `tests/phpunit/test-vectors/` (replayed by PHPUnit) — kept
   byte-identical by `tests/js/engines/intent-log/vector-parity.test.js`;
   regenerate with the `tests/tools/` scripts and always update both.
+- `docs/engine-comparison.md` — the engine comparison guide: parity table,
+  host resource profiles, measured transport numbers, known gaps. The
+  interpretation layer over both benchmark harnesses; keep it current when
+  engine capabilities or benchmarks change.
 - `PORTING.md` — historical record of the client-side split (mostly DONE).
 
 ## The `gutenberg/` subtree

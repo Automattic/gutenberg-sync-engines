@@ -35,6 +35,11 @@ The active engine and transport are chosen on the plugin's **Settings →
 Collaboration** screen (or via `wp_sync_engine` / the
 `WP_COLLABORATION_TRANSPORT` config value).
 
+**Comparing the engines?** Start with
+[`docs/engine-comparison.md`](docs/engine-comparison.md) — the feature
+parity table, host-facing resource profiles, measured transport numbers,
+and the known gaps that should color any conclusion.
+
 ## Architecture
 
 Both axes are independent registries with a client/server handshake: the
