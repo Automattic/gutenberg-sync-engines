@@ -98,6 +98,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			require_once $engines . 'intent-log/class-wp-intent-log-rich-text.php';
 			require_once $engines . 'intent-log/class-wp-intent-log-engine.php';
 			require_once $engines . 'yjs-relay/class-wp-yjs-relay-engine.php';
+			require_once $engines . 'yjs-server/class-wp-yjs-server-engine.php';
 
 			$transports = GUTENBERG_SYNC_ENGINES_PATH . 'includes/transports/';
 			require_once $transports . 'class-wp-http-polling-sync-server.php';
@@ -141,6 +142,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 		 */
 		public function register_engines( array $engines, WP_Sync_Storage $storage ): array {
 			$engines[] = new WP_Yjs_Relay_Engine( $storage );
+			$engines[] = new WP_Yjs_Server_Engine( $storage );
 			$engines[] = new WP_Intent_Log_Engine( $storage );
 			return $engines;
 		}

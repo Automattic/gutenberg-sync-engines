@@ -46,6 +46,7 @@
 				     keep their framework-canonical WP_* names. -->
 				<element value="WP_Intent_Log"/>
 				<element value="WP_Yjs_Relay"/>
+				<element value="WP_Yjs_Server"/>
 				<element value="WP_HTTP_Polling"/>
 				<element value="WP_HTTP_Long_Polling"/>
 				<element value="WP_WebSocket"/>
