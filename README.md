@@ -124,11 +124,12 @@ type-checking against the Gutenberg checkout.
 
 ### Benchmarks and tools
 
-- `tests/benchmarks/` — a server-side engine benchmark harness: it drives both
-  engines through the production ingest/read seam and reports service-time
-  percentiles, payload and storage growth, and (for intent-log) merge-quality
-  metrics. See `tests/benchmarks/README.md` for how to run it and how to read
-  the numbers.
+- `tests/benchmarks/` — a server-side engine benchmark harness: it drives any
+  registered engine through the production ingest/read seam and reports
+  service-time percentiles, payload and storage growth, and (for intent-log)
+  merge-quality metrics; `compare.js` renders multiple runs side by side.
+  See `tests/benchmarks/README.md` for how to run it and how to read the
+  numbers.
 - `tests/benchmarks/transport/` — a transport experience benchmark: two real
   browser clients measure edit-to-visible propagation latency and wire
   traffic (editing + idle) per transport. See its README.

@@ -6,13 +6,23 @@ transport makes — so the numbers are the real engine's, not a model's. It
 exists to make the architecture decision (which engine, or keep both) a
 matter of evidence.
 
-Two engines are registered today:
+Engines are resolved through the framework's registry (the
+`wp_sync_engines` filter), so **any engine registered by an active plugin is
+benchmarkable by slug** — run with an unknown slug to list what's
+registered. This plugin registers two:
 
 - **`intent-log`** (`WP_Intent_Log_Engine`) — server-authoritative: the
   server transforms each edit against the log, so it can report exactly how
   every edit settled.
 - **`yjs-relay`** (`WP_Yjs_Relay_Engine`) — a dumb relay: the merge happens
   in each client's CRDT, so the server never sees the outcome.
+
+The runner speaks to intent-log in typed intents (and scores quality);
+every other engine gets the **opaque-relay profile** — relay-convention
+`update`/`compaction` blobs with quality reported as not server-observable.
+A third-party relay-style engine benchmarks meaningfully out of the box; an
+engine with its own wire vocabulary will void the generic updates, and the
+dispositions/storage counts will show that rather than fake a result.
 
 ## What it measures
 
@@ -131,6 +141,22 @@ across reps. Add `json=out.json` to also write the full report, which
 includes an `environment` stanza (PHP/WP/DB versions, opcache) and the
 `calibration` block — always quote those when comparing runs from different
 machines.
+
+### Comparing runs
+
+`compare.js` renders any number of `json=` outputs side by side — engine
+runs, transport-benchmark runs (`tests/benchmarks/transport/`), or a mix;
+each kind gets its own table, one column per run:
+
+```bash
+node tests/benchmarks/compare.js intent.json relay.json            # console
+node tests/benchmarks/compare.js intent.json relay.json md=1      # Markdown
+```
+
+It warns when engine runs used different workloads (scenario/seed/rounds/
+clients/paragraphs) or environments (PHP/DB/opcache) — those numbers are
+not directly comparable, and the warning says so instead of silently lining
+them up.
 
 ## Reading the results
 

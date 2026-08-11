@@ -61,11 +61,11 @@ module.exports = {
 		},
 		{
 			// Node CLI scripts (vector generators, simulator sweep, manual
-			// two-tab observer, transport benchmark) — they print to stdout
-			// by design.
+			// two-tab observer, benchmark tools) — they print to stdout by
+			// design.
 			files: [
 				'tests/tools/**/*.{js,mjs}',
-				'tests/benchmarks/transport/**/*.mjs',
+				'tests/benchmarks/**/*.{js,mjs}',
 			],
 			env: {
 				es2021: true,

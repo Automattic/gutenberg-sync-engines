@@ -167,11 +167,16 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 							),
 						);
 					} else {
-						// Relay: an opaque client-computed update of comparable
-						// size (a real yjs update for a few inserted chars).
+						// Opaque-relay profile (yjs-relay and any engine
+						// without a dedicated authoring profile): an opaque
+						// client-computed update of comparable size (a real
+						// yjs update for a few inserted chars). The literal
+						// 'update'/'compaction' types are the relay
+						// convention; an engine that rejects them will show
+						// it in the dispositions/storage counts.
 						$updates = array(
 							array(
-								'type' => WP_Yjs_Relay_Engine::UPDATE_TYPE_UPDATE,
+								'type' => 'update',
 								'data' => base64_encode( 'yjs-update:' . $edit['text'] . str_repeat( "\x01", 24 ) ),
 							),
 						);
@@ -256,7 +261,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 					if ( ! $is_intent && ! empty( $response['should_compact'] ) ) {
 						$compaction   = array(
 							array(
-								'type' => WP_Yjs_Relay_Engine::UPDATE_TYPE_COMPACTION,
+								'type' => 'compaction',
 								'data' => base64_encode( 'yjs-compaction:' . str_repeat( "\x01", $relay_doc_bytes ) ),
 							),
 						);
@@ -313,6 +318,10 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 			$total_edits = count( $service_us );
 			return array(
 				'engine'              => $slug,
+				// Authoring profile: how the runner speaks to the engine.
+				// Engines without a dedicated profile get the relay-style
+				// opaque updates and unobservable quality.
+				'profile'             => $is_intent ? 'intent-log' : 'opaque-relay',
 				'scenario'            => $workload['scenario'],
 				'rounds'              => count( $workload['rounds'] ),
 				'clients'             => $client_count,

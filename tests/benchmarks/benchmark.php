@@ -66,8 +66,16 @@ if ( ! array_key_exists( $scenario, WP_Sync_Bench_Workload::scenarios() ) ) {
 	fwrite( STDERR, 'Scenarios: ' . implode( ', ', array_keys( WP_Sync_Bench_Workload::scenarios() ) ) . "\n" );
 	exit( 1 );
 }
-if ( ! in_array( $engine_slug, array( 'intent-log', 'yjs-relay' ), true ) ) {
-	fwrite( STDERR, "Unknown engine: {$engine_slug} (intent-log | yjs-relay)\n" );
+// Engines are resolved through the framework's registry (the
+// `wp_sync_engines` filter), so any engine registered by an active plugin —
+// including third-party ones — is benchmarkable by slug. Engines other than
+// intent-log are driven with relay-convention opaque updates (see the
+// runner's authoring profiles); the intent log gets typed intents and the
+// quality oracle.
+$wp_sync_bench_engine_slugs = ( new WP_Sync_Engine_Registry( new WP_Sync_Bench_Memory_Storage() ) )->get_engine_slugs();
+if ( ! in_array( $engine_slug, $wp_sync_bench_engine_slugs, true ) ) {
+	fwrite( STDERR, "Unknown engine: {$engine_slug}\n" );
+	fwrite( STDERR, 'Registered engines: ' . ( $wp_sync_bench_engine_slugs ? implode( ', ', $wp_sync_bench_engine_slugs ) : '(none — is the engine plugin active?)' ) . "\n" );
 	exit( 1 );
 }
 
@@ -121,9 +129,7 @@ $wp_sync_bench_fingerprints = array();
 $report                     = null;
 for ( $wp_sync_bench_rep = 0; $wp_sync_bench_rep < $reps; $wp_sync_bench_rep++ ) {
 	$storage = new WP_Sync_Bench_Memory_Storage();
-	$engine  = 'yjs-relay' === $engine_slug
-		? new WP_Yjs_Relay_Engine( $storage )
-		: new WP_Intent_Log_Engine( $storage );
+	$engine  = ( new WP_Sync_Engine_Registry( $storage ) )->get_engine( $engine_slug );
 
 	$post_id = wp_insert_post(
 		array(
@@ -280,6 +286,12 @@ if ( $q['observable'] ) {
 	}
 } else {
 	printf( "quality: NOT SERVER-OBSERVABLE (client-side CRDT merge)\n" );
+}
+if ( 'opaque-relay' === ( $report['profile'] ?? '' ) && 'yjs-relay' !== $engine_slug ) {
+	printf(
+		"note: engine '%s' has no dedicated authoring profile — driven with relay-convention opaque updates ('update'/'compaction'); if the engine rejects them, the dispositions/storage counts above reflect that.\n",
+		$engine_slug
+	);
 }
 
 if ( ! empty( $wp_sync_bench_opts['json'] ) ) {
