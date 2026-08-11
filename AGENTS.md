@@ -35,7 +35,24 @@ The framework/plugin split is complete: the framework ships **neither** engines
 
 - `gutenberg-sync-engines.php` — plugin entry.
 - `includes/` — server PHP: `engines/{intent-log,yjs-relay}/`,
-  `transports/{...,websocket/}`, `admin/` (the Collaboration settings screen).
+  `transports/{...,websocket/}`, `admin/` (the Collaboration settings screen),
+  and `lib/`:
+  - `lib/y-php/` — **vendored y-php** (PHP port of Yjs 13.6.31), imported
+    verbatim from <https://github.com/alecgeatches/y-php> (MIT; upstream
+    commit recorded in the import commit). Excluded from our phpcs (it
+    deliberately mirrors JS Yjs style and carries its own configs). Its own
+    conformance suite runs in CI:
+    `composer --working-dir=includes/lib/y-php install && composer
+    --working-dir=includes/lib/y-php test` (~4 s, no WordPress needed).
+    Treat it like the frozen intent-log core: don't casually edit — its
+    contract is byte-parity with JS Yjs, enforced by translated upstream
+    tests + fixtures generated from the real JS implementation.
+  - `lib/yjs/tests/compatibility.tests.js` — single fixture file from JS
+    Yjs v13.6.31 (MIT), vendored at the sibling path y-php's
+    CompatibilityTest expects.
+  - `lib/y-php-loader.php` — lazy runtime loader (PSR-4 autoloader +
+    Composer-`files` equivalents) so the plugin can use y-php without a
+    Composer autoloader.
 - `src/` — client JS/TS (webpack entry `src/index.ts` → `build/sync-engines.js`,
   externalizes `@wordpress/sync`→`wp.sync` and `yjs`→`wp.sync.Y`):
   - `engines/intent-log/` — the **frozen cross-language core** (byte-matched

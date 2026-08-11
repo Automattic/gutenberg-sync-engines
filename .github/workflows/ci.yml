@@ -71,6 +71,14 @@ jobs:
       - name: Install PHP dependencies
         run: composer install --no-progress
 
+      # The vendored y-php library's own conformance suite: translated
+      # upstream Yjs tests plus byte-level fixtures generated from the JS
+      # implementation. Runs on the runner's PHP directly (no WordPress).
+      - name: y-php conformance
+        run: |
+          composer --working-dir=includes/lib/y-php install --no-progress
+          composer --working-dir=includes/lib/y-php test
+
       # The PHP test path loads the subtree's PHP directly (framework
       # first, then this plugin — see tests/bootstrap.php); it does not
       # need the subtree's JS built.
