@@ -5,17 +5,14 @@
  *
  * Two modes, selected by --mode=<websockets|http>:
  *
- *   websockets: mount the test WebSocket provider plugin into the dev
- *   wp-env, activate it, then run the same y-websocket sync server the
- *   e2e suite uses. Open http://localhost:8888/wp-admin in two browser
- *   windows to collaborate over WebSockets.
+ *   websockets: build and activate the test WebSocket provider plugin
+ *   (mounted permanently via this repo's .wp-env.json), then run the same
+ *   y-websocket sync server the e2e suite uses. Open
+ *   http://localhost:8888/wp-admin in two browser windows to collaborate
+ *   over WebSockets.
  *
- *   http: tear that down so RTC falls back to the built-in HTTP polling
- *   provider. Deactivates the plugin and removes the mount.
- *
- * The mount lives in .wp-env.override.json (gitignored, auto-merged by
- * wp-env) so we never touch the checked-in .wp-env.json. Other override
- * entries the user already has are preserved.
+ *   http: tear that down so RTC falls back to the HTTP polling transport.
+ *   Deactivates the provider plugin.
  */
 
 import { spawn } from 'node:child_process';
@@ -31,13 +28,10 @@ const __dirname = path.dirname( __filename );
 const REPO_ROOT = path.resolve( __dirname, '../../..' );
 const PROVIDER_DIR = path.join(
 	REPO_ROOT,
-	'packages/e2e-tests/plugins/rtc-websocket-provider'
+	'tests/e2e/plugins/rtc-websocket-provider'
 );
 const WS_SERVER_SCRIPT = path.join( __dirname, 'rtc-test-ws-sync-server.mjs' );
-const OVERRIDE_FILE = path.join( REPO_ROOT, '.wp-env.override.json' );
-const MOUNT_TARGET = 'wp-content/plugins/gutenberg-test-plugins';
-const MOUNT_SOURCE = './packages/e2e-tests/plugins';
-const PLUGIN_SLUG = 'gutenberg-test-plugins/rtc-websocket-provider';
+const PLUGIN_SLUG = 'sync-engines-test-plugins/rtc-websocket-provider';
 
 const DEFAULT_WS_PORT = 18991;
 const WS_PORT = Number.parseInt(
@@ -56,80 +50,6 @@ function parseMode() {
 		);
 	}
 	return mode;
-}
-
-async function readOverride() {
-	try {
-		const raw = await fs.readFile( OVERRIDE_FILE, 'utf8' );
-		const parsed = JSON.parse( raw );
-		if (
-			parsed &&
-			typeof parsed === 'object' &&
-			! Array.isArray( parsed )
-		) {
-			return parsed;
-		}
-		throw new Error(
-			`${ OVERRIDE_FILE } is not a JSON object; refusing to edit.`
-		);
-	} catch ( error ) {
-		if ( error.code === 'ENOENT' ) {
-			return null;
-		}
-		throw error;
-	}
-}
-
-async function writeOverride( data ) {
-	const isEmpty =
-		! data ||
-		( Object.keys( data ).length === 0 && data.constructor === Object );
-
-	if ( isEmpty ) {
-		try {
-			await fs.unlink( OVERRIDE_FILE );
-		} catch ( error ) {
-			if ( error.code !== 'ENOENT' ) {
-				throw error;
-			}
-		}
-		return;
-	}
-
-	await fs.writeFile(
-		OVERRIDE_FILE,
-		JSON.stringify( data, null, '\t' ) + '\n'
-	);
-}
-
-async function ensureMountAdded() {
-	const existing = ( await readOverride() ) || {};
-	const mappings = { ...( existing.mappings || {} ) };
-	if ( mappings[ MOUNT_TARGET ] === MOUNT_SOURCE ) {
-		return false;
-	}
-	mappings[ MOUNT_TARGET ] = MOUNT_SOURCE;
-	await writeOverride( { ...existing, mappings } );
-	return true;
-}
-
-async function ensureMountRemoved() {
-	const existing = await readOverride();
-	if ( ! existing || ! existing.mappings ) {
-		return false;
-	}
-	if ( ! ( MOUNT_TARGET in existing.mappings ) ) {
-		return false;
-	}
-	const { [ MOUNT_TARGET ]: removed, ...rest } = existing.mappings;
-	const next = { ...existing };
-	if ( Object.keys( rest ).length > 0 ) {
-		next.mappings = rest;
-	} else {
-		delete next.mappings;
-	}
-	await writeOverride( next );
-	return true;
 }
 
 function runCommand( command, args, options = {} ) {
@@ -197,14 +117,7 @@ async function writeRuntimeConfig() {
 }
 
 async function runWebSocketsMode() {
-	const mountAdded = await ensureMountAdded();
-	if ( mountAdded ) {
-		process.stdout.write(
-			'Added mount to .wp-env.override.json. Restarting wp-env... '
-		);
-	} else {
-		process.stdout.write( 'Ensuring wp-env is running... ' );
-	}
+	process.stdout.write( 'Ensuring wp-env is running... ' );
 	await runCommand( 'npx', [ 'wp-env', 'start' ] );
 	process.stdout.write( 'done\n' );
 
@@ -251,17 +164,6 @@ async function runHttpMode() {
 		allowFailure: true,
 	} );
 	process.stdout.write( 'done\n' );
-
-	const mountRemoved = await ensureMountRemoved();
-	if ( mountRemoved ) {
-		process.stdout.write(
-			'Removed mount from .wp-env.override.json. Restarting wp-env... '
-		);
-		await runCommand( 'npx', [ 'wp-env', 'start' ] );
-		process.stdout.write( 'done\n' );
-	} else {
-		process.stdout.write( 'No mount to remove.\n' );
-	}
 
 	process.stdout.write(
 		'\nRTC switched to HTTP polling (default). http://localhost:8888/wp-admin\n'

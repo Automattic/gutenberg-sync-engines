@@ -1,7 +1,7 @@
 /**
  * WebSocket-provider-specific globalSetup pieces.
  *
- * Kept in its own module so test/e2e/config/global-setup.ts doesn't have
+ * Kept in its own module so tests/e2e/config/global-setup.ts doesn't have
  * to carry the bundle build, runtime-config write, and sync-server reset
  * machinery the WS suite needs. Activated by playwright.rtc-websocket.config.ts
  * via the GUTENBERG_RTC_TEST_WS_PROVIDER env var.
@@ -22,10 +22,7 @@ import type { RequestUtils } from '@wordpress/e2e-test-utils-playwright';
 const PROVIDER_PLUGIN = 'gutenberg-test-plugin-rtc-websocket-provider';
 
 function getProviderPluginDir() {
-	return path.resolve(
-		__dirname,
-		'../../../packages/e2e-tests/plugins/rtc-websocket-provider'
-	);
+	return path.resolve( __dirname, '../plugins/rtc-websocket-provider' );
 }
 
 function getResolvedWsUrl() {

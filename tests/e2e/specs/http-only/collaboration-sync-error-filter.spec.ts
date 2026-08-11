@@ -1,9 +1,12 @@
 /**
  * Internal dependencies
  */
-import { test, expect } from '../fixtures';
-import { SECOND_USER } from '../fixtures/collaboration-utils';
-import type { UserCredentials } from '../fixtures/collaboration-utils';
+import {
+	test,
+	expect,
+} from '../../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures';
+import { SECOND_USER } from '../../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures/collaboration-utils';
+import type { UserCredentials } from '../../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures/collaboration-utils';
 
 const BASE_URL = process.env.WP_BASE_URL || 'http://localhost:8889';
 

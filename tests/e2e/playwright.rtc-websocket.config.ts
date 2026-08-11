@@ -1,4 +1,12 @@
 /**
+ * Playwright config for the WebSocket-transport collaboration e2e.
+ *
+ * Extends the default plugin config (`./playwright.config.ts`) and runs only
+ * the specs under `specs/websocket-only/`, with the test WebSocket provider
+ * plugin activated by globalSetup (via GUTENBERG_RTC_TEST_WS_PROVIDER) and
+ * the y-websocket sync server started as a second webServer. The default
+ * config ignores `websocket-only/` so these specs run only here.
+ *
  * External dependencies
  */
 import { defineConfig, type PlaywrightTestConfig } from '@playwright/test';
@@ -26,26 +34,10 @@ if ( Array.isArray( baseConfig.webServer ) ) {
 	baseWebServer.push( baseConfig.webServer );
 }
 
-const baseTestIgnore: Array< string | RegExp > = [];
-if ( Array.isArray( baseConfig.testIgnore ) ) {
-	baseTestIgnore.push( ...baseConfig.testIgnore );
-} else if ( baseConfig.testIgnore ) {
-	baseTestIgnore.push( baseConfig.testIgnore );
-}
-const testIgnore = baseTestIgnore.filter(
-	( ignore ) => ignore !== '**/specs/editor/collaboration/websocket-only/**'
-);
-
 const config = defineConfig( {
 	...baseConfig,
-	// Run the shared RTC specs plus anything WebSocket-specific under
-	// `websocket-only/`, with the test WebSocket provider activated by
-	// globalSetup. Specs that exercise HTTP-polling-specific semantics
-	// (connection limits, wp-sync polling responses, document-size
-	// errors that surface via the polling pipeline) live under
-	// `http-only/` and are excluded here.
-	testMatch: '**/specs/editor/collaboration/**/collaboration-*.spec.ts',
-	testIgnore: [ ...testIgnore, '**/specs/editor/collaboration/http-only/**' ],
+	testMatch: '**/specs/websocket-only/**/*.spec.ts',
+	testIgnore: [],
 	webServer: [
 		...baseWebServer,
 		{
