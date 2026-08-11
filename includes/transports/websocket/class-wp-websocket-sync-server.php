@@ -828,7 +828,14 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 		 * @param int|null $exclude_key Client key to skip (the sender), or null.
 		 */
 		private function broadcast_room( string $room, ?int $exclude_key = null ): void {
-			$awareness_map = $this->sync->get_storage()->get_awareness_state( $room );
+			// Convert the raw storage entries to the client_id => state map
+			// clients expect (the shape process_awareness_update() responds
+			// with on the REST transports); the raw entry list crashes the
+			// editor's collaborator UI.
+			$awareness_map = array();
+			foreach ( $this->sync->get_storage()->get_awareness_state( $room ) as $entry ) {
+				$awareness_map[ $entry['client_id'] ] = $entry['state'];
+			}
 
 			foreach ( $this->clients as $other_key => $other ) {
 				if ( $other_key === $exclude_key || ! isset( $other['rooms'][ $room ] ) || ! $other['conn']->is_open() ) {

@@ -79,12 +79,22 @@ describe( 'websocket manager', () => {
 	afterEach( () => {
 		resetWebSocketManagerForTesting();
 		FakeWebSocket.instances = [];
-		delete window._wpCollaborationWebSocketUrl;
+		delete (
+			window as Window & {
+				_wpCollaborationTransportConfig?: unknown;
+			}
+		 )._wpCollaborationTransportConfig;
 		( apiFetch as unknown as jest.Mock ).mockReset();
 	} );
 
 	const setup = () => {
-		window._wpCollaborationWebSocketUrl = 'ws://localhost:8787';
+		(
+			window as Window & {
+				_wpCollaborationTransportConfig?: unknown;
+			}
+		 )._wpCollaborationTransportConfig = {
+			websocket: { url: 'ws://localhost:8787' },
+		};
 		( window as unknown as { WebSocket: unknown } ).WebSocket =
 			FakeWebSocket as unknown;
 		( apiFetch as unknown as jest.Mock ).mockResolvedValue( {

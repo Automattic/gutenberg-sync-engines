@@ -65,13 +65,34 @@ during a run.
 ### The websocket transport
 
 The websocket transport needs the sync-server daemon running on an address
-the *browser* can reach (`WP_SYNC_WEBSOCKET_HOST`/`WP_SYNC_WEBSOCKET_PORT`,
-default `ws://127.0.0.1:8787`). Under wp-env the daemon would run inside the
-container, where its port is not mapped to the host — so benchmarking the
-websocket transport requires a host-reachable daemon (e.g. a non-container
-WordPress install, or a container setup that maps the port). The benchmark
-counts WebSocket frames/bytes and will fail with a clear message when the
-daemon is unreachable (window B never receives the anchor paragraph).
+the *browser* can reach. Under wp-env that takes two pieces:
+
+1. `.wp-env.json` sets `WP_SYNC_WEBSOCKET_HOST` to `localhost` (already in
+   this repo's config) so the announced socket URL shares the site's cookie
+   domain — the daemon authenticates the browser's `logged_in` cookie, and
+   cookies for `localhost:<port>` are not sent to the default `127.0.0.1`.
+2. wp-env cannot publish extra container ports itself, but its generated
+   compose file can. Start the daemon with the port published:
+
+   ```bash
+   docker compose \
+       -f "$(ls -d ~/.wp-env/wp-env-*$(basename "$PWD")*)/docker-compose.yml" \
+       run --rm -p 8787:8787 tests-cli \
+       wp collaboration sync-server --host=0.0.0.0 --port=8787
+   ```
+
+   (`~/.wp-env/<dir>` is the install dir whose `docker-compose.yml` mentions
+   your checkout; `curl localhost:8787/health` should answer `OK`.)
+
+The benchmark then works with `transport=websocket`: it counts WebSocket
+frames/bytes instead of HTTP requests, and fails with a clear message when
+the daemon is unreachable (window B never receives the anchor paragraph).
+
+Known caveat: as of 2026-08-11 the **intent-log engine mangles live typing
+over the websocket transport** (characters drop/reorder in the author's own
+window — the per-keystroke frame cadence exposes a client-session race that
+the HTTP transports' ~1 s batching masks). Benchmark the websocket transport
+under `engine=yjs-relay` until that is fixed.
 
 ## Reading the numbers
 
@@ -92,9 +113,11 @@ daemon is unreachable (window B never receives the anchor paragraph).
   the other's held request — so the idle *request rate* can exceed
   short-polling's (observed ~94 vs ~56 requests/min per window) even though
   each request is short-lived.
-- **websocket**: push latency (no polling floor) and the lowest wire volume,
-  in exchange for the heaviest hosting ask (persistent daemon, TLS
-  termination, exposed port).
+- **websocket**: true push — observed p50 ≈ 30 ms edit-to-visible (~20×
+  better than long-polling, ~60× better than polling) with the lowest idle
+  wire volume by far (~14 frames/idle-30 s per window vs ~28–49 HTTP
+  requests). The price is the heaviest hosting ask: a persistent daemon,
+  TLS termination, and an exposed port.
 
 Latency includes the engine's client-side apply path, so cross-engine runs
 of this benchmark differ for engine reasons too — compare transports under

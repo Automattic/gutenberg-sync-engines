@@ -78,7 +78,16 @@ async function fetchToken(): Promise< string > {
  * @return {string} Socket URL.
  */
 function socketUrl( token: string ): string {
-	const base = window._wpCollaborationWebSocketUrl;
+	// Announced through the framework's `wp_sync_transport_client_config`
+	// filter (hooked by this plugin's PHP half).
+	const transportConfig = (
+		window as Window & {
+			_wpCollaborationTransportConfig?: {
+				websocket?: { url?: string };
+			};
+		}
+	 )._wpCollaborationTransportConfig;
+	const base = transportConfig?.websocket?.url;
 	if ( ! base ) {
 		throw new Error( 'WebSocket URL is not configured' );
 	}

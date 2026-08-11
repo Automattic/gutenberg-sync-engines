@@ -11,7 +11,8 @@
   "autoPort": true,
   "config": {
     "WP_DEBUG": true,
-    "SCRIPT_DEBUG": true
+    "SCRIPT_DEBUG": true,
+    "WP_SYNC_WEBSOCKET_HOST": "localhost"
   },
   "mappings": {
     "wp-content/plugins/gutenberg-sync-engines": "."

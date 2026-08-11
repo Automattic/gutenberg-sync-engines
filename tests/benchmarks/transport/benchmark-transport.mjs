@@ -336,6 +336,8 @@ async function main() {
 	const browser = await chromium.launch( { headless: ! HEADED } );
 	let settings = null;
 	let pageA = null;
+	let pageBRef = null;
+	const consoleErrors = { a: [], b: [] };
 	try {
 		const contextA = await browser.newContext();
 		pageA = await login( contextA );
@@ -353,11 +355,18 @@ async function main() {
 
 		const countersA = attachCounters( pageA );
 
-		// Helper: wait until a window's sync session is live (completed
-		// sync requests observed on the wire).
+		// Helper: wait until a window's sync session is live. HTTP transports
+		// poll repeatedly; a working websocket session makes a single
+		// ws-token request and then talks in frames — count both.
 		const waitForSyncTraffic = async ( page, counters, label ) => {
 			const deadline = Date.now() + 30000;
-			while ( counters.snapshot().requests < 2 ) {
+			const live = () => {
+				const c = counters.snapshot();
+				return (
+					c.requests >= 2 || c.wsFramesSent + c.wsFramesReceived >= 2
+				);
+			};
+			while ( ! live() ) {
 				if ( Date.now() > deadline ) {
 					throw new Error(
 						`Window ${ label } never started syncing (no ` +
@@ -384,8 +393,8 @@ async function main() {
 		// clobbered when the joining peer's session initializes the room.
 		// Typing only once both sessions are live avoids that race.
 		const pageB = await contextB.newPage();
+		pageBRef = pageB;
 		const countersB = attachCounters( pageB );
-		const consoleErrors = { a: [], b: [] };
 		for ( const [ key, page ] of [
 			[ 'a', pageA ],
 			[ 'b', pageB ],
@@ -413,10 +422,35 @@ async function main() {
 
 		// Window A types the anchor paragraph; window B must receive it
 		// through the sync stack — this gates on collaboration working.
-		await pageA
-			.frameLocator( 'iframe[name="editor-canvas"]' )
-			.locator( 'role=button[name="Add default block"i]' )
-			.click();
+		// The canvas may or may not be iframed (theme-dependent).
+		const canvasA = ( await pageA
+			.locator( 'iframe[name="editor-canvas"]' )
+			.count() )
+			? pageA.frameLocator( 'iframe[name="editor-canvas"]' )
+			: pageA;
+		try {
+			await canvasA
+				.locator( 'role=button[name="Add default block"i]' )
+				.click();
+		} catch ( error ) {
+			await pageA
+				.screenshot( { path: 'bench-fail-a.png' } )
+				.catch( () => {} );
+			await pageB
+				.screenshot( { path: 'bench-fail-b.png' } )
+				.catch( () => {} );
+			throw new Error(
+				'Could not click the block appender in window A ' +
+					'(screenshots: bench-fail-a.png / bench-fail-b.png): ' +
+					String( error ).split( '\n' )[ 0 ] +
+					`\n  A console errors: ${ JSON.stringify(
+						consoleErrors.a
+					) }` +
+					`\n  B console errors: ${ JSON.stringify(
+						consoleErrors.b
+					) }`
+			);
+		}
 		await pageA.keyboard.type( 'benchanchor' );
 		try {
 			await pageA.waitForFunction(
@@ -527,14 +561,19 @@ async function main() {
 				.waitForFunction(
 					( t ) => window.__benchSeen[ t ] ?? false,
 					token,
-					{ timeout: 5000 }
+					{
+						timeout: 5000,
+					}
 				)
 				.then( ( handle ) => handle.jsonValue() );
 			const seenAt = await pageB
 				.waitForFunction(
 					( t ) => window.__benchSeen[ t ] ?? false,
 					token,
-					{ timeout: 30000, polling: 100 }
+					{
+						timeout: 30000,
+						polling: 100,
+					}
 				)
 				.then( ( handle ) => handle.jsonValue() );
 			const latency = seenAt - sentAt;
@@ -663,6 +702,21 @@ async function main() {
 			fs.writeFileSync( JSON_PATH, JSON.stringify( summary, null, 2 ) );
 			console.log( `json written: ${ JSON_PATH }` );
 		}
+	} catch ( error ) {
+		// Enrich any failure with the captured console errors and
+		// screenshots — an editor crash (React error boundary) otherwise
+		// surfaces only as an opaque timeout.
+		await pageA
+			?.screenshot( { path: 'bench-fail-a.png' } )
+			.catch( () => {} );
+		await pageBRef
+			?.screenshot( { path: 'bench-fail-b.png' } )
+			.catch( () => {} );
+		error.message +=
+			`\n  A console errors: ${ JSON.stringify( consoleErrors.a ) }` +
+			`\n  B console errors: ${ JSON.stringify( consoleErrors.b ) }` +
+			'\n  screenshots: bench-fail-a.png / bench-fail-b.png';
+		throw error;
 	} finally {
 		const changedSettings =
 			settings &&

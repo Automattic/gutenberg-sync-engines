@@ -124,6 +124,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 		private function register(): void {
 			add_filter( 'wp_sync_engines', array( $this, 'register_engines' ), 10, 2 );
 			add_filter( 'wp_sync_transports', array( $this, 'register_transports' ), 10, 3 );
+			add_filter( 'wp_sync_transport_client_config', array( $this, 'filter_transport_client_config' ), 10, 2 );
 			add_action( 'enqueue_block_editor_assets', array( $this, 'enqueue_editor_assets' ) );
 
 			( new Gutenberg_Sync_Engines_Settings() )->register();
@@ -159,6 +160,31 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			$transports[] = new WP_HTTP_Long_Polling_Sync_Server( $storage, $engines );
 			$transports[] = new WP_WebSocket_Sync_Transport( $storage, $engines );
 			return $transports;
+		}
+
+		/**
+		 * Supplies transport-specific client connection metadata for the
+		 * framework's collaboration announcement
+		 * (`window._wpCollaborationTransportConfig`): the framework carries no
+		 * transport-specific knowledge, so the WebSocket transport's socket
+		 * URL must be announced from here. Without it the client's socket
+		 * provider has no URL to connect to and the websocket transport
+		 * cannot establish a session.
+		 *
+		 * @since 0.1.0
+		 *
+		 * @param array    $config     Client config keyed by transport slug.
+		 * @param string[] $transports Announced transport slugs.
+		 * @return array Config including the socket URL when announced.
+		 */
+		public function filter_transport_client_config( $config, $transports ): array {
+			$config = is_array( $config ) ? $config : array();
+			if ( in_array( WP_WebSocket_Sync_Transport::TRANSPORT_SLUG, (array) $transports, true ) ) {
+				$config[ WP_WebSocket_Sync_Transport::TRANSPORT_SLUG ] = array(
+					'url' => WP_WebSocket_Sync_Transport::get_socket_url(),
+				);
+			}
+			return $config;
 		}
 
 		/**
