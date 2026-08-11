@@ -4,7 +4,8 @@
  *
  * The framework exposes its registration surface through UNLOCKABLE PRIVATE
  * APIs. This plugin unlocks them with the shared consent string and adds:
- *   - engine adapters (intent-log, yjs-relay) via `registerSyncEngine`
+ *   - engine adapters (intent-log, yjs-relay, yjs-server) via
+ *     `registerSyncEngine`
  *   - transport providers (http-polling, http-long-polling, websocket) via
  *     `registerSyncTransport`
  *
@@ -33,6 +34,7 @@ import { privateApis } from '@wordpress/sync';
 import { unlock } from './lock-unlock';
 import { createIntentLogEngineAdapter } from './engines/intent-log-adapter';
 import { createYjsRelayEngineAdapter } from './engines/yjs-relay-adapter';
+import { createYjsServerEngineAdapter } from './engines/yjs-server-adapter';
 import { createHttpPollingProvider } from './providers/http-polling/http-polling-provider';
 import { createHttpLongPollingProvider } from './providers/http-long-polling/http-long-polling-provider';
 import { createWebSocketProvider } from './providers/websocket/websocket-provider';
@@ -42,6 +44,7 @@ const { registerSyncEngine, registerSyncTransport } = unlock( privateApis );
 // Engines: how concurrent edits merge.
 registerSyncEngine( createIntentLogEngineAdapter() );
 registerSyncEngine( createYjsRelayEngineAdapter() );
+registerSyncEngine( createYjsServerEngineAdapter() );
 
 // Transports: how updates move. Each carries the slug + protocol the server
 // announces and negotiates against.
