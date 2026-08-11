@@ -746,10 +746,22 @@ function poll(): void {
 				// full document state to replace all prior updates on the server.
 				if ( room.should_compact ) {
 					roomState.log( 'Server requested compaction update' );
-					roomState.updateQueue.clear();
-					roomState.updateQueue.add(
-						roomState.session.createCompactionUpdate()
-					);
+					try {
+						// Create BEFORE clearing: a session that cannot
+						// compact (e.g. intent-log) throws here, and clearing
+						// first would destroy the queued updates for nothing.
+						const compactionUpdate =
+							roomState.session.createCompactionUpdate();
+						roomState.updateQueue.clear();
+						roomState.updateQueue.add( compactionUpdate );
+					} catch ( error ) {
+						roomState.log(
+							'Failed to create compaction update',
+							{ error },
+							'error',
+							true // force
+						);
+					}
 				} else if ( room.compaction_request ) {
 					// Deprecated
 					roomState.log( 'Server requested (old) compaction update' );
