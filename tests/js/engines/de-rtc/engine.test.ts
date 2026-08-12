@@ -22,7 +22,8 @@ import type { SyncConfig } from '@wordpress/sync';
 // a JSON representation is a faithful stand-in.
 jest.mock( '@wordpress/blocks', () => ( {
 	parse: ( content: string ) => ( content ? JSON.parse( content ) : [] ),
-	serialize: ( blocks: unknown[] ) => JSON.stringify( blocks ),
+	__unstableSerializeAndClean: ( blocks: unknown[] ) =>
+		JSON.stringify( blocks ),
 } ) );
 
 /**
@@ -61,7 +62,8 @@ function snapshotRow( version: string, content: string ) {
 function contentRow(
 	version: string,
 	content: string,
-	authorClientId: number
+	authorClientId: number,
+	proposalId = 'p-x'
 ) {
 	return {
 		type: DE_RTC_CONTENT_TYPE,
@@ -70,7 +72,7 @@ function contentRow(
 			baseVersion: 'v1',
 			content,
 			authorClientId,
-			proposalId: 'p-x',
+			proposalId,
 		} ),
 	};
 }
@@ -122,7 +124,11 @@ describe( 'createDeRtcEngine', () => {
 		const entity = makeEntity();
 		const session = entity.createSession();
 
-		entity.applyLocalChanges( { blocks: [ BLOCK_B ] } as any, 'editor', {} );
+		entity.applyLocalChanges(
+			{ blocks: [ BLOCK_B ] } as any,
+			'editor',
+			{}
+		);
 		expect( syncConfig.applyChangesToCRDTDoc ).not.toHaveBeenCalled();
 
 		session.receiveUpdate( snapshotRow( 'v1', contentOf( BLOCK_A ) ) );
@@ -140,7 +146,11 @@ describe( 'createDeRtcEngine', () => {
 
 		session.receiveUpdate( snapshotRow( 'v1', contentOf( BLOCK_A ) ) );
 
-		entity.applyLocalChanges( { blocks: [ BLOCK_B ] } as any, 'editor', {} );
+		entity.applyLocalChanges(
+			{ blocks: [ BLOCK_B ] } as any,
+			'editor',
+			{}
+		);
 		entity.applyLocalChanges(
 			{ blocks: [ BLOCK_B, BLOCK_C ] } as any,
 			'editor',
@@ -187,7 +197,11 @@ describe( 'createDeRtcEngine', () => {
 		// The next proposal is based on the newly applied version.
 		const sent: any[] = [];
 		session.onLocalUpdate( ( update ) => sent.push( update ) );
-		entity.applyLocalChanges( { blocks: [ BLOCK_B ] } as any, 'editor', {} );
+		entity.applyLocalChanges(
+			{ blocks: [ BLOCK_B ] } as any,
+			'editor',
+			{}
+		);
 		expect( JSON.parse( sent[ 0 ].data ).baseVersion ).toBe( 'v2' );
 	} );
 
@@ -198,7 +212,11 @@ describe( 'createDeRtcEngine', () => {
 		session.onLocalUpdate( ( update ) => sent.push( update ) );
 
 		session.receiveUpdate( snapshotRow( 'v1', contentOf( BLOCK_A ) ) );
-		entity.applyLocalChanges( { blocks: [ BLOCK_B ] } as any, 'editor', {} );
+		entity.applyLocalChanges(
+			{ blocks: [ BLOCK_B ] } as any,
+			'editor',
+			{}
+		);
 		expect( sent ).toHaveLength( 1 );
 
 		// A peer's row arrives while ours is in flight: the local doc must
@@ -228,12 +246,21 @@ describe( 'createDeRtcEngine', () => {
 		session.onLocalUpdate( ( update ) => sent.push( update ) );
 
 		session.receiveUpdate( snapshotRow( 'v1', contentOf( BLOCK_A ) ) );
-		entity.applyLocalChanges( { blocks: [ BLOCK_B ] } as any, 'editor', {} );
+		entity.applyLocalChanges(
+			{ blocks: [ BLOCK_B ] } as any,
+			'editor',
+			{}
+		);
 		expect( sent ).toHaveLength( 1 );
 
-		// The server merged and broadcast OUR proposal.
+		// The server merged and broadcast OUR proposal (echoing its id).
 		session.receiveUpdate(
-			contentRow( 'v2', contentOf( BLOCK_B ), session.clientId )
+			contentRow(
+				'v2',
+				contentOf( BLOCK_B ),
+				session.clientId,
+				JSON.parse( sent[ 0 ].data ).proposalId
+			)
 		);
 
 		// The slot is free: a new local edit proposes against v2.

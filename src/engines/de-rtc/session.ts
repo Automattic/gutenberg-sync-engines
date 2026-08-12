@@ -98,15 +98,19 @@ export function createDeRtcSessionCodec(
 	let isDocListenerAttached = false;
 	let dirty = false;
 	let inFlight = false;
+	let inFlightProposalId: string | null = null;
 	let proposalCounter = 0;
+	let lastProposedContent: string | null = null;
 	let pendingCanonical: { version: string; content: string } | null = null;
 
 	function buildProposal(): EngineUpdate {
 		proposalCounter += 1;
+		lastProposedContent = bridge.buildContent();
+		inFlightProposalId = `p-${ doc.clientID }-${ proposalCounter }`;
 		const payload = {
-			proposalId: `p-${ doc.clientID }-${ proposalCounter }`,
+			proposalId: inFlightProposalId,
 			baseVersion: bridge.lastVersion() ?? '',
-			proposedContent: bridge.buildContent(),
+			proposedContent: lastProposedContent,
 			// The block-native update descriptor is server-derivable; the
 			// engine's "engine-unaware writer" lane authors it on our
 			// behalf. Porting the client-side descriptor builder (and its
@@ -167,11 +171,46 @@ export function createDeRtcSessionCodec(
 				return;
 
 			case DE_RTC_CONTENT_TYPE:
-				if ( decoded.authorClientId === doc.clientID ) {
-					// Our own accepted proposal, merged by the server: the
-					// in-flight slot is free again (dispositions confirm the
-					// same thing when this row and they share a response).
+				if (
+					decoded.authorClientId === doc.clientID &&
+					decoded.proposalId === inFlightProposalId
+				) {
+					// The accepted row for OUR CURRENT proposal, merged by
+					// the server: the in-flight slot is free again
+					// (dispositions confirm the same thing when this row and
+					// they share a response). Rows for older proposals fall
+					// through to the generic path — settling on them would
+					// free the slot early and let a peer row clobber
+					// unproposed local edits.
 					inFlight = false;
+					inFlightProposalId = null;
+					if ( decoded.content === lastProposedContent ) {
+						// Round-tripped unchanged: the doc already holds this
+						// content (plus any NEWER local keystrokes, which an
+						// application would clobber). Advance the version
+						// only, so the next coalesced chunk proposes against
+						// it instead of colliding with our own accepted edit.
+						pendingCanonical = null;
+						bridge.advanceVersion( decoded.version );
+						settleQueued();
+						return;
+					}
+					if (
+						null !== lastProposedContent &&
+						bridge.incorporateCanonicalPreservingLocalEdits(
+							decoded.version,
+							decoded.content,
+							lastProposedContent
+						)
+					) {
+						// The server merged peers' work into our proposal:
+						// adopt their blocks, keep the blocks we edited since
+						// proposing (the next proposal reconciles them), and
+						// rebase onto the new version.
+						pendingCanonical = null;
+						settleQueued();
+						return;
+					}
 				}
 				applyOrDeferCanonical( decoded.version, decoded.content );
 				if ( ! inFlight ) {
@@ -236,14 +275,21 @@ export function createDeRtcSessionCodec(
 		},
 		receiveUpdate: ( update ) => processRow( update ),
 		receiveDispositions( dispositions: EngineDisposition[] ) {
-			if ( ! dispositions.length ) {
+			// ONLY the disposition for the CURRENT in-flight proposal
+			// settles the slot: a previous proposal's disposition arrives in
+			// the response that follows the one whose rows already settled
+			// it, after a NEWER proposal may have gone out. Applied rows
+			// have already been (or will be) received as content rows;
+			// escalated/voided proposals are abandoned — the canonical state
+			// wins locally when it applies.
+			const settlesCurrent = dispositions.some(
+				( disposition ) => disposition.intentId === inFlightProposalId
+			);
+			if ( ! settlesCurrent ) {
 				return;
 			}
-			// Every disposition for this client settles its proposal:
-			// applied rows have already been (or will be) received as
-			// content rows; escalated/voided proposals are abandoned — the
-			// canonical state wins locally when it applies.
 			inFlight = false;
+			inFlightProposalId = null;
 			settleQueued();
 		},
 	};
