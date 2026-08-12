@@ -1,17 +1,16 @@
-# Gutenberg Sync Engines
+# Gutenberg sync engines
 
-Pluggable real-time collaboration **engines** and **transports** for the
-Gutenberg collaborative-editing framework.
+Pluggable real-time collaboration **engines** and **transports** for Gutenberg.
 
-Gutenberg (WordPress core) hosts the collaboration *framework*: the
-`WP_Sync_Engine` / `WP_Sync_Transport` / `WP_Sync_Storage` contracts, the two
-registries, room permission config, storage, the client `@wordpress/sync`
+Gutenberg hosts the collaboration *framework*: the `WP_Sync_Engine` /
+`WP_Sync_Transport` / `WP_Sync_Storage` contracts, the two registries (server
+and client), room permission config, storage, the client `@wordpress/sync`
 package, and the editor/data-layer integration (including the conflict-review
-UI). This plugin supplies the *implementations* that register through the
-framework's extension filters.
+UI). This plugin supplies the *implementations* that register themselves via
+filters supplied by Gutenberg.
 
 **Without this plugin active, real-time collaboration is effectively
-disabled** — the framework registers no engine or transport, so a session
+disabled.** The framework registers no engine or transport, so a session
 finds nothing to negotiate and the editor falls back to the classic
 exclusive post lock.
 
@@ -19,17 +18,15 @@ exclusive post lock.
 
 Engines (how concurrent edits merge):
 
-- **intent-log** — a server-authoritative log of typed intents; concurrent
+- **intent-log**: a server-authoritative log of typed intents; concurrent
   edits merge by transform, genuine conflicts are set aside for review, and
   no work is silently lost.
-- **yjs-server** — a server-authoritative CRDT: the vendored y-php library
+- **yjs-server**: a server-authoritative CRDT: the vendored y-php library
   merges every update into a canonical room document server-side, compacts
   by itself, and materializes post content.
-- **de-rtc** — Distributed Editing's save-centric model: clients propose
+- **de-rtc**: Distributed Editing's save-centric model: clients propose
   whole content against a named base version, the server three-way-merges
-  every proposal with the merge core ported from wordpress-develop's
-  `add/distributed-editing` branch, and genuine conflicts escalate instead
-  of silently merging.
+  every proposal. Genuine conflicts escalate instead of silently merging.
 
 Transports (how updates move):
 
@@ -44,7 +41,7 @@ Collaboration** screen (or via `wp_sync_engine` / the
 `WP_COLLABORATION_TRANSPORT` config value).
 
 **Comparing the engines?** Start with
-[`docs/engine-comparison.md`](docs/engine-comparison.md) — the feature
+[`docs/engine-comparison.md`](docs/engine-comparison.md) and the feature
 parity table, host-facing resource profiles, measured transport numbers,
 and the known gaps that should color any conclusion.
 
@@ -64,10 +61,10 @@ The plugin registers via:
 
 ## Development
 
-This plugin requires the Gutenberg collaborative-editing framework at runtime.
-That framework is vendored as a **pinned git subtree** in `gutenberg/` (mounted
-by `.wp-env.json`), so the local WordPress environment runs the exact Gutenberg
-the engines were built against — no separate checkout needed.
+A modified copy of Gutenberg at runtime is vendored as a **git subtree** in
+`gutenberg/` and mounted by `.wp-env.json` so the local WordPress environment
+runs the exact Gutenberg the engines were built against. No separate checkout
+needed.
 
 ### Setup
 
@@ -76,12 +73,7 @@ composer install          # PHP tooling (PHPCS/WPCS, PHPUnit + polyfills)
 npm install               # JS tooling (@wordpress/scripts, wp-env, Playwright)
 npm run build             # Build this plugin's client bundle
 
-# Build the vendored Gutenberg once, so wp-env serves working editor assets.
-# (The subtree is committed as source only; its build output is not.)
-# Jest and `npm run typecheck` also resolve @wordpress/sync + yjs from this
-# build. `--ignore-scripts` is required: Gutenberg's `prepare` hook (husky)
-# errors inside a subtree, and the lifecycle outputs it skips are regenerated
-# by `npm run build`.
+# Build the vendored Gutenberg.
 cd gutenberg && npm install --ignore-scripts && npm run build && cd ..
 ```
 
@@ -90,21 +82,6 @@ cd gutenberg && npm install --ignore-scripts && npm run build && cd ..
 ```bash
 npm run env start         # Start WordPress (Gutenberg subtree + this plugin)
 npm run env stop          # Stop it
-```
-
-The dev site is <http://localhost:8888> (tests site <http://localhost:8889>).
-`autoPort` is enabled, so when those ports are busy — e.g. another wp-env
-instance is running — wp-env automatically picks free ones and prints the URLs
-it chose on startup. To force specific ports instead, set
-`WP_ENV_PORT` / `WP_ENV_TESTS_PORT`.
-
-### Quality
-
-```bash
-composer lint             # PHPCS (mirrors wordpress-develop)
-composer format           # PHPCBF
-npm run lint:js           # ESLint (mirrors Gutenberg)
-npm run format            # Prettier (@wordpress/prettier-config)
 ```
 
 ### Tests
@@ -116,28 +93,6 @@ npm run test:php          # PHPUnit in the wp-env tests container (loads the
 npm run test:e2e          # Playwright — two-browser collaboration against the
                           # running env (needs `npx playwright install chromium`)
 ```
-
-`npm run test:php` and `npm run test:e2e` require a running environment
-(`npm run env start`) with the Gutenberg subtree built (see Setup).
-
-The e2e specs reuse the Gutenberg subtree's collaboration fixtures, so they
-must run against a single copy of `@playwright/test`; `pretest:e2e`
-deduplicates the subtree's copy against this plugin's automatically. They run
-against the tests site (`:8889`); if it landed on a different port (auto-port,
-or an override), point them there with `WP_BASE_URL`, e.g.
-`WP_BASE_URL=http://localhost:8890 npm run test:e2e`. If a *different*
-project's wp-env holds `:8889`, always pass `WP_BASE_URL` — Playwright's
-web-server check would otherwise silently reuse that foreign site.
-
-CI (`.github/workflows/ci.yml`) runs lint + typecheck + Jest, PHPUnit
-under wp-env, and the Playwright suite on every push to `main` and every
-pull request.
-
-`@wordpress/sync` is **externalized** at build time (the WordPress
-dependency-extraction plugin maps `@wordpress/*` imports to the `wp.*`
-runtime globals and adds them as script dependencies), so the plugin ships
-no copy of the framework; the `file:` devDependency exists only for local
-type-checking against the Gutenberg checkout.
 
 ### Benchmarks and tools
 
@@ -154,15 +109,3 @@ type-checking against the Gutenberg checkout.
   sweep (`node tests/tools/sweep.js`), a manual two-tab sync observer against
   a live environment (`node tests/tools/observe-two-tab-sync.mjs`), and the
   frozen-core test-vector generators.
-
-### Coding standards
-
-- PHP: `phpcs.xml.dist` runs WordPress-Core/Extra/Docs + PHPCompatibilityWP,
-  as `wordpress-develop` does.
-- TypeScript/JS: `.eslintrc.js` extends `@wordpress/eslint-plugin` and
-  `prettier.config.js` re-exports `@wordpress/prettier-config`, as Gutenberg
-  does.
-
-The frozen JS engine core under `src/engines/intent-log/` is a vendored
-cross-language contract (byte-matched against its PHP twin and JSON vectors)
-and is excluded from linting/formatting.
