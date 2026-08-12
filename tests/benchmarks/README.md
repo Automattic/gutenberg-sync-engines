@@ -83,6 +83,19 @@ instead.
   split into catch-up reads (during and after the session) and idle polls
   (nothing new to deliver). Idle polls dominate request volume in a live
   deployment, so their cost is reported on its own.
+- `join_us` — the later-joiner read: a COLD `get_updates_since` at cursor 0
+  by a client that was never in the session, after all the session's
+  history — what a fresh visitor pays to enter the room (snapshot + tail,
+  per the engine's retention). Its response size is reported as
+  `payload_bytes.join_response_*`: the payload that visitor downloads,
+  which differs sharply per engine (full-content rows vs binary diffs).
+- `materialize_us` — the save path: `materialize()` timed on a FRESH
+  engine instance per sample (a save request starts with no per-request
+  room cache). Engines without the materialize convention report null.
+- `memory.ingest_peak_bytes` / `memory.materialize_peak_bytes` — peak PHP
+  memory allocated on top of the baseline during the worst ingest and the
+  cold materialize (via `memory_reset_peak_usage()`, PHP 8.2+; null
+  otherwise) — the number a constrained PHP-FPM pool actually OOMs on.
 - `payload_bytes` — request and response sizes of the engine-level updates
   payload (the transport envelope and awareness add overhead on top).
 - `storage.rows` / `storage.bytes` — how the room grows. This is measured
@@ -96,6 +109,10 @@ instead.
   room. `storage.followups` counts protocol follow-up ingests generally
   (the relay's compaction snapshots; de-rtc's stale-base retry proposals);
   their requests and dispositions are included in cost and quality.
+  `storage.trims` counts history-trim events — every engine's checkpoint
+  path trims once per checkpoint (as does an accepted relay compaction),
+  so the server's checkpoint cadence is visible per engine instead of
+  hiding as unlabeled spikes in `service_us` p99.
 
 **Quality** — policy-correct, and only where the server can observe it:
 
@@ -243,6 +260,10 @@ wp-env Docker, PHP 8.3 / MariaDB — quote your own `environment` +
 | idle poll ms (mean) | ~0.0003          | ~0.0002                | ~0.0003                | ~0.0002                |
 | storage rows        | 296 (server checkpoints + trims) | 30 (11 scripted client compactions) | 102 (server checkpoints + trims; no client help) | 185 (server checkpoints + trims) |
 | storage bytes       | ~108 KB (JSON intents + checkpoints) | (synthetic) | ~61 KB (binary diffs + snapshots) | ~817 KB (every accepted proposal stores a FULL content row) |
+| trims (checkpoints) | 3                | —                      | 6                      | 4                      |
+| join (cold read)    | ~0.24 ms, ~105 KB payload | —             | ~0.09 ms, ~60 KB payload | ~0.94 ms, **~813 KB payload** (the retained full-content tail) |
+| materialize (cold save path) | ~2.7 ms | n/a (no document)     | **~164 ms** (decode the whole canonical doc; the in-session ingest keeps it cached, a fresh save request does not) | ~0.0004 ms (the canonical IS post content) |
+| ingest peak memory  | ~0.7 MB          | —                      | ~0.8 MB                | ~0.7 MB                |
 | quality             | 480 applied, 114 to review, **0 lost**, content-verified converged | not observable | 600 applied, **0 lost**, all-client CRDT convergence verified | 582 applied, 18 to review, **0 lost**, lineage-verified converged |
 
 Document-size scaling (`long-form`, one editor in a ~5 KB document, 100

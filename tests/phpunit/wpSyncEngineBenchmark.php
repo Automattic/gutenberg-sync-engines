@@ -82,6 +82,17 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 		$this->assertGreaterThan( 0, $report['idle_poll_us']['mean'] );
 		$this->assertGreaterThan( 0, $report['payload_bytes']['request_p50'] );
 		$this->assertGreaterThan( 0, $report['storage']['bytes'] );
+		// The later-joiner read is timed, with the payload a fresh visitor
+		// downloads to enter the room.
+		$this->assertGreaterThan( 0, $report['join_us']['mean'] );
+		$this->assertGreaterThan( 0, $report['payload_bytes']['join_response_p50'] );
+		// The save path (cold materialize) is timed with its peak memory.
+		$this->assertNotNull( $report['materialize_us'] );
+		$this->assertGreaterThan( 0, $report['materialize_us']['mean'] );
+		$this->assertGreaterThan( 0, $report['memory']['ingest_peak_bytes'] );
+		$this->assertGreaterThan( 0, $report['memory']['materialize_peak_bytes'] );
+		// Below the 100-row checkpoint interval: no history trims yet.
+		$this->assertSame( 0, $report['storage']['trims'] );
 	}
 
 	public function test_laggy_clients_escalate_or_settle_but_lose_nothing() {
@@ -326,9 +337,15 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 		$this->assertNull( $report['quality']['converged'] );
 		$this->assertSame( 0, $report['quality']['lost_work'] );
 		// 30 rounds x 3 clients = 90 updates against the 50-row threshold:
-		// the nominated compactor answered should_compact.
+		// the nominated compactor answered should_compact, and each accepted
+		// compaction trimmed history.
 		$this->assertGreaterThan( 0, $report['storage']['followups'] );
+		$this->assertGreaterThan( 0, $report['storage']['trims'] );
 		$this->assertGreaterThan( 0, $report['storage']['rows'] );
+		// The relay has no document to materialize: reported as null, and
+		// the join read is still timed (it is engine-generic).
+		$this->assertNull( $report['materialize_us'] );
+		$this->assertGreaterThan( 0, $report['join_us']['mean'] );
 	}
 
 	public function test_profile_registry_filter_maps_an_engine_to_a_profile() {
@@ -379,7 +396,9 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 			// No client follow-ups (should_compact never fires)…
 			$this->assertSame( 0, $report['storage']['followups'] );
 			// …yet the room stays bounded: the server checkpointed and
-			// trimmed by itself.
+			// trimmed by itself — and the trim count makes that cadence
+			// visible (120 updates against a 20-row interval).
+			$this->assertGreaterThan( 0, $report['storage']['trims'] );
 			$this->assertLessThan( 60, $report['storage']['rows'] );
 			$this->assertTrue( $report['quality']['converged'] );
 			$this->assertSame( 0, $report['quality']['lost_work'] );

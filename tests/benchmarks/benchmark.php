@@ -124,12 +124,18 @@ if ( ! function_exists( 'wp_sync_bench_calibrate' ) ) {
 $wp_sync_bench_workload = WP_Sync_Bench_Workload::build( $scenario, $seed, $rounds, $clients, $paragraphs );
 
 $wp_sync_bench_series       = array(
-	'service_us'   => array(),
-	'read_us'      => array(),
-	'idle_poll_us' => array(),
+	'service_us'     => array(),
+	'read_us'        => array(),
+	'idle_poll_us'   => array(),
+	'join_us'        => array(),
+	'materialize_us' => array(),
 );
 $wp_sync_bench_rep_means    = array();
 $wp_sync_bench_fingerprints = array();
+$wp_sync_bench_memory       = array(
+	'ingest_peak_bytes'      => null,
+	'materialize_peak_bytes' => null,
+);
 $report                     = null;
 for ( $wp_sync_bench_rep = 0; $wp_sync_bench_rep < $reps; $wp_sync_bench_rep++ ) {
 	$storage = new WP_Sync_Bench_Memory_Storage();
@@ -166,6 +172,14 @@ for ( $wp_sync_bench_rep = 0; $wp_sync_bench_rep < $reps; $wp_sync_bench_rep++ )
 		$wp_sync_bench_rep_means[] = count( $series['service_us'] ) > 0
 			? array_sum( $series['service_us'] ) / count( $series['service_us'] ) / 1000
 			: 0.0;
+		// Peak memory: the max across measured reps (warmup absorbs the
+		// autoload/opcache spike, like the timing warmup).
+		foreach ( $wp_sync_bench_memory as $wp_sync_bench_mem_key => $wp_sync_bench_mem_value ) {
+			$rep_value = $report['memory'][ $wp_sync_bench_mem_key ] ?? null;
+			if ( null !== $rep_value ) {
+				$wp_sync_bench_memory[ $wp_sync_bench_mem_key ] = max( (int) $wp_sync_bench_mem_value, (int) $rep_value );
+			}
+		}
 	}
 }
 
@@ -173,6 +187,11 @@ for ( $wp_sync_bench_rep = 0; $wp_sync_bench_rep < $reps; $wp_sync_bench_rep++ )
 foreach ( $wp_sync_bench_series as $metric => $samples ) {
 	$report[ $metric ] = WP_Sync_Bench_Runner::summary( $samples );
 }
+// No materialize convention on this engine (e.g. an opaque relay).
+if ( array() === $wp_sync_bench_series['materialize_us'] ) {
+	$report['materialize_us'] = null;
+}
+$report['memory'] = $wp_sync_bench_memory;
 
 $wp_sync_bench_mean = array_sum( $wp_sync_bench_rep_means ) / count( $wp_sync_bench_rep_means );
 $wp_sync_bench_var  = 0.0;
@@ -268,13 +287,38 @@ printf(
 	$report['idle_poll_us']['mean']
 );
 printf(
+	"join ms: p50=%.4f max=%.4f mean=%.4f (cold read at cursor 0; resp bytes p50=%d max=%d)\n",
+	$report['join_us']['p50'],
+	$report['join_us']['max'],
+	$report['join_us']['mean'],
+	$report['payload_bytes']['join_response_p50'],
+	$report['payload_bytes']['join_response_max']
+);
+if ( null !== $report['materialize_us'] ) {
+	printf(
+		"materialize ms: p50=%.4f max=%.4f mean=%.4f (cold engine, the save path)\n",
+		$report['materialize_us']['p50'],
+		$report['materialize_us']['max'],
+		$report['materialize_us']['mean']
+	);
+}
+if ( null !== $report['memory']['ingest_peak_bytes'] ) {
+	printf(
+		"memory peak: ingest=%.2f MB%s\n",
+		$report['memory']['ingest_peak_bytes'] / 1048576,
+		null !== $report['memory']['materialize_peak_bytes']
+			? sprintf( ', materialize=%.2f MB', $report['memory']['materialize_peak_bytes'] / 1048576 )
+			: ''
+	);
+}
+printf(
 	"payload bytes: req p50=%d max=%d / resp p50=%d max=%d\n",
 	$report['payload_bytes']['request_p50'],
 	$report['payload_bytes']['request_max'],
 	$report['payload_bytes']['response_p50'],
 	$report['payload_bytes']['response_max']
 );
-printf( "storage: rows=%d bytes=%d followups=%d\n", $report['storage']['rows'], $report['storage']['bytes'], $report['storage']['followups'] );
+printf( "storage: rows=%d bytes=%d followups=%d trims=%d\n", $report['storage']['rows'], $report['storage']['bytes'], $report['storage']['followups'], $report['storage']['trims'] );
 if ( $q['observable'] ) {
 	printf(
 		"quality: converged=%s applied=%d escalated=%d voided=%d escalation_rate=%.4f lost_work=%d\n",
