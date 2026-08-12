@@ -48,6 +48,11 @@ test.describe( 'Sync connection error filter', () => {
 		requestUtils,
 		admin,
 	} ) => {
+		// Four logged-in editor clients (admin, two fillers, and the
+		// over-limit fourth user) make this the heaviest setup in the
+		// suite; the happy path can exceed the 60 s default cap on CI.
+		test.setTimeout( 120_000 );
+
 		// Create filler users inside the test, after the fixture's
 		// deleteAllUsers() has run.
 		for ( const user of FILLER_USERS ) {
@@ -71,8 +76,16 @@ test.describe( 'Sync connection error filter', () => {
 		// The second user (4th client) opens the post, exceeding the
 		// default connection limit. This triggers CONNECTION_LIMIT_EXCEEDED
 		// on their first poll response.
+		/*
+		 * Clean storage state, for the same reason as the collaboration
+		 * fixture's joinUser: an inherited admin cookie makes wp-login.php
+		 * render a wp_attempt_focus() script that clears the password field
+		 * 200ms after load, racing the fill below and silently blocking the
+		 * submit.
+		 */
 		const fourthContext = await admin.browser.newContext( {
 			baseURL: BASE_URL,
+			storageState: { cookies: [], origins: [] },
 		} );
 		const page4 = await fourthContext.newPage();
 

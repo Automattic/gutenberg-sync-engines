@@ -25,6 +25,16 @@ import { genesisSyncId } from '../../../src/engines/intent-log/sync-id.js';
  * the option unset the remaining collaboration specs exercise it too).
  */
 
+/*
+ * The block serializer escapes `--` inside comment attributes as
+ * `\u002d\u002d` so the block delimiter stays a valid HTML comment.
+ * SyncIds are base64url and can legitimately contain consecutive dashes,
+ * so undo that escape before matching ids against raw persisted content.
+ */
+function unescapeCommentDashes( raw: string ): string {
+	return raw.replaceAll( '\\u002d', '-' );
+}
+
 async function setSyncEngine(
 	requestUtils: RequestUtils,
 	engine: string | null
@@ -202,8 +212,21 @@ test.describe( 'Collaboration - intent-log engine', () => {
 			.click();
 		await page2.keyboard.type( 'Second author paragraph' );
 
-		// Both editors converge on BOTH paragraphs (order may vary by
-		// arrival; neither may vanish).
+		/*
+		 * Both editors converge on BOTH paragraphs (order may vary by
+		 * arrival; neither may vanish).
+		 *
+		 * KNOWN FAILURE MODE: under CI load this can fail with the SECOND
+		 * author's paragraph settling on a truncated prefix (for example
+		 * "Second author par") while both paragraphs survive. That is the
+		 * intent-log echo race, a real product bug: a peer push landing
+		 * mid-typing reverts the tail of the typer's own paragraph, and the
+		 * next capture treats the truncated canvas as testimony, so the
+		 * tail never returns. See the KNOWN LIMITATION note at the delayed
+		 * re-push in src/engines/intent-log-manager.ts. Such a failure is
+		 * CORRECT and should stand until the session/bridge redesign fixes
+		 * the race; do not loosen these assertions to make CI green.
+		 */
 		for ( const currentEditor of [ editor, editor2 ] ) {
 			await expect( async () => {
 				const blocks = await currentEditor.getBlocks();
@@ -515,7 +538,9 @@ test.describe( 'Collaboration - intent-log engine', () => {
 			path: `/wp/v2/posts/${ post.id }`,
 			params: { context: 'edit' },
 		} );
-		expect( saved.content.raw ).toContain( `"syncId":"${ stampedId }"` );
+		expect( unescapeCommentDashes( saved.content.raw ) ).toContain(
+			`"syncId":"${ stampedId }"`
+		);
 
 		// …and survives a full reload unchanged.
 		await page1.reload();
@@ -586,9 +611,11 @@ test.describe( 'Collaboration - intent-log engine', () => {
 		 * persist it id-less; that self-heals on the next save.
 		 */
 		const savedIdsOf = ( raw: string ) =>
-			[ ...raw.matchAll( /"syncId":"([^"]+)"/g ) ].map(
-				( match ) => match[ 1 ]
-			);
+			[
+				...unescapeCommentDashes( raw ).matchAll(
+					/"syncId":"([^"]+)"/g
+				),
+			].map( ( match ) => match[ 1 ] );
 		const originalId = await page1.evaluate(
 			() =>
 				( window as any ).wp.data
@@ -636,7 +663,7 @@ test.describe( 'Collaboration - intent-log engine', () => {
 			path: `/wp/v2/posts/${ post.id }`,
 			params: { context: 'edit' },
 		} );
-		expect( settledSave.content.raw ).toContain(
+		expect( unescapeCommentDashes( settledSave.content.raw ) ).toContain(
 			`"syncId":"${ idsSeen[ 0 ] }"`
 		);
 	} );
@@ -758,6 +785,11 @@ test.describe( 'Collaboration - intent-log engine', () => {
 		requestUtils,
 		editor,
 	} ) => {
+		// The discard-until-quiescent loop (60 s budget with 3 s settle
+		// waits per attempt) plus the reload and bootstrap-replay waits
+		// push this test's happy path past the 60 s default cap on CI.
+		test.setTimeout( 120_000 );
+
 		const post = await requestUtils.createPost( {
 			title: 'Intent Log Escalation Test',
 			status: 'draft',
@@ -1037,8 +1069,9 @@ test.describe( 'Collaboration - intent-log engine', () => {
 			path: `/wp/v2/posts/${ post.id }`,
 			params: { context: 'edit' },
 		} );
+		const savedRaw = unescapeCommentDashes( saved.content.raw );
 		for ( const id of expectedIds ) {
-			expect( saved.content.raw ).toContain( `"syncId":"${ id }"` );
+			expect( savedRaw ).toContain( `"syncId":"${ id }"` );
 		}
 	} );
 
