@@ -80,6 +80,14 @@ jobs:
           composer --working-dir=includes/lib/y-php install --no-progress
           composer --working-dir=includes/lib/y-php test
 
+      # The vendored automerge-php library's own conformance suite:
+      # ported upstream Automerge JS/Rust tests (680 mapped). Needs no
+      # Composer install (hand-rolled runner) and no WordPress; requires
+      # PHP >= 8.2 with mbstring, which the runner PHP satisfies. The
+      # runner exits non-zero on any failing test.
+      - name: automerge-php conformance
+        run: php includes/lib/automerge-php/tests/run.php > /dev/null
+
       # The PHP test path loads the subtree's PHP directly (framework
       # first, then this plugin — see tests/bootstrap.php); it does not
       # need the subtree's JS built.

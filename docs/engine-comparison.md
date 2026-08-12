@@ -18,6 +18,13 @@ conclusion. Read it alongside the two benchmark harnesses
   document server-side, the server compacts by itself and materializes
   post content, while clients keep the CRDT machinery inherited from the
   retired relay engine (same wire documents, same undo).
+- **de-rtc** — the server owns the document and clients never merge:
+  each client proposes its WHOLE content against the version it last
+  incorporated, and the server three-way-merges every proposal with the
+  Distributed Editing merge core ported verbatim from wordpress-develop
+  (serialized-block + rich-text + block-identity merges); most edits
+  merge cleanly, and genuine conflicts ESCALATE for a human decision
+  instead of silently merging.
 
 **Retired: yjs-relay** — the incumbent design this plugin started from: the
 clients owned the document, and the server stored and forwarded opaque CRDT
@@ -57,30 +64,30 @@ differently. The tables below are how the price shows up.
 
 ## Feature parity
 
-| Area | intent-log | yjs-server |
-| --- | --- | --- |
-| Conflict handling | Transform on the server; genuine conflicts park in the editor's review panel (escalation notice, marker chip, durable resolutions — e2e-verified) | Silent CRDT auto-merge, but ON THE SERVER — outcomes observable, still no review lane |
-| Collaborative undo | **Not yet** — WP's global undo applies (can undo a peer's work); designed fix is inverse intents | Per-peer undo manager (`src/engines/yjs/undo.ts`, inherited from the retired relay) |
-| Refresh/offline recovery | Server materializes the document; queued intents are memory-only. Solo edits flush every poll (`syncWhileSolo`), and discarded unsent work surfaces an editor notice | Server holds the canonical doc; a rejoining client re-bootstraps from the retained snapshot + tail and uploads its own state idempotently |
-| Error recovery | Exact re-send; ingest is idempotent by intentId | Full-state recovery update, IDEMPOTENT server-side (the server diffs out what it already has — redelivery settles as a benign `already-merged` void) |
-| History compaction | Server checkpoints every 100 intent rows and trims | Server checkpoints every 100 rows and trims — abandoned rooms stay bounded |
-| Genesis | Server, from post content | Server, from post content — deterministic build, so racing initializers merge idempotently |
-| Capability enforcement | At ingest (kses lane; escalation for `unfiltered_html`-gated content) | **Not yet** — the server CAN decode content (the prerequisite the retired relay structurally lacked), but the per-update kses lane is undesigned; see Known gaps |
-| Synced entity properties | Whitelist (currently the title) | Whatever the sync config maps into the CRDT |
-| Presence/awareness | Yes (shared Yjs-free awareness doc) | Yes (Yjs awareness, relayed opaquely — the server does not decode it) |
-| Server observability | Dispositions, debug envelope, benchmark quality metrics | Per-update dispositions, CRDT convergence oracle, materialization |
-| Materialize to post_content | Yes (server-side) | Yes (server-side, from the canonical doc) |
-| Wire format | Small human-readable JSON intents | Opaque base64 binary (V2) + JSON snapshot rows |
+| Area | intent-log | yjs-server | de-rtc |
+| --- | --- | --- | --- |
+| Conflict handling | Transform on the server; genuine conflicts park in the editor's review panel (escalation notice, marker chip, durable resolutions — e2e-verified) | Silent CRDT auto-merge, but ON THE SERVER — outcomes observable, still no review lane | Three-way merge on the server; genuine conflicts ESCALATE as dispositions (`manual-conflict-required`) — but no review UI yet, so the client abandons the proposal and canonical wins locally |
+| Collaborative undo | **Not yet** — WP's global undo applies (can undo a peer's work); designed fix is inverse intents | Per-peer undo manager (`src/engines/yjs/undo.ts`, inherited from the retired relay) | Per-peer undo manager (shared `src/engines/yjs/undo.ts` over the local doc bridge); undone state propagates as an ordinary proposal |
+| Refresh/offline recovery | Server materializes the document; queued intents are memory-only. Solo edits flush every poll (`syncWhileSolo`), and discarded unsent work surfaces an editor notice | Server holds the canonical doc; a rejoining client re-bootstraps from the retained snapshot + tail and uploads its own state idempotently | Server holds canonical content + version snapshots; a rejoining client re-bootstraps from the retained snapshot + content rows. Un-acked local edits re-propose (the server merges) |
+| Error recovery | Exact re-send; ingest is idempotent by intentId | Full-state recovery update, IDEMPOTENT server-side (the server diffs out what it already has — redelivery settles as a benign `already-merged` void) | Recovery re-proposes the doc's current state; if the lost send landed, the re-proposal merges as a no-op |
+| History compaction | Server checkpoints every 100 intent rows and trims | Server checkpoints every 100 rows and trims — abandoned rooms stay bounded | Server checkpoints every 100 rows and trims (same retention invariant) |
+| Genesis | Server, from post content | Server, from post content — deterministic build, so racing initializers merge idempotently | Server, from post content — deterministic, and ADOPTS an upstream DE-RTC sync-meta block if one is embedded (version lineage continues) |
+| Capability enforcement | At ingest (kses lane; escalation for `unfiltered_html`-gated content) | **Not yet** — the server CAN decode content (the prerequisite the retired relay structurally lacked), but the per-update kses lane is undesigned; see Known gaps | At ingest, coarse: a proposal kses would rewrite escalates whole (`requires-unfiltered-html`). Upstream DE-RTC sequesters just the risky blocks for review — that partial-safe lane is unported |
+| Synced entity properties | Whitelist (currently the title) | Whatever the sync config maps into the CRDT | Content only (**no title sync yet**) |
+| Presence/awareness | Yes (shared Yjs-free awareness doc) | Yes (Yjs awareness, relayed opaquely — the server does not decode it) | Yes (Yjs awareness over the doc bridge, relayed opaquely) |
+| Server observability | Dispositions, debug envelope, benchmark quality metrics | Per-update dispositions, CRDT convergence oracle, materialization | Per-proposal dispositions (applied/escalated/voided with reasons), version lineage, materialization |
+| Materialize to post_content | Yes (server-side) | Yes (server-side, from the canonical doc) | Trivially — the canonical document IS post content |
+| Wire format | Small human-readable JSON intents | Opaque base64 binary (V2) + JSON snapshot rows | Human-readable JSON: whole-content proposals up, whole-content canonical rows down (bytes scale with document size) |
 
 ## Host-facing resource profile
 
-| Concern | intent-log | yjs-server |
-| --- | --- | --- |
-| Per-ingest CPU | Replay from checkpoint + transform planning | Load + merge + re-encode the canonical y-php doc — the dominant cost, tens of ms at benchmark document sizes, scales with document size |
-| Locking | Per-room MySQL `GET_LOCK` serializes ingest (5 s timeout; contenders get a retryable 503). One real lock round-trip pair inside every timed request — the engine benchmark's `calibration` block exists to subtract it | None — CRDT merge needs no total order; the update log is the source of truth and a lost canonical-save race is repaired from it on the next load |
-| Idle reads | Cheap by design (rows after cursor; no reconstruction) | Cheap (the canonical doc is never touched on the read path) |
-| Storage growth | Bounded: checkpoint + trim every 100 rows | Bounded: server checkpoint + trim every 100 rows, no client needed |
-| Row contents | JSON intents (~200 B typical) + periodic full-document checkpoint rows | Base64 V2 diffs (server strips what it already had) + full-state snapshot rows, plus the canonical doc in room meta |
+| Concern | intent-log | yjs-server | de-rtc |
+| --- | --- | --- | --- |
+| Per-ingest CPU | Replay from checkpoint + transform planning | Load + merge + re-encode the canonical y-php doc — the dominant cost, tens of ms at benchmark document sizes, scales with document size | Parse + three-way merge of three content strings (pure PHP over `parse_blocks` trees); unmeasured — no benchmark profile yet |
+| Locking | Per-room MySQL `GET_LOCK` serializes ingest (5 s timeout; contenders get a retryable 503). One real lock round-trip pair inside every timed request — the engine benchmark's `calibration` block exists to subtract it | None — CRDT merge needs no total order; the update log is the source of truth and a lost canonical-save race is repaired from it on the next load | Same per-room `GET_LOCK` as intent-log — three-way merges are order-dependent |
+| Idle reads | Cheap by design (rows after cursor; no reconstruction) | Cheap (the canonical doc is never touched on the read path) | Cheap (rows after cursor; canonical untouched) |
+| Storage growth | Bounded: checkpoint + trim every 100 rows | Bounded: server checkpoint + trim every 100 rows, no client needed | Bounded: server checkpoint + trim every 100 rows — but every accepted proposal stores a FULL content row, so row bytes scale with document size |
+| Row contents | JSON intents (~200 B typical) + periodic full-document checkpoint rows | Base64 V2 diffs (server strips what it already had) + full-state snapshot rows, plus the canonical doc in room meta | Full-content JSON rows (content + version + attribution) + snapshot rows, plus canonical content and version snapshots in room meta |
 
 Reference numbers from one dev machine (wp-env, Docker MariaDB, Aug 2026 —
 regenerate locally, and never compare across machines without the
@@ -109,6 +116,28 @@ Transport latency is engine-independent (the HTTP rows replicate within
 noise under intent-log), with one exception noted below.
 
 ## Known gaps — read before concluding
+
+- **de-rtc has no benchmark authoring profile yet.** The engine benchmark
+  harness cannot drive it; the resource-profile column above is
+  architectural, not measured. Building the profile (and a convergence
+  oracle over version lineage) is the first step before performance
+  claims.
+- **de-rtc has no review lane UI and no title sync.** Escalations
+  (`manual-conflict-required`, `requires-unfiltered-html`) are observable
+  dispositions, but nothing presents them to a human yet — the client
+  abandons an escalated proposal once canonical applies. Proposals carry
+  content only; title edits stay local.
+- **de-rtc same-block concurrency is block-level last-writer-wins.** When
+  truly concurrent edits hit the SAME block, the client's incorporation
+  policy keeps its local block and re-proposes it (the yjs-server
+  silent-register-LWW class, at coarser grain). Different-block
+  concurrency merges losslessly via the server's three-way merge.
+- **de-rtc clients do not author block-native update descriptors yet**
+  (`clientUpdate: null`; the server's engine-unaware-writer lane derives
+  operations). Porting the client-side descriptor builder and its
+  cross-language fingerprint vectors would restore DE-RTC's
+  proof-carrying proposals (tamper detection is active only for clients
+  that send descriptors).
 
 - **Intent-log echo race.** Editor pushes racing live keystrokes can
   corrupt canvas text; it is rare over the HTTP transports' batched cadence
@@ -167,6 +196,14 @@ noise under intent-log), with one exception noted below.
   edit at benchmark document sizes, no review lane, and the kses lane
   still to build. It is the measurement platform for deciding whether
   server-side Yjs can be made cheap enough, not yet a production default.
+- If the priority is **WordPress-native merge semantics with escalation
+  over silent conflict** — proposals in plain serialized-block JSON, a
+  server that merges the way upstream Distributed Editing's save path
+  does, version lineage per room, and conflicts that refuse to
+  auto-merge — de-rtc now provides the engine core, with the review UI,
+  title sync, client-side proof descriptors, and a benchmark profile as
+  the open items. It is the migration path for evaluating Distributed
+  Editing inside the pluggable framework, not yet a production default.
 - Transport choice is independent and mostly a hosting decision: polling
   works everywhere at ~1.7 s perceived latency, long-polling roughly
   triples responsiveness for the price of held PHP workers, and websocket

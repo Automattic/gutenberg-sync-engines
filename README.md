@@ -25,6 +25,11 @@ Engines (how concurrent edits merge):
 - **yjs-server** — a server-authoritative CRDT: the vendored y-php library
   merges every update into a canonical room document server-side, compacts
   by itself, and materializes post content.
+- **de-rtc** — Distributed Editing's save-centric model: clients propose
+  whole content against a named base version, the server three-way-merges
+  every proposal with the merge core ported from wordpress-develop's
+  `add/distributed-editing` branch, and genuine conflicts escalate instead
+  of silently merging.
 
 Transports (how updates move):
 
