@@ -35,11 +35,11 @@ export default defineConfig( {
 	testIgnore: '**/specs/websocket-only/**',
 	webServer: {
 		...baseConfig.webServer,
-		// Start this plugin's wp-env (Gutenberg subtree + this plugin).
-		// Rarely runs: reuseExistingServer is true, so an already-running
-		// env on the port is used as-is (see the AGENTS.md warning about a
-		// FOREIGN wp-env holding the port).
-		command: 'npm run env start',
+		// Start this plugin's TESTS wp-env (Gutenberg subtree + this
+		// plugin, .wp-env.tests.json). Rarely runs: reuseExistingServer is
+		// true, so an already-running env on the port is used as-is (see
+		// the AGENTS.md warning about a FOREIGN wp-env holding the port).
+		command: 'npm run env:tests start',
 	},
 	projects: [
 		{
