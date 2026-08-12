@@ -86,8 +86,14 @@ The framework/plugin split is complete: the framework ships **neither** engines
     PHP 8.2+ with mbstring, namespace
     `WordPress\DistributedEditing\Automerge`, no WordPress dependency).
     Excluded from phpcs; frozen like y-php. Its own conformance suite runs
-    in CI: `php includes/lib/automerge-php/tests/run.php` (~40 s, no
-    WordPress; 680 mapped upstream tests). The 11 upstream fixture files
+    in CI: `php includes/lib/automerge-php/tests/run.php` (<1 s, no
+    WordPress; 680 mapped upstream tests). FULL parity needs the fixed
+    GB11 grapheme rules of PCRE2 ≥ 10.43, which PHP bundles from 8.4 —
+    under PHP ≤ 8.3 builds carrying PCRE2 10.42 (stock GitHub runners,
+    Ubuntu 24.04 packages) two adjacent emoji-ZWJ sequences count as ONE
+    `\X` cluster and exactly 2 of the 680 tests fail (grapheme cursor
+    tracking + a UTF-16-boundary splice); CI pins PHP 8.4 for this step.
+    The 11 upstream fixture files
     the runner reads live under `automerge-php/upstream/automerge/`
     (fetched from automerge/automerge; pin recorded in
     `VENDORED_FROM_COMMIT.txt` — the source branches referenced an
