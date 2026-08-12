@@ -29,6 +29,18 @@
  * Known limitation: classic (freeform) content occupies a path index in the
  * editor but not in the server's parse — such posts fall back to adoption.
  *
+ * IN-SESSION STAND-DOWN: while the intent-log engine is ANNOUNCED
+ * (window._wpCollaborationSync.engine), only the genesis pass runs here.
+ * The capture bridge mints identity for blocks created during a live
+ * session and pushes the document's id back into the editor; minting here
+ * too raced that push (the stamper's block-editor write landed before the
+ * push's entity-level edit propagated down), putting a THIRD identity on
+ * the block that the document never knew — and a save in that window
+ * persisted it (the save-vs-settle id drift). The random and dedupe lanes
+ * therefore yield to the engine; they still serve tabs where no engine is
+ * announced. The genesis pass is race-free by construction: it runs on the
+ * pristine first pass, before any capture has authored.
+ *
  * Deliberately build-free: uses WordPress script globals so the prototype
  * stays inside lib/experimental/ without touching the packages build.
  */
@@ -165,6 +177,16 @@
 			regimeDecided = true;
 		}
 
+		// In-session stand-down (see the header): with the intent-log
+		// engine announced, creation identity belongs to the capture
+		// bridge; only the genesis pass runs here.
+		if (
+			! useGenesis &&
+			'intent-log' === window._wpCollaborationSync?.engine
+		) {
+			return;
+		}
+
 		const updates = collectUpdates();
 		if ( ! updates.length ) {
 			return;
@@ -175,6 +197,11 @@
 			const assignments = await Promise.all(
 				updates.map( async ( update ) => ( {
 					clientId: update.clientId,
+					duplicate: update.duplicate,
+					// The id observed at collection time (undefined for a
+					// missing-id row, the duplicated id for a duplicate row),
+					// re-checked at dispatch time below.
+					observedSyncId: update.metadata?.syncId,
 					syncId:
 						useGenesis && ! update.duplicate
 							? await genesisSyncId( postId, update.path )
@@ -192,10 +219,35 @@
 				return;
 			}
 			const editorDispatch = dispatch( 'core/block-editor' );
-			for ( const { clientId, syncId } of assignments ) {
+			for ( const {
+				clientId,
+				syncId,
+				duplicate,
+				observedSyncId,
+			} of assignments ) {
 				const attributes = blockEditor?.getBlockAttributes( clientId );
 				if ( ! attributes || attributes.metadata?.syncId === syncId ) {
 					continue; // Removed mid-flight, or already converged.
+				}
+				/*
+				 * FILL-ONLY: never replace an identity that arrived during
+				 * the digest hop. The capture bridge mints for id-less blocks
+				 * and pushes the document's id back into the editor; the
+				 * document is the identity authority, and overwriting its id
+				 * here put a THIRD identity on the block that the document
+				 * never knew — a save in that window persisted it (the
+				 * save-vs-settle id drift). A missing-id row therefore only
+				 * fills a still-missing id, and a duplicate row only re-mints
+				 * while the block still carries the id observed as
+				 * duplicated (someone else may have resolved the duplication
+				 * mid-flight).
+				 */
+				const currentSyncId = attributes.metadata?.syncId;
+				if ( ! duplicate && currentSyncId ) {
+					continue;
+				}
+				if ( duplicate && currentSyncId !== observedSyncId ) {
+					continue;
 				}
 				// Identity assignment is bookkeeping, not an edit — keep it
 				// out of the undo stack.

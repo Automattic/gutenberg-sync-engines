@@ -190,7 +190,7 @@ everywhere, so auth even succeeds); the first visible failure is
 "Unexpected end of JSON input". Always pass `WP_BASE_URL` in that case.
 
 Current green baseline: **Jest 342**, **PHPUnit 148 (659 assertions)**,
-**e2e 39/39** (occasional flake under full-suite load — a save notice or a
+**e2e 40/40** (occasional flake under full-suite load — a save notice or a
 fixture login navigation; green solo), **e2e:websocket 1 skipped** (see
 below — the peer-relay WS fixture needs a client-merging engine and none
 remains), plus the

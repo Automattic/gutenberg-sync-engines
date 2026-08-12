@@ -600,11 +600,11 @@ for ( const engine of ENGINES ) {
 
 			// A adds a block mid-session and saves, persisting both blocks'
 			// syncIds into the post content. Wait for the serialized content
-			// to SETTLE first: intent-log assigns a provisional identity that
-			// the shared document's settled id then replaces, and a save
-			// racing that window persists a stale id the room's document no
-			// longer carries — a KNOWN drift (kept out of this spec's scope)
-			// that would defeat record-based display seeding for the joiner.
+			// to SETTLE first: the engine's minted identity reaches the
+			// canvas via an entity push, and a save racing that propagation
+			// can persist the newborn block id-less — a shape record-based
+			// display seeding cannot cover for the joiner (kept out of this
+			// spec's scope; see the id-stability spec for the contract).
 			await editor.insertBlock( {
 				name: 'core/paragraph',
 				attributes: { content: 'Added mid-session by A' },
