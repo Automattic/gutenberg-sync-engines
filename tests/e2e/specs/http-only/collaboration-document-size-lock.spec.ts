@@ -26,9 +26,11 @@ test.describe( 'Collaboration with large documents', () => {
 		page,
 	} ) => {
 		// Rendering a >1 MB paragraph keeps the editor's main thread busy
-		// for a long stretch (~45 s even on fast hardware); CI runners
-		// exceed the default 100 s test timeout. slow() triples it.
-		test.slow();
+		// for a long stretch (~45 s even on fast hardware), and CI runners
+		// have needed well over 100 s in total. Declare the proven budget
+		// explicitly rather than via test.slow(), which would silently
+		// shrink whenever the config default changes.
+		test.setTimeout( 300_000 );
 
 		// Create a small draft post — the large content is inserted via
 		// the block editor API after the editor has loaded, so User 1's

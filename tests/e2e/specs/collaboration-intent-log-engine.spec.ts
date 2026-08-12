@@ -758,6 +758,11 @@ test.describe( 'Collaboration - intent-log engine', () => {
 		requestUtils,
 		editor,
 	} ) => {
+		// The discard-until-quiescent loop (60 s budget with 3 s settle
+		// waits per attempt) plus the reload and bootstrap-replay waits
+		// push this test's happy path past the 60 s default cap on CI.
+		test.setTimeout( 120_000 );
+
 		const post = await requestUtils.createPost( {
 			title: 'Intent Log Escalation Test',
 			status: 'draft',

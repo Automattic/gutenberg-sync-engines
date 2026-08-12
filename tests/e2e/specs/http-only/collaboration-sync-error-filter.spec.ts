@@ -48,6 +48,11 @@ test.describe( 'Sync connection error filter', () => {
 		requestUtils,
 		admin,
 	} ) => {
+		// Four logged-in editor clients (admin, two fillers, and the
+		// over-limit fourth user) make this the heaviest setup in the
+		// suite; the happy path can exceed the 60 s default cap on CI.
+		test.setTimeout( 120_000 );
+
 		// Create filler users inside the test, after the fixture's
 		// deleteAllUsers() has run.
 		for ( const user of FILLER_USERS ) {
