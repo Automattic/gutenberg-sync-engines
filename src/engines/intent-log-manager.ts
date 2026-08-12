@@ -361,6 +361,22 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			);
 			const docIds = collectBlockIds( blocks );
 			/*
+			 * Genesis seeding: a seq-0 bootstrap is the room GENESIS, derived
+			 * from the saved post content this editor itself parsed and
+			 * rendered — its blocks are provably displayed, so they are
+			 * removable immediately. Without this, a WHOLESALE first edit
+			 * (select-all paste) captures a tree that never contained the
+			 * genesis blocks, their absence reads as staleness, and the
+			 * dropped deletions resurrect on every client. Checkpoint
+			 * bootstraps (seq > 0) may carry blocks a late joiner never
+			 * displayed and must NOT seed. The first post-init change event
+			 * fires synchronously on snapshot receipt, so `blocks` here is
+			 * exactly the bootstrap document.
+			 */
+			if ( null === state.editorIds && 0 === session.getBootstrapSeq() ) {
+				state.editorIds = new Set( docIds );
+			}
+			/*
 			 * Tombstone maintenance: ids that left the document through
 			 * REMOTE intents (own authorship is under the capturing guard)
 			 * must not be resurrected by a stale editor tree. Reappearing
