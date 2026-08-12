@@ -68,6 +68,13 @@ module.exports = {
 			FRAMEWORK_MODULES,
 			'@wordpress/hooks'
 		),
+		// The de-rtc doc bridge serializes/parses through the editor's block
+		// library (the single wp.blocks at runtime); resolve it from the
+		// subtree. Tests mock it — block registration is editor state.
+		'^@wordpress/blocks$': path.join(
+			FRAMEWORK_MODULES,
+			'@wordpress/blocks'
+		),
 	},
 	setupFiles: [
 		...( defaultConfig.setupFiles || [] ),
