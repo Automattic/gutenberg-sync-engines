@@ -128,7 +128,7 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 	}
 
 	public function test_convergence_oracle_accepts_matching_content() {
-		$content = "<!-- wp:paragraph {\"align\":\"wide\"} -->\n<p> r0c0.0;Paragraph 1</p>\n<!-- /wp:paragraph -->";
+		$content = "<!-- wp:paragraph {\"align\":\"wide\"} -->\n<p> r0c0.0;Paragraph 1;</p>\n<!-- /wp:paragraph -->";
 
 		$failures = WP_Sync_Bench_Intent_Log_Profile::verify_convergence(
 			$content,
@@ -182,6 +182,109 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 
 		$c = WP_Sync_Bench_Workload::build( 'mixed-newsroom', 124, 10, 3, 5 );
 		$this->assertNotSame( $a['rounds'], $c['rounds'] );
+
+		$d = WP_Sync_Bench_Workload::build( 'editorial-session', 123, 60, 3, 5 );
+		$e = WP_Sync_Bench_Workload::build( 'editorial-session', 123, 60, 3, 5 );
+		$this->assertSame( $d['rounds'], $e['rounds'] );
+	}
+
+	public function test_workload_fill_controls_document_size() {
+		$small = WP_Sync_Bench_Workload::build( 'solo-typing', 7, 4, 1, 8 );
+		$big   = WP_Sync_Bench_Workload::build( 'solo-typing', 7, 4, 1, 8, 6000 );
+		// ~6 KB x 8 paragraphs: the size-sweep axis.
+		$this->assertGreaterThan( 40000, strlen( $big['post_content'] ) );
+		$this->assertLessThan( 2000, strlen( $small['post_content'] ) );
+	}
+
+	public function test_structural_churn_generates_block_ops_with_discipline() {
+		$workload = WP_Sync_Bench_Workload::build( 'structural-churn', 7, 30, 3, 4 );
+
+		$inserts = array();
+		$removes = array();
+		$texts   = 0;
+		foreach ( $workload['rounds'] as $edits ) {
+			foreach ( $edits as $edit ) {
+				if ( 'insert_block' === $edit['op'] ) {
+					$inserts[ $edit['block_id'] ] = $edit['client'];
+				} elseif ( 'remove_block' === $edit['op'] ) {
+					$removes[] = $edit;
+				} elseif ( 'text' === $edit['op'] ) {
+					++$texts;
+				}
+			}
+		}
+		$this->assertNotEmpty( $inserts );
+		$this->assertNotEmpty( $removes );
+		$this->assertGreaterThan( 0, $texts );
+		foreach ( $removes as $remove ) {
+			// Discipline: removals only target the removing client's OWN
+			// earlier insert (what keeps the marker oracle decidable).
+			$this->assertArrayHasKey( $remove['block_id'], $inserts );
+			$this->assertSame( $inserts[ $remove['block_id'] ], $remove['client'] );
+		}
+	}
+
+	public function test_editorial_session_schedules_joins_bursts_and_readers() {
+		$workload = WP_Sync_Bench_Workload::build( 'editorial-session', 7, 100, 3, 4 );
+
+		$this->assertSame( 60, $workload['save_every'] );
+		$first_round = $workload['rounds'][0];
+		$this->assertArrayHasKey( 'edits', $first_round );
+		$this->assertArrayHasKey( 'readers', $first_round );
+
+		// The last-joining client reads nothing before its join round…
+		$early_readers = array();
+		foreach ( array_slice( $workload['rounds'], 0, 5 ) as $round ) {
+			$early_readers = array_merge( $early_readers, $round['readers'] );
+		}
+		$this->assertNotContains( 2, $early_readers );
+		// …and present clients poll even in rounds where they type nothing.
+		$idle_reads = 0;
+		foreach ( $workload['rounds'] as $round ) {
+			$typed = array_column( $round['edits'], 'client' );
+			foreach ( $round['readers'] as $reader ) {
+				if ( ! in_array( $reader, $typed, true ) ) {
+					++$idle_reads;
+				}
+			}
+		}
+		$this->assertGreaterThan( 0, $idle_reads );
+	}
+
+	public function test_structural_churn_converges_on_every_engine() {
+		$workload = WP_Sync_Bench_Workload::build( 'structural-churn', 7, 30, 3, 4 );
+		foreach ( array( 'WP_Intent_Log_Engine', 'WP_Yjs_Server_Engine', 'WP_De_RTC_Engine' ) as $engine_class ) {
+			$post_id = self::factory()->post->create(
+				array( 'post_content' => $workload['post_content'] )
+			);
+			$storage = new WP_Sync_Bench_Memory_Storage();
+			$engine  = new $engine_class( $storage );
+
+			$report = WP_Sync_Bench_Runner::run( $engine, $storage, $post_id, $workload );
+
+			$this->assertSame( 0, $report['quality']['lost_work'], $engine_class . ' lost work under structural churn' );
+			$this->assertSame( array(), $report['quality']['convergence_failures'], $engine_class . ' failed convergence under structural churn' );
+			$this->assertTrue( $report['quality']['converged'], $engine_class . ' did not converge under structural churn' );
+			wp_delete_post( $post_id, true );
+		}
+	}
+
+	public function test_editorial_session_runs_with_scheduled_readers_and_autosaves() {
+		$workload = WP_Sync_Bench_Workload::build( 'editorial-session', 7, 120, 3, 4 );
+		$post_id  = self::factory()->post->create(
+			array( 'post_content' => $workload['post_content'] )
+		);
+		$storage  = new WP_Sync_Bench_Memory_Storage();
+		$engine   = new WP_Intent_Log_Engine( $storage );
+
+		$report = WP_Sync_Bench_Runner::run( $engine, $storage, $post_id, $workload );
+
+		$this->assertSame( 0, $report['quality']['lost_work'] );
+		$this->assertSame( array(), $report['quality']['convergence_failures'] );
+		$this->assertTrue( $report['quality']['converged'] );
+		// 120 rounds / save_every 60 = 2 in-session autosaves, plus the 5
+		// end-of-session cold samples.
+		$this->assertCount( 7, $report['materialize_us_series'] );
 	}
 
 	/**

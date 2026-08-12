@@ -119,6 +119,14 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 		private $expected_align = array();
 
 		/**
+		 * Oracle input: inserted-block marker => 'alive' | 'absent', from
+		 * insert/remove dispositions.
+		 *
+		 * @var array<string, string>
+		 */
+		private $expected_markers = array();
+
+		/**
 		 * Constructor (the factory contract).
 		 *
 		 * @param int   $post_id  Seeded post (room target).
@@ -175,9 +183,10 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 		 * @return array Updates payload.
 		 */
 		public function author( int $client, array $edit, int $round_index ): array {
-			$paragraph = (int) $edit['paragraph'];
-			if ( 'attr' === ( $edit['op'] ?? 'text' ) ) {
-				$payload = array(
+			$op = $edit['op'] ?? 'text';
+			if ( 'attr' === $op ) {
+				$paragraph = (int) $edit['paragraph'];
+				$payload   = array(
 					'type'    => 'set_attr',
 					'payload' => array(
 						'syncId'          => $this->paragraph_ids[ $paragraph ],
@@ -186,8 +195,38 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 						'observedVersion' => $this->observed_versions[ $client ][ $paragraph ],
 					),
 				);
-			} else {
+			} elseif ( 'insert_block' === $op ) {
+				// The codec model for a client-born paragraph: plain text
+				// (the block's identity marker) with the wrapper element on
+				// the internal attr, anchored after a genesis sibling.
 				$payload = array(
+					'type'    => 'insert_block',
+					'payload' => array(
+						'block'          => array(
+							'syncId'    => 'ins-' . $edit['block_id'],
+							'blockType' => 'core/paragraph',
+							'text'      => $edit['marker'],
+							'attrs'     => array(
+								'_wrapper' => array(
+									'open'  => '<p>',
+									'close' => '</p>',
+								),
+							),
+						),
+						'parentId'       => null,
+						'afterSiblingId' => $this->paragraph_ids[ (int) $edit['after'] ],
+					),
+				);
+			} elseif ( 'remove_block' === $op ) {
+				$payload = array(
+					'type'    => 'remove_block',
+					'payload' => array(
+						'syncId' => 'ins-' . $edit['block_id'],
+					),
+				);
+			} else {
+				$paragraph = (int) $edit['paragraph'];
+				$payload   = array(
 					'type'    => 'insert_text',
 					'payload' => array(
 						'syncId' => $this->paragraph_ids[ $paragraph ],
@@ -223,23 +262,32 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 		 * @param array $disposition Engine disposition.
 		 */
 		public function record_disposition( int $client, array $edit, array $disposition ): void { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable -- $client is part of the profile contract.
-			$status  = $disposition['status'] ?? 'unknown';
-			$is_attr = 'attr' === ( $edit['op'] ?? 'text' );
+			$status = $disposition['status'] ?? 'unknown';
+			$op     = $edit['op'] ?? 'text';
 
 			if ( 'applied' === $status ) {
 				++$this->head; // A new log entry: the head advances.
-				if ( $is_attr ) {
+				if ( 'attr' === $op ) {
 					++$this->attr_version[ (int) $edit['paragraph'] ];
 					// Ingest is serialized, so processing order IS server
 					// order: last applied write wins.
 					$this->expected_align[ (int) $edit['paragraph'] ] = $edit['align'];
 				}
 			}
-			if ( ! $is_attr ) {
+			if ( 'text' === $op ) {
 				$this->expected_texts[] = array(
 					'text'   => (string) $edit['text'],
 					'status' => $status,
 				);
+			} elseif ( 'insert_block' === $op ) {
+				// A parked/voided insert never landed: the marker must be
+				// absent from the materialized document.
+				$this->expected_markers[ $edit['marker'] ] = 'applied' === $status ? 'alive' : 'absent';
+			} elseif ( 'remove_block' === $op && 'applied' === $status ) {
+				// A non-applied remove leaves the block where the insert's
+				// settlement put it (a benign already-deleted void means it
+				// never landed in the first place).
+				$this->expected_markers[ $edit['marker'] ] = 'absent';
 			}
 		}
 
@@ -299,7 +347,8 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 				(string) $engine->materialize( $room ),
 				(int) $this->workload['paragraphs'],
 				$this->expected_texts,
-				$this->expected_align
+				$this->expected_align,
+				$this->expected_markers
 			);
 		}
 
@@ -310,16 +359,21 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 		 * Pure content oracle — no engine state: applied text tokens must
 		 * appear exactly once, escalated/voided tokens must be absent (they
 		 * were preserved for review or dropped as benign, never auto-applied),
-		 * the block structure must be intact, and each block's final
-		 * attribute value must be the LAST applied write in server order.
+		 * the block structure must be intact (every genesis marker present,
+		 * every applied insert's marker present, every removed/parked one
+		 * absent, total paragraph count matching), and each genesis block's
+		 * final attribute value must be the LAST applied write in server
+		 * order. Blocks are located by their identity MARKERS, not their
+		 * position — concurrent structural edits shift positions.
 		 *
-		 * @param string $content         Materialized post content.
-		 * @param int    $paragraph_count Paragraphs the document started with.
-		 * @param array  $expected_texts  List of array( 'text', 'status' ).
-		 * @param array  $expected_align  Paragraph index => final align value.
+		 * @param string $content          Materialized post content.
+		 * @param int    $paragraph_count  Paragraphs the document started with.
+		 * @param array  $expected_texts   List of array( 'text', 'status' ).
+		 * @param array  $expected_align   Paragraph index => final align value.
+		 * @param array  $expected_markers Inserted marker => 'alive' | 'absent'.
 		 * @return array Failures (empty when converged), each array( 'check', 'detail' ).
 		 */
-		public static function verify_convergence( string $content, int $paragraph_count, array $expected_texts, array $expected_align ): array {
+		public static function verify_convergence( string $content, int $paragraph_count, array $expected_texts, array $expected_align, array $expected_markers = array() ): array {
 			if ( '' === $content ) {
 				return array(
 					array(
@@ -339,11 +393,37 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 					}
 				)
 			);
-			if ( count( $blocks ) !== $paragraph_count ) {
+
+			$alive = count(
+				array_filter(
+					$expected_markers,
+					static function ( $state ) {
+						return 'alive' === $state;
+					}
+				)
+			);
+			if ( count( $blocks ) !== $paragraph_count + $alive ) {
 				$failures[] = array(
 					'check'  => 'structure',
-					'detail' => sprintf( 'expected %d paragraph blocks, found %d', $paragraph_count, count( $blocks ) ),
+					'detail' => sprintf( 'expected %d paragraph blocks (%d genesis + %d live inserts), found %d', $paragraph_count + $alive, $paragraph_count, $alive, count( $blocks ) ),
 				);
+			}
+			for ( $i = 0; $i < $paragraph_count; $i++ ) {
+				if ( 1 !== substr_count( $content, WP_Sync_Bench_Workload::genesis_marker( $i ) ) ) {
+					$failures[] = array(
+						'check'  => 'structure',
+						'detail' => sprintf( "genesis block '%s' is missing or duplicated", WP_Sync_Bench_Workload::genesis_marker( $i ) ),
+					);
+				}
+			}
+			foreach ( $expected_markers as $marker => $state ) {
+				$found = substr_count( $content, $marker );
+				if ( ( 'alive' === $state ? 1 : 0 ) !== $found ) {
+					$failures[] = array(
+						'check'  => 'structure',
+						'detail' => sprintf( "inserted block '%s' should be %s, found %d times", $marker, $state, $found ),
+					);
+				}
 			}
 
 			foreach ( $expected_texts as $entry ) {
@@ -362,7 +442,8 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 			}
 
 			foreach ( $expected_align as $paragraph => $align ) {
-				$actual = $blocks[ $paragraph ]['attrs']['align'] ?? null;
+				$block  = self::find_block_by_marker( $blocks, WP_Sync_Bench_Workload::genesis_marker( (int) $paragraph ) );
+				$actual = null === $block ? null : ( $block['attrs']['align'] ?? null );
 				if ( $actual !== $align ) {
 					$failures[] = array(
 						'check'  => 'attr-register',
@@ -372,6 +453,22 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 			}
 
 			return $failures;
+		}
+
+		/**
+		 * Finds the paragraph block whose body carries an identity marker.
+		 *
+		 * @param array  $blocks Parsed paragraph blocks.
+		 * @param string $marker Identity marker.
+		 * @return array|null The block, or null when absent.
+		 */
+		private static function find_block_by_marker( array $blocks, string $marker ): ?array {
+			foreach ( $blocks as $block ) {
+				if ( false !== strpos( (string) ( $block['innerHTML'] ?? '' ), $marker ) ) {
+					return $block;
+				}
+			}
+			return null;
 		}
 	}
 }

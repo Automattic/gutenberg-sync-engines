@@ -16,6 +16,7 @@
  */
 
 if ( ! class_exists( 'WP_Sync_Bench_Profiles' ) ) {
+	require_once __DIR__ . '/class-wp-sync-bench-workload.php';
 	require_once __DIR__ . '/interface-wp-sync-bench-authoring-profile.php';
 	require_once __DIR__ . '/class-wp-sync-bench-intent-log-profile.php';
 	require_once __DIR__ . '/class-wp-sync-bench-yjs-server-profile.php';

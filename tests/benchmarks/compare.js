@@ -124,6 +124,7 @@ if ( engineRuns.length ) {
 		[ 'rounds', ( d ) => d.config?.rounds ],
 		[ 'clients', ( d ) => d.config?.clients ],
 		[ 'paragraphs', ( d ) => d.config?.paragraphs ],
+		[ 'document size', ( d ) => d.config?.doc_bytes ],
 		[ 'PHP version', ( d ) => d.environment?.php ],
 		[ 'database', ( d ) => d.environment?.db ],
 		[ 'opcache', ( d ) => d.environment?.opcache ],

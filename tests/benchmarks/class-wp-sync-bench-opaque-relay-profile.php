@@ -113,12 +113,14 @@ if ( ! class_exists( 'WP_Sync_Bench_Opaque_Relay_Profile' ) ) {
 		 */
 		public function author( int $client, array $edit, int $round_index ): array { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable -- $client and $round_index are part of the profile contract.
 			// Every edit lands in the client CRDT, so the eventual compaction
-			// snapshot grows with the document.
-			$this->relay_doc_bytes += strlen( (string) $edit['text'] );
+			// snapshot grows with the document. Structural edits carry their
+			// block marker instead of typed text.
+			$body                   = (string) ( $edit['text'] ?? $edit['marker'] ?? $edit['op'] ?? '' );
+			$this->relay_doc_bytes += strlen( $body );
 			return array(
 				array(
 					'type' => 'update',
-					'data' => base64_encode( 'yjs-update:' . $edit['text'] . str_repeat( "\x01", 24 ) ),
+					'data' => base64_encode( 'yjs-update:' . $body . str_repeat( "\x01", 24 ) ),
 				),
 			);
 		}

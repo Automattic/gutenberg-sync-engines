@@ -181,15 +181,25 @@ review* (an outcome, not a demerit).
 | Slug                  | Shape                                                        |
 | --------------------- | ----------------------------------------------------------- |
 | `solo-typing`         | One editor, one document. Baseline cost, no contention.     |
-| `long-form`           | One editor, ~600 chars per paragraph (~5 KB at defaults). Does cost scale with document size? |
+| `long-form`           | One editor, ~600 chars per paragraph (~5 KB at defaults). Does cost scale with document size? Combine with `fill=` for a sweep. |
 | `parallel-paragraphs` | N editors, each in their own paragraph. Clean concurrency.  |
 | `contended-paragraph` | N editors restyling the SAME block. High escalation.        |
 | `mixed-newsroom`      | Mostly parallel, ~25% of rounds collide on one block.       |
 | `laggy-newsroom`      | Mixed newsroom, but the last client reads only every 10th round: stale bases, deep transforms, heavy catch-up reads. |
+| `structural-churn`    | Concurrent block INSERTS and REMOVALS alongside typing — the block-structure stress the pure-typing scenarios never exercise. |
+| `editorial-session`   | A wall-clock session, one round per second: staggered joins/leaves, typing bursts with think-time pauses, every present client polling every round, an autosave every 60 rounds. `rounds=3600 clients=3` is a one-hour three-user session. |
 
-Contention is modelled as concurrent writes to a versioned register (a
-block's alignment), because concurrent *text* inserts merge cleanly (the
-text interleaves — correct, not a conflict). Same seed ⇒ same workload.
+The workload speaks four operations: `text` (a keystroke batch into a
+genesis paragraph), `attr` (an align restyle), `insert_block` (a new
+paragraph), and `remove_block` (of a block the same client inserted
+earlier). Register contention is modelled on align because concurrent
+*text* inserts merge cleanly (the text interleaves — correct, not a
+conflict). Structural discipline keeps the oracles decidable: text/attr
+edits target genesis paragraphs only (identified by delimiter-terminated
+markers `Paragraph N;`, never removed), inserted blocks carry unique
+markers and are never edited, and removals only target the remover's own
+earlier inserts — so every marker's presence in the final document follows
+purely from the engine's dispositions. Same seed ⇒ same workload.
 
 Clients author from the state observed at their own last read, so a laggy
 client's `baseSeq` genuinely lags the server head. After the rounds, every
@@ -207,11 +217,24 @@ wp eval-file tests/benchmarks/benchmark.php \
     engine=intent-log scenario=mixed-newsroom \
     rounds=200 clients=4 paragraphs=8 seed=42
 
-# Head-to-head: run both engines over the same scenario and seed.
-for e in intent-log yjs-server; do
+# Head-to-head: run every engine over the same scenario and seed.
+for e in intent-log yjs-server de-rtc; do
   wp eval-file tests/benchmarks/benchmark.php \
       engine=$e scenario=contended-paragraph rounds=200 clients=4 seed=42
 done
+
+# Document-size sweep: fill= pads every genesis paragraph to ~N chars
+# (8 paragraphs x fill=6000 is a ~48 KB document).
+for kb in 0 750 6000 60000; do
+  wp eval-file tests/benchmarks/benchmark.php \
+      engine=yjs-server scenario=solo-typing rounds=50 fill=$kb json=size-$kb.json
+done
+
+# A one-hour three-user session (one round per second; join/leave, typing
+# bursts, idle polling, autosaves). Heavy under yjs-server — start with
+# rounds=600 (ten minutes) to see the growth trend.
+wp eval-file tests/benchmarks/benchmark.php \
+    engine=intent-log scenario=editorial-session rounds=3600 clients=3 reps=1
 ```
 
 Under wp-env, the plugin is mounted at
@@ -278,6 +301,27 @@ heavier catch-up reads); de-rtc escalates more (~23% — cumulative
 stale-base proposals conflict more often) and exercises its retry lane
 once the laggy client's base ages out of the engine's 20-version snapshot
 window (visible as `unknown-base-version` voids + `followups`).
+
+Structural churn (concurrent inserts/removals + typing, 60 rounds, 4
+clients) is where conflict POLICIES separate hardest: intent-log and
+yjs-server merge all 240 edits cleanly (transform and CRDT both handle
+structure), while de-rtc escalates ~50% of proposals (whole-document
+proposals against a structurally-shifting base are exactly what its
+three-way merge refuses to auto-resolve) — still zero lost work, all
+engines convergence-verified through the marker oracle.
+
+A ten-minute `editorial-session` (600 rounds, 3 clients, joins/bursts/
+saves; ~818 requests) shows the session-lifetime behavior single scenarios
+miss: intent-log holds a flat ~0.6 ms mean throughout; **yjs-server
+degrades as the document grows** (p50 ~65 ms but p90 ~203 ms / max ~436 ms
+by session end — every ingest rebuilds the ever-larger canonical doc, and
+in-session cold saves run ~160 ms); de-rtc stays ~2.9 ms mean but its room
+tail reaches **~1.2 MB** — which is also the payload the NEXT visitor
+downloads to join. Escalations in the realistic mix: 0 (yjs-server,
+silent), 0 (intent-log — bursty non-overlapping typing rarely collides),
+~6.5% (de-rtc, whole-proposal grain), with de-rtc's retry lane firing for
+late joiners whose genesis base aged out. All three: **0 lost**,
+converged.
 
 The comparison the decision turns on:
 

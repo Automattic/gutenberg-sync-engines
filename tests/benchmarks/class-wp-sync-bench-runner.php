@@ -143,8 +143,36 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 				$profile->record_followup_result( $client, $result );
 			};
 
-			foreach ( $workload['rounds'] as $round_index => $edits ) {
-				$active = array();
+			$save_every       = max( 0, (int) ( $workload['save_every'] ?? 0 ) );
+			$materialize_us   = array();
+			$materialize_peak = null;
+			$engine_class     = get_class( $engine );
+			$supports_mat     = method_exists( $engine, 'materialize' );
+			// One in-session save: materialize() on a FRESH engine instance
+			// (a save request starts with no per-request room cache), timed
+			// with its peak memory.
+			$cold_save = static function () use ( $storage, $room, $engine_class, &$materialize_us, &$materialize_peak, $track_memory ): void {
+				$cold       = new $engine_class( $storage );
+				$mem_before = 0;
+				if ( $track_memory ) {
+					memory_reset_peak_usage();
+					$mem_before = memory_get_usage();
+				}
+				$start = hrtime( true );
+				$cold->materialize( $room );
+				$materialize_us[] = ( hrtime( true ) - $start ) / 1e3;
+				if ( $track_memory ) {
+					$materialize_peak = max( (int) $materialize_peak, memory_get_peak_usage() - $mem_before );
+				}
+			};
+
+			foreach ( $workload['rounds'] as $round_index => $round ) {
+				// A round is a plain edit list, or array( 'edits', 'readers' )
+				// when the scenario schedules reads explicitly (present-but-
+				// idle clients polling on the transport cadence).
+				$edits   = $round['edits'] ?? $round;
+				$readers = $round['readers'] ?? null;
+				$active  = array();
 
 				foreach ( $edits as $edit ) {
 					$client            = (int) $edit['client'];
@@ -187,14 +215,21 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 					}
 				}
 
-				// Every active editor whose poll is due reads and advances its
-				// cursor and observed state; a laggy client skips and keeps
+				// Explicitly scheduled readers, or (legacy) every active
+				// editor whose poll is due — a laggy client skips and keeps
 				// authoring from its stale base.
-				foreach ( array_keys( $active ) as $client ) {
-					$every = max( 1, (int) ( $read_every[ $client ] ?? 1 ) );
-					if ( 0 !== ( ( $round_index + 1 ) % $every ) ) {
-						continue;
+				$due = $readers;
+				if ( null === $due ) {
+					$due = array();
+					foreach ( array_keys( $active ) as $client ) {
+						$every = max( 1, (int) ( $read_every[ $client ] ?? 1 ) );
+						if ( 0 === ( ( $round_index + 1 ) % $every ) ) {
+							$due[] = $client;
+						}
 					}
+				}
+				foreach ( $due as $client ) {
+					$client = (int) $client;
 
 					$start                  = hrtime( true );
 					$response               = $engine->get_updates_since( $room, $client, $read_cursor[ $client ], $read_context );
@@ -207,6 +242,13 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 					$profile->observe( $client, $response );
 
 					$submit_followup( $client, $response );
+				}
+
+				// Periodic in-session saves (the session scenarios' autosave
+				// cadence) — the save path is a real request a live session
+				// makes, timed like the end-of-session cold samples.
+				if ( $save_every > 0 && $supports_mat && 0 === ( ( $round_index + 1 ) % $save_every ) ) {
+					$cold_save();
 				}
 			}
 
@@ -247,27 +289,13 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 				$join_b[]  = strlen( (string) wp_json_encode( $response['updates'] ?? array() ) );
 			}
 
-			// Save-path cost: materialize() on a FRESH engine instance per
-			// sample (a save request starts with no per-request room cache),
-			// timed with its peak memory. Engines without the materialize
-			// convention (an opaque relay has no document) report null.
-			$materialize_us   = array();
-			$materialize_peak = null;
-			if ( method_exists( $engine, 'materialize' ) ) {
-				$engine_class = get_class( $engine );
+			// Save-path cost: end-of-session cold samples (plus any
+			// in-session autosaves already recorded above). Engines without
+			// the materialize convention (an opaque relay has no document)
+			// report null.
+			if ( $supports_mat ) {
 				for ( $i = 0; $i < self::MATERIALIZE_SAMPLES; $i++ ) {
-					$cold       = new $engine_class( $storage );
-					$mem_before = 0;
-					if ( $track_memory ) {
-						memory_reset_peak_usage();
-						$mem_before = memory_get_usage();
-					}
-					$start = hrtime( true );
-					$cold->materialize( $room );
-					$materialize_us[] = ( hrtime( true ) - $start ) / 1e3;
-					if ( $track_memory ) {
-						$materialize_peak = max( (int) $materialize_peak, memory_get_peak_usage() - $mem_before );
-					}
+					$cold_save();
 				}
 			}
 

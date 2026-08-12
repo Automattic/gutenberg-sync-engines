@@ -62,6 +62,9 @@ $paragraphs  = (int) ( $wp_sync_bench_opts['paragraphs'] ?? 8 );
 $seed        = (int) ( $wp_sync_bench_opts['seed'] ?? 42 );
 $reps        = max( 1, (int) ( $wp_sync_bench_opts['reps'] ?? 3 ) );
 $warmup      = max( 0, min( (int) ( $wp_sync_bench_opts['warmup'] ?? 1 ), $reps - 1 ) );
+// fill=N pads every genesis paragraph to ~N chars — the document-size
+// sweep axis (unset = the scenario default).
+$fill = isset( $wp_sync_bench_opts['fill'] ) ? max( 0, (int) $wp_sync_bench_opts['fill'] ) : null;
 
 if ( ! array_key_exists( $scenario, WP_Sync_Bench_Workload::scenarios() ) ) {
 	fwrite( STDERR, "Unknown scenario: {$scenario}\n" );
@@ -121,7 +124,7 @@ if ( ! function_exists( 'wp_sync_bench_calibrate' ) ) {
 // move between reps, and timing gets independent samples. Warmup reps run
 // the same load but are excluded from timing (autoload, opcache, and the
 // first lock acquisition all land in rep 0).
-$wp_sync_bench_workload = WP_Sync_Bench_Workload::build( $scenario, $seed, $rounds, $clients, $paragraphs );
+$wp_sync_bench_workload = WP_Sync_Bench_Workload::build( $scenario, $seed, $rounds, $clients, $paragraphs, $fill );
 
 $wp_sync_bench_series       = array(
 	'service_us'     => array(),
@@ -235,6 +238,8 @@ $report['config'] = array(
 	'rounds'     => $rounds,
 	'clients'    => $clients,
 	'paragraphs' => $paragraphs,
+	'fill'       => $fill,
+	'doc_bytes'  => strlen( (string) $wp_sync_bench_workload['post_content'] ),
 	'seed'       => $seed,
 	'reps'       => $reps,
 	'warmup'     => $warmup,
@@ -242,7 +247,7 @@ $report['config'] = array(
 
 $q = $report['quality'];
 printf( "\n== %s / %s ==\n", $report['engine'], $report['scenario'] );
-printf( "config: rounds=%d clients=%d paragraphs=%d seed=%d reps=%d(+%d warmup)\n", $rounds, $clients, $paragraphs, $seed, $report['timing']['measured_reps'], $warmup );
+printf( "config: rounds=%d clients=%d paragraphs=%d doc=%dB seed=%d reps=%d(+%d warmup)\n", $rounds, $clients, $paragraphs, $report['config']['doc_bytes'], $seed, $report['timing']['measured_reps'], $warmup );
 printf(
 	"environment: PHP %s / WP %s / %s / %s / opcache %s\n",
 	$report['environment']['php'],

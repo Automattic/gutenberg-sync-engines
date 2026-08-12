@@ -125,6 +125,14 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 		private $expected_align = array();
 
 		/**
+		 * Oracle input: inserted-block marker => 'alive' | 'absent', from
+		 * insert/remove dispositions.
+		 *
+		 * @var array<string, string>
+		 */
+		private $expected_markers = array();
+
+		/**
 		 * Lineage: content-row version => its baseVersion, from read rows.
 		 *
 		 * @var array<string, string>
@@ -417,11 +425,38 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 					}
 				)
 			);
-			if ( count( $blocks ) !== (int) $this->workload['paragraphs'] ) {
+
+			$paragraph_count = (int) $this->workload['paragraphs'];
+			$alive           = count(
+				array_filter(
+					$this->expected_markers,
+					static function ( $state ) {
+						return 'alive' === $state;
+					}
+				)
+			);
+			if ( count( $blocks ) !== $paragraph_count + $alive ) {
 				$failures[] = array(
 					'check'  => 'structure',
-					'detail' => sprintf( 'expected %d paragraph blocks, found %d', (int) $this->workload['paragraphs'], count( $blocks ) ),
+					'detail' => sprintf( 'expected %d paragraph blocks (%d genesis + %d live inserts), found %d', $paragraph_count + $alive, $paragraph_count, $alive, count( $blocks ) ),
 				);
+			}
+			for ( $i = 0; $i < $paragraph_count; $i++ ) {
+				if ( 1 !== substr_count( $content, WP_Sync_Bench_Workload::genesis_marker( $i ) ) ) {
+					$failures[] = array(
+						'check'  => 'structure',
+						'detail' => sprintf( "genesis block '%s' is missing or duplicated", WP_Sync_Bench_Workload::genesis_marker( $i ) ),
+					);
+				}
+			}
+			foreach ( $this->expected_markers as $marker => $state ) {
+				$found = substr_count( $content, $marker );
+				if ( ( 'alive' === $state ? 1 : 0 ) !== $found ) {
+					$failures[] = array(
+						'check'  => 'structure',
+						'detail' => sprintf( "inserted block '%s' should be %s, found %d times", $marker, $state, $found ),
+					);
+				}
 			}
 
 			foreach ( $this->expected_texts as $token => $status ) {
@@ -440,7 +475,14 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 			}
 
 			foreach ( $this->expected_align as $paragraph => $align ) {
-				$actual = $blocks[ $paragraph ]['attrs']['align'] ?? null;
+				$marker = WP_Sync_Bench_Workload::genesis_marker( (int) $paragraph );
+				$actual = null;
+				foreach ( $blocks as $block ) {
+					if ( false !== strpos( (string) ( $block['innerHTML'] ?? '' ), $marker ) ) {
+						$actual = $block['attrs']['align'] ?? null;
+						break;
+					}
+				}
 				if ( $actual !== $align ) {
 					$failures[] = array(
 						'check'  => 'attr-register',
@@ -521,6 +563,13 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 				foreach ( $records as $record ) {
 					if ( 'text' === $record['op'] ) {
 						$this->expected_texts[ $record['token'] ] = 'applied';
+					} elseif ( 'insert_block' === $record['op'] ) {
+						$this->expected_markers[ $record['marker'] ] = 'alive';
+					} elseif ( 'remove_block' === $record['op'] ) {
+						// Covers the no-op case too: a remove of a block whose
+						// insert never landed applies as a version-only
+						// advance, and the marker is absent either way.
+						$this->expected_markers[ $record['marker'] ] = 'absent';
 					} elseif ( $record['changed'] ) {
 						// Three-way merges only move a register the proposal
 						// actually changed against its own base; a no-op
@@ -575,9 +624,14 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 		private function park_settled( array $record ): void {
 			if ( 'text' === $record['op'] ) {
 				$this->expected_texts[ $record['token'] ] = 'parked';
+			} elseif ( 'insert_block' === $record['op'] ) {
+				// A parked insert never landed: the marker must stay out of
+				// the canonical.
+				$this->expected_markers[ $record['marker'] ] = 'absent';
 			}
-			// A parked attr write leaves the register where it was: no
-			// expectation to move.
+			// A parked attr write or block removal leaves the document where
+			// it was: no expectation to move (the block's fate stays with its
+			// insert's settlement).
 		}
 
 		/**
@@ -587,21 +641,41 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 		 * @return array Edit record.
 		 */
 		private function build_edit_record( array $edit ): array {
-			if ( 'attr' === ( $edit['op'] ?? 'text' ) ) {
+			$op = $edit['op'] ?? 'text';
+			if ( 'attr' === $op ) {
 				return array(
 					'op'         => 'attr',
 					'paragraph'  => (int) $edit['paragraph'],
+					'marker'     => WP_Sync_Bench_Workload::genesis_marker( (int) $edit['paragraph'] ),
 					'align'      => (string) $edit['align'],
 					'prev_align' => null,  // Captured by apply_record().
 					'changed'    => true,  // Recomputed by apply_record().
 					'retried'    => false,
 				);
 			}
+			if ( 'insert_block' === $op ) {
+				return array(
+					'op'           => 'insert_block',
+					'marker'       => (string) $edit['marker'],
+					'after_marker' => WP_Sync_Bench_Workload::genesis_marker( (int) $edit['after'] ),
+					'retried'      => false,
+				);
+			}
+			if ( 'remove_block' === $op ) {
+				return array(
+					'op'            => 'remove_block',
+					'marker'        => (string) $edit['marker'],
+					'after_marker'  => WP_Sync_Bench_Workload::genesis_marker( (int) $edit['after'] ),
+					'removed_block' => null, // Captured by apply_record(), for revert.
+					'noop'          => false,
+					'retried'       => false,
+				);
+			}
 			return array(
-				'op'        => 'text',
-				'paragraph' => (int) $edit['paragraph'],
-				'token'     => (string) $edit['text'],
-				'retried'   => false,
+				'op'      => 'text',
+				'marker'  => WP_Sync_Bench_Workload::genesis_marker( (int) $edit['paragraph'] ),
+				'token'   => (string) $edit['text'],
+				'retried' => false,
 			);
 		}
 
@@ -616,9 +690,25 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 		 */
 		private function apply_record( string $content, array &$record ): string {
 			$op = $record['op'];
-			return $this->with_paragraph(
+
+			if ( 'insert_block' === $op ) {
+				return $this->splice_block_after( $content, $record['after_marker'], self::new_paragraph_block( $record['marker'] ) );
+			}
+
+			if ( 'remove_block' === $op ) {
+				$removed = null;
+				$content = $this->extract_block( $content, $record['marker'], $removed );
+				// Absent target (the insert never landed at this client): the
+				// proposal degenerates to a no-op — the engine applies it as
+				// a version-only advance, which is correct either way.
+				$record['noop']          = null === $removed;
+				$record['removed_block'] = $removed;
+				return $content;
+			}
+
+			return $this->with_marker_block(
 				$content,
-				$record['paragraph'],
+				$record['marker'],
 				function ( array $block ) use ( $op, &$record ): array {
 					if ( 'attr' === $op ) {
 						$record['prev_align']    = $block['attrs']['align'] ?? null;
@@ -639,15 +729,30 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 		 * @return string Updated serialized blocks.
 		 */
 		private function revert_record( string $content, array $record ): string {
-			if ( 'text' === $record['op'] ) {
+			$op = $record['op'];
+
+			if ( 'text' === $op ) {
 				// Tokens are unique and delimiter-terminated (the workload
 				// generator's guarantee), so plain removal is exact.
 				return str_replace( $record['token'], '', $content );
 			}
+
+			if ( 'insert_block' === $op ) {
+				$removed = null;
+				return $this->extract_block( $content, $record['marker'], $removed );
+			}
+
+			if ( 'remove_block' === $op ) {
+				if ( ! empty( $record['noop'] ) || ! is_array( $record['removed_block'] ) ) {
+					return $content;
+				}
+				return $this->splice_block_after( $content, $record['after_marker'], $record['removed_block'] );
+			}
+
 			$prev = $record['prev_align'];
-			return $this->with_paragraph(
+			return $this->with_marker_block(
 				$content,
-				$record['paragraph'],
+				$record['marker'],
 				static function ( array $block ) use ( $prev ): array {
 					if ( null === $prev ) {
 						unset( $block['attrs']['align'] );
@@ -660,27 +765,106 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 		}
 
 		/**
-		 * Rewrites the Nth core/paragraph block through a callback.
+		 * Rewrites the block carrying an identity marker through a callback.
+		 * Blocks are addressed by marker, never by position — concurrent
+		 * structural edits shift positions.
 		 *
-		 * @param string   $content         Serialized blocks.
-		 * @param int      $paragraph_index Index among core/paragraph blocks.
-		 * @param callable $callback        Receives and returns the block.
+		 * @param string   $content  Serialized blocks.
+		 * @param string   $marker   Identity marker.
+		 * @param callable $callback Receives and returns the block.
 		 * @return string Updated serialized blocks.
 		 */
-		private function with_paragraph( string $content, int $paragraph_index, callable $callback ): string {
+		private function with_marker_block( string $content, string $marker, callable $callback ): string {
 			$blocks = parse_blocks( $content );
-			$seen   = -1;
 			foreach ( $blocks as $i => $block ) {
 				if ( 'core/paragraph' !== ( $block['blockName'] ?? null ) ) {
 					continue;
 				}
-				++$seen;
-				if ( $seen === $paragraph_index ) {
+				if ( false !== strpos( (string) $block['innerHTML'], $marker ) ) {
 					$blocks[ $i ] = $callback( $block );
 					break;
 				}
 			}
 			return serialize_blocks( $blocks );
+		}
+
+		/**
+		 * Inserts a block (plus a blank-line separator) after the block
+		 * carrying the anchor marker, or appends when the anchor is absent.
+		 *
+		 * @param string $content   Serialized blocks.
+		 * @param string $anchor    Anchor block's identity marker.
+		 * @param array  $new_block Parsed block to insert.
+		 * @return string Updated serialized blocks.
+		 */
+		private function splice_block_after( string $content, string $anchor, array $new_block ): string {
+			$blocks    = parse_blocks( $content );
+			$separator = array(
+				'blockName'    => null,
+				'attrs'        => array(),
+				'innerBlocks'  => array(),
+				'innerHTML'    => "\n\n",
+				'innerContent' => array( "\n\n" ),
+			);
+			$at        = count( $blocks );
+			foreach ( $blocks as $i => $block ) {
+				if ( 'core/paragraph' === ( $block['blockName'] ?? null )
+					&& false !== strpos( (string) $block['innerHTML'], $anchor ) ) {
+					$at = $i + 1;
+					break;
+				}
+			}
+			array_splice( $blocks, $at, 0, array( $separator, $new_block ) );
+			return serialize_blocks( $blocks );
+		}
+
+		/**
+		 * Removes the block carrying a marker (and its preceding blank-line
+		 * separator), handing the removed block back for a possible revert.
+		 *
+		 * @param string     $content Serialized blocks.
+		 * @param string     $marker  Identity marker.
+		 * @param array|null $removed Set to the removed block, or null.
+		 * @return string Updated serialized blocks.
+		 */
+		private function extract_block( string $content, string $marker, ?array &$removed ): string {
+			$removed = null;
+			$blocks  = parse_blocks( $content );
+			foreach ( $blocks as $i => $block ) {
+				if ( 'core/paragraph' !== ( $block['blockName'] ?? null ) ) {
+					continue;
+				}
+				if ( false !== strpos( (string) $block['innerHTML'], $marker ) ) {
+					$removed = $block;
+					$from    = $i;
+					$length  = 1;
+					$prior   = $blocks[ $i - 1 ] ?? null;
+					if ( $i > 0 && null === ( $prior['blockName'] ?? null ) && '' === trim( (string) ( $prior['innerHTML'] ?? '' ) ) ) {
+						--$from;
+						++$length;
+					}
+					array_splice( $blocks, $from, $length );
+					break;
+				}
+			}
+			return serialize_blocks( $blocks );
+		}
+
+		/**
+		 * A fresh client-born paragraph block whose body is its marker.
+		 *
+		 * @param string $marker Identity marker.
+		 * @return array Parsed-block-shaped array.
+		 */
+		private static function new_paragraph_block( string $marker ): array {
+			$html = "\n<p>" . $marker . "</p>\n";
+			return array(
+				'blockName'    => 'core/paragraph',
+				'attrs'        => array(),
+				'innerBlocks'  => array(),
+				'innerHTML'    => $html,
+				'innerContent' => array( $html ),
+			);
 		}
 
 		/**

@@ -71,6 +71,14 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 		private $expected_texts = array();
 
 		/**
+		 * Oracle input: inserted-block marker => 'alive' | 'absent', from
+		 * insert/remove dispositions.
+		 *
+		 * @var array<string, string>
+		 */
+		private $expected_markers = array();
+
+		/**
 		 * Constructor (the factory contract).
 		 *
 		 * @param int   $post_id  Seeded post (room target, unused here).
@@ -139,19 +147,92 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 		public function author( int $client, array $edit, int $round_index ): array { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable -- $round_index is part of the profile contract.
 			$doc       = $this->ydocs[ $client ];
 			$sv_before = \Yjs\encodeStateVector( $doc );
-			$paragraph = (int) $edit['paragraph'];
-			$block     = $doc->getMap( 'document' )->get( 'blocks' )->get( $paragraph );
-			if ( 'attr' === ( $edit['op'] ?? 'text' ) ) {
-				$block->get( 'attributes' )->set( 'align', $edit['align'] );
+			$yblocks   = $doc->getMap( 'document' )->get( 'blocks' );
+			$op        = $edit['op'] ?? 'text';
+
+			if ( 'attr' === $op ) {
+				$this->find_block( $yblocks, 'srv-' . (int) $edit['paragraph'] )->get( 'attributes' )->set( 'align', $edit['align'] );
+			} elseif ( 'insert_block' === $op ) {
+				// A client-born paragraph, mirroring the codec's shape (the
+				// server materializes it with the per-type default wrapper).
+				// Anchored after the genesis block IN THIS CLIENT'S doc —
+				// concurrent inserts at the same anchor interleave by CRDT
+				// order.
+				$index = $this->find_block_index( $yblocks, 'srv-' . (int) $edit['after'] );
+				$yblocks->insert(
+					null === $index ? $yblocks->length : $index + 1,
+					array( self::make_client_yblock( 'ins-' . $edit['block_id'], $edit['marker'] ) )
+				);
+			} elseif ( 'remove_block' === $op ) {
+				$index = $this->find_block_index( $yblocks, 'ins-' . $edit['block_id'] );
+				if ( null !== $index ) {
+					$yblocks->delete( $index, 1 );
+				}
 			} else {
-				$block->get( 'attributes' )->get( 'content' )->insert( 0, $edit['text'] );
+				// Genesis blocks are addressed by their stable clientId, not
+				// their position — concurrent structural edits shift indexes.
+				$this->find_block( $yblocks, 'srv-' . (int) $edit['paragraph'] )->get( 'attributes' )->get( 'content' )->insert( 0, $edit['text'] );
 			}
+
 			return array(
 				array(
 					'type' => 'update',
 					'data' => \Yjs\encodeStateAsUpdateV2( $doc, $sv_before )->toBase64(),
 				),
 			);
+		}
+
+		/**
+		 * Finds a block Y.Map by its clientId.
+		 *
+		 * @param \Yjs\Types\YArray $yblocks   Blocks array.
+		 * @param string            $client_id Block clientId.
+		 * @return \Yjs\Types\YMap|null The block, or null when absent.
+		 */
+		private function find_block( $yblocks, string $client_id ) {
+			$index = $this->find_block_index( $yblocks, $client_id );
+			return null === $index ? null : $yblocks->get( $index );
+		}
+
+		/**
+		 * Finds a block's index by its clientId.
+		 *
+		 * @param \Yjs\Types\YArray $yblocks   Blocks array.
+		 * @param string            $client_id Block clientId.
+		 * @return int|null The index, or null when absent.
+		 */
+		private function find_block_index( $yblocks, string $client_id ): ?int {
+			$length = (int) $yblocks->length;
+			for ( $i = 0; $i < $length; $i++ ) {
+				$block = $yblocks->get( $i );
+				if ( $block instanceof \Yjs\Types\YMap && $block->get( 'clientId' ) === $client_id ) {
+					return $i;
+				}
+			}
+			return null;
+		}
+
+		/**
+		 * Builds a client-born paragraph YBlock, mirroring the engine's
+		 * genesis shape (name/clientId/isValid/attributes/innerBlocks; the
+		 * body rides the content Y.Text; isValid MUST be true or the editor
+		 * renders the block in invalid-content recovery mode).
+		 *
+		 * @param string $client_id Block clientId.
+		 * @param string $marker    Identity marker (the block body).
+		 * @return \Yjs\Types\YMap YBlock.
+		 */
+		private static function make_client_yblock( string $client_id, string $marker ): \Yjs\Types\YMap {
+			$attributes = new \Yjs\Types\YMap();
+			$attributes->set( 'content', new \Yjs\Types\YText( $marker ) );
+
+			$yblock = new \Yjs\Types\YMap();
+			$yblock->set( 'name', 'core/paragraph' );
+			$yblock->set( 'clientId', $client_id );
+			$yblock->set( 'isValid', true );
+			$yblock->set( 'attributes', $attributes );
+			$yblock->set( 'innerBlocks', new \Yjs\Types\YArray() );
+			return $yblock;
 		}
 
 		/**
@@ -166,11 +247,17 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 		 * @param array $disposition Engine disposition.
 		 */
 		public function record_disposition( int $client, array $edit, array $disposition ): void { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable -- $client is part of the profile contract.
-			if ( 'attr' !== ( $edit['op'] ?? 'text' ) ) {
+			$op     = $edit['op'] ?? 'text';
+			$status = $disposition['status'] ?? 'unknown';
+			if ( 'text' === $op ) {
 				$this->expected_texts[] = array(
 					'text'   => (string) $edit['text'],
-					'status' => $disposition['status'] ?? 'unknown',
+					'status' => $status,
 				);
+			} elseif ( 'insert_block' === $op ) {
+				$this->expected_markers[ $edit['marker'] ] = 'applied' === $status ? 'alive' : 'absent';
+			} elseif ( 'remove_block' === $op && 'applied' === $status ) {
+				$this->expected_markers[ $edit['marker'] ] = 'absent';
 			}
 		}
 
@@ -229,7 +316,8 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 				(string) $engine->materialize( $room ),
 				(int) $this->workload['paragraphs'],
 				$this->expected_texts,
-				$this->ydocs
+				$this->ydocs,
+				$this->expected_markers
 			);
 		}
 
@@ -264,13 +352,14 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 		 * (deterministic, but NOT server arrival order), so the oracle for
 		 * them is the converged client state, not the submission log.
 		 *
-		 * @param string $content         Materialized post content.
-		 * @param int    $paragraph_count Paragraphs the document started with.
-		 * @param array  $expected_texts  List of array( 'text', 'status' ).
-		 * @param array  $ydocs           Caught-up client documents.
+		 * @param string $content          Materialized post content.
+		 * @param int    $paragraph_count  Paragraphs the document started with.
+		 * @param array  $expected_texts   List of array( 'text', 'status' ).
+		 * @param array  $ydocs            Caught-up client documents.
+		 * @param array  $expected_markers Inserted marker => 'alive' | 'absent'.
 		 * @return array Failures (empty when converged).
 		 */
-		public static function verify_crdt_convergence( string $content, int $paragraph_count, array $expected_texts, array $ydocs ): array {
+		public static function verify_crdt_convergence( string $content, int $paragraph_count, array $expected_texts, array $ydocs, array $expected_markers = array() ): array {
 			if ( '' === $content ) {
 				return array(
 					array(
@@ -304,11 +393,37 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 					}
 				)
 			);
-			if ( count( $blocks ) !== $paragraph_count ) {
+
+			$alive = count(
+				array_filter(
+					$expected_markers,
+					static function ( $state ) {
+						return 'alive' === $state;
+					}
+				)
+			);
+			if ( count( $blocks ) !== $paragraph_count + $alive ) {
 				$failures[] = array(
 					'check'  => 'structure',
-					'detail' => sprintf( 'expected %d paragraph blocks, found %d', $paragraph_count, count( $blocks ) ),
+					'detail' => sprintf( 'expected %d paragraph blocks (%d genesis + %d live inserts), found %d', $paragraph_count + $alive, $paragraph_count, $alive, count( $blocks ) ),
 				);
+			}
+			for ( $i = 0; $i < $paragraph_count; $i++ ) {
+				if ( 1 !== substr_count( $content, WP_Sync_Bench_Workload::genesis_marker( $i ) ) ) {
+					$failures[] = array(
+						'check'  => 'structure',
+						'detail' => sprintf( "genesis block '%s' is missing or duplicated", WP_Sync_Bench_Workload::genesis_marker( $i ) ),
+					);
+				}
+			}
+			foreach ( $expected_markers as $marker => $state ) {
+				$found = substr_count( $content, $marker );
+				if ( ( 'alive' === $state ? 1 : 0 ) !== $found ) {
+					$failures[] = array(
+						'check'  => 'structure',
+						'detail' => sprintf( "inserted block '%s' should be %s, found %d times", $marker, $state, $found ),
+					);
+				}
 			}
 
 			foreach ( $expected_texts as $entry ) {
@@ -322,24 +437,36 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 			}
 
 			// The materialized attribute registers match the converged CRDT
-			// state (client 0 is representative once client convergence held).
+			// state (client 0 is representative once client convergence
+			// held). Genesis blocks are located by clientId in the CRDT and
+			// by identity marker in the materialized content — never by
+			// position, which structural edits shift.
 			$reference = reset( $ydocs );
 			if ( $reference ) {
-				$yblocks     = $reference->getMap( 'document' )->get( 'blocks' );
-				$block_count = min( $paragraph_count, count( $blocks ) );
-				for ( $i = 0; $i < $block_count; $i++ ) {
+				$doc_json    = self::normalize_for_compare( $reference->getMap( 'document' )->toJSON() );
+				$json_blocks = is_array( $doc_json ) && is_array( $doc_json['blocks'] ?? null )
+					? $doc_json['blocks']
+					: array();
+				for ( $i = 0; $i < $paragraph_count; $i++ ) {
 					$expected = null;
-					try {
-						$expected = $yblocks->get( $i )->get( 'attributes' )->get( 'align' );
-					} catch ( \Throwable $e ) {
-						$expected = null;
+					foreach ( $json_blocks as $json_block ) {
+						if ( is_array( $json_block ) && ( $json_block['clientId'] ?? null ) === 'srv-' . $i ) {
+							$expected = $json_block['attributes']['align'] ?? null;
+							break;
+						}
 					}
 					if ( ! is_string( $expected ) ) {
-						// A never-set key comes back as y-php's UndefinedValue
-						// singleton: an absent register.
 						$expected = null;
 					}
-					$actual = $blocks[ $i ]['attrs']['align'] ?? null;
+					$block  = null;
+					$marker = WP_Sync_Bench_Workload::genesis_marker( $i );
+					foreach ( $blocks as $candidate ) {
+						if ( false !== strpos( (string) ( $candidate['innerHTML'] ?? '' ), $marker ) ) {
+							$block = $candidate;
+							break;
+						}
+					}
+					$actual = null === $block ? null : ( $block['attrs']['align'] ?? null );
 					if ( $actual !== $expected ) {
 						$failures[] = array(
 							'check'  => 'attr-register',
