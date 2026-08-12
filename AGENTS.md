@@ -18,11 +18,17 @@ the editor falls back to the classic exclusive post lock.
 This plugin provides:
 
 - **Engines:** `intent-log` (server-authoritative log of typed intents; merges
-  by transform, sets genuine conflicts aside for review) and `yjs-server`
+  by transform, sets genuine conflicts aside for review), `yjs-server`
   (server-authoritative CRDT: the vendored y-php library merges every update
   into a canonical room document server-side, compacts by itself, and
   materializes post content — lock-free ingest; it inherited the retired
-  naive-relay yjs-relay engine's client CRDT machinery and wire format).
+  naive-relay yjs-relay engine's client CRDT machinery and wire format), and
+  `de-rtc` (Distributed Editing's save-centric model on the room protocol:
+  clients propose whole content against a named base version; the server
+  three-way-merges every proposal with the merge core ported verbatim from
+  the wordpress-develop `add/distributed-editing` branch and broadcasts
+  canonical content rows; genuine conflicts escalate instead of silently
+  merging).
   The framework's conventional default engine
   (`WP_Sync_Engine_Registry::DEFAULT_ENGINE`) is **intent-log** — that's
   what runs when the `wp_sync_engine` option is unset. Registration order
@@ -42,9 +48,21 @@ The framework/plugin split is complete: the framework ships **neither** engines
 ## Repo layout
 
 - `gutenberg-sync-engines.php` — plugin entry.
-- `includes/` — server PHP: `engines/{intent-log,yjs-server}/`,
+- `includes/` — server PHP: `engines/{intent-log,yjs-server,de-rtc}/`,
   `transports/{...,websocket/}`, `admin/` (the Collaboration settings screen),
   and `lib/`:
+  - `engines/de-rtc/merge-core.php` — the DE-RTC merge core, ported
+    VERBATIM from the Gutenberg `chriszarate/refreshed-de-rtc` branch's
+    `de-rtc.php` (itself a verbatim port of wordpress-develop
+    `add/distributed-editing`): the exact call-graph closure (113
+    functions) of the engine-facing entry points — serialized-block +
+    block-identity three-way merges, the rich-text merge model, update
+    construction/validation, version snapshots, sync-meta parse/format,
+    canonicalization/hashing. Frozen like the intent-log core and excluded
+    from phpcs; the only deltas are the vendored-library path and loader
+    delegation (marked `DELTA` in place). Loaded behind a
+    `function_exists( 'wp_de_rtc_get_reason_codes' )` guard so a
+    Core/Gutenberg build that ships DE-RTC itself wins.
   - `lib/y-php/` — **vendored y-php** (PHP port of Yjs 13.6.31), imported
     verbatim from <https://github.com/alecgeatches/y-php> (MIT; upstream
     commit recorded in the import commit). Excluded from our phpcs (it
@@ -61,6 +79,33 @@ The framework/plugin split is complete: the framework ships **neither** engines
   - `lib/y-php-loader.php` — lazy runtime loader (PSR-4 autoloader +
     Composer-`files` equivalents) so the plugin can use y-php without a
     Composer autoloader.
+  - `lib/automerge-php/` — **vendored automerge-php** (native PHP port of
+    Automerge for DE-RTC research), imported verbatim from the Gutenberg
+    `chriszarate/refreshed-de-rtc` branch (originally wordpress-develop
+    `add/distributed-editing`, PR WordPress/wordpress-develop#12334; MIT,
+    PHP 8.2+ with mbstring, namespace
+    `WordPress\DistributedEditing\Automerge`, no WordPress dependency).
+    Excluded from phpcs; frozen like y-php. Its own conformance suite runs
+    in CI: `php includes/lib/automerge-php/tests/run.php` (<1 s, no
+    WordPress; 680 mapped upstream tests). FULL parity needs the fixed
+    GB11 grapheme rules of PCRE2 ≥ 10.43, which PHP bundles from 8.4 —
+    under PHP ≤ 8.3 builds carrying PCRE2 10.42 (stock GitHub runners,
+    Ubuntu 24.04 packages) two adjacent emoji-ZWJ sequences count as ONE
+    `\X` cluster and exactly 2 of the 680 tests fail (grapheme cursor
+    tracking + a UTF-16-boundary splice); CI pins PHP 8.4 for this step.
+    The 11 upstream fixture files
+    the runner reads live under `automerge-php/upstream/automerge/`
+    (fetched from automerge/automerge; pin recorded in
+    `VENDORED_FROM_COMMIT.txt` — the source branches referenced an
+    upstream submodule that was never committed). Running the suite
+    rewrites the tracked `PORTING_STATUS.json` (timestamps); revert that
+    side-effect after local runs. NOTE: the DE-RTC
+    *shipping* merge path (`native-automerge-blocks-v1`) never calls this
+    library — it backs only the dead legacy whole-text lane and
+    external-repair; it is vendored for fidelity and future use.
+  - `lib/automerge-php-loader.php` — lazy PSR-4 loader shim +
+    `gutenberg_sync_engines_automerge_php_is_supported()` (PHP ≥ 8.2 +
+    mbstring gate).
 - `src/` — client JS/TS (webpack entry `src/index.ts` → `build/sync-engines.js`,
   externalizes `@wordpress/sync`→`wp.sync` and `yjs`→`wp.sync.Y`):
   - `engines/intent-log/` — the **frozen cross-language core** (byte-matched
@@ -189,15 +234,19 @@ everywhere, so auth even succeeds); the first visible failure is
 `activatePlugin( 'gutenberg' )` in global-setup dying with
 "Unexpected end of JSON input". Always pass `WP_BASE_URL` in that case.
 
-Current green baseline: **Jest 342**, **PHPUnit 148 (659 assertions)**,
-**e2e 40/40** (occasional flake under full-suite load — a save notice or a
-fixture login navigation; green solo), **e2e:websocket 1 skipped** (see
+Current green baseline: **Jest 347**, **PHPUnit 174 (763 assertions)**,
+**e2e 32/32** (occasional flake under full-suite load — a save notice, a
+fixture login navigation, or `http-only/collaboration-sync-body-size`
+failing after a preceding engine-flip suite [verified pre-existing: the
+yjs suite followed by body-size reproduces it without de-rtc involved];
+each green solo), **e2e:websocket 1 skipped** (see
 below — the peer-relay WS fixture needs a client-merging engine and none
-remains), plus the
-vendored y-php library's own conformance suite (**428 tests**, run
-separately — see `includes/lib/` above). CI (`.github/workflows/ci.yml`)
-certifies all suites on pushes to `main` and PRs; the e2e job leans on the
-base config's 2-retries-in-CI to absorb the flake.
+remains), plus the vendored libraries' own conformance suites run
+separately: y-php (**428 tests**) and automerge-php (**680 mapped
+upstream tests**, `php includes/lib/automerge-php/tests/run.php`). CI
+(`.github/workflows/ci.yml`) certifies all suites on pushes to `main` and
+PRs; the e2e job leans on the base config's 2-retries-in-CI to absorb the
+flakes.
 
 The transport-specific e2e suites live here (relocated from the framework):
 `tests/e2e/specs/http-only/` runs in the default suite; `tests/e2e/specs/
@@ -336,6 +385,20 @@ and the test suites never start a daemon.
   materialization carries the same Phase-2a wrapper simplification as
   intent-log. Genesis blocks must set `isValid: true` or the editor renders
   them as invalid-content recovery blocks (has bitten).
+- **de-rtc known gaps** (docs/engine-comparison.md has the full list): no
+  title sync (proposals carry content only); no review lane yet — server
+  escalations (`manual-conflict-required`, `requires-unfiltered-html`)
+  surface as dispositions but no UI presents them, and the client abandons
+  an escalated proposal once canonical applies; truly concurrent SAME-block
+  edits resolve block-level last-writer-wins client-side (yjs-server's
+  silent-register-LWW class, coarser grain); the client sends
+  `clientUpdate: null` and relies on the server's engine-unaware-writer
+  lane to derive block-native operations (the client-side descriptor
+  builder + cross-language fingerprint vectors are unported); no benchmark
+  authoring profile yet (`tests/benchmarks` cannot drive de-rtc); ingest
+  serializes per room under the intent-log-style GET_LOCK, and every
+  accepted proposal broadcasts FULL content rows (storage bounded by
+  checkpoints, but row bytes scale with document size).
 - **Intent-log echo race:** editor pushes racing live keystrokes can corrupt
   canvas text (observed under load; worst over websocket's per-keystroke
   cadence — benchmark that transport under yjs-server meanwhile). Deferring or

@@ -34,6 +34,7 @@ import { privateApis } from '@wordpress/sync';
 import { unlock } from './lock-unlock';
 import { createIntentLogEngineAdapter } from './engines/intent-log-adapter';
 import { createYjsServerEngineAdapter } from './engines/yjs-server-adapter';
+import { createDeRtcEngineAdapter } from './engines/de-rtc-adapter';
 import { createHttpPollingProvider } from './providers/http-polling/http-polling-provider';
 import { createHttpLongPollingProvider } from './providers/http-long-polling/http-long-polling-provider';
 import { createWebSocketProvider } from './providers/websocket/websocket-provider';
@@ -43,6 +44,7 @@ const { registerSyncEngine, registerSyncTransport } = unlock( privateApis );
 // Engines: how concurrent edits merge.
 registerSyncEngine( createIntentLogEngineAdapter() );
 registerSyncEngine( createYjsServerEngineAdapter() );
+registerSyncEngine( createDeRtcEngineAdapter() );
 
 // Transports: how updates move. Each carries the slug + protocol the server
 // announces and negotiates against.

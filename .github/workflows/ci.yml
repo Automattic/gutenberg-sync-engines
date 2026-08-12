@@ -81,16 +81,52 @@ jobs:
           npm ci --ignore-scripts
           npm run build
 
+      # The conformance suites run on the runner's PHP directly (no
+      # WordPress). automerge-php's grapheme-cluster paths need the fixed
+      # GB11 rules of PCRE2 >= 10.43, which PHP bundles from 8.4 — under
+      # PHP <= 8.3 (PCRE2 10.42, including the stock runner PHP) two
+      # adjacent emoji-ZWJ sequences count as ONE \X cluster and exactly
+      # 2 of its 680 tests fail. Pin 8.4.
+      - name: Set up PHP for the conformance suites
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: mbstring
+          tools: composer
+
       - name: Install PHP dependencies
         run: composer install --no-progress
 
       # The vendored y-php library's own conformance suite: translated
       # upstream Yjs tests plus byte-level fixtures generated from the JS
-      # implementation. Runs on the runner's PHP directly (no WordPress).
+      # implementation.
       - name: y-php conformance
         run: |
           composer --working-dir=includes/lib/y-php install --no-progress
           composer --working-dir=includes/lib/y-php test
+
+      # The vendored automerge-php library's own conformance suite:
+      # ported upstream Automerge JS/Rust tests (680 mapped). Needs no
+      # Composer install (hand-rolled runner). The runner exits non-zero
+      # on any failing test; keep its report visible either way.
+      - name: automerge-php conformance
+        run: |
+          status=0
+          php includes/lib/automerge-php/tests/run.php > automerge-conformance.json || status=$?
+          php -r '
+            $report = json_decode( (string) file_get_contents( "automerge-conformance.json" ), true );
+            if ( ! is_array( $report ) ) {
+              echo "Runner produced no JSON report:\n";
+              echo file_get_contents( "automerge-conformance.json" ), "\n";
+              exit( 1 );
+            }
+            printf( "passing=%d failing=%d (%s%%)\n", $report["passingTests"] ?? -1, $report["failingTests"] ?? -1, $report["passPercent"] ?? "?" );
+          '
+          if [ "$status" -ne 0 ]; then
+            echo "=== failing tests ==="
+            grep -B 8 '"passed": false' automerge-conformance.json || true
+          fi
+          exit "$status"
 
       # Tests target the dedicated tests environment (.wp-env.tests.json)
       # — the default .wp-env.json is the dev environment, whose afterStart
