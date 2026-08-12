@@ -150,6 +150,18 @@ noise under intent-log), with one exception noted below.
   this is the biggest day-to-day parity gap.
 - **The websocket transport is experimental** (one-time auth token travels
   as a URL query parameter; plaintext `ws://` must never leave a dev box).
+- **The websocket transport drops the client's engine stamps.** The
+  daemon's room-request validation
+  (`WP_WebSocket_Sync_Server::validate_room_request()`) normalizes away
+  the `engine`/`engine_protocol` fields the HTTP transports forward to the
+  engine layer. Two consequences: there is no stale-tab engine fence over
+  websocket, and the switched-engine collection-room healing
+  (`reset_switched_room`, HTTP polling only) can never trigger — a global
+  collection/taxonomy room with stale engine lineage 409s
+  (`rest_sync_engine_mismatch`) forever over websocket while an HTTP
+  client would heal it. Since comparing engines means switching them,
+  flip engines over an HTTP transport first (letting it heal the global
+  rooms) before benchmarking websocket.
 - **yjs-server ingest cost is real and scales with document size.** Every
   ingest decodes, merges, and re-encodes the canonical document in pure
   PHP (~30 ms at benchmark sizes vs intent-log's ~0.6 ms). Before
