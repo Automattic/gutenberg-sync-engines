@@ -1,4 +1,4 @@
-# Choosing a sync engine (and transport)
+# Choosing a sync engine and transport
 
 This plugin exists to make the engine/transport decision a matter of
 evidence. This guide is the interpretation layer for that evidence: what
@@ -7,45 +7,34 @@ performance and which are policy, and the known gaps that should color any
 conclusion. Read it alongside the two benchmark harnesses
 (`tests/benchmarks/README.md` and `tests/benchmarks/transport/README.md`).
 
-## The engines in one sentence each
+## The engines
 
-- **intent-log** — the server owns the document: every edit is a typed
+- **intent-log**: The server owns the document and every edit is a typed
   intent the server transforms against the log, so it can say exactly how
-  every edit settled — and park genuine conflicts for human review instead
+  every edit settled. It parks genuine conflicts for human review instead
   of auto-merging them.
-- **yjs-server** — the server owns the document AND it is a CRDT: the
+- **yjs-server**: The server owns the document AND it is a CRDT. The
   vendored y-php library merges every update into a canonical room
   document server-side, the server compacts by itself and materializes
   post content, while clients keep the CRDT machinery inherited from the
   retired relay engine (same wire documents, same undo).
-- **de-rtc** — the server owns the document and clients never merge:
-  each client proposes its WHOLE content against the version it last
-  incorporated, and the server three-way-merges every proposal with the
-  Distributed Editing merge core ported verbatim from wordpress-develop
-  (serialized-block + rich-text + block-identity merges); most edits
-  merge cleanly, and genuine conflicts ESCALATE for a human decision
-  instead of silently merging.
+- **de-rtc**: The server owns the document and clients never merge.
+  Each client proposes its WHOLE content against the version it last
+  incorporated, and the server three-way-merges every proposal. Most
+  edits merge cleanly, and genuine conflicts escalate for a human
+  decision instead of auto-merging.
 
-**Retired: yjs-relay** — the incumbent design this plugin started from: the
-clients owned the document, and the server stored and forwarded opaque CRDT
-updates it could not inspect. It was removed once yjs-server matched its
-client-side behavior with server-side authority; its shared client modules
-live on in `src/engines/yjs/` (constants, doc schema, snapshot, undo), and
-yjs-server's wire documents remain byte-compatible with rooms it wrote.
-Where the relay appears below it is as historical context.
+**Retired: yjs-relay**: The incumbent design had clients own the document.
+The server stored and forwarded opaque CRDT updates it could not inspect.
+Its shared client modules live on in `src/engines/yjs/` (constants, doc
+schema, snapshot, undo), and yjs-server's wire documents remain
+byte-compatible with rooms it wrote. Where the relay appears below it is as
+historical context.
 
 ## One architectural choice drives everything
 
-Where the merge happens decides almost every other property — and
-yjs-server deliberately sits in the middle: server-side authority over a
-CRDT merge. It gains the relay's lock-free ingest and lossless text
-merging plus the intent log's observability, bounded storage, and
-materialization; it does NOT gain the intent log's conflict *policy*
-(register conflicts still resolve silently, last-writer-wins) and it pays
-the cost of rebuilding the canonical document in PHP on every ingest.
-
-- **Merging on the server (intent-log)** costs server CPU and a per-room
-  ingest lock, and in exchange the server can *observe* outcomes: per-edit
+- **Merging on the server** costs server CPU (and possibly a per-room
+  ingest lock) and in exchange the server can *observe* outcomes: per-edit
   dispositions (applied / escalated / voided), a convergence oracle in the
   benchmark, a review lane for conflicts, and capability enforcement at
   ingest (an author without `unfiltered_html` gets raw-HTML content parked
@@ -79,7 +68,7 @@ differently. The tables below are how the price shows up.
 | Materialize to post_content | Yes (server-side) | Yes (server-side, from the canonical doc) | Trivially — the canonical document IS post content |
 | Wire format | Small human-readable JSON intents | Opaque base64 binary (V2) + JSON snapshot rows | Human-readable JSON: whole-content proposals up, whole-content canonical rows down (bytes scale with document size) |
 
-## Host-facing resource profile
+## Resource profile
 
 | Concern | intent-log | yjs-server | de-rtc |
 | --- | --- | --- | --- |
@@ -101,7 +90,7 @@ benchmark profile authors genuine Yjs updates through y-php).
 
 ## Transports are a separate axis
 
-Both engines run over any transport. Measured with the transport benchmark
+Engines run over any transport. Measured with the transport benchmark
 (same machine, 30 trials, under the retired yjs-relay engine — transport
 latency is engine-independent, so the numbers stand; re-measure under
 yjs-server to confirm on your hardware):
@@ -150,6 +139,18 @@ noise under intent-log), with one exception noted below.
   this is the biggest day-to-day parity gap.
 - **The websocket transport is experimental** (one-time auth token travels
   as a URL query parameter; plaintext `ws://` must never leave a dev box).
+- **The websocket transport drops the client's engine stamps.** The
+  daemon's room-request validation
+  (`WP_WebSocket_Sync_Server::validate_room_request()`) normalizes away
+  the `engine`/`engine_protocol` fields the HTTP transports forward to the
+  engine layer. Two consequences: there is no stale-tab engine fence over
+  websocket, and the switched-engine collection-room healing
+  (`reset_switched_room`, HTTP polling only) can never trigger — a global
+  collection/taxonomy room with stale engine lineage 409s
+  (`rest_sync_engine_mismatch`) forever over websocket while an HTTP
+  client would heal it. Since comparing engines means switching them,
+  flip engines over an HTTP transport first (letting it heal the global
+  rooms) before benchmarking websocket.
 - **yjs-server ingest cost is real and scales with document size.** Every
   ingest decodes, merges, and re-encodes the canonical document in pure
   PHP (~30 ms at benchmark sizes vs intent-log's ~0.6 ms). Before
@@ -180,31 +181,3 @@ noise under intent-log), with one exception noted below.
   for blocks born in-session). Complex sourced attributes beyond the
   content field don't round-trip through server materialization yet —
   the same class of gap intent-log carries.
-
-## Bottom line
-
-- If the priority is **accountable merges** — no silently lost or
-  silently merged work, conflicts reviewable by humans, quality metrics a
-  host can actually monitor — intent-log buys that for roughly half a
-  millisecond of serialized server work per edit, with collaborative undo
-  and the echo-race fix as the open engineering items.
-- If the priority is **CRDT merge semantics with server authority** —
-  lossless text merging and per-peer undo like the retired relay, but with
-  server-side genesis, bounded storage without client help, observable
-  convergence, materialization, and lock-free ingest — yjs-server now
-  provides it, at a real price: tens of milliseconds of y-php CPU per
-  edit at benchmark document sizes, no review lane, and the kses lane
-  still to build. It is the measurement platform for deciding whether
-  server-side Yjs can be made cheap enough, not yet a production default.
-- If the priority is **WordPress-native merge semantics with escalation
-  over silent conflict** — proposals in plain serialized-block JSON, a
-  server that merges the way upstream Distributed Editing's save path
-  does, version lineage per room, and conflicts that refuse to
-  auto-merge — de-rtc now provides the engine core, with the review UI,
-  title sync, client-side proof descriptors, and a benchmark profile as
-  the open items. It is the migration path for evaluating Distributed
-  Editing inside the pluggable framework, not yet a production default.
-- Transport choice is independent and mostly a hosting decision: polling
-  works everywhere at ~1.7 s perceived latency, long-polling roughly
-  triples responsiveness for the price of held PHP workers, and websocket
-  is effectively instant for the price of running a daemon.
