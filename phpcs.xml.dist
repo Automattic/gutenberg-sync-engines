@@ -12,6 +12,10 @@
 	<!-- Vendored y-php library (deliberately mirrors JS Yjs, not WPCS; it
 	     carries its own phpcs.xml.dist). -->
 	<exclude-pattern>/includes/lib/y-php/*</exclude-pattern>
+	<!-- Vendored automerge-php library (deliberately mirrors upstream
+	     Automerge style, PHP 8.2+, not WPCS; ported verbatim from the
+	     wordpress-develop add/distributed-editing branch). -->
+	<exclude-pattern>/includes/lib/automerge-php/*</exclude-pattern>
 	<!-- Frozen JS engine core + vectors are not PHP. -->
 	<exclude-pattern>*/engines/intent-log/*.js</exclude-pattern>
 
