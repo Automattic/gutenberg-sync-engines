@@ -6,7 +6,10 @@ import * as path from 'path';
 /**
  * WordPress dependencies
  */
-import type { RequestUtils } from '@wordpress/e2e-test-utils-playwright';
+import {
+	PageUtils,
+	type RequestUtils,
+} from '@wordpress/e2e-test-utils-playwright';
 
 /**
  * Internal dependencies
@@ -15,6 +18,7 @@ import {
 	test,
 	expect,
 } from '../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures';
+import { SECOND_USER } from '../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures/collaboration-utils';
 
 /**
  * Multi-client content preservation, run against BOTH engines.
@@ -566,6 +570,121 @@ for ( const engine of ENGINES ) {
 			);
 			expect( saved.content.raw ).not.toContain(
 				'Original second paragraph'
+			);
+		} );
+
+		test( 'a late joiner pasting over the document removes blocks saved mid-session', async ( {
+			collaborationUtils,
+			requestUtils,
+			editor,
+		} ) => {
+			test.setTimeout( 120_000 );
+
+			// Seeding diversity: the room's bootstrap document and the
+			// content a late joiner loads are DIFFERENT proofs of what that
+			// joiner has displayed. The mid-session block below exists only
+			// as post-genesis history plus a persisted syncId in the saved
+			// content — a wholesale first edit by the late joiner must
+			// delete it too, not resurrect it.
+			const post = await requestUtils.createPost( {
+				title: `Late Joiner Paste (${ engine })`,
+				status: 'draft',
+				content:
+					'<!-- wp:paragraph -->\n<p>Original seeded paragraph</p>\n<!-- /wp:paragraph -->',
+				date_gmt: new Date().toISOString(),
+			} );
+
+			// User A opens ALONE; the room bootstraps from the single
+			// original paragraph.
+			await collaborationUtils.openPost( post.id );
+
+			// A adds a block mid-session and saves, persisting both blocks'
+			// syncIds into the post content. Wait for the serialized content
+			// to SETTLE first: intent-log assigns a provisional identity that
+			// the shared document's settled id then replaces, and a save
+			// racing that window persists a stale id the room's document no
+			// longer carries — a KNOWN drift (kept out of this spec's scope)
+			// that would defeat record-based display seeding for the joiner.
+			await editor.insertBlock( {
+				name: 'core/paragraph',
+				attributes: { content: 'Added mid-session by A' },
+			} );
+			const page1 = editor.page;
+			await expect( async () => {
+				const before = await page1.evaluate( () =>
+					( window as any ).wp.data
+						.select( 'core/editor' )
+						.getEditedPostContent()
+				);
+				await page1.waitForTimeout( 1500 );
+				const after = await page1.evaluate( () =>
+					( window as any ).wp.data
+						.select( 'core/editor' )
+						.getEditedPostContent()
+				);
+				expect( after ).toBe( before );
+			} ).toPass( { timeout: 30_000 } );
+			await editor.saveDraft();
+
+			// B joins AFTER the save: its editor renders the two saved
+			// blocks while the room replays them as history.
+			await collaborationUtils.joinUser( post.id, SECOND_USER );
+			await collaborationUtils.waitForMutualDiscovery();
+			const { editor2, page2 } = collaborationUtils;
+			const pageUtils2 = new PageUtils( {
+				page: page2,
+				browserName: 'chromium',
+			} );
+
+			// B's FIRST action: select the whole document and paste over it.
+			await editor2.canvas
+				.locator( '[data-type="core/paragraph"]' )
+				.first()
+				.click();
+			await pageUtils2.pressKeys( 'primary+a' );
+			await pageUtils2.pressKeys( 'primary+a' );
+			await pageUtils2.setClipboardData( {
+				html: '<p>Late joiner replacement paragraph</p>',
+			} );
+			await pageUtils2.pressKeys( 'primary+v' );
+
+			// Both editors converge on the replacement ALONE; neither
+			// original may resurrect.
+			for ( const currentEditor of [ editor, editor2 ] ) {
+				await expect( async () => {
+					const blocks = await currentEditor.getBlocks();
+					expect(
+						blocks.map( ( block ) => block.attributes.content )
+					).toEqual( [ 'Late joiner replacement paragraph' ] );
+				} ).toPass( { timeout: 15_000 } );
+			}
+			// Sustained: still converged after a settle window (no
+			// delete/reinsert war, no late resurrection).
+			await page2.waitForTimeout( 3000 );
+			await collaborationUtils.waitForConvergence();
+			for ( const currentEditor of [ editor, editor2 ] ) {
+				await expect(
+					currentEditor.canvas.locator(
+						'[data-type="core/paragraph"]'
+					)
+				).toHaveCount( 1 );
+			}
+
+			await editor2.saveDraft();
+			const saved = await requestUtils.rest< {
+				content: { raw: string };
+			} >( {
+				path: `/wp/v2/posts/${ post.id }`,
+				params: { context: 'edit' },
+			} );
+			expect( saved.content.raw ).toContain(
+				'Late joiner replacement paragraph'
+			);
+			expect( saved.content.raw ).not.toContain(
+				'Original seeded paragraph'
+			);
+			expect( saved.content.raw ).not.toContain(
+				'Added mid-session by A'
 			);
 		} );
 

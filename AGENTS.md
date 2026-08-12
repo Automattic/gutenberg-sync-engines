@@ -189,8 +189,8 @@ everywhere, so auth even succeeds); the first visible failure is
 `activatePlugin( 'gutenberg' )` in global-setup dying with
 "Unexpected end of JSON input". Always pass `WP_BASE_URL` in that case.
 
-Current green baseline: **Jest 341**, **PHPUnit 148 (659 assertions)**,
-**e2e 37/37** (occasional flake under full-suite load — a save notice or a
+Current green baseline: **Jest 342**, **PHPUnit 148 (659 assertions)**,
+**e2e 39/39** (occasional flake under full-suite load — a save notice or a
 fixture login navigation; green solo), **e2e:websocket 1 skipped** (see
 below — the peer-relay WS fixture needs a client-merging engine and none
 remains), plus the
