@@ -236,7 +236,7 @@ printf(
 	"calibration: db rtt p50=%.4f ms, lock pair p50=%.4f ms%s\n",
 	$report['calibration']['db_rtt_p50_ms'],
 	$report['calibration']['lock_pair_p50_ms'],
-	'intent-log' === $engine_slug ? ' (each request below holds one lock pair)' : ''
+	in_array( $engine_slug, array( 'intent-log', 'de-rtc' ), true ) ? ' (each request below holds one lock pair)' : ''
 );
 printf( "requests: %d per rep\n", $report['requests'] );
 printf(
@@ -274,7 +274,7 @@ printf(
 	$report['payload_bytes']['response_p50'],
 	$report['payload_bytes']['response_max']
 );
-printf( "storage: rows=%d bytes=%d compactions=%d\n", $report['storage']['rows'], $report['storage']['bytes'], $report['storage']['compactions'] );
+printf( "storage: rows=%d bytes=%d followups=%d\n", $report['storage']['rows'], $report['storage']['bytes'], $report['storage']['followups'] );
 if ( $q['observable'] ) {
 	printf(
 		"quality: converged=%s applied=%d escalated=%d voided=%d escalation_rate=%.4f lost_work=%d\n",

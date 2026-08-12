@@ -234,6 +234,77 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 		$this->assertSame( 0, $report['quality']['lost_work'] );
 	}
 
+	/**
+	 * Runs a workload for one scenario against the de-rtc engine (the
+	 * whole-content proposal profile with the lineage oracle).
+	 *
+	 * @param string $scenario Scenario slug.
+	 * @param int    $rounds   Rounds.
+	 * @param int    $clients  Clients.
+	 * @return array Report.
+	 */
+	private function run_de_rtc( string $scenario, int $rounds = 8, int $clients = 3 ): array {
+		$workload = WP_Sync_Bench_Workload::build( $scenario, 7, $rounds, $clients, 4 );
+		$post_id  = self::factory()->post->create(
+			array( 'post_content' => $workload['post_content'] )
+		);
+		$storage  = new WP_Sync_Bench_Memory_Storage();
+		$engine   = new WP_De_RTC_Engine( $storage );
+		return WP_Sync_Bench_Runner::run( $engine, $storage, $post_id, $workload );
+	}
+
+	public function test_de_rtc_gets_the_proposal_profile_and_observable_quality() {
+		$report = $this->run_de_rtc( 'parallel-paragraphs' );
+
+		$this->assertSame( 'de-rtc', $report['engine'] );
+		$this->assertSame( 'de-rtc', $report['profile'] );
+		$this->assertTrue( $report['quality']['observable'] );
+		$this->assertTrue( $report['quality']['converged'] );
+		$this->assertSame( array(), $report['quality']['convergence_failures'] );
+		$this->assertSame( 0, $report['quality']['lost_work'] );
+		// Distinct paragraphs three-way merge clean: everything applies.
+		$this->assertSame( $report['requests'], $report['quality']['dispositions']['applied'] );
+		$this->assertSame( 0, $report['quality']['dispositions']['escalated'] );
+		// Whole-content proposals: request bytes scale with the document.
+		$this->assertGreaterThan( 0, $report['payload_bytes']['request_p50'] );
+		$this->assertGreaterThan( 0, $report['storage']['bytes'] );
+	}
+
+	public function test_de_rtc_contended_paragraph_escalates_but_loses_nothing() {
+		$report = $this->run_de_rtc( 'contended-paragraph' );
+
+		// Concurrent restyles of the same block from the same base are a
+		// genuine conflict: DE-RTC policy is a human decision, not a silent
+		// merge — and escalation preserves, never drops.
+		$this->assertGreaterThan( 0, $report['quality']['dispositions']['escalated'] );
+		$this->assertSame( 0, $report['quality']['lost_work'] );
+		$this->assertSame( array(), $report['quality']['convergence_failures'] );
+		$this->assertTrue( $report['quality']['converged'] );
+	}
+
+	public function test_de_rtc_laggy_clients_retry_stale_bases_and_lose_nothing() {
+		// The laggy client reads every 10th round while three peers land
+		// ~3 versions per round: its base ages out of the engine's bounded
+		// version-snapshot window (20), so stale-base voids occur and the
+		// profile's retry-at-fresh-base lane must re-propose them.
+		$report = $this->run_de_rtc( 'laggy-newsroom', 30, 4 );
+
+		$this->assertGreaterThan( 0, $report['quality']['dispositions']['voided'], 'expected stale-base voids to exercise the retry lane' );
+		$this->assertGreaterThan( 0, $report['storage']['followups'], 'expected retry follow-up proposals' );
+		$this->assertSame( 0, $report['quality']['lost_work'] );
+		$this->assertSame( array(), $report['quality']['convergence_failures'] );
+		$this->assertTrue( $report['quality']['converged'] );
+	}
+
+	public function test_de_rtc_solo_typing_is_all_applied() {
+		$report = $this->run_de_rtc( 'solo-typing', 8, 1 );
+
+		$this->assertSame( $report['requests'], $report['quality']['dispositions']['applied'] );
+		$this->assertSame( 0, $report['quality']['dispositions']['escalated'] );
+		$this->assertSame( 0, $report['quality']['lost_work'] );
+		$this->assertTrue( $report['quality']['converged'] );
+	}
+
 	public function test_unknown_engine_falls_back_to_the_opaque_relay_profile() {
 		// The relay fixture engine has no dedicated profile, so the registry
 		// must resolve the opaque fallback: relay-convention updates that a
@@ -256,7 +327,7 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 		$this->assertSame( 0, $report['quality']['lost_work'] );
 		// 30 rounds x 3 clients = 90 updates against the 50-row threshold:
 		// the nominated compactor answered should_compact.
-		$this->assertGreaterThan( 0, $report['storage']['compactions'] );
+		$this->assertGreaterThan( 0, $report['storage']['followups'] );
 		$this->assertGreaterThan( 0, $report['storage']['rows'] );
 	}
 
@@ -305,8 +376,8 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 			// 40 rounds x 3 clients = 120 updates against a 20-row interval.
 			$report = $this->run_yjs_server( 'parallel-paragraphs', 40, 3 );
 
-			// No client compactions (should_compact never fires)…
-			$this->assertSame( 0, $report['storage']['compactions'] );
+			// No client follow-ups (should_compact never fires)…
+			$this->assertSame( 0, $report['storage']['followups'] );
 			// …yet the room stays bounded: the server checkpointed and
 			// trimmed by itself.
 			$this->assertLessThan( 60, $report['storage']['rows'] );

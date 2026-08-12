@@ -105,14 +105,28 @@ if ( ! interface_exists( 'WP_Sync_Bench_Authoring_Profile' ) ) {
 		/**
 		 * A follow-up ingest the client protocol requires after this read —
 		 * e.g. a relay client answering a should_compact nomination with a
-		 * full-state snapshot. The runner times and counts it like any other
-		 * ingest. Null when the protocol asks nothing.
+		 * full-state snapshot, or a proposal engine's client re-submitting a
+		 * void-at-stale-base edit against the base it just observed. The
+		 * runner times and counts it like any other ingest, feeds its
+		 * dispositions through the shared counters, and hands the result to
+		 * record_followup_result(). Null when the protocol asks nothing.
 		 *
 		 * @param int   $client   Reading client index.
 		 * @param array $response get_updates_since() response.
 		 * @return array|null Updates payload for handle_updates(), or null.
 		 */
-		public function compaction_request( int $client, array $response ): ?array;
+		public function followup_request( int $client, array $response ): ?array;
+
+		/**
+		 * Feeds back the engine's result for a follow-up ingest this profile
+		 * requested, so it can settle internal bookkeeping (e.g. which
+		 * retried edits landed). The runner has already counted the result's
+		 * dispositions; profiles that never follow up can no-op.
+		 *
+		 * @param int            $client Client index that sent the follow-up.
+		 * @param array|WP_Error $result handle_updates() result.
+		 */
+		public function record_followup_result( int $client, $result ): void;
 
 		/**
 		 * Scores quality after full catch-up, with an oracle matched to the

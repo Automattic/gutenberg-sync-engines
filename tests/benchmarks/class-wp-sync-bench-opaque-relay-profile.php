@@ -163,7 +163,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Opaque_Relay_Profile' ) ) {
 		 * @param array $response get_updates_since() response.
 		 * @return array|null Compaction payload, or null when not nominated.
 		 */
-		public function compaction_request( int $client, array $response ): ?array { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable -- $client is part of the profile contract.
+		public function followup_request( int $client, array $response ): ?array { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable -- $client is part of the profile contract.
 			if ( empty( $response['should_compact'] ) ) {
 				return null;
 			}
@@ -173,6 +173,15 @@ if ( ! class_exists( 'WP_Sync_Bench_Opaque_Relay_Profile' ) ) {
 					'data' => base64_encode( 'yjs-compaction:' . str_repeat( "\x01", $this->relay_doc_bytes ) ),
 				),
 			);
+		}
+
+		/**
+		 * The relay returns no dispositions; nothing to settle.
+		 *
+		 * @param int            $client Client index.
+		 * @param array|WP_Error $result handle_updates() result.
+		 */
+		public function record_followup_result( int $client, $result ): void {
 		}
 
 		/**

@@ -266,14 +266,24 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 		}
 
 		/**
-		 * The intent log compacts server-side; clients are never asked.
+		 * The intent log compacts server-side and never voids at a stale
+		 * base (it transforms); clients send no follow-ups.
 		 *
 		 * @param int   $client   Reading client index.
 		 * @param array $response get_updates_since() response.
 		 * @return array|null Always null.
 		 */
-		public function compaction_request( int $client, array $response ): ?array {
+		public function followup_request( int $client, array $response ): ?array {
 			return null;
+		}
+
+		/**
+		 * No follow-ups are ever requested; nothing to settle.
+		 *
+		 * @param int            $client Client index.
+		 * @param array|WP_Error $result handle_updates() result.
+		 */
+		public function record_followup_result( int $client, $result ): void {
 		}
 
 		/**

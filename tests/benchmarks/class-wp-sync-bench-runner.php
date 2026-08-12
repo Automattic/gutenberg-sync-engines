@@ -76,7 +76,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 
 			$read_context = $profile->read_context();
 			$read_every   = (array) ( $workload['read_every'] ?? array() );
-			$compactions  = 0;
+			$followups    = 0;
 
 			$service_us   = array();
 			$read_us      = array();
@@ -90,6 +90,41 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 				'unknown'   => 0,
 			);
 			$lost_work    = array();
+
+			// Counts a handle_updates() result's dispositions into the shared
+			// tallies (per-status counts; non-benign voids are lost work).
+			$count_dispositions = static function ( $result ) use ( $profile, &$dispositions, &$lost_work ): void {
+				foreach ( (array) ( $result['dispositions'] ?? array() ) as $disposition ) {
+					$status = $disposition['status'] ?? 'unknown';
+					if ( isset( $dispositions[ $status ] ) ) {
+						++$dispositions[ $status ];
+					}
+					if ( 'voided' === $status && ! $profile->is_benign_void( (string) ( $disposition['reason'] ?? '' ) ) ) {
+						$lost_work[] = $disposition;
+					}
+				}
+			};
+
+			// A follow-up ingest the client protocol requires after a read
+			// (a nominated relay compactor's snapshot; a proposal client's
+			// retry at the base it just observed) — a real, timed request
+			// the deployed protocol makes, with its dispositions counted
+			// like any other ingest.
+			$submit_followup = static function ( int $client, array $response ) use ( $engine, $room, $profile, &$read_cursor, &$request_b, &$service_us, &$followups, $count_dispositions ): void {
+				$followup = $profile->followup_request( $client, $response );
+				if ( null === $followup ) {
+					return;
+				}
+				$request_b[]  = strlen( (string) wp_json_encode( $followup ) );
+				$start        = hrtime( true );
+				$result       = $engine->handle_updates( $room, $client, $read_cursor[ $client ], $followup, array() );
+				$service_us[] = ( hrtime( true ) - $start ) / 1e3;
+				if ( ! is_wp_error( $result ) ) {
+					++$followups;
+					$count_dispositions( $result );
+				}
+				$profile->record_followup_result( $client, $result );
+			};
 
 			foreach ( $workload['rounds'] as $round_index => $edits ) {
 				$active = array();
@@ -118,14 +153,8 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 						continue;
 					}
 
+					$count_dispositions( $result );
 					foreach ( (array) ( $result['dispositions'] ?? array() ) as $disposition ) {
-						$status = $disposition['status'] ?? 'unknown';
-						if ( isset( $dispositions[ $status ] ) ) {
-							++$dispositions[ $status ];
-						}
-						if ( 'voided' === $status && ! $profile->is_benign_void( (string) ( $disposition['reason'] ?? '' ) ) ) {
-							$lost_work[] = $disposition;
-						}
 						// Each request carries exactly one update, so this
 						// disposition settles the edit just submitted; the
 						// profile tracks its oracle expectations from it.
@@ -152,19 +181,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 					// client work — untimed, like authoring.
 					$profile->observe( $client, $response );
 
-					// A follow-up ingest the client protocol requires (e.g. a
-					// nominated relay compactor's snapshot) is a real, timed
-					// request the deployed protocol makes.
-					$compaction = $profile->compaction_request( $client, $response );
-					if ( null !== $compaction ) {
-						$request_b[]  = strlen( (string) wp_json_encode( $compaction ) );
-						$start        = hrtime( true );
-						$result       = $engine->handle_updates( $room, $client, $read_cursor[ $client ], $compaction, array() );
-						$service_us[] = ( hrtime( true ) - $start ) / 1e3;
-						if ( ! is_wp_error( $result ) ) {
-							++$compactions;
-						}
-					}
+					$submit_followup( $client, $response );
 				}
 			}
 
@@ -180,6 +197,9 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 				$response_b[]           = strlen( (string) wp_json_encode( $response['updates'] ?? array() ) );
 				$read_cursor[ $client ] = (int) ( $response['end_cursor'] ?? $read_cursor[ $client ] );
 				$profile->observe( $client, $response );
+				// The catch-up read also answers protocol follow-ups, so a
+				// retry queued near session end still settles before scoring.
+				$submit_followup( $client, $response );
 			}
 			for ( $i = 0; $i < self::IDLE_POLLS_PER_CLIENT; $i++ ) {
 				for ( $client = 0; $client < $client_count; $client++ ) {
@@ -221,9 +241,9 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 					'response_max' => empty( $response_b ) ? 0 : max( $response_b ),
 				),
 				'storage'             => array(
-					'rows'        => $storage->get_update_count( $room ),
-					'bytes'       => $storage->stored_bytes( $room ),
-					'compactions' => $compactions,
+					'rows'      => $storage->get_update_count( $room ),
+					'bytes'     => $storage->stored_bytes( $room ),
+					'followups' => $followups,
 				),
 				'quality'             => array(
 					'observable'           => $observable,

@@ -185,8 +185,11 @@ if ( engineRuns.length ) {
 				...engineRuns.map( ( r ) => d( r ).storage.bytes ),
 			],
 			[
-				'compactions',
-				...engineRuns.map( ( r ) => d( r ).storage.compactions ),
+				'followups',
+				...engineRuns.map(
+					( r ) =>
+						d( r ).storage.followups ?? d( r ).storage.compactions
+				),
 			],
 			[
 				'lock pair p50 ms',
