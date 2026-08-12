@@ -208,8 +208,26 @@ request a live deployment mostly serves.
 
 ## Running
 
-The engines need WordPress (`get_post`, `serialize_block`, and a `$wpdb` for
-the ingest lock), so run inside the environment under test via wp-cli.
+The fastest way to the whole decision picture is the one-command runner
+(needs the tests wp-env running — `npm run env:tests start` — with the
+subtree built; it activates the plugins itself):
+
+```bash
+npm run bench                        # every engine x the decision matrix
+                                     # (steady concurrency, structural churn,
+                                     #  a 10-minute wall-clock session), with
+                                     #  comparison tables and hosting cost
+                                     #  cards; FAILS on any lost work or
+                                     #  convergence failure
+npm run bench -- engines=de-rtc scenarios=editorial-session
+npm run bench -- certify=10          # invariant sweep: 10 seeds x engines x
+                                     # adversarial scenarios — certifies "no
+                                     # edit is ever silently dropped" at scale
+```
+
+JSON reports land in `bench-results/`. Individual runs go through wp-cli
+directly — the engines need WordPress (`get_post`, `serialize_block`, and a
+`$wpdb` for the ingest lock), so run inside the environment under test.
 Options are bare `key=value` tokens — wp-cli would claim `--flags` itself.
 
 ```bash
@@ -253,6 +271,29 @@ across reps. Add `json=out.json` to also write the full report, which
 includes an `environment` stanza (PHP/WP/DB versions, opcache) and the
 `calibration` block — always quote those when comparing runs from different
 machines.
+
+### The hosting cost card
+
+Wall-clock scenarios (currently `editorial-session`, where one round is
+one second) additionally emit a `hosting` stanza — the same measurements
+composed into the units a capacity plan multiplies out:
+
+- **requests, PHP-CPU-seconds and engine wire MB per user-hour** —
+  client-seconds of presence are counted exactly (every present client
+  reads once per round), so the numbers normalize across session shapes;
+- **sustained CPU core share** for the whole session — how much of one
+  core this session consumed end to end;
+- **storage at rest** after the session and **the join payload** the next
+  visitor downloads.
+
+The card covers the ENGINE seam only: the transport envelope, HTTP
+headers (~0.5–1 KB/request) and awareness traffic add overhead on top —
+the transport benchmark (`tests/benchmarks/transport/`) measures those
+per-collaborator rates on a live site, and multiplying ITS idle rate into
+the card's per-user-hour numbers is the full steady-state bill. Composing
+micro-measurements this way still assumes requests don't queue (see
+Limitations); a browser-driven multi-client soak to validate the
+projections end-to-end is the known remaining gap.
 
 ### Comparing runs
 
@@ -364,7 +405,13 @@ The comparison the decision turns on:
 - **Single-process, no queueing model.** This measures per-request service
   time and growth, not tail latency under a saturated worker pool. The
   DE-RTC harness's multi-process request-queue simulation could be layered
-  on top of these engine adapters later.
+  on top of these engine adapters later. The hosting cost card inherits
+  this: its CPU/request totals are exact for the session it measured, but
+  under real concurrency the lock-holding engines (intent-log, de-rtc)
+  additionally queue on the per-room lock, which the card cannot see. A
+  browser-driven multi-client soak (extending
+  `tests/benchmarks/transport/` beyond two windows) validating the card's
+  projections end-to-end is the known remaining verification gap.
 - **Opaque-relay quality is unmeasured here** by construction (a
   client-merging engine's merge runs in browser clients, outside the
   harness), not by omission. This limitation does not apply to yjs-server:

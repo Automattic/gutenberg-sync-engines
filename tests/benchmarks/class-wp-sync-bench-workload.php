@@ -120,18 +120,22 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 			}
 
 			$workload = array(
-				'scenario'     => $scenario,
-				'post_content' => $post_content,
-				'paragraphs'   => $paragraphs,
-				'clients'      => $clients,
-				'read_every'   => $read_every,
-				'save_every'   => 0,
-				'rounds'       => array(),
+				'scenario'          => $scenario,
+				'post_content'      => $post_content,
+				'paragraphs'        => $paragraphs,
+				'clients'           => $clients,
+				'read_every'        => $read_every,
+				'save_every'        => 0,
+				// Wall-clock scenarios map rounds to time, which lets the
+				// CLI compose per-request costs into a hosting cost card.
+				'seconds_per_round' => 0,
+				'rounds'            => array(),
 			);
 
 			if ( 'editorial-session' === $scenario ) {
-				$workload['rounds']     = self::session_rounds( $rand, $rounds, $clients, $paragraphs );
-				$workload['save_every'] = 60; // An autosave a "minute".
+				$workload['rounds']            = self::session_rounds( $rand, $rounds, $clients, $paragraphs );
+				$workload['save_every']        = 60; // An autosave a "minute".
+				$workload['seconds_per_round'] = 1;
 				return $workload;
 			}
 

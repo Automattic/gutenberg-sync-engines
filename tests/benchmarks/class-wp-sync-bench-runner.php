@@ -87,18 +87,20 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 			$track_memory = function_exists( 'memory_reset_peak_usage' );
 			$ingest_peak  = null;
 
-			$service_us   = array();
-			$read_us      = array();
-			$idle_poll_us = array();
-			$request_b    = array();
-			$response_b   = array();
-			$dispositions = array(
+			$service_us    = array();
+			$read_us       = array();
+			$idle_poll_us  = array();
+			$request_b     = array();
+			$response_b    = array();
+			$reads_session = 0;
+			$saves_session = 0;
+			$dispositions  = array(
 				'applied'   => 0,
 				'escalated' => 0,
 				'voided'    => 0,
 				'unknown'   => 0,
 			);
-			$lost_work    = array();
+			$lost_work     = array();
 
 			// Counts a handle_updates() result's dispositions into the shared
 			// tallies (per-status counts; non-benign voids are lost work).
@@ -236,6 +238,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 					$read_us[]              = ( hrtime( true ) - $start ) / 1e3;
 					$response_b[]           = strlen( (string) wp_json_encode( $response['updates'] ?? array() ) );
 					$read_cursor[ $client ] = (int) ( $response['end_cursor'] ?? $read_cursor[ $client ] );
+					++$reads_session;
 
 					// The read is what the client observes: applying it is
 					// client work — untimed, like authoring.
@@ -249,6 +252,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 				// makes, timed like the end-of-session cold samples.
 				if ( $save_every > 0 && $supports_mat && 0 === ( ( $round_index + 1 ) % $save_every ) ) {
 					$cold_save();
+					++$saves_session;
 				}
 			}
 
@@ -317,6 +321,24 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 				'rounds'                => count( $workload['rounds'] ),
 				'clients'               => $client_count,
 				'requests'              => $total_edits,
+				// Per-kind request counts (deterministic), for hosting-cost
+				// composition: each in-session read is one present-client-
+				// round — under a wall-clock scenario, one client-second.
+				'request_counts'        => array(
+					'ingests'       => $total_edits,
+					'followups'     => $followups,
+					'reads_session' => $reads_session,
+					'reads_catchup' => $client_count,
+					'idle_polls'    => count( $idle_poll_us ),
+					'joins'         => count( $join_us ),
+					'saves_session' => $saves_session,
+				),
+				// Total engine-level wire volume (deterministic): every
+				// ingest request body and every read response body.
+				'wire'                  => array(
+					'request_bytes'  => array_sum( $request_b ),
+					'response_bytes' => array_sum( $response_b ),
+				),
 				'service_us'            => self::summary( $service_us ),
 				'read_us'               => self::summary( $read_us ),
 				'idle_poll_us'          => self::summary( $idle_poll_us ),

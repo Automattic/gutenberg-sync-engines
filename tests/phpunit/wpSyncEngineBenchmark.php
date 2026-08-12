@@ -93,6 +93,15 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 		$this->assertGreaterThan( 0, $report['memory']['materialize_peak_bytes'] );
 		// Below the 100-row checkpoint interval: no history trims yet.
 		$this->assertSame( 0, $report['storage']['trims'] );
+		// Per-kind request counts and wire totals (the hosting cost card's
+		// inputs) are populated and consistent.
+		$counts = $report['request_counts'];
+		$this->assertSame( $report['requests'], $counts['ingests'] );
+		$this->assertGreaterThan( 0, $counts['reads_session'] );
+		$this->assertSame( 3, $counts['reads_catchup'] );
+		$this->assertGreaterThan( 0, $counts['idle_polls'] );
+		$this->assertGreaterThan( 0, $report['wire']['request_bytes'] );
+		$this->assertGreaterThan( 0, $report['wire']['response_bytes'] );
 	}
 
 	public function test_laggy_clients_escalate_or_settle_but_lose_nothing() {
@@ -285,6 +294,10 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 		// 120 rounds / save_every 60 = 2 in-session autosaves, plus the 5
 		// end-of-session cold samples.
 		$this->assertCount( 7, $report['materialize_us_series'] );
+		$this->assertSame( 2, $report['request_counts']['saves_session'] );
+		// Present-but-idle clients read every round: far more reads than
+		// edits (the burst duty cycle is well under 100%).
+		$this->assertGreaterThan( $report['requests'], $report['request_counts']['reads_session'] );
 	}
 
 	/**

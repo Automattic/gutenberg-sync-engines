@@ -196,6 +196,42 @@ if ( array() === $wp_sync_bench_series['materialize_us'] ) {
 }
 $report['memory'] = $wp_sync_bench_memory;
 
+/*
+ * The hosting cost card: only wall-clock scenarios (1 round = N seconds)
+ * can honestly compose per-request costs into what-does-this-do-to-my-box
+ * numbers. Client-seconds = in-session reads (every present client reads
+ * exactly once per round under those scenarios), which normalizes the
+ * session to per-user-hour units a capacity plan can multiply out.
+ */
+$report['hosting'] = null;
+if ( ! empty( $wp_sync_bench_workload['seconds_per_round'] ) ) {
+	$wp_sync_bench_counts = $report['request_counts'];
+	$session_seconds      = $rounds * (int) $wp_sync_bench_workload['seconds_per_round'];
+	$client_seconds       = max( 1, (int) $wp_sync_bench_counts['reads_session'] );
+	$session_requests     = $wp_sync_bench_counts['ingests'] + $wp_sync_bench_counts['reads_session'] + $wp_sync_bench_counts['saves_session'];
+	$cpu_seconds          = (
+		$report['service_us']['mean'] * $wp_sync_bench_counts['ingests']
+		+ $report['read_us']['mean'] * $wp_sync_bench_counts['reads_session']
+		+ ( null !== $report['materialize_us'] ? $report['materialize_us']['mean'] * $wp_sync_bench_counts['saves_session'] : 0 )
+	) / 1000;
+	$wire_bytes           = $report['wire']['request_bytes'] + $report['wire']['response_bytes'];
+
+	$report['hosting'] = array(
+		'session_seconds'             => $session_seconds,
+		'client_seconds'              => $client_seconds,
+		'requests_session'            => $session_requests,
+		'requests_per_second'         => round( $session_requests / max( 1, $session_seconds ), 2 ),
+		'requests_per_client_hour'    => (int) round( $session_requests * 3600 / $client_seconds ),
+		'cpu_seconds_session'         => round( $cpu_seconds, 3 ),
+		'cpu_core_share'              => round( $cpu_seconds / max( 1, $session_seconds ), 4 ),
+		'cpu_seconds_per_client_hour' => round( $cpu_seconds * 3600 / $client_seconds, 2 ),
+		'wire_bytes_session'          => $wire_bytes,
+		'wire_mb_per_client_hour'     => round( $wire_bytes * 3600 / $client_seconds / 1048576, 2 ),
+		'storage_bytes_at_rest'       => $report['storage']['bytes'],
+		'join_payload_bytes'          => $report['payload_bytes']['join_response_p50'],
+	);
+}
+
 $wp_sync_bench_mean = array_sum( $wp_sync_bench_rep_means ) / count( $wp_sync_bench_rep_means );
 $wp_sync_bench_var  = 0.0;
 foreach ( $wp_sync_bench_rep_means as $m ) {
@@ -339,6 +375,33 @@ if ( $q['observable'] ) {
 	}
 } else {
 	printf( "quality: NOT SERVER-OBSERVABLE (client-side CRDT merge)\n" );
+}
+if ( null !== $report['hosting'] ) {
+	$h = $report['hosting'];
+	printf( "hosting cost card (1 round = 1 s; engine seam only — the transport envelope, HTTP headers and awareness add overhead on top):\n" );
+	printf(
+		"  session: %d s wall clock, %d client-seconds of presence, %d requests (%.2f req/s)\n",
+		$h['session_seconds'],
+		$h['client_seconds'],
+		$h['requests_session'],
+		$h['requests_per_second']
+	);
+	printf(
+		"  per user-hour: %d requests, %.2f PHP-CPU-seconds, %.2f MB engine wire\n",
+		$h['requests_per_client_hour'],
+		$h['cpu_seconds_per_client_hour'],
+		$h['wire_mb_per_client_hour']
+	);
+	printf(
+		"  server CPU: %.3f s over the session = %.2f%% of one core sustained\n",
+		$h['cpu_seconds_session'],
+		100 * $h['cpu_core_share']
+	);
+	printf(
+		"  at rest afterwards: %d KB stored; the next visitor downloads %d KB to join\n",
+		(int) round( $h['storage_bytes_at_rest'] / 1024 ),
+		(int) round( $h['join_payload_bytes'] / 1024 )
+	);
 }
 if ( 'opaque-relay' === ( $report['profile'] ?? '' ) ) {
 	printf(
