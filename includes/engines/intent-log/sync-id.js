@@ -74,6 +74,9 @@
 			.replace( /=+$/, '' );
 	}
 
+	// How long a retry waits before re-checking a save or flush in flight.
+	const RETRY_DELAY_MS = 100;
+
 	let scheduled = false;
 	let flushing = false;
 	let regimeDecided = false;
@@ -126,13 +129,15 @@
 	 * scheduled it) and never while a save is in flight: dispatching a block
 	 * mutation into the middle of a save's serialization races with it and can
 	 * drop the very edit being saved. Deferring to a microtask also avoids
-	 * re-entrant store updates from within the subscribe callback.
+	 * re-entrant store updates from within the subscribe callback. Retries
+	 * that wait on a save or an in-flight flush must go through
+	 * scheduleRetry() instead; see the comment there.
 	 */
 	async function flushSyncIds() {
 		scheduled = false;
 		if ( flushing ) {
 			// A previous flush is awaiting its digests; rerun after it.
-			schedule();
+			scheduleRetry();
 			return;
 		}
 
@@ -141,8 +146,8 @@
 			editor &&
 			( editor.isSavingPost() || editor.isAutosavingPost() )
 		) {
-			// Reschedule for after the save settles.
-			schedule();
+			// Retry after the save settles.
+			scheduleRetry();
 			return;
 		}
 
@@ -188,7 +193,7 @@
 				editor &&
 				( editor.isSavingPost() || editor.isAutosavingPost() )
 			) {
-				schedule();
+				scheduleRetry();
 				return;
 			}
 			const editorDispatch = dispatch( 'core/block-editor' );
@@ -215,6 +220,22 @@
 		}
 		scheduled = true;
 		Promise.resolve().then( flushSyncIds );
+	}
+
+	/*
+	 * Retries wait on state that only changes when the event loop runs
+	 * tasks: a save request completing, a digest promise resolving. They
+	 * must therefore be scheduled as tasks. A microtask retry re-runs
+	 * before the event loop can deliver the completion it is waiting for,
+	 * so the queue never drains and the page hangs in an infinite
+	 * microtask loop.
+	 */
+	function scheduleRetry() {
+		if ( scheduled ) {
+			return;
+		}
+		scheduled = true;
+		setTimeout( flushSyncIds, RETRY_DELAY_MS );
 	}
 
 	subscribe( schedule, 'core/block-editor' );
