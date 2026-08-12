@@ -36,7 +36,8 @@ Transports (how updates move):
 - **http-polling** — short-poll `POST /wp-sync/v1/updates` (default).
 - **http-long-polling** — the same, held open until data is ready.
 - **websocket** — push over a persistent socket served by a bundled PHP
-  daemon (`wp collaboration sync-server`).
+  daemon (`wp collaboration sync-server`). For local dev, `npm run rtc:ws`
+  starts everything in one command (and `npm run rtc:http` switches back).
 
 The active engine and transport are chosen on the plugin's **Settings →
 Collaboration** screen (or via `wp_sync_engine` / the

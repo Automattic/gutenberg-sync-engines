@@ -64,10 +64,22 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            gutenberg/package-lock.json
 
       - name: Install plugin dependencies
         run: npm ci
+
+      # An UNBUILT gutenberg.php refuses to load its lib/ (the framework),
+      # so the plugin under test finds no WP_Sync_* contracts and the
+      # PHPUnit bootstrap dies with "Interface WP_Sync_Engine not found".
+      # The subtree build is required even for the PHP-only test path.
+      - name: Install and build the vendored Gutenberg subtree
+        run: |
+          cd gutenberg
+          npm ci --ignore-scripts
+          npm run build
 
       - name: Install PHP dependencies
         run: composer install --no-progress
@@ -88,11 +100,11 @@ jobs:
       - name: automerge-php conformance
         run: php includes/lib/automerge-php/tests/run.php > /dev/null
 
-      # The PHP test path loads the subtree's PHP directly (framework
-      # first, then this plugin — see tests/bootstrap.php); it does not
-      # need the subtree's JS built.
-      - name: Start wp-env
-        run: npm run env start
+      # Tests target the dedicated tests environment (.wp-env.tests.json)
+      # — the default .wp-env.json is the dev environment, whose afterStart
+      # hook (the websocket daemon) has no business in CI.
+      - name: Start wp-env (tests)
+        run: npm run env:tests start
 
       - name: PHPUnit
         run: npm run test:php
@@ -127,8 +139,8 @@ jobs:
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
 
-      - name: Start wp-env
-        run: npm run env start
+      - name: Start wp-env (tests)
+        run: npm run env:tests start
 
       # The @wordpress/scripts base config applies 2 retries under CI,
       # which absorbs the suite's known under-load flake (a fixture login

@@ -8,6 +8,8 @@
 			"@wordpress/sync": [ "./gutenberg/packages/sync/src" ],
 			"@wordpress/blocks": [
 				"./gutenberg/node_modules/@wordpress/blocks/build-types"
+			"@wordpress/block-serialization-default-parser": [
+				"./gutenberg/node_modules/@wordpress/block-serialization-default-parser"
 			],
 			"yjs": [ "./gutenberg/node_modules/yjs" ],
 			"y-protocols/*": [ "./gutenberg/node_modules/y-protocols/*" ],

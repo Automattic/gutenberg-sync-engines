@@ -32,6 +32,7 @@
   "scripts": {
     "build": "wp-scripts build",
     "env": "wp-env",
+    "env:tests": "wp-env --config .wp-env.tests.json",
     "format": "wp-scripts format",
     "format:php": "composer format",
     "lint:js": "wp-scripts lint-js src tests",
@@ -45,7 +46,7 @@
     "test:e2e": "playwright test --config tests/e2e/playwright.config.ts",
     "test:e2e:websocket": "playwright test --config tests/e2e/playwright.rtc-websocket.config.ts",
     "test:js": "wp-scripts test-unit-js",
-    "test:php": "wp-env run tests-cli --env-cwd=wp-content/plugins/gutenberg-sync-engines vendor/bin/phpunit",
+    "test:php": "wp-env --config .wp-env.tests.json run cli --env-cwd=wp-content/plugins/gutenberg-sync-engines vendor/bin/phpunit",
     "typecheck": "tsc --noEmit"
   }
 }

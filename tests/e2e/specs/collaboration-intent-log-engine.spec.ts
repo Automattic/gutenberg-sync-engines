@@ -524,6 +524,123 @@ test.describe( 'Collaboration - intent-log engine', () => {
 		} ).toPass( { timeout: 15000 } );
 	} );
 
+	test( 'a newborn block’s identity is assigned once and an immediate save persists it (no save-vs-settle drift)', async ( {
+		collaborationUtils,
+		requestUtils,
+		editor,
+	} ) => {
+		// Regression: the id stamper's random lane used to race the capture
+		// bridge for every block created in-session — the stamper's direct
+		// block-editor write landed before the capture push's entity-level
+		// edit propagated down, putting a THIRD identity on the block that
+		// the shared document never knew. A save in that window persisted
+		// the foreign id (the save-vs-settle id drift). With the stamper's
+		// in-session stand-down, a newborn block carries exactly ONE
+		// identity, ever, and even an immediate save persists that id.
+		const post = await requestUtils.createPost( {
+			title: 'Intent Log Id Stability Test',
+			status: 'draft',
+			content:
+				'<!-- wp:paragraph -->\n<p>Existing</p>\n<!-- /wp:paragraph -->',
+			date_gmt: new Date().toISOString(),
+		} );
+
+		await collaborationUtils.openPost( post.id );
+		const page1 = editor.page;
+
+		// Record every distinct id the new (second) block ever carries.
+		await page1.evaluate( () => {
+			const idsSeen: string[] = [];
+			( window as any ).__blockIdTrace = idsSeen;
+			const blockEditor = ( window as any ).wp.data.select(
+				'core/block-editor'
+			);
+			( window as any ).wp.data.subscribe( () => {
+				const blocks = blockEditor.getBlocks();
+				const id = blocks[ 1 ]?.attributes?.metadata?.syncId;
+				if ( id && idsSeen[ idsSeen.length - 1 ] !== id ) {
+					idsSeen.push( id );
+				}
+			} );
+		} );
+
+		await editor.insertBlock( {
+			name: 'core/paragraph',
+			attributes: { content: 'Newborn block' },
+		} );
+		// Save immediately — the historical drift window.
+		await editor.saveDraft();
+
+		// Let the settle machinery (including the 1.2 s delayed re-push)
+		// run; the block's identity must never have changed.
+		await page1.waitForTimeout( 3000 );
+		const idsSeen = await page1.evaluate(
+			() => ( window as any ).__blockIdTrace as string[]
+		);
+		expect( idsSeen ).toHaveLength( 1 );
+
+		/*
+		 * The immediate save must never persist a FOREIGN identity (an id
+		 * the shared document does not carry — the drift). It may catch
+		 * the newborn block before the engine's id reaches the canvas and
+		 * persist it id-less; that self-heals on the next save.
+		 */
+		const savedIdsOf = ( raw: string ) =>
+			[ ...raw.matchAll( /"syncId":"([^"]+)"/g ) ].map(
+				( match ) => match[ 1 ]
+			);
+		const originalId = await page1.evaluate(
+			() =>
+				( window as any ).wp.data
+					.select( 'core/block-editor' )
+					.getBlocks()[ 0 ].attributes.metadata.syncId
+		);
+		const firstSave = await requestUtils.rest< {
+			content: { raw: string };
+		} >( {
+			path: `/wp/v2/posts/${ post.id }`,
+			params: { context: 'edit' },
+		} );
+		for ( const id of savedIdsOf( firstSave.content.raw ) ) {
+			expect( [ originalId, idsSeen[ 0 ] ] ).toContain( id );
+		}
+
+		// The canvas has settled on the engine's identity…
+		await expect( async () => {
+			const canvasId = await page1.evaluate(
+				() =>
+					( window as any ).wp.data
+						.select( 'core/block-editor' )
+						.getBlocks()[ 1 ]?.attributes?.metadata?.syncId
+			);
+			expect( canvasId ).toBe( idsSeen[ 0 ] );
+		} ).toPass( { timeout: 10000 } );
+
+		// …and a settled save persists it. Sync-applied pushes don't
+		// re-dirty the post, so make a small edit (the realistic path:
+		// any later edit carries the settled tree) via the store — the
+		// identity push remounts canvas blocks, which makes keyboard
+		// focus racy here — then save.
+		await page1.evaluate( () => {
+			const { select, dispatch } = ( window as any ).wp.data;
+			const block = select( 'core/block-editor' ).getBlocks()[ 1 ];
+			dispatch( 'core/block-editor' ).updateBlockAttributes(
+				block.clientId,
+				{ content: 'Newborn block settled' }
+			);
+		} );
+		await editor.saveDraft();
+		const settledSave = await requestUtils.rest< {
+			content: { raw: string };
+		} >( {
+			path: `/wp/v2/posts/${ post.id }`,
+			params: { context: 'edit' },
+		} );
+		expect( settledSave.content.raw ).toContain(
+			`"syncId":"${ idsSeen[ 0 ] }"`
+		);
+	} );
+
 	test( 'a save captures both users’ settled edits and persists clean content', async ( {
 		collaborationUtils,
 		requestUtils,

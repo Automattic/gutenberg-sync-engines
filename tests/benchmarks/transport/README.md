@@ -65,24 +65,34 @@ during a run.
 ### The websocket transport
 
 The websocket transport needs the sync-server daemon running on an address
-the *browser* can reach. Under wp-env that takes two pieces:
+the *browser* can reach. For the DEV site, `npm run rtc:ws` is the
+one-command start (it selects the websocket transport and runs the daemon
+with its port published), and the dev env's afterStart hook keeps a daemon
+running anyway. This benchmark targets the TESTS env
+(`.wp-env.tests.json`, its own wp-env project), where the same two pieces
+apply manually:
 
-1. `.wp-env.json` sets `WP_SYNC_WEBSOCKET_HOST` to `localhost` (already in
-   this repo's config) so the announced socket URL shares the site's cookie
+1. The config sets `WP_SYNC_WEBSOCKET_HOST` to `localhost` (already in this
+   repo's config) so the announced socket URL shares the site's cookie
    domain — the daemon authenticates the browser's `logged_in` cookie, and
    cookies for `localhost:<port>` are not sent to the default `127.0.0.1`.
 2. wp-env cannot publish extra container ports itself, but its generated
-   compose file can. Start the daemon with the port published:
+   compose file can. Start the daemon with the port published AND bound to
+   `0.0.0.0` (a loopback-bound daemon is unreachable even through a
+   published port). The tests env's work dir carries a `-tests-` segment
+   and its single environment's WP-CLI service is `cli`:
 
    ```bash
    docker compose \
-       -f "$(ls -d ~/.wp-env/wp-env-*$(basename "$PWD")*)/docker-compose.yml" \
-       run --rm -p 8787:8787 tests-cli \
+       -f "$(ls -d ~/.wp-env/wp-env-*$(basename "$PWD")*-tests-*)/docker-compose.yml" \
+       run --rm -p 8787:8787 cli \
        wp collaboration sync-server --host=0.0.0.0 --port=8787
    ```
 
-   (`~/.wp-env/<dir>` is the install dir whose `docker-compose.yml` mentions
-   your checkout; `curl localhost:8787/health` should answer `OK`.)
+   (Stop the dev env's auto-started daemon first if it holds port 8787:
+   `docker rm -f wp-sync-ws-daemon`. `curl localhost:8787/health` from the
+   HOST should answer `OK` — if it doesn't, the browser can't connect
+   either and clients retry silently with no visible error.)
 
 The benchmark then works with `transport=websocket`: it counts WebSocket
 frames/bytes instead of HTTP requests, and fails with a clear message when
