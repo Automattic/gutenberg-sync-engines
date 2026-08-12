@@ -22,19 +22,34 @@ registered. This plugin registers two:
 client's CRDT — has been removed; historical numbers for it remain below
 as context.)
 
-The runner has three authoring profiles. It speaks to intent-log in typed
-intents (and scores quality with the disposition-based oracle). It speaks
-to yjs-server in **real Yjs**: each simulated client holds a y-php
-document, authors genuine incremental V2 updates (text inserts into the
-paragraph's content Y.Text; align set on the attributes Y.Map — exactly
-what the editor's session codec sends), and applies read responses into its
-document; payload and storage bytes are therefore REAL for this engine, and
-quality is scored with a CRDT oracle (see below). Every other engine gets
-the **opaque-relay profile** — relay-convention `update`/`compaction` blobs
-with quality reported as not server-observable. A third-party relay-style
-engine benchmarks meaningfully out of the box; an engine with its own wire
-vocabulary will void the generic updates, and the dispositions/storage
-counts will show that rather than fake a result.
+HOW the runner speaks to an engine is an **authoring profile** — a
+first-class SPI (`WP_Sync_Bench_Authoring_Profile`) that owns everything
+engine-specific: translating the workload's abstract edits into the
+engine's wire vocabulary, playing the client's part between requests
+(applying read responses, tracking observed state, answering compaction
+nominations), classifying void reasons, and scoring quality with an oracle
+matched to the engine's merge semantics. The measurement loop
+(`WP_Sync_Bench_Runner`) is engine-neutral: it times whatever requests the
+profile hands it. Profiles are resolved by engine slug through
+`WP_Sync_Bench_Profiles`; an engine plugin can register its own via the
+`wp_sync_bench_authoring_profiles` filter (mapping slug to a class
+constructed as `new $class( int $post_id, array $workload )`).
+
+This plugin ships two dedicated profiles. The **intent-log profile**
+speaks typed intents authored from each client's observed base and scores
+quality with the disposition-based oracle. The **yjs-server profile**
+speaks **real Yjs**: each simulated client holds a y-php document, authors
+genuine incremental V2 updates (text inserts into the paragraph's content
+Y.Text; align set on the attributes Y.Map — exactly what the editor's
+session codec sends), and applies read responses into its document;
+payload and storage bytes are therefore REAL for this engine, and quality
+is scored with a CRDT oracle (see below). Every other engine gets the
+**opaque-relay fallback profile** — relay-convention `update`/`compaction`
+blobs with quality reported as not server-observable. A third-party
+relay-style engine benchmarks meaningfully out of the box; an engine with
+its own wire vocabulary will void the generic updates, and the
+dispositions/storage counts will show that rather than fake a result — its
+plugin should register a real profile instead.
 
 ## What it measures
 
@@ -75,8 +90,10 @@ counts will show that rather than fake a result.
   penalized**: sending a genuine conflict to review is the point, not a
   failure.
 - `lost_work` — edits that were dropped without being applied or preserved
-  for review (a `voided` with a non-benign reason). The project's policy is
-  *never lose work*; this asserts it. It is `0` in every scenario here.
+  for review (a `voided` with a non-benign reason; each authoring profile
+  classifies which void reasons are benign for ITS engine). The project's
+  policy is *never lose work*; this asserts it. It is `0` in every scenario
+  here.
 - `converged` — the materialized document matches the engine's own account
   of the session: every `applied` edit's unique token appears in the content
   exactly once, no `escalated` edit's token leaked into the content, the

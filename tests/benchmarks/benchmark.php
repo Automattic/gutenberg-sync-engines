@@ -70,10 +70,11 @@ if ( ! array_key_exists( $scenario, WP_Sync_Bench_Workload::scenarios() ) ) {
 }
 // Engines are resolved through the framework's registry (the
 // `wp_sync_engines` filter), so any engine registered by an active plugin —
-// including third-party ones — is benchmarkable by slug. Engines other than
-// intent-log are driven with relay-convention opaque updates (see the
-// runner's authoring profiles); the intent log gets typed intents and the
-// quality oracle.
+// including third-party ones — is benchmarkable by slug. HOW each engine is
+// driven is the authoring profile's job, resolved per slug through
+// WP_Sync_Bench_Profiles (extensible via the
+// `wp_sync_bench_authoring_profiles` filter); engines without a dedicated
+// profile fall back to relay-convention opaque updates.
 $wp_sync_bench_engine_slugs = ( new WP_Sync_Engine_Registry( new WP_Sync_Bench_Memory_Storage() ) )->get_engine_slugs();
 if ( ! in_array( $engine_slug, $wp_sync_bench_engine_slugs, true ) ) {
 	fwrite( STDERR, "Unknown engine: {$engine_slug}\n" );
@@ -292,7 +293,7 @@ if ( $q['observable'] ) {
 }
 if ( 'opaque-relay' === ( $report['profile'] ?? '' ) ) {
 	printf(
-		"note: engine '%s' has no dedicated authoring profile — driven with relay-convention opaque updates ('update'/'compaction'); if the engine rejects them, the dispositions/storage counts above reflect that.\n",
+		"note: engine '%s' has no dedicated authoring profile — driven with relay-convention opaque updates ('update'/'compaction'); if the engine rejects them, the dispositions/storage counts above reflect that. An engine plugin can register a profile via the wp_sync_bench_authoring_profiles filter.\n",
 		$engine_slug
 	);
 }

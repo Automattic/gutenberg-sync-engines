@@ -12,14 +12,15 @@
  *
  * @group collaboration
  */
+
+// Loaded at file scope (not set_up_before_class): the fixture profile at
+// the bottom of this file extends a benchmark class, and its definition
+// executes when PHPUnit includes the file.
+require_once dirname( __DIR__ ) . '/benchmarks/class-wp-sync-bench-memory-storage.php';
+require_once dirname( __DIR__ ) . '/benchmarks/class-wp-sync-bench-workload.php';
+require_once dirname( __DIR__ ) . '/benchmarks/class-wp-sync-bench-runner.php';
+
 class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
-	public static function set_up_before_class() {
-		parent::set_up_before_class();
-		$base = dirname( __DIR__ ) . '/benchmarks/';
-		require_once $base . 'class-wp-sync-bench-memory-storage.php';
-		require_once $base . 'class-wp-sync-bench-workload.php';
-		require_once $base . 'class-wp-sync-bench-runner.php';
-	}
 
 	/**
 	 * Runs a workload for one scenario against the intent-log engine.
@@ -118,7 +119,7 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 	public function test_convergence_oracle_accepts_matching_content() {
 		$content = "<!-- wp:paragraph {\"align\":\"wide\"} -->\n<p> r0c0.0;Paragraph 1</p>\n<!-- /wp:paragraph -->";
 
-		$failures = WP_Sync_Bench_Runner::verify_convergence(
+		$failures = WP_Sync_Bench_Intent_Log_Profile::verify_convergence(
 			$content,
 			1,
 			array(
@@ -140,7 +141,7 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 	public function test_convergence_oracle_detects_corruption() {
 		$content = "<!-- wp:paragraph -->\n<p>Paragraph 1 r9c9.9;</p>\n<!-- /wp:paragraph -->";
 
-		$failures = WP_Sync_Bench_Runner::verify_convergence(
+		$failures = WP_Sync_Bench_Intent_Log_Profile::verify_convergence(
 			$content,
 			2, // A dropped paragraph block.
 			array(
@@ -233,6 +234,67 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 		$this->assertSame( 0, $report['quality']['lost_work'] );
 	}
 
+	public function test_unknown_engine_falls_back_to_the_opaque_relay_profile() {
+		// The relay fixture engine has no dedicated profile, so the registry
+		// must resolve the opaque fallback: relay-convention updates that a
+		// store-and-forward engine accepts, quality reported as
+		// unobservable rather than faked, and the runner playing the
+		// nominated compactor's part.
+		$workload = WP_Sync_Bench_Workload::build( 'parallel-paragraphs', 7, 30, 3, 4 );
+		$post_id  = self::factory()->post->create(
+			array( 'post_content' => $workload['post_content'] )
+		);
+		$storage  = new WP_Sync_Bench_Memory_Storage();
+		$engine   = new Test_Opaque_Relay_Engine( $storage );
+
+		$report = WP_Sync_Bench_Runner::run( $engine, $storage, $post_id, $workload );
+
+		$this->assertSame( 'test-opaque-relay', $report['engine'] );
+		$this->assertSame( 'opaque-relay', $report['profile'] );
+		$this->assertFalse( $report['quality']['observable'] );
+		$this->assertNull( $report['quality']['converged'] );
+		$this->assertSame( 0, $report['quality']['lost_work'] );
+		// 30 rounds x 3 clients = 90 updates against the 50-row threshold:
+		// the nominated compactor answered should_compact.
+		$this->assertGreaterThan( 0, $report['storage']['compactions'] );
+		$this->assertGreaterThan( 0, $report['storage']['rows'] );
+	}
+
+	public function test_profile_registry_filter_maps_an_engine_to_a_profile() {
+		$filter = static function ( array $profiles ): array {
+			$profiles['test-opaque-relay'] = Bench_Test_Named_Relay_Profile::class;
+			return $profiles;
+		};
+		add_filter( 'wp_sync_bench_authoring_profiles', $filter );
+
+		try {
+			$workload = WP_Sync_Bench_Workload::build( 'solo-typing', 7, 4, 1, 4 );
+			$profile  = WP_Sync_Bench_Profiles::for_engine( 'test-opaque-relay', 0, $workload );
+			$this->assertInstanceOf( Bench_Test_Named_Relay_Profile::class, $profile );
+			$this->assertSame( 'bench-test-named-relay', $profile->name() );
+		} finally {
+			remove_filter( 'wp_sync_bench_authoring_profiles', $filter );
+		}
+	}
+
+	public function test_profile_registry_rejects_a_broken_registration() {
+		$filter = static function ( array $profiles ): array {
+			// Not a class that implements the profile interface.
+			$profiles['test-opaque-relay'] = 'Bench_Class_That_Does_Not_Exist';
+			return $profiles;
+		};
+		add_filter( 'wp_sync_bench_authoring_profiles', $filter );
+
+		try {
+			$workload = WP_Sync_Bench_Workload::build( 'solo-typing', 7, 4, 1, 4 );
+			$profile  = WP_Sync_Bench_Profiles::for_engine( 'test-opaque-relay', 0, $workload );
+			// A broken registration must not fake a dedicated profile.
+			$this->assertInstanceOf( WP_Sync_Bench_Opaque_Relay_Profile::class, $profile );
+		} finally {
+			remove_filter( 'wp_sync_bench_authoring_profiles', $filter );
+		}
+	}
+
 	public function test_yjs_server_checkpoints_bound_storage_without_client_help() {
 		$interval = static function () {
 			return 20;
@@ -252,6 +314,23 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 			$this->assertSame( 0, $report['quality']['lost_work'] );
 		} finally {
 			remove_filter( 'wp_sync_yjs_server_checkpoint_interval', $interval );
+		}
+	}
+}
+
+if ( ! class_exists( 'Bench_Test_Named_Relay_Profile' ) ) {
+	/**
+	 * TEST FIXTURE: a distinctly-named profile, for asserting the
+	 * `wp_sync_bench_authoring_profiles` filter resolves registrations.
+	 */
+	class Bench_Test_Named_Relay_Profile extends WP_Sync_Bench_Opaque_Relay_Profile {
+		/**
+		 * Profile name.
+		 *
+		 * @return string Profile name.
+		 */
+		public function name(): string {
+			return 'bench-test-named-relay';
 		}
 	}
 }
