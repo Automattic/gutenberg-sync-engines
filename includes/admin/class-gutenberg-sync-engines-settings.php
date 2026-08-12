@@ -70,6 +70,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			$choices = array(
 				'intent-log' => __( 'Intent log (server-authoritative; conflicts go to review)', 'gutenberg-sync-engines' ),
 				'yjs-server' => __( 'Yjs server (server-authoritative CRDT; server merges and compacts)', 'gutenberg-sync-engines' ),
+				'de-rtc'     => __( 'DE-RTC (server-governed three-way merges of content proposals; conflicts escalate)', 'gutenberg-sync-engines' ),
 			);
 
 			/**
