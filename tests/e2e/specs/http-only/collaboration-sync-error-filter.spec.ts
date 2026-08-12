@@ -76,8 +76,16 @@ test.describe( 'Sync connection error filter', () => {
 		// The second user (4th client) opens the post, exceeding the
 		// default connection limit. This triggers CONNECTION_LIMIT_EXCEEDED
 		// on their first poll response.
+		/*
+		 * Clean storage state, for the same reason as the collaboration
+		 * fixture's joinUser: an inherited admin cookie makes wp-login.php
+		 * render a wp_attempt_focus() script that clears the password field
+		 * 200ms after load, racing the fill below and silently blocking the
+		 * submit.
+		 */
 		const fourthContext = await admin.browser.newContext( {
 			baseURL: BASE_URL,
+			storageState: { cookies: [], origins: [] },
 		} );
 		const page4 = await fourthContext.newPage();
 
