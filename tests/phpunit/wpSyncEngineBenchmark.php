@@ -197,6 +197,20 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 		$this->assertSame( $d['rounds'], $e['rounds'] );
 	}
 
+	public function test_ingest_concurrency_histogram() {
+		$workload  = WP_Sync_Bench_Workload::build( 'parallel-paragraphs', 7, 10, 3, 4 );
+		$histogram = WP_Sync_Bench_Workload::ingest_concurrency_histogram( $workload['rounds'] );
+		// Lock-step: every round has exactly 3 concurrent ingests.
+		$this->assertSame( array( 3 => 10 ), $histogram );
+
+		$session = WP_Sync_Bench_Workload::build( 'editorial-session', 7, 100, 3, 4 );
+		$mixed   = WP_Sync_Bench_Workload::ingest_concurrency_histogram( $session['rounds'] );
+		// Bursty session: concurrency varies round to round (and empty
+		// rounds are excluded — nothing queues behind nothing).
+		$this->assertNotEmpty( $mixed );
+		$this->assertArrayNotHasKey( 0, $mixed );
+	}
+
 	public function test_workload_fill_controls_document_size() {
 		$small = WP_Sync_Bench_Workload::build( 'solo-typing', 7, 4, 1, 8 );
 		$big   = WP_Sync_Bench_Workload::build( 'solo-typing', 7, 4, 1, 8, 6000 );

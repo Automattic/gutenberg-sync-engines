@@ -24,7 +24,7 @@
  * config with BENCH_WPENV_CONFIG (default .wp-env.tests.json).
  */
 
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -71,6 +71,36 @@ const MATRIX = {
 const SCENARIOS = ( args.scenarios ?? Object.keys( MATRIX ).join( ',' ) )
 	.split( ',' )
 	.filter( Boolean );
+
+// Async variant for the concurrency mode: N workers must be IN FLIGHT
+// simultaneously, which spawnSync cannot do.
+function wpAsync( ...wpArgs ) {
+	return new Promise( ( resolve, reject ) => {
+		const child = spawn(
+			'npx',
+			[
+				'wp-env',
+				'--config',
+				ENV_CONFIG,
+				'run',
+				'cli',
+				`--env-cwd=${ ENV_CWD }`,
+				...wpArgs,
+			],
+			{ stdio: [ 'ignore', 'pipe', 'pipe' ] }
+		);
+		let out = '';
+		child.stdout.on( 'data', ( chunk ) => ( out += chunk ) );
+		child.stderr.on( 'data', ( chunk ) => ( out += chunk ) );
+		child.on( 'close', ( code ) =>
+			0 === code
+				? resolve( out )
+				: reject(
+						new Error( `exit ${ code }: ${ out.slice( -400 ) }` )
+				  )
+		);
+	} );
+}
 
 function wp( ...wpArgs ) {
 	const result = spawnSync(
@@ -147,7 +177,171 @@ wp( 'wp', 'plugin', 'activate', 'gutenberg', 'gutenberg-sync-engines' );
 const violations = [];
 const started = Date.now();
 
-if ( args.certify ) {
+function percentile( sorted, fraction ) {
+	return sorted[ Math.floor( fraction * ( sorted.length - 1 ) ) ];
+}
+
+// Multi-process concurrency measurement (opt-in, concurrency=N): N worker
+// processes hammer the SAME room through the real postmeta storage
+// simultaneously, so latency includes genuine lock waits, 503 timeouts,
+// and MySQL under concurrent writers — everything the single-process
+// harness structurally cannot see. A 1-worker pass on a fresh room is the
+// uncontended baseline; the delta IS the queueing cost.
+async function runConcurrencyPhase( engine, workers, requests, paragraphs ) {
+	const setup = wp(
+		'wp',
+		'eval-file',
+		'tests/benchmarks/concurrency-setup.php',
+		`engine=${ engine }`,
+		`paragraphs=${ paragraphs }`
+	);
+	const postId = Number( ( setup.match( /BENCH_POST (\d+)/ ) ?? [] )[ 1 ] );
+	if ( ! postId ) {
+		throw new Error(
+			`setup failed for ${ engine }: ${ setup.slice( -200 ) }`
+		);
+	}
+
+	const phaseStarted = Date.now();
+	const outputs = await Promise.all(
+		Array.from( { length: workers }, ( _, worker ) =>
+			wpAsync(
+				'wp',
+				'eval-file',
+				'tests/benchmarks/concurrency-worker.php',
+				`engine=${ engine }`,
+				`post=${ postId }`,
+				`worker=${ worker }`,
+				`workers=${ workers }`,
+				`requests=${ requests }`,
+				`paragraphs=${ paragraphs }`
+			)
+		)
+	);
+	const wallMs = Date.now() - phaseStarted;
+	wp(
+		'wp',
+		'eval-file',
+		'tests/benchmarks/concurrency-setup.php',
+		`teardown=${ postId }`
+	);
+
+	const latencies = [];
+	const errors = {};
+	const voidReasons = {};
+	const dispositions = { applied: 0, escalated: 0, voided: 0 };
+	for ( const out of outputs ) {
+		const line = out.match( /BENCH_WORKER (\{.*\})/ );
+		if ( ! line ) {
+			throw new Error(
+				`worker emitted no result for ${ engine }: ${ out.slice(
+					-200
+				) }`
+			);
+		}
+		const parsed = JSON.parse( line[ 1 ] );
+		latencies.push( ...parsed.latency_us );
+		for ( const [ code, count ] of Object.entries( parsed.errors ) ) {
+			errors[ code ] = ( errors[ code ] ?? 0 ) + count;
+		}
+		for ( const [ reason, count ] of Object.entries(
+			parsed.void_reasons ?? {}
+		) ) {
+			voidReasons[ reason ] = ( voidReasons[ reason ] ?? 0 ) + count;
+		}
+		for ( const key of Object.keys( dispositions ) ) {
+			dispositions[ key ] += parsed.dispositions[ key ];
+		}
+	}
+	latencies.sort( ( a, b ) => a - b );
+	return {
+		workers,
+		requests: latencies.length,
+		wall_ms: wallMs,
+		p50_ms: percentile( latencies, 0.5 ) / 1000,
+		p90_ms: percentile( latencies, 0.9 ) / 1000,
+		p99_ms: percentile( latencies, 0.99 ) / 1000,
+		max_ms: latencies[ latencies.length - 1 ] / 1000,
+		errors,
+		void_reasons: voidReasons,
+		dispositions,
+	};
+}
+
+async function runConcurrencyMode() {
+	const workers = Math.max( 2, Number( args.concurrency ) );
+	const requests = Number( args.requests ?? 40 );
+	const paragraphs = Number( args.paragraphs ?? 4 );
+	console.log(
+		`\nmulti-process concurrency: ${ workers } workers x ${ requests } requests, same room, REAL postmeta storage` +
+			`\n(latency includes genuine lock waits and DB I/O — not comparable with the in-memory single-process numbers)`
+	);
+
+	for ( const engine of ENGINES ) {
+		try {
+			const baseline = await runConcurrencyPhase(
+				engine,
+				1,
+				requests,
+				paragraphs
+			);
+			const loaded = await runConcurrencyPhase(
+				engine,
+				workers,
+				requests,
+				paragraphs
+			);
+			const voidList = Object.entries( loaded.void_reasons )
+				.map( ( [ reason, count ] ) => `${ reason }x${ count }` )
+				.join( ', ' );
+			const errorList = Object.entries( loaded.errors )
+				.map( ( [ code, count ] ) => `${ code }x${ count }` )
+				.join( ', ' );
+			console.log( `\n  ${ engine }:` );
+			console.log(
+				`    1 worker : p50 ${ baseline.p50_ms.toFixed(
+					2
+				) } ms, p99 ${ baseline.p99_ms.toFixed(
+					2
+				) } ms (uncontended baseline)`
+			);
+			console.log(
+				`    ${ workers } workers: p50 ${ loaded.p50_ms.toFixed(
+					2
+				) } ms, p99 ${ loaded.p99_ms.toFixed(
+					2
+				) } ms, max ${ loaded.max_ms.toFixed( 2 ) } ms` +
+					` — measured queueing +${ (
+						loaded.p50_ms - baseline.p50_ms
+					).toFixed( 2 ) } ms p50 / +${ (
+						loaded.p99_ms - baseline.p99_ms
+					).toFixed( 2 ) } ms p99`
+			);
+			console.log(
+				`    ${ loaded.requests } requests in ${ (
+					loaded.wall_ms / 1000
+				).toFixed( 1 ) } s wall; ` +
+					`${ loaded.dispositions.applied } applied / ${ loaded.dispositions.escalated } escalated / ${ loaded.dispositions.voided } voided` +
+					`${ voidList ? ` (${ voidList })` : '' }; errors: ${
+						errorList || 'none'
+					}`
+			);
+			fs.writeFileSync(
+				path.join( OUT_DIR, `concurrency--${ engine }.json` ),
+				JSON.stringify( { engine, baseline, loaded }, null, '\t' )
+			);
+		} catch ( error ) {
+			violations.push( `${ engine }/concurrency: ${ error.message }` );
+			console.log(
+				`  ${ engine }: FAILED (${ error.message.split( '\n' )[ 0 ] })`
+			);
+		}
+	}
+}
+
+if ( args.concurrency ) {
+	await runConcurrencyMode();
+} else if ( args.certify ) {
 	// Invariant sweep: many seeds, every engine, the two adversarial
 	// scenarios — cheap per run, additive as evidence.
 	const seeds = Math.max( 1, Number( args.certify ) );

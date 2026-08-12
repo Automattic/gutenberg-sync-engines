@@ -232,6 +232,29 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 		}
 
 		/**
+		 * How often K ingests land in the same round — the workload's
+		 * concurrency profile. In production, same-round edits arrive
+		 * near-simultaneously, so under a per-room serialized engine the
+		 * K-th writer queues behind K-1 merges; this histogram is what the
+		 * CLI's queueing model multiplies against measured service time.
+		 *
+		 * @param array $rounds Workload rounds.
+		 * @return array<int, int> Concurrent-ingest count => rounds seen.
+		 */
+		public static function ingest_concurrency_histogram( array $rounds ): array {
+			$histogram = array();
+			foreach ( $rounds as $round ) {
+				$edits = $round['edits'] ?? $round;
+				$k     = count( $edits );
+				if ( $k > 0 ) {
+					$histogram[ $k ] = ( $histogram[ $k ] ?? 0 ) + 1;
+				}
+			}
+			ksort( $histogram );
+			return $histogram;
+		}
+
+		/**
 		 * The identity marker a genesis paragraph's body starts with.
 		 *
 		 * @param int $paragraph Paragraph index.

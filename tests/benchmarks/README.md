@@ -225,6 +225,25 @@ npm run bench -- certify=10          # invariant sweep: 10 seeds x engines x
                                      # edit is ever silently dropped" at scale
 ```
 
+Multi-process concurrency measurement is OPT-IN behind one flag:
+
+```bash
+npm run bench -- concurrency=4       # 4 worker processes, same room, REAL
+                                     # postmeta storage: latency including
+                                     # genuine lock waits and 503s, vs a
+                                     # 1-worker uncontended baseline
+```
+
+It complements the modeled queueing on the hosting cost card: the model
+composes measured service times with the workload's concurrency histogram
+(cheap, deterministic); the measurement runs truly parallel processes against
+the shared database (real, noisy, and the only way to exercise the
+engines' actual race behavior — its first run caught yjs-server voiding
+most updates under 4-writer contention; see
+`docs/engine-comparison.md`). No quality oracles run in this mode — it is
+a latency and failure-mode probe, with dispositions and void reasons
+reported for context.
+
 JSON reports land in `bench-results/`. Individual runs go through wp-cli
 directly — the engines need WordPress (`get_post`, `serialize_block`, and a
 `$wpdb` for the ingest lock), so run inside the environment under test.

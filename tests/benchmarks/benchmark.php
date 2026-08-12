@@ -216,6 +216,31 @@ if ( ! empty( $wp_sync_bench_workload['seconds_per_round'] ) ) {
 	) / 1000;
 	$wire_bytes           = $report['wire']['request_bytes'] + $report['wire']['response_bytes'];
 
+	/*
+	 * Modeled queueing: the harness executes requests one at a time, but
+	 * production edits from the same round arrive near-simultaneously. For
+	 * engines that serialize ingest per room (the GET_LOCK holders), the
+	 * K-th concurrent writer waits for K-1 merges: convolving the
+	 * workload's ingest-concurrency histogram with the MEASURED mean
+	 * service time models that wait. yjs-server is lock-free (no room
+	 * queue), but every in-flight ingest still holds a PHP WORKER, so its
+	 * peak concurrent worker demand is reported instead. MODELED, not
+	 * measured — `npm run bench -- concurrency=N` measures it for real.
+	 */
+	$wp_sync_bench_histogram  = WP_Sync_Bench_Workload::ingest_concurrency_histogram( $wp_sync_bench_workload['rounds'] );
+	$wp_sync_bench_serialized = in_array( $engine_slug, array( 'intent-log', 'de-rtc' ), true );
+	$wp_sync_bench_wait_ms    = 0.0;
+	$wp_sync_bench_wait_max   = 0.0;
+	$wp_sync_bench_hist_edits = 0;
+	foreach ( $wp_sync_bench_histogram as $wp_sync_bench_k => $wp_sync_bench_n ) {
+		$wp_sync_bench_hist_edits += $wp_sync_bench_k * $wp_sync_bench_n;
+		if ( $wp_sync_bench_serialized ) {
+			// Sum of waits in a K-deep convoy: (0+1+…+K-1) x service.
+			$wp_sync_bench_wait_ms += $wp_sync_bench_n * ( $wp_sync_bench_k * ( $wp_sync_bench_k - 1 ) / 2 ) * $report['service_us']['mean'];
+			$wp_sync_bench_wait_max = max( $wp_sync_bench_wait_max, ( $wp_sync_bench_k - 1 ) * $report['service_us']['p90'] );
+		}
+	}
+
 	$report['hosting'] = array(
 		'session_seconds'             => $session_seconds,
 		'client_seconds'              => $client_seconds,
@@ -229,6 +254,15 @@ if ( ! empty( $wp_sync_bench_workload['seconds_per_round'] ) ) {
 		'wire_mb_per_client_hour'     => round( $wire_bytes * 3600 / $client_seconds / 1048576, 2 ),
 		'storage_bytes_at_rest'       => $report['storage']['bytes'],
 		'join_payload_bytes'          => $report['payload_bytes']['join_response_p50'],
+		'queueing_model'              => array(
+			'ingest_concurrency'      => $wp_sync_bench_histogram,
+			'serialized_ingest'       => $wp_sync_bench_serialized,
+			'modeled_wait_ms_mean'    => $wp_sync_bench_hist_edits > 0
+				? round( $wp_sync_bench_wait_ms / $wp_sync_bench_hist_edits, 4 )
+				: 0.0,
+			'modeled_wait_ms_worst'   => round( $wp_sync_bench_wait_max, 4 ),
+			'peak_concurrent_workers' => array() === $wp_sync_bench_histogram ? 0 : max( array_keys( $wp_sync_bench_histogram ) ),
+		),
 	);
 }
 
@@ -402,6 +436,19 @@ if ( null !== $report['hosting'] ) {
 		(int) round( $h['storage_bytes_at_rest'] / 1024 ),
 		(int) round( $h['join_payload_bytes'] / 1024 )
 	);
+	$q = $h['queueing_model'];
+	if ( $q['serialized_ingest'] ) {
+		printf(
+			"  queueing (MODELED from the workload's concurrency, not measured): +%.2f ms mean / +%.2f ms worst-case ingest wait behind the per-room lock; measure for real with `npm run bench -- concurrency=N`\n",
+			$q['modeled_wait_ms_mean'],
+			$q['modeled_wait_ms_worst']
+		);
+	} else {
+		printf(
+			"  queueing: lock-free ingest (no per-room queue), but up to %d concurrent ingests each hold a PHP worker for the full service time; measure for real with `npm run bench -- concurrency=N`\n",
+			$q['peak_concurrent_workers']
+		);
+	}
 }
 if ( 'opaque-relay' === ( $report['profile'] ?? '' ) ) {
 	printf(
