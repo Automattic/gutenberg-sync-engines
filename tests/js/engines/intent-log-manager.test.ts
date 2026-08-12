@@ -310,6 +310,74 @@ describe( 'intent-log manager', () => {
 		).toHaveLength( 1 );
 	} );
 
+	it( 'persisted record ids are removable from the first capture even on a checkpoint bootstrap', async () => {
+		// The loaded record is the OTHER proof of display: a late joiner
+		// bootstrapping from a compaction checkpoint has still parsed and
+		// rendered the saved content, so ids persisted in it are deletable
+		// by a wholesale first edit — while a checkpoint block that was
+		// never saved (another client's live work) stays protected.
+		const { manager, transport } = await loadManagedEntity( {
+			content: {
+				raw:
+					'<!-- wp:paragraph {"metadata":{"syncId":"r1"}} -->\n<p>Saved one</p>\n<!-- /wp:paragraph -->\n\n' +
+					'<!-- wp:paragraph {"metadata":{"syncId":"r2"}} -->\n<p>Saved two</p>\n<!-- /wp:paragraph -->',
+			},
+		} );
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				seq: 7,
+				doc: createDocument( [
+					{
+						syncId: 'r1',
+						blockType: 'core/paragraph',
+						text: 'Saved one',
+					},
+					{
+						syncId: 'r2',
+						blockType: 'core/paragraph',
+						text: 'Saved two',
+					},
+					{
+						syncId: 'c3',
+						blockType: 'core/paragraph',
+						text: 'Live unsaved block',
+					},
+				] ),
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.SNAPSHOT,
+		} );
+
+		manager.update(
+			'postType/post',
+			'1',
+			{
+				blocks: [
+					{
+						name: 'core/paragraph',
+						attributes: {
+							content: 'Pasted replacement',
+							metadata: { syncId: 'local-new' },
+						},
+						innerBlocks: [],
+					},
+				],
+			},
+			'gutenberg'
+		);
+
+		const intents = transport.captured.sent.map( ( row ) =>
+			JSON.parse( row.data )
+		);
+		const removed = intents
+			.filter( ( intent ) => 'remove_block' === intent.type )
+			.map( ( intent ) => intent.payload.syncId )
+			.sort();
+		expect( removed ).toEqual( [ 'r1', 'r2' ] );
+		expect(
+			intents.filter( ( intent ) => 'insert_block' === intent.type )
+		).toHaveLength( 1 );
+	} );
+
 	it( 'applies remote intents to the editor through editRecord', async () => {
 		const { handlers, transport } = await loadManagedEntity();
 		transport.captured.session!.receiveUpdate(

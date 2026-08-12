@@ -7,6 +7,11 @@
 import type { Awareness } from 'y-protocols/awareness';
 
 /**
+ * WordPress dependencies
+ */
+import { parse as parseBlockDelimiters } from '@wordpress/block-serialization-default-parser';
+
+/**
  * Internal dependencies
  */
 import { createAwarenessDoc } from './awareness-sync';
@@ -91,8 +96,23 @@ interface EntityState {
 	 * Ids the editor has actually displayed (last agreed view). Only these
 	 * may be DELETED by a capture diff: a document block missing from the
 	 * editor tree but never displayed is staleness, not a deletion.
+	 *
+	 * Three seeding sources, all proofs of display:
+	 * 1. persisted syncIds parsed from the record the editor loaded and
+	 *    rendered (covers blocks saved after the room's genesis — a late
+	 *    joiner bootstraps from the old genesis or a checkpoint yet has
+	 *    displayed the newer saved blocks);
+	 * 2. the seq-0 genesis bootstrap document, derived from the same saved
+	 *    content the editor parsed (covers legacy content whose ids exist
+	 *    only as deterministic genesis mints);
+	 * 3. every tree the editor hands to update() — its ongoing testimony.
 	 */
-	editorIds: Set< string > | null;
+	editorIds: Set< string >;
+	/**
+	 * Whether the bootstrap document has been offered for genesis seeding
+	 * (one-shot, on the first post-initialization change event).
+	 */
+	genesisSeeded: boolean;
 	/** Document ids as of the previous session change (tombstone diffing). */
 	prevDocIds: Set< string >;
 	/**
@@ -146,6 +166,39 @@ function rawPropertyValue(
 		return ( value as { raw: string } ).raw;
 	}
 	return undefined;
+}
+
+/**
+ * Collects the persisted syncIds carried in a record's serialized content.
+ *
+ * Reads only the block delimiters (grammar-level parse, no block registry),
+ * so it sees exactly what the editor parsed and rendered from this content.
+ * Legacy content without persisted ids yields an empty set — deterministic
+ * genesis seeding covers that shape instead.
+ *
+ * @param content Raw serialized post content, or undefined.
+ * @return The persisted syncIds.
+ */
+function collectPersistedSyncIds( content: string | undefined ): Set< string > {
+	const ids = new Set< string >();
+	if ( ! content || ! content.includes( '"syncId"' ) ) {
+		return ids;
+	}
+	type ParsedNode = {
+		attrs: { metadata?: { syncId?: unknown } } | null;
+		innerBlocks: ParsedNode[];
+	};
+	const walk = ( nodes: ParsedNode[] ) => {
+		for ( const node of nodes ) {
+			const syncId = node.attrs?.metadata?.syncId;
+			if ( 'string' === typeof syncId ) {
+				ids.add( syncId );
+			}
+			walk( node.innerBlocks );
+		}
+	};
+	walk( parseBlockDelimiters( content ) as ParsedNode[] );
+	return ids;
 }
 
 /**
@@ -306,7 +359,15 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			unloaded: false,
 			lastPushedState: null,
 			capturing: false,
-			editorIds: null,
+			// Record seeding (source 1 of the editorIds contract): the ids
+			// persisted in the content this editor loaded and rendered.
+			editorIds: collectPersistedSyncIds(
+				rawPropertyValue(
+					record as Record< string, unknown >,
+					'content'
+				)
+			),
+			genesisSeeded: false,
 			prevDocIds: new Set(),
 			docTombstones: new Set(),
 			clientIds: new Map(),
@@ -361,20 +422,26 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			);
 			const docIds = collectBlockIds( blocks );
 			/*
-			 * Genesis seeding: a seq-0 bootstrap is the room GENESIS, derived
-			 * from the saved post content this editor itself parsed and
-			 * rendered — its blocks are provably displayed, so they are
-			 * removable immediately. Without this, a WHOLESALE first edit
-			 * (select-all paste) captures a tree that never contained the
-			 * genesis blocks, their absence reads as staleness, and the
-			 * dropped deletions resurrect on every client. Checkpoint
-			 * bootstraps (seq > 0) may carry blocks a late joiner never
-			 * displayed and must NOT seed. The first post-init change event
-			 * fires synchronously on snapshot receipt, so `blocks` here is
-			 * exactly the bootstrap document.
+			 * Genesis seeding (source 2 of the editorIds contract): a seq-0
+			 * bootstrap is the room GENESIS, derived from the saved post
+			 * content this editor itself parsed and rendered — its blocks
+			 * are provably displayed, so they are removable immediately.
+			 * Without this, a WHOLESALE first edit (select-all paste)
+			 * captures a tree that never contained the genesis blocks, their
+			 * absence reads as staleness, and the dropped deletions resurrect
+			 * on every client. Checkpoint bootstraps (seq > 0) may carry
+			 * blocks a late joiner never displayed and must NOT seed (record
+			 * seeding covers the ids that joiner did render). The first
+			 * post-init change event fires synchronously on snapshot receipt,
+			 * so `blocks` here is exactly the bootstrap document.
 			 */
-			if ( null === state.editorIds && 0 === session.getBootstrapSeq() ) {
-				state.editorIds = new Set( docIds );
+			if ( ! state.genesisSeeded ) {
+				state.genesisSeeded = true;
+				if ( 0 === session.getBootstrapSeq() ) {
+					for ( const id of docIds ) {
+						state.editorIds.add( id );
+					}
+				}
 			}
 			/*
 			 * Tombstone maintenance: ids that left the document through
@@ -712,9 +779,6 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			 * (A push becomes removable when its echo arrives here.)
 			 */
 			const treeIds = collectBlockIds( blocks );
-			if ( null === state.editorIds ) {
-				state.editorIds = new Set();
-			}
 			for ( const id of treeIds ) {
 				state.editorIds.add( id );
 			}
@@ -739,7 +803,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			// Id-less blocks in the tree confirm their adopted/minted ids.
 			const confirmIds = ( specs: typeof derived.specs ) => {
 				for ( const spec of specs ) {
-					state.editorIds!.add( spec.syncId as string );
+					state.editorIds.add( spec.syncId as string );
 					confirmIds(
 						( spec.children as typeof derived.specs ) ?? []
 					);

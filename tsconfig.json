@@ -6,6 +6,9 @@
 		"baseUrl": ".",
 		"paths": {
 			"@wordpress/sync": [ "./gutenberg/packages/sync/src" ],
+			"@wordpress/block-serialization-default-parser": [
+				"./gutenberg/node_modules/@wordpress/block-serialization-default-parser"
+			],
 			"yjs": [ "./gutenberg/node_modules/yjs" ],
 			"y-protocols/*": [ "./gutenberg/node_modules/y-protocols/*" ],
 			"lib0/*": [ "./gutenberg/node_modules/lib0/*" ]
