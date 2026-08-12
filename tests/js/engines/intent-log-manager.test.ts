@@ -207,6 +207,177 @@ describe( 'intent-log manager', () => {
 		expect( handlers.edits ).toHaveLength( editsBefore );
 	} );
 
+	it( 'REGRESSION: a wholesale FIRST edit (select-all paste) deletes the genesis blocks', async () => {
+		// The genesis blocks never appear in any captured tree when the
+		// user's first action replaces the whole document, but they came
+		// from the saved content this editor itself rendered — their
+		// absence is a deletion, not staleness. Without seq-0 seeding the
+		// removals were dropped and the originals resurrected everywhere.
+		const { manager, transport } = await loadManagedEntity();
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [
+				{
+					syncId: 'g1',
+					blockType: 'core/paragraph',
+					text: 'Original one',
+				},
+				{
+					syncId: 'g2',
+					blockType: 'core/paragraph',
+					text: 'Original two',
+				},
+			] )
+		);
+
+		manager.update(
+			'postType/post',
+			'1',
+			{
+				blocks: [
+					{
+						name: 'core/heading',
+						attributes: { content: 'Pasted heading' },
+						innerBlocks: [],
+					},
+					{
+						name: 'core/paragraph',
+						attributes: { content: 'Pasted paragraph' },
+						innerBlocks: [],
+					},
+				],
+			},
+			'gutenberg'
+		);
+
+		const intents = transport.captured.sent.map( ( row ) =>
+			JSON.parse( row.data )
+		);
+		const removed = intents
+			.filter( ( intent ) => 'remove_block' === intent.type )
+			.map( ( intent ) => intent.payload.syncId )
+			.sort();
+		expect( removed ).toEqual( [ 'g1', 'g2' ] );
+		expect(
+			intents.filter( ( intent ) => 'insert_block' === intent.type )
+		).toHaveLength( 2 );
+	} );
+
+	it( 'a checkpoint bootstrap (seq > 0) does NOT make never-displayed blocks removable', async () => {
+		// A compaction checkpoint may carry blocks a late joiner's editor
+		// has never rendered; their absence from its first capture must
+		// still read as staleness (retention), never deletion.
+		const { manager, transport } = await loadManagedEntity();
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				seq: 7,
+				doc: createDocument( [
+					{
+						syncId: 'c1',
+						blockType: 'core/paragraph',
+						text: 'Checkpoint-only block',
+					},
+				] ),
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.SNAPSHOT,
+		} );
+
+		manager.update(
+			'postType/post',
+			'1',
+			{
+				blocks: [
+					{
+						name: 'core/paragraph',
+						attributes: {
+							content: 'Typed locally',
+							metadata: { syncId: 'local-new' },
+						},
+						innerBlocks: [],
+					},
+				],
+			},
+			'gutenberg'
+		);
+
+		const intents = transport.captured.sent.map( ( row ) =>
+			JSON.parse( row.data )
+		);
+		expect(
+			intents.some( ( intent ) => 'remove_block' === intent.type )
+		).toBe( false );
+		expect(
+			intents.filter( ( intent ) => 'insert_block' === intent.type )
+		).toHaveLength( 1 );
+	} );
+
+	it( 'persisted record ids are removable from the first capture even on a checkpoint bootstrap', async () => {
+		// The loaded record is the OTHER proof of display: a late joiner
+		// bootstrapping from a compaction checkpoint has still parsed and
+		// rendered the saved content, so ids persisted in it are deletable
+		// by a wholesale first edit — while a checkpoint block that was
+		// never saved (another client's live work) stays protected.
+		const { manager, transport } = await loadManagedEntity( {
+			content: {
+				raw:
+					'<!-- wp:paragraph {"metadata":{"syncId":"r1"}} -->\n<p>Saved one</p>\n<!-- /wp:paragraph -->\n\n' +
+					'<!-- wp:paragraph {"metadata":{"syncId":"r2"}} -->\n<p>Saved two</p>\n<!-- /wp:paragraph -->',
+			},
+		} );
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				seq: 7,
+				doc: createDocument( [
+					{
+						syncId: 'r1',
+						blockType: 'core/paragraph',
+						text: 'Saved one',
+					},
+					{
+						syncId: 'r2',
+						blockType: 'core/paragraph',
+						text: 'Saved two',
+					},
+					{
+						syncId: 'c3',
+						blockType: 'core/paragraph',
+						text: 'Live unsaved block',
+					},
+				] ),
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.SNAPSHOT,
+		} );
+
+		manager.update(
+			'postType/post',
+			'1',
+			{
+				blocks: [
+					{
+						name: 'core/paragraph',
+						attributes: {
+							content: 'Pasted replacement',
+							metadata: { syncId: 'local-new' },
+						},
+						innerBlocks: [],
+					},
+				],
+			},
+			'gutenberg'
+		);
+
+		const intents = transport.captured.sent.map( ( row ) =>
+			JSON.parse( row.data )
+		);
+		const removed = intents
+			.filter( ( intent ) => 'remove_block' === intent.type )
+			.map( ( intent ) => intent.payload.syncId )
+			.sort();
+		expect( removed ).toEqual( [ 'r1', 'r2' ] );
+		expect(
+			intents.filter( ( intent ) => 'insert_block' === intent.type )
+		).toHaveLength( 1 );
+	} );
+
 	it( 'applies remote intents to the editor through editRecord', async () => {
 		const { handlers, transport } = await loadManagedEntity();
 		transport.captured.session!.receiveUpdate(

@@ -53,6 +53,14 @@ module.exports = {
 	moduleNameMapper: {
 		...( defaultConfig.moduleNameMapper || {} ),
 		'^@wordpress/sync$': SYNC_SRC,
+		// Stateless grammar parser used by the intent-log manager to read
+		// persisted syncIds out of loaded record content; resolved from the
+		// subtree so no plugin-local install is needed (at runtime it is the
+		// wp-block-serialization-default-parser script).
+		'^@wordpress/block-serialization-default-parser$': path.join(
+			FRAMEWORK_MODULES,
+			'@wordpress/block-serialization-default-parser'
+		),
 		'^yjs$': path.join( FRAMEWORK_MODULES, 'yjs' ),
 		// The private-API lock lives in a module-scoped WeakMap; the framework
 		// locks and the plugin unlocks, so both MUST share one copy of
@@ -67,6 +75,13 @@ module.exports = {
 		'^@wordpress/hooks$': path.join(
 			FRAMEWORK_MODULES,
 			'@wordpress/hooks'
+		),
+		// The de-rtc doc bridge serializes/parses through the editor's block
+		// library (the single wp.blocks at runtime); resolve it from the
+		// subtree. Tests mock it — block registration is editor state.
+		'^@wordpress/blocks$': path.join(
+			FRAMEWORK_MODULES,
+			'@wordpress/blocks'
 		),
 	},
 	setupFiles: [

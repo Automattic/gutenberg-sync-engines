@@ -30,6 +30,22 @@ export default defineConfig( {
 	testDir: './specs',
 	globalSetup,
 	workers: 1,
+	// Fail hung tests fast. The base config's 100 s per-test cap is the
+	// only bound on several failure modes, so a wedged test burns minutes
+	// across CI retries. Collaboration setup (two logged-in editors plus
+	// mutual discovery) legitimately takes 20-40 s on CI runners, so keep
+	// headroom above that; known-long specs opt up with test.setTimeout().
+	// TIMEOUT env overrides, same as the base config.
+	timeout: parseInt( process.env.TIMEOUT || '', 10 ) || 60_000,
+	use: {
+		...baseConfig.use,
+		// The base config caps actions (10 s) but not navigations, so a
+		// hung page.goto()/reload() (the suite's known under-load flake is
+		// a fixture login navigation) would otherwise consume the whole
+		// test budget and report a generic test timeout instead of the
+		// failing call.
+		navigationTimeout: 30_000,
+	},
 	// WebSocket-transport specs need the test WS provider + sync server and
 	// run only under playwright.rtc-websocket.config.ts.
 	testIgnore: '**/specs/websocket-only/**',

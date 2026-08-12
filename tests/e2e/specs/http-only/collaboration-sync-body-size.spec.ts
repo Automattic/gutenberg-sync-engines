@@ -81,7 +81,6 @@ test.describe( 'Collaboration sync body size', () => {
 		page,
 	} ) => {
 		test.setTimeout( 180_000 );
-		test.slow();
 
 		const syncRequests: Array< {
 			length: number;

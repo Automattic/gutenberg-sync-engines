@@ -187,6 +187,15 @@ export interface IntentLogSession extends EngineSessionCodec {
 	/** Whether the genesis snapshot has arrived. */
 	isInitialized: () => boolean;
 
+	/**
+	 * The seq of the snapshot this replica (re-)bootstrapped from, or null
+	 * pre-snapshot. 0 identifies the room GENESIS — a document derived from
+	 * the saved post content every client parsed and rendered on load. A
+	 * positive value is a compaction checkpoint, which may carry blocks a
+	 * late joiner's editor has never displayed.
+	 */
+	getBootstrapSeq: () => number | null;
+
 	/** Latest remote awareness states, keyed by client id. */
 	getPeers: () => AwarenessState;
 
@@ -239,6 +248,7 @@ export function createIntentLogSession(
 	const actorId = `u${ options.userId }c${ clientId }`;
 
 	let replica: ReturnType< typeof createClient > | null = null;
+	let bootstrapSeq: number | null = null;
 	let localUpdateListener: EngineLocalUpdateListener | null = null;
 	let localAwareness: LocalAwarenessState = {};
 	let peers: AwarenessState = {};
@@ -303,6 +313,7 @@ export function createIntentLogSession(
 					if ( ! replica ) {
 						// First snapshot wins; genesis carries seq 0 and a
 						// compaction checkpoint carries its engine seq.
+						bootstrapSeq = snapshotSeq;
 						replica = createClient(
 							actorId,
 							decoded.doc as EngineDocument,
@@ -321,6 +332,7 @@ export function createIntentLogSession(
 						 * against the reset document, re-deriving any
 						 * unacked local work.
 						 */
+						bootstrapSeq = snapshotSeq;
 						replica = createClient(
 							actorId,
 							decoded.doc as EngineDocument,
@@ -506,6 +518,7 @@ export function createIntentLogSession(
 		getPendingCount: () => replica?.outbox.length ?? 0,
 		getSeq: () => replica?.cursor ?? 0,
 		isInitialized: () => null !== replica,
+		getBootstrapSeq: () => bootstrapSeq,
 		getPeers: () => peers,
 		setLocalAwareness: ( state: LocalAwarenessState ) => {
 			localAwareness = state;

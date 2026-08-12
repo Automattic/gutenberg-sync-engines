@@ -1,25 +1,48 @@
 {
-	"compilerOptions": {
-		"target": "esnext",
-		"module": "esnext",
-		"moduleResolution": "node",
-		"baseUrl": ".",
-		"paths": {
-			"@wordpress/sync": [ "./gutenberg/packages/sync/src" ],
-			"yjs": [ "./gutenberg/node_modules/yjs" ],
-			"y-protocols/*": [ "./gutenberg/node_modules/y-protocols/*" ],
-			"lib0/*": [ "./gutenberg/node_modules/lib0/*" ]
-		},
-		"jsx": "react-jsx",
-		"strict": true,
-		"noEmit": true,
-		"esModuleInterop": true,
-		"skipLibCheck": true,
-		"forceConsistentCasingInFileNames": true,
-		"allowJs": true,
-		"checkJs": false,
-		"types": [ "@wordpress/element" ]
-	},
-	"include": [ "src/**/*", "tests/js/**/*" ],
-	"exclude": [ "node_modules", "build", "src/engines/intent-log/*.js" ]
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "esnext",
+    "moduleResolution": "node",
+    "baseUrl": ".",
+    "paths": {
+      "@wordpress/sync": [
+        "./gutenberg/packages/sync/src"
+      ],
+      "@wordpress/blocks": [
+        "./gutenberg/node_modules/@wordpress/blocks/build-types"
+      ],
+      "@wordpress/block-serialization-default-parser": [
+        "./gutenberg/node_modules/@wordpress/block-serialization-default-parser"
+      ],
+      "yjs": [
+        "./gutenberg/node_modules/yjs"
+      ],
+      "y-protocols/*": [
+        "./gutenberg/node_modules/y-protocols/*"
+      ],
+      "lib0/*": [
+        "./gutenberg/node_modules/lib0/*"
+      ]
+    },
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "allowJs": true,
+    "checkJs": false,
+    "types": [
+      "@wordpress/element"
+    ]
+  },
+  "include": [
+    "src/**/*",
+    "tests/js/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "build",
+    "src/engines/intent-log/*.js"
+  ]
 }

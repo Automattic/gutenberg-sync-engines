@@ -92,12 +92,21 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 		 * @return void
 		 */
 		private function load(): void {
+			// The automerge-php support gate (tiny; the library itself stays lazy).
+			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/lib/automerge-php-loader.php';
+
 			$engines = GUTENBERG_SYNC_ENGINES_PATH . 'includes/engines/';
 			require_once $engines . 'intent-log/class-wp-intent-log-document.php';
 			require_once $engines . 'intent-log/class-wp-intent-log-planner.php';
 			require_once $engines . 'intent-log/class-wp-intent-log-rich-text.php';
 			require_once $engines . 'intent-log/class-wp-intent-log-engine.php';
 			require_once $engines . 'yjs-server/class-wp-yjs-server-engine.php';
+			// The DE-RTC merge core is ported verbatim from wordpress-develop;
+			// a Core/Gutenberg build that ships DE-RTC itself wins the guard.
+			if ( ! function_exists( 'wp_de_rtc_get_reason_codes' ) ) {
+				require_once $engines . 'de-rtc/merge-core.php';
+			}
+			require_once $engines . 'de-rtc/class-wp-de-rtc-engine.php';
 
 			$transports = GUTENBERG_SYNC_ENGINES_PATH . 'includes/transports/';
 			require_once $transports . 'class-wp-http-polling-sync-server.php';
@@ -147,6 +156,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			// registered (misconfiguration degrades to the first engine).
 			$engines[] = new WP_Yjs_Server_Engine( $storage );
 			$engines[] = new WP_Intent_Log_Engine( $storage );
+			$engines[] = new WP_De_RTC_Engine( $storage );
 			return $engines;
 		}
 
