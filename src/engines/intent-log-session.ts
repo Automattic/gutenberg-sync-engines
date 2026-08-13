@@ -249,6 +249,16 @@ export function createIntentLogSession(
 
 	let replica: ReturnType< typeof createClient > | null = null;
 	let bootstrapSeq: number | null = null;
+	/*
+	 * Log rows this replica has absorbed, by intentId. The replica's log is
+	 * positional — clientReceive() appends every entry at the cursor — so a
+	 * transport that redelivers a row (e.g. overlapping delivery windows)
+	 * would have it counted as a NEW log entry, pushing the local head past
+	 * the server's and voiding every later local intent as invalid-payload.
+	 * IntentIds are unique per log entry (the server settles duplicates),
+	 * so they identify rows exactly.
+	 */
+	let appliedIntentIds = new Set< string >();
 	let localUpdateListener: EngineLocalUpdateListener | null = null;
 	let localAwareness: LocalAwarenessState = {};
 	let peers: AwarenessState = {};
@@ -338,6 +348,9 @@ export function createIntentLogSession(
 							decoded.doc as EngineDocument,
 							snapshotSeq
 						);
+						// New epoch: rows after the checkpoint are new to
+						// this replica even if their ids were seen before.
+						appliedIntentIds = new Set();
 						resetListeners.forEach( ( listener ) => listener() );
 						notifyChange();
 					}
@@ -352,6 +365,11 @@ export function createIntentLogSession(
 						);
 					}
 					const intent = decoded as IntentEnvelope;
+					// Redelivered row (see appliedIntentIds): already
+					// absorbed at its true log position; skip.
+					if ( appliedIntentIds.has( intent.intentId ) ) {
+						return;
+					}
 					/*
 					 * Normally our own accepted intents were settled by the
 					 * dispositions ack in the same response. If that ack was
@@ -360,11 +378,23 @@ export function createIntentLogSession(
 					 */
 					settlePending( intent.intentId );
 					clientReceive( replica, [ intent ], replica.cursor );
+					appliedIntentIds.add( intent.intentId );
 					notifyChange();
 					return;
 				}
 				case INTENT_LOG_UPDATE_TYPES.PROPOSAL: {
 					const proposal = decoded as IntentLogProposal;
+					// Same redelivery guard as intents: a duplicate row
+					// would double-list the proposal for review.
+					if (
+						proposals.some(
+							( existing ) =>
+								existing.intent.intentId ===
+								proposal.intent.intentId
+						)
+					) {
+						return;
+					}
 					settlePending( proposal.intent.intentId );
 					proposals.push( proposal );
 					proposalListeners.forEach( ( listener ) =>

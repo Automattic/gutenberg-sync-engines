@@ -717,6 +717,25 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 					return;
 				}
 
+				/*
+				 * Deliver monotonically per socket. A broadcast triggered by
+				 * ANOTHER socket's message advances this socket's server-side
+				 * cursor while the client's own frame — stamped with the older
+				 * cursor it knew when it sent — is still in flight. Honoring
+				 * that stale `after` would redeliver rows the broadcast
+				 * already pushed. Log-based engines (intent-log) count every
+				 * delivered row as a new log entry, so a duplicate permanently
+				 * desyncs the replica: its local head passes the server's and
+				 * all its later intents void as invalid-payload. max() keeps
+				 * client-driven resync working (a reconnect is a new socket,
+				 * which subscribes fresh at cursor 0) while making each
+				 * socket's delivery window monotonic.
+				 */
+				$validated['after'] = max(
+					$validated['after'],
+					(int) $this->clients[ $key ]['rooms'][ $room ]['cursor']
+				);
+
 				$room_response = $this->sync->process_room_request( $validated );
 
 				if ( is_wp_error( $room_response ) ) {
