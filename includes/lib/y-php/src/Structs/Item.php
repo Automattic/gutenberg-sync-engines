@@ -23,14 +23,21 @@ class Item extends AbstractStruct {
 	public ?ID $origin;
 
 	/**
-	 * @var Item|null
+	 * Holds a GC transiently while `getMissing` resolves an origin that was
+	 * garbage-collected (mirrors the upstream JS runtime, where `left` briefly
+	 * holds the GC before the item itself is discarded as a GC).
+	 *
+	 * @var Item|GC|null
 	 */
-	public ?Item $left;
+	public ?AbstractStruct $left;
 
 	/**
-	 * @var Item|null
+	 * Holds a GC transiently while `getMissing` resolves a rightOrigin that
+	 * was garbage-collected (see `$left`).
+	 *
+	 * @var Item|GC|null
 	 */
-	public ?Item $right;
+	public ?AbstractStruct $right;
 
 	/**
 	 * @var ID|null
@@ -170,8 +177,10 @@ class Item extends AbstractStruct {
 		}
 
 		if ( null !== $this->origin ) {
-			$this->left   = \Yjs\getItemCleanEnd( $transaction, $store, $this->origin );
-			$this->origin = $this->left->lastId;
+			$this->left = \Yjs\getItemCleanEnd( $transaction, $store, $this->origin );
+			// Upstream JS reads `this.left.lastId`, which is `undefined` when
+			// the struct is a GC; the GC branch below then discards the item.
+			$this->origin = $this->left instanceof Item ? $this->left->lastId : null;
 		}
 		if ( null !== $this->rightOrigin ) {
 			$this->right       = \Yjs\getItemCleanStart( $transaction, $this->rightOrigin );
@@ -192,7 +201,10 @@ class Item extends AbstractStruct {
 			if ( $parentItem instanceof GC ) {
 				$this->parent = null;
 			} else {
-				$this->parent = $parentItem->content->type;
+				// Upstream JS reads `.type`, which is `undefined` when the
+				// parent item's content was deleted (ContentDeleted); the
+				// falsy parent makes `integrate` discard the item as a GC.
+				$this->parent = $parentItem->content->type ?? null;
 			}
 		}
 		return null;

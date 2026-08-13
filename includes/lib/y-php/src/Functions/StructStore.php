@@ -113,16 +113,18 @@ function find( Utils\StructStore $store, Utils\ID $id ): Structs\AbstractStruct 
 }
 
 /**
+ * Expects that id is actually in store. This function throws or is an infinite loop otherwise.
+ *
+ * Like the upstream JS `getItem` (a plain type-cast alias of `find`), this may
+ * return a GC struct: `Item::getMissing` relies on receiving the GC when an
+ * incoming item references a garbage-collected parent.
+ *
  * @param Utils\StructStore $store Struct store.
  * @param Utils\ID          $id    ID.
- * @return Structs\Item
+ * @return Structs\AbstractStruct
  */
-function getItem( Utils\StructStore $store, Utils\ID $id ): Structs\Item {
-	$item = find( $store, $id );
-	if ( ! $item instanceof Structs\Item ) {
-		Lib0\Error::unexpectedCase();
-	}
-	return $item;
+function getItem( Utils\StructStore $store, Utils\ID $id ): Structs\AbstractStruct {
+	return find( $store, $id );
 }
 
 /**
@@ -142,34 +144,39 @@ function findIndexCleanStart( $transaction, array &$structs, int $clock ): int {
 }
 
 /**
+ * Expects that id is actually in store. This function throws or is an infinite loop otherwise.
+ *
+ * Like the upstream JS `getItemCleanStart`, this may return a GC struct
+ * (`findIndexCleanStart` only splits Items): `Item::getMissing` relies on
+ * receiving the GC when an incoming item's rightOrigin was garbage-collected.
+ *
  * @param mixed    $transaction Transaction.
  * @param Utils\ID $id          ID.
- * @return Structs\Item
+ * @return Structs\AbstractStruct
  */
-function getItemCleanStart( $transaction, Utils\ID $id ): Structs\Item {
+function getItemCleanStart( $transaction, Utils\ID $id ): Structs\AbstractStruct {
 	$structs =& $transaction->doc->store->clients[ $id->client ];
-	$item    = $structs[ findIndexCleanStart( $transaction, $structs, $id->clock ) ];
-	if ( ! $item instanceof Structs\Item ) {
-		Lib0\Error::unexpectedCase();
-	}
-	return $item;
+	return $structs[ findIndexCleanStart( $transaction, $structs, $id->clock ) ];
 }
 
 /**
+ * Expects that id is actually in store. This function throws or is an infinite loop otherwise.
+ *
+ * Like the upstream JS `getItemCleanEnd`, this may return a GC struct (GC
+ * ranges are never split): `Item::getMissing` relies on receiving the GC
+ * when an incoming item's origin was garbage-collected.
+ *
  * @param mixed             $transaction Transaction.
  * @param Utils\StructStore $store       Struct store.
  * @param Utils\ID          $id          ID.
- * @return Structs\Item
+ * @return Structs\AbstractStruct
  */
-function getItemCleanEnd( $transaction, Utils\StructStore $store, Utils\ID $id ): Structs\Item {
+function getItemCleanEnd( $transaction, Utils\StructStore $store, Utils\ID $id ): Structs\AbstractStruct {
 	$structs =& $store->clients[ $id->client ];
 	$index   = findIndexSS( $structs, $id->clock );
 	$struct  = $structs[ $index ];
 	if ( $id->clock !== $struct->id->clock + $struct->length - 1 && ! $struct instanceof Structs\GC ) {
 		array_splice( $structs, $index + 1, 0, array( splitItem( $transaction, $struct, $id->clock - $struct->id->clock + 1 ) ) );
-	}
-	if ( ! $struct instanceof Structs\Item ) {
-		Lib0\Error::unexpectedCase();
 	}
 	return $struct;
 }
