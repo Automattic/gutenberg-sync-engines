@@ -214,21 +214,6 @@ noise under intent-log), with one exception noted below.
   showed zero errors and zero voids under the same load, paying instead
   with measured queueing (+1.9 ms and +10.5 ms p50 respectively at 4
   writers).
-- **y-php crashes applying certain post-removal diffs (found by
-  `npm run bench -- certify=…`).** Under concurrent block removals
-  (`structural-churn`), the vendored y-php throws `Unexpected case`
-  (`getMissing` → `getItem`, preceded by an
-  `Undefined property: ContentDeleted::$type` warning in `Item.php`) when
-  a simulated y-php CLIENT applies the server's diff rows — on roughly
-  half of tested seeds (43/44/46 crash, 42/45/47 pass; repro:
-  `wp eval-file tests/benchmarks/benchmark.php engine=yjs-server
-  scenario=structural-churn rounds=40 clients=3 seed=43`). Production
-  browsers run JS Yjs (which guards this case), so the demonstrated
-  crash is harness-client-side — but the ENGINE also replays stored rows
-  through the same y-php apply path when rebuilding canonical state, so
-  server-side exposure needs ruling out upstream before production use.
-  The library is vendored/frozen (byte-parity contract with JS Yjs);
-  the fix belongs upstream in y-php's `Item::getMissing`.
 - **The websocket transport drops the client's engine stamps.** The
   daemon's room-request validation
   (`WP_WebSocket_Sync_Server::validate_room_request()`) normalizes away

@@ -242,7 +242,7 @@ yjs suite followed by body-size reproduces it without de-rtc involved];
 each green solo), **e2e:websocket 1 skipped** (see
 below — the peer-relay WS fixture needs a client-merging engine and none
 remains), plus the vendored libraries' own conformance suites run
-separately: y-php (**428 tests**) and automerge-php (**680 mapped
+separately: y-php (**436 tests**) and automerge-php (**680 mapped
 upstream tests**, `php includes/lib/automerge-php/tests/run.php`). CI
 (`.github/workflows/ci.yml`) certifies all suites on pushes to `main` and
 PRs; the e2e job leans on the base config's 2-retries-in-CI to absorb the
