@@ -552,6 +552,70 @@ const makeYMapConvergenceFixtures = () => ({
   cases: [10, 40, 42, 43, 44, 45, 46, 300, 400, 500].map(seed => runYMapConvergenceCase(seed, 80, 3))
 })
 
+/**
+ * A client edits inside a nested subtree while the server concurrently
+ * deletes (and garbage-collects) that subtree. Applying the client's update
+ * then makes `Item.getMissing` resolve origin / rightOrigin / parent
+ * references onto GC structs (or a ContentDeleted parent), and the incoming
+ * items must be discarded as GCs — not crash. Each case exercises one lane.
+ */
+const runGcResolutionCase = (name, edit) => {
+  const server = new Y.Doc({ guid: `y-php-gc-${name}-server` })
+  server.clientID = 1
+  const blocks = server.getArray('blocks')
+  const block = new Y.Map()
+  blocks.insert(0, [block])
+  const meta = new Y.Map()
+  block.set('meta', meta)
+  const text = new Y.Text()
+  block.set('text', text)
+  text.insert(0, 'hello')
+
+  const client = new Y.Doc({ guid: `y-php-gc-${name}-client` })
+  client.clientID = 2
+  Y.applyUpdate(client, Y.encodeStateAsUpdate(server))
+  const baseline = Y.encodeStateVector(client)
+
+  edit(client.getArray('blocks').get(0))
+  const clientUpdate = Y.encodeStateAsUpdate(client, baseline)
+  const clientUpdateV2 = Y.encodeStateAsUpdateV2(client, baseline)
+
+  server.getArray('blocks').delete(0)
+  Y.applyUpdate(server, clientUpdate)
+
+  return {
+    name,
+    clientUpdateHex: hex(clientUpdate),
+    clientUpdateV2Hex: hex(clientUpdateV2),
+    json: server.getArray('blocks').toJSON(),
+    updateHex: hex(Y.encodeStateAsUpdate(server)),
+    updateV2Hex: hex(Y.encodeStateAsUpdateV2(server)),
+    stateVectorHex: hex(Y.encodeStateVector(server))
+  }
+}
+
+const makeGcResolutionFixtures = () => ({
+  source: 'yjs/src/structs/Item.js (getMissing) + yjs/src/utils/StructStore.js',
+  cases: [
+    // parent -> Item whose content is ContentDeleted (`.type` is undefined).
+    runGcResolutionCase('parent-content-deleted', block => {
+      block.set('newKey', 'v')
+    }),
+    // parent -> GC struct (getItem returns the GC).
+    runGcResolutionCase('parent-gc', block => {
+      block.get('meta').set('k', 'v')
+    }),
+    // origin -> GC range (getItemCleanEnd returns the GC).
+    runGcResolutionCase('origin-gc', block => {
+      block.get('text').insert(5, '!')
+    }),
+    // origin null, rightOrigin -> GC range (getItemCleanStart returns the GC).
+    runGcResolutionCase('rightorigin-gc', block => {
+      block.get('text').insert(0, '>')
+    })
+  ]
+})
+
 const ytextAttrs = [
   { bold: true },
   { bold: null },
@@ -1450,6 +1514,10 @@ fs.writeFileSync(
 fs.writeFileSync(
   path.join(fixturesDir, 'ymap-convergence.json'),
   `${JSON.stringify(makeYMapConvergenceFixtures(), null, 2)}\n`
+)
+fs.writeFileSync(
+  path.join(fixturesDir, 'gc-resolution.json'),
+  `${JSON.stringify(makeGcResolutionFixtures(), null, 2)}\n`
 )
 fs.writeFileSync(
   path.join(fixturesDir, 'ytext-scenarios.json'),
