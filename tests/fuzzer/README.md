@@ -1,0 +1,173 @@
+# RTC engine × transport fuzzer
+
+Seeded browser fuzzing for this plugin's real-time collaboration stack,
+swept across **every engine × transport combination**. Adapted from the
+Gutenberg RTC browser fuzzing pipeline (danluu/gutenberg `try/fuzz`; see its
+`docs/explanations/architecture/real-time-collaboration-fuzzing*.md`),
+reduced to the parts that find bugs and reshaped around this repo's
+pluggable engines and transports.
+
+## One command
+
+```bash
+npm run fuzz
+```
+
+That runs the default matrix — `{intent-log, yjs-server} ×
+{http-polling, http-long-polling, websocket}` — with 5 seeds per combo,
+12 actions per seed, 2 collaborating browsers. It starts wp-env if needed,
+flips the engine/transport per combo, manages the websocket daemon, rechecks
+failures, and writes a summary. Exit code is non-zero when any failure
+reproduces.
+
+Common variations:
+
+```bash
+npm run fuzz -- --seeds=20 --steps=15            # deeper sweep
+npm run fuzz -- --engines=yjs-server             # one engine, all transports
+npm run fuzz -- --transports=websocket           # all engines, one transport
+npm run fuzz -- --users=3                        # adds a seeded late joiner
+npm run fuzz -- --no-faults --no-reload          # low-noise convergence-only
+npm run fuzz -- --combos=intent-log/http-polling \
+    --seed-list=42 --trace=retain-on-failure     # replay one failing seed
+```
+
+`--help` lists everything. Prerequisites are the standard repo setup
+(README/AGENTS.md): plugin `npm install` + `npm run build`, the subtree
+built once, and `npx playwright install chromium`.
+
+## Strategy: what we adopted, what we changed, what we dropped
+
+The upstream pipeline is layered: pure CRDT model fuzzers → sync
+state-machine fuzzers → a **seeded browser fuzzer** → a long-running
+campaign/triage stack. Its core insight, which we keep: *push search into
+deterministic layers, keep browser runs seeded and bounded, and assert a
+few durable invariants instead of many brittle UI details.*
+
+**Adopted (the browser layer, this directory):**
+
+- **Seeded determinism.** One test = one seed. The seed drives initial
+  content, every action, the acting user, milestone placement, and fault
+  injection. Failing seeds replay exactly.
+- **Bounded action grammar.** Block insert/edit/move/delete, nested
+  groups/lists/quotes, headings, title edits, real keystrokes (typing
+  exercises capture paths that programmatic edits bypass — this is what
+  surfaces the intent-log echo race), and concurrent same-step edits from
+  two browsers.
+- **Durable invariants.**
+  - *Convergence*: after every step all participants expose the same
+    normalized title + block tree (`waitForConvergence` from the subtree's
+    collaboration fixtures).
+  - *Structural validity*: no block may become an invalid-content recovery
+    block (`isValid: false`) — the classic engine-genesis failure mode.
+  - *Persistence*: a mid-run save milestone plus a final
+    save → reload → reconverge round-trip. A server-authoritative engine
+    must rebuild the same document for a fresh session; the REST title must
+    match the converged state.
+  - *Session lifecycle*: a seeded mid-run reload of a random participant;
+    with `--users=3`, a seeded late join that must be able to *contribute*,
+    not just receive.
+- **Transient fault injection.** Before some steps the acting page's next
+  sync request is delayed (250–1500 ms) or failed with a retryable status
+  (429/500/503). Like upstream, no 403s: that is a semantic permission
+  signal that legitimately unregisters rooms and only manufactures harness
+  false positives.
+- **Recheck-based triage.** The runner re-runs failing seeds once (traces
+  on) and splits **reproducible** failures from **flaky** ones, then groups
+  reproducible failures by normalized signature with a ready-made replay
+  command.
+
+**Changed (this repo's architecture):**
+
+- **The matrix is the point.** Upstream fuzzed one merge implementation over
+  two transports. Here engines and transports are pluggable, so the runner
+  sweeps the cross product: it flips `wp_sync_engine` and
+  `gutenberg_sync_engines_transport` on the tests site via wp-cli between
+  combos, and wipes `wp_sync_storage` rooms so no combo inherits another
+  engine's room lineage (rooms are engine-stamped; the websocket daemon
+  strips the stamps that let HTTP transports heal stale collection rooms).
+- **Engine-neutral oracles.** No `_crdt_document` assertions — that meta is
+  an implementation detail of the upstream fork's client-merging engine.
+  Convergence, validity, and the reload round-trip apply to any engine.
+- **Websocket lane.** The `wp collaboration sync-server` PHP daemon is run
+  through wp-env's generated compose file with the port **published**
+  (`-p 8787:8787`) and the daemon bound to `0.0.0.0` — an unpublished or
+  loopback-bound daemon is silently unreachable from the browser (clients
+  retry forever with no error). The daemon is restarted per combo because a
+  long-running PHP process caches the engine option at boot. Route-based
+  fault injection is disabled on this lane: Playwright routes cannot touch
+  WebSocket frames.
+
+**Dropped (deliberately):**
+
+- The campaign/triage stack — tmux supervisors, watchdogs, LLM analysis
+  tiers, novelty-guided expansion, CDP coverage, the operation ledger.
+  Wrong scale for this repo today; the runbook's *discipline* survives as
+  durable artifacts, signature grouping, and replay commands. If a
+  long-running campaign is ever wanted, wrap `run.mjs` in a loop — it is
+  resumable by construction (each invocation is self-contained).
+- The lower fuzz layers (CRDT model / sync state-machine / PHP randomized
+  tests). Their equivalents here would target the frozen intent-log core,
+  y-php, and the transport servers — worthwhile future work, but the
+  engine × transport interaction bugs this harness hunts only exist in the
+  full stack.
+
+## Architecture
+
+```
+tests/fuzzer/
+├── run.mjs                        # matrix runner (npm run fuzz)
+├── playwright.config.ts           # fuzz-tuned config (no retries, JSON report)
+├── specs/collaboration-fuzz.spec.ts  # the seeded fuzz spec
+└── artifacts/                     # gitignored run outputs
+    └── fuzz-<timestamp>/
+        ├── summary.md             # human summary + failure signatures + replays
+        ├── summary.ndjson         # one record per combo × seed
+        └── <engine>--<transport>/
+            ├── sweep-report.json      # Playwright JSON report
+            ├── sweep-artifacts/       # screenshots, fuzz-run.json traces
+            ├── recheck-report.json    # failing seeds re-run, traces on
+            └── recheck-artifacts/
+```
+
+Every test attaches `fuzz-run.json` — the full seeded action/fault/milestone
+trace — so a failure is diagnosable without re-running it.
+
+The spec reuses the subtree's collaboration fixtures
+(`gutenberg/test/e2e/specs/editor/collaboration/fixtures/`) and the
+plugin-local e2e global setup (auth, clean state, plugin activation
+including the worktree duplicate-mount handling). Engine/transport are set
+*outside* the spec by the runner; the spec only reads `RTC_FUZZ_ENGINE` /
+`RTC_FUZZ_TRANSPORT` to record them and adapt fault injection.
+
+## Reading results
+
+- **flaky** (failed once, passed the recheck): usually harness/timing noise
+  or a genuinely nondeterministic race. Recurring flaky signatures deserve a
+  look — races are real bugs too.
+- **reproducible** (failed twice): start from the recheck's Playwright trace
+  (`recheck-artifacts/`) and the `fuzz-run.json` action trace; replay with
+  the command printed in `summary.md`. Shrink by re-running with smaller
+  `--steps` while the failure persists.
+- Before filing anything, check the known-issue families in AGENTS.md —
+  e.g. the intent-log echo race (canvas corruption under editor pushes
+  racing live keystrokes, worst over websocket), yjs-server's silent LWW on
+  register conflicts, and the websocket daemon's missing engine-stamp
+  fencing. Finding these again validates the harness; it does not need a
+  new report.
+
+## Env knobs (spec level)
+
+The runner sets these; direct `npx playwright test
+--config tests/fuzzer/playwright.config.ts` invocations can too:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `RTC_FUZZ_SEEDS` / `RTC_FUZZ_SEED_START`+`RTC_FUZZ_SEED_COUNT` | `1..3` | Seed selection |
+| `RTC_FUZZ_STEPS` | 12 | Actions per seed |
+| `RTC_FUZZ_USERS` | 2 | Browsers; 3 adds a seeded late join |
+| `RTC_FUZZ_ENGINE` / `RTC_FUZZ_TRANSPORT` | `unknown` | Recorded in traces; `websocket` disables faults |
+| `RTC_FUZZ_DISABLE_SYNC_FAULTS` / `RTC_FUZZ_DISABLE_RELOAD` | unset | Noise reduction |
+| `RTC_FUZZ_CONVERGENCE_TIMEOUT_MS` | 20000 | Per-step convergence budget |
+| `RTC_FUZZ_TRACE` | `off` | Playwright trace mode |
+| `RTC_FUZZ_JSON_REPORT` / `RTC_FUZZ_OUTPUT_DIR` | unset | Runner's result channels |
