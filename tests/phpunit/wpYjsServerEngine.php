@@ -381,6 +381,163 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 		}
 	}
 
+	/**
+	 * The canonical snapshot's stamped cursor is the ingest's load-time
+	 * watermark, never the ingest's own insert id: an insert-id stamp
+	 * over-claims a concurrent ingest's rows interleaved below it, and the
+	 * load-path repair would then skip them forever.
+	 */
+	public function test_canonical_stamp_under_claims_so_the_log_repair_can_run() {
+		$response_a = $this->engine()->get_updates_since( $this->room(), 101, 0, array() );
+		$doc_a      = $this->client_doc_from_response( $response_a );
+		$cursor_a   = (int) $response_a['end_cursor'];
+
+		// Genesis stamps cursor 0: a racing initializer's client can append
+		// a row below this genesis row's id, so even the genesis row id
+		// would over-claim.
+		$storage = new WP_Sync_Post_Meta_Storage();
+		$meta    = $storage->get_room_meta( $this->room(), WP_Yjs_Server_Engine::META_DOC );
+		$this->assertSame( 0, (int) $meta['cursor'] );
+
+		$update = $this->encode_edit(
+			$doc_a,
+			function ( $doc ) {
+				$this->first_block_content( $doc )->insert( 0, 'A' );
+			}
+		);
+		$this->engine()->handle_updates(
+			$this->room(),
+			101,
+			$cursor_a,
+			array(
+				array(
+					'type' => 'update',
+					'data' => $update,
+				),
+			),
+			array()
+		);
+
+		$storage = new WP_Sync_Post_Meta_Storage();
+		$meta    = $storage->get_room_meta( $this->room(), WP_Yjs_Server_Engine::META_DOC );
+		$storage->get_updates_after_cursor( $this->room(), 0 );
+		$head = $storage->get_cursor( $this->room() );
+
+		// The stamp is the ingest's load-time watermark, strictly below the
+		// row it appended. A concurrent ingest's row interleaved below the
+		// head therefore stays above the stamp and re-applies on the next
+		// load; a stamp at the appended row's id would hide it forever.
+		$this->assertSame( $cursor_a, (int) $meta['cursor'] );
+		$this->assertLessThan( $head, (int) $meta['cursor'] );
+	}
+
+	/**
+	 * The lock-free design's canonical save race, re-enacted through the
+	 * real storage: the losing writer's merged content is gone from the
+	 * canonical document but its row is in the log, and the under-claiming
+	 * stamp lets the next load repair it. Before the fix this scenario
+	 * wedged the losing client permanently (every subsequent update voided
+	 * as invalid-payload).
+	 */
+	public function test_lost_canonical_save_race_is_repaired_from_the_log() {
+		// Clients A and B bootstrap from genesis.
+		$response_a = $this->engine()->get_updates_since( $this->room(), 101, 0, array() );
+		$doc_a      = $this->client_doc_from_response( $response_a );
+		$cursor_a   = (int) $response_a['end_cursor'];
+
+		$response_b = $this->engine()->get_updates_since( $this->room(), 202, 0, array() );
+		$doc_b      = $this->client_doc_from_response( $response_b );
+
+		// A's ingest lands: row appended, canonical saved.
+		$update_a = $this->encode_edit(
+			$doc_a,
+			function ( $doc ) {
+				$this->first_block_content( $doc )->insert( 0, 'alpha ' );
+			}
+		);
+		$first    = $this->engine()->handle_updates(
+			$this->room(),
+			101,
+			$cursor_a,
+			array(
+				array(
+					'type' => 'update',
+					'data' => $update_a,
+				),
+			),
+			array()
+		);
+		$this->assertSame( 'applied', $first['dispositions'][0]['status'] );
+
+		// B's concurrent ingest loaded the canonical BEFORE A's row was
+		// visible, merged only its own edit, appended its row, and won the
+		// canonical save race. Replay that outcome through the storage: B's
+		// row lands after A's, and the canonical becomes genesis + B's edit
+		// (A's merged content is gone from it), stamped with B's load-time
+		// watermark per the under-claim invariant.
+		$update_b = $this->encode_edit(
+			$doc_b,
+			function ( $doc ) {
+				$this->first_block_content( $doc )->insert( 0, 'bravo ' );
+			}
+		);
+		$storage  = new WP_Sync_Post_Meta_Storage();
+		$storage->add_update(
+			$this->room(),
+			array(
+				'client_id' => 202,
+				'data'      => $update_b,
+				'type'      => 'update',
+			)
+		);
+		$storage->set_room_meta(
+			$this->room(),
+			WP_Yjs_Server_Engine::META_DOC,
+			array(
+				'doc'    => \Yjs\encodeStateAsUpdateV2( $doc_b )->toBase64(),
+				'cursor' => $cursor_a,
+			)
+		);
+
+		// A's next edit causally depends on its first. Before the
+		// under-claim fix the canonical had lost A's items, y-php rejected
+		// the update, and every subsequent update from A voided; now the
+		// load repairs A's row from the log first and the edit applies.
+		$update_a2 = $this->encode_edit(
+			$doc_a,
+			function ( $doc ) {
+				$this->first_block_content( $doc )->insert( 0, 'delta ' );
+			}
+		);
+		$second    = $this->engine()->handle_updates(
+			$this->room(),
+			101,
+			$cursor_a,
+			array(
+				array(
+					'type' => 'update',
+					'data' => $update_a2,
+				),
+			),
+			array()
+		);
+		$this->assertSame( 'applied', $second['dispositions'][0]['status'] );
+
+		// Nothing lost, nothing duplicated: the repair re-applied B's row
+		// idempotently, and all three edits survive in the canonical.
+		$materialized = (string) $this->engine()->materialize( $this->room() );
+		foreach ( array( 'alpha ', 'bravo ', 'delta ' ) as $token ) {
+			$this->assertSame( 1, substr_count( $materialized, $token ), "token '{$token}' in: {$materialized}" );
+		}
+
+		// A fresh peer converges to the same text from the log alone.
+		$doc_c  = $this->client_doc_from_response( $this->engine()->get_updates_since( $this->room(), 303, 0, array() ) );
+		$text_c = $this->first_block_content( $doc_c )->toString();
+		foreach ( array( 'alpha ', 'bravo ', 'delta ' ) as $token ) {
+			$this->assertSame( 1, substr_count( $text_c, $token ), "token '{$token}' in: {$text_c}" );
+		}
+	}
+
 	public function test_concurrent_genesis_writers_merge_idempotently() {
 		// Two engines race the same empty room: both build genesis. The
 		// deterministic build (fixed per-room clientID, fixed op order) must

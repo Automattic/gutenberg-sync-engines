@@ -257,7 +257,8 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 			if ( is_wp_error( $state ) ) {
 				return $state;
 			}
-			$doc = $state['doc'];
+			$doc         = $state['doc'];
+			$load_cursor = (int) $state['cursor'];
 
 			$before_bytes = \Yjs\encodeStateAsUpdateV2( $doc )->toBinaryString();
 
@@ -347,9 +348,9 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				}
 			}
 
-			// $after_bytes IS the canonical encoding at the new head — reuse
+			// $after_bytes IS the canonical encoding at the new head; reuse
 			// it rather than encoding the document a third time.
-			$this->save_canonical( $room, $doc, base64_encode( $after_bytes ) );
+			$this->save_canonical( $room, $doc, $load_cursor, base64_encode( $after_bytes ) );
 			$this->maybe_checkpoint( $room, $client_id, $doc );
 
 			return array( 'dispositions' => $dispositions );
@@ -535,31 +536,37 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 
 		/**
 		 * Persists the canonical document snapshot with the cursor it
-		 * reflects. Skipped silently when the storage has no room meta —
-		 * the log alone remains authoritative.
+		 * reflects. Skipped silently when the storage has no room meta, in
+		 * which case the log alone remains authoritative.
+		 *
+		 * The stamped cursor MUST under-claim: every row at or below it is
+		 * merged into $doc. Callers pass the LOAD-time watermark, never this
+		 * request's own insert id. Concurrent ingests interleave row ids, so
+		 * an insert-id stamp claims foreign rows this process never loaded,
+		 * and the load-path repair (apply rows past the stamp) would then
+		 * skip them forever: the losing writer's merged content vanishes
+		 * from the canonical document while its row sits uselessly in the
+		 * log, and that client's next update references items the canonical
+		 * no longer has. Under-claiming instead re-applies this request's
+		 * own rows on the next load, which is safe because Yjs updates are
+		 * idempotent.
 		 *
 		 * @since 0.2.0
 		 *
-		 * @global wpdb $wpdb WordPress database abstraction object.
-		 *
-		 * @param string          $room       Room identifier.
+		 * @param string         $room       Room identifier.
 		 * @param \Yjs\Utils\Doc $doc        Canonical document.
-		 * @param string|null     $doc_base64 Pre-encoded state (base64 V2), to
-		 *                                    avoid re-encoding when the caller
-		 *                                    already has it.
+		 * @param int            $cursor     Load-time cursor $doc reflects.
+		 *                                   Rows above it (including this
+		 *                                   request's own) re-apply on the
+		 *                                   next load.
+		 * @param string|null    $doc_base64 Pre-encoded state (base64 V2), to
+		 *                                   avoid re-encoding when the caller
+		 *                                   already has it.
 		 * @return void
 		 */
-		private function save_canonical( string $room, \Yjs\Utils\Doc $doc, ?string $doc_base64 = null ): void {
+		private function save_canonical( string $room, \Yjs\Utils\Doc $doc, int $cursor, ?string $doc_base64 = null ): void {
 			if ( ! method_exists( $this->storage, 'set_room_meta' ) ) {
 				return;
-			}
-			// The rows just appended by this request are incorporated in $doc,
-			// and the connection's last insert id IS the newest such row (the
-			// storage's cached get_cursor() is stale until the next read).
-			global $wpdb;
-			$cursor = isset( $wpdb ) ? (int) $wpdb->insert_id : 0;
-			if ( $cursor <= 0 ) {
-				$cursor = $this->storage->get_cursor( $room );
 			}
 			$this->storage->set_room_meta(
 				$room,
@@ -718,12 +725,23 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				}
 				global $wpdb;
 				$cursor = isset( $wpdb ) ? (int) $wpdb->insert_id : 0;
+
+				/*
+				 * The canonical stamp must under-claim (see save_canonical):
+				 * with two racing initializers, a client of the faster one
+				 * can append an update row with a LOWER id than this genesis
+				 * row, and stamping the genesis row id would hide that row
+				 * from the load-path repair forever. Cursor 0 re-applies the
+				 * genesis row itself on the next load, a no-op against the
+				 * identical canonical. The checkpoint stamp keeps the row id;
+				 * it only paces compaction windows.
+				 */
 				$this->storage->set_room_meta(
 					$room,
 					self::META_DOC,
 					array(
 						'doc'    => \Yjs\encodeStateAsUpdateV2( $doc )->toBase64(),
-						'cursor' => $cursor > 0 ? $cursor : $this->storage->get_cursor( $room ),
+						'cursor' => 0,
 					)
 				);
 				$this->storage->set_room_meta( $room, self::META_CHECKPOINT, array( 'cursor' => $cursor ) );
