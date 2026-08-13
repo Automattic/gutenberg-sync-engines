@@ -124,6 +124,7 @@ if ( engineRuns.length ) {
 		[ 'rounds', ( d ) => d.config?.rounds ],
 		[ 'clients', ( d ) => d.config?.clients ],
 		[ 'paragraphs', ( d ) => d.config?.paragraphs ],
+		[ 'document size', ( d ) => d.config?.doc_bytes ],
 		[ 'PHP version', ( d ) => d.environment?.php ],
 		[ 'database', ( d ) => d.environment?.db ],
 		[ 'opcache', ( d ) => d.environment?.opcache ],
@@ -159,6 +160,14 @@ if ( engineRuns.length ) {
 				...engineRuns.map( ( r ) => d( r ).idle_poll_us.p50 ),
 			],
 			[
+				'join p50 ms',
+				...engineRuns.map( ( r ) => d( r ).join_us?.p50 ?? '—' ),
+			],
+			[
+				'materialize p50 ms',
+				...engineRuns.map( ( r ) => d( r ).materialize_us?.p50 ?? '—' ),
+			],
+			[
 				'req bytes p50/max',
 				...engineRuns.map(
 					( r ) =>
@@ -185,8 +194,25 @@ if ( engineRuns.length ) {
 				...engineRuns.map( ( r ) => d( r ).storage.bytes ),
 			],
 			[
-				'compactions',
-				...engineRuns.map( ( r ) => d( r ).storage.compactions ),
+				'followups',
+				...engineRuns.map(
+					( r ) =>
+						d( r ).storage.followups ?? d( r ).storage.compactions
+				),
+			],
+			[
+				'trims',
+				...engineRuns.map( ( r ) => d( r ).storage.trims ?? '—' ),
+			],
+			[
+				'ingest peak MB',
+				...engineRuns.map( ( r ) =>
+					typeof d( r ).memory?.ingest_peak_bytes === 'number'
+						? ( d( r ).memory.ingest_peak_bytes / 1048576 ).toFixed(
+								2
+						  )
+						: '—'
+				),
 			],
 			[
 				'lock pair p50 ms',

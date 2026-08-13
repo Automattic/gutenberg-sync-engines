@@ -30,6 +30,7 @@
     "@wordpress/env": "^11.11.0"
   },
   "scripts": {
+    "bench": "node tests/benchmarks/bench.mjs",
     "build": "wp-scripts build",
     "env": "wp-env",
     "env:tests": "wp-env --config .wp-env.tests.json",

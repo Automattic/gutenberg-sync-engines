@@ -16,3 +16,6 @@
 
 # Playwright e2e output (traces, screenshots, reports)
 /artifacts
+
+# One-command benchmark runner output (npm run bench)
+/bench-results

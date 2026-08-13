@@ -3,16 +3,39 @@
  * Seeded workload generator for the sync-engine benchmark.
  *
  * A workload is a document of N paragraphs plus a list of ROUNDS. Each round
- * is a set of (client, paragraph, text) edits authored from the same
- * observed sequence, then delivered. Whether clients share a paragraph in a
+ * carries a set of (client, op, target) edits authored from the same
+ * observed sequence, then delivered. Whether clients share a target in a
  * round is what produces contention: two clients typing the SAME paragraph
  * field concurrently escalate (the second loses the one-sided-transform
  * race); typing DIFFERENT paragraphs merges clean. Scenarios pick that mix,
  * so the quality metric has a controllable escalation rate to report.
  *
+ * Four operations:
+ *
+ * - `text` — insert a unique token at offset 0 of a genesis paragraph's
+ *   content field (a keystroke batch).
+ * - `attr` — set a genesis paragraph's align register (a restyle).
+ * - `insert_block` — insert a NEW paragraph (its body is a unique marker)
+ *   after a genesis paragraph.
+ * - `remove_block` — remove a block the SAME client inserted earlier.
+ *
+ * Structural discipline keeps the oracles sound under concurrency: text
+ * and attr edits target GENESIS paragraphs only (identified by their
+ * delimiter-terminated markers `Paragraph N;`, which are never removed),
+ * and removals target only the removing client's own earlier inserts, so
+ * whether any marker should exist in the final document is decidable
+ * purely from the engine's dispositions.
+ *
  * The generator is engine-agnostic and deterministic: same seed, same
- * rounds. The runner binds each edit to real engine coordinates (syncId,
- * baseSeq) at submit time.
+ * rounds. The runner binds each edit to real engine coordinates (syncIds,
+ * Y.Map handles, base versions) at submit time through the authoring
+ * profiles.
+ *
+ * Rounds are plain edit lists by default (every ACTIVE client reads per
+ * its `read_every` cadence). A scenario may instead emit
+ * `array( 'edits' => …, 'readers' => … )` rounds to schedule reads
+ * explicitly — how `editorial-session` models present-but-idle clients
+ * polling every second.
  *
  * @package gutenberg
  */
@@ -31,25 +54,31 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 		public static function scenarios(): array {
 			return array(
 				'solo-typing'         => 'One editor typing into one document (baseline cost, no contention).',
-				'long-form'           => 'One editor in a much LARGER document (does engine cost scale with document size?).',
+				'long-form'           => 'One editor in a much LARGER document (does engine cost scale with document size? Combine with fill= for a size sweep).',
 				'parallel-paragraphs' => 'Several editors, each in their own paragraph (clean concurrent merges).',
 				'contended-paragraph' => 'Several editors typing into the SAME paragraph (high escalation).',
 				'mixed-newsroom'      => 'Mostly parallel editing with occasional collisions.',
 				'laggy-newsroom'      => 'Mixed newsroom where the last client reads only every 10th round (stale bases, deep transforms, catch-up reads).',
+				'structural-churn'    => 'Concurrent block inserts/removals alongside typing (block-structure stress).',
+				'editorial-session'   => 'A wall-clock editing session: one round per second, staggered joins/leaves, typing bursts with think-time pauses, every present client polling every round, periodic saves. rounds=3600 clients=3 is a one-hour three-user session.',
 			);
 		}
 
 		/**
 		 * Builds a workload.
 		 *
-		 * @param string $scenario   Scenario slug.
-		 * @param int    $seed        Deterministic seed.
-		 * @param int    $rounds      Number of edit rounds.
-		 * @param int    $clients     Number of concurrent editors.
-		 * @param int    $paragraphs  Document paragraph count.
-		 * @return array Workload: post_content, paragraphs, clients, rounds.
+		 * @param string   $scenario   Scenario slug.
+		 * @param int      $seed       Deterministic seed.
+		 * @param int      $rounds     Number of edit rounds.
+		 * @param int      $clients    Number of concurrent editors.
+		 * @param int      $paragraphs Document paragraph count.
+		 * @param int|null $fill       Filler characters per genesis paragraph
+		 *                             (document-size sweeps); null = the
+		 *                             scenario default (long-form pads ~600,
+		 *                             everything else is near-empty).
+		 * @return array Workload: post_content, paragraphs, clients, rounds, …
 		 */
-		public static function build( string $scenario, int $seed, int $rounds, int $clients, int $paragraphs ): array {
+		public static function build( string $scenario, int $seed, int $rounds, int $clients, int $paragraphs, ?int $fill = null ): array {
 			// Portable deterministic draws: crc32 of (seed, counter) — a
 			// fixed 32-bit hash, so the workload never depends on PHP's rng
 			// seeding or int width across versions.
@@ -60,16 +89,24 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 			};
 
 			// long-form pads every paragraph to ~600 chars, so the default 8
-			// paragraphs make a ~5 KB document (raise `paragraphs` for more) —
-			// against solo-typing's near-empty one, this shows whether engine
-			// cost scales with document size.
-			$filler = 'long-form' === $scenario
-				? str_repeat( ' lorem ipsum dolor sit amet consectetur adipiscing elit sed do', 9 )
+			// paragraphs make a ~5 KB document (raise `paragraphs` or pass
+			// $fill for more) — against solo-typing's near-empty one, this
+			// shows whether engine cost scales with document size.
+			if ( null === $fill ) {
+				$fill = 'long-form' === $scenario ? 567 : 0;
+			}
+			$filler = $fill > 0
+				? substr( str_repeat( ' lorem ipsum dolor sit amet consectetur adipiscing elit sed do', (int) ceil( $fill / 63 ) ), 0, $fill )
 				: '';
 
+			// Genesis paragraph bodies start with a delimiter-terminated
+			// MARKER ("Paragraph 3;") — unique, never a substring of another
+			// marker, and never removed — so the oracles can locate blocks
+			// by identity even after concurrent structural edits shift
+			// positions.
 			$content_parts = array();
 			for ( $i = 0; $i < $paragraphs; $i++ ) {
-				$content_parts[] = "<!-- wp:paragraph -->\n<p>Paragraph " . ( $i + 1 ) . $filler . "</p>\n<!-- /wp:paragraph -->";
+				$content_parts[] = "<!-- wp:paragraph -->\n<p>" . self::genesis_marker( $i ) . $filler . "</p>\n<!-- /wp:paragraph -->";
 			}
 			$post_content = implode( "\n\n", $content_parts );
 
@@ -82,6 +119,26 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 				$read_every[ $clients - 1 ] = 10;
 			}
 
+			$workload = array(
+				'scenario'          => $scenario,
+				'post_content'      => $post_content,
+				'paragraphs'        => $paragraphs,
+				'clients'           => $clients,
+				'read_every'        => $read_every,
+				'save_every'        => 0,
+				// Wall-clock scenarios map rounds to time, which lets the
+				// CLI compose per-request costs into a hosting cost card.
+				'seconds_per_round' => 0,
+				'rounds'            => array(),
+			);
+
+			if ( 'editorial-session' === $scenario ) {
+				$workload['rounds']            = self::session_rounds( $rand, $rounds, $clients, $paragraphs );
+				$workload['save_every']        = 60; // An autosave a "minute".
+				$workload['seconds_per_round'] = 1;
+				return $workload;
+			}
+
 			// Two operation kinds drive the two settlement paths. Concurrent
 			// text inserts MERGE (the text interleaves — correct, not a
 			// conflict), so contention is modelled as concurrent writes to a
@@ -90,6 +147,9 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 			// escalates (attr-conflict) — the everyday "we both restyled
 			// this block" collision.
 			$round_list = array();
+			// Per-client roster of own inserted-and-not-yet-removed blocks
+			// (structural-churn's removal pool).
+			$own_blocks = array_fill( 0, max( 1, $clients ), array() );
 			for ( $r = 0; $r < $rounds; $r++ ) {
 				$edits = array();
 
@@ -125,6 +185,27 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 						}
 						break;
 
+					case 'structural-churn':
+						// Typing continues while blocks are inserted and
+						// removed concurrently: ~50% text, ~30% insert,
+						// ~20% remove (of the client's own earlier insert;
+						// falls back to text when it has none left).
+						for ( $c = 0; $c < $clients; $c++ ) {
+							$draw = $rand( 100 );
+							if ( $draw < 50 || ( $draw >= 80 && array() === $own_blocks[ $c ] ) ) {
+								$edits[] = array(
+									'client'    => $c,
+									'paragraph' => $rand( $paragraphs ),
+									'op'        => 'text',
+								);
+							} elseif ( $draw < 80 ) {
+								$edits[] = self::insert_edit( $c, $r, count( $edits ), $rand( $paragraphs ), $own_blocks );
+							} else {
+								$edits[] = self::remove_edit( $c, $rand( count( $own_blocks[ $c ] ) ), $own_blocks );
+							}
+						}
+						break;
+
 					case 'mixed-newsroom':
 					case 'laggy-newsroom':
 					default:
@@ -142,26 +223,206 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 						break;
 				}
 
-				foreach ( $edits as $index => &$edit ) {
-					// A unique, delimiter-terminated token per edit: the runner's
-					// convergence oracle counts these in the materialized content,
-					// so no token may be a substring of another (';' terminates).
-					$edit['text']  = ' r' . $r . 'c' . $edit['client'] . '.' . $index . ';';
-					$edit['align'] = 0 === ( ( $r + $edit['client'] ) % 2 ) ? 'wide' : 'full';
-				}
-				unset( $edit );
-
+				self::finalize_edits( $edits, $r );
 				$round_list[] = $edits;
 			}
 
-			return array(
-				'scenario'     => $scenario,
-				'post_content' => $post_content,
-				'paragraphs'   => $paragraphs,
-				'clients'      => $clients,
-				'read_every'   => $read_every,
-				'rounds'       => $round_list,
+			$workload['rounds'] = $round_list;
+			return $workload;
+		}
+
+		/**
+		 * How often K ingests land in the same round — the workload's
+		 * concurrency profile. In production, same-round edits arrive
+		 * near-simultaneously, so under a per-room serialized engine the
+		 * K-th writer queues behind K-1 merges; this histogram is what the
+		 * CLI's queueing model multiplies against measured service time.
+		 *
+		 * @param array $rounds Workload rounds.
+		 * @return array<int, int> Concurrent-ingest count => rounds seen.
+		 */
+		public static function ingest_concurrency_histogram( array $rounds ): array {
+			$histogram = array();
+			foreach ( $rounds as $round ) {
+				$edits = $round['edits'] ?? $round;
+				$k     = count( $edits );
+				if ( $k > 0 ) {
+					$histogram[ $k ] = ( $histogram[ $k ] ?? 0 ) + 1;
+				}
+			}
+			ksort( $histogram );
+			return $histogram;
+		}
+
+		/**
+		 * The identity marker a genesis paragraph's body starts with.
+		 *
+		 * @param int $paragraph Paragraph index.
+		 * @return string Marker ("Paragraph 3;" — ';' terminates so no
+		 *                marker is a substring of another).
+		 */
+		public static function genesis_marker( int $paragraph ): string {
+			return 'Paragraph ' . ( $paragraph + 1 ) . ';';
+		}
+
+		/**
+		 * Builds the wall-clock session rounds: one round per second.
+		 *
+		 * Clients join staggered (client c enters at c/(c+1)-spread offsets
+		 * across the first tenth of the session) and leave in the last
+		 * twentieth; while present they alternate typing BURSTS (3–8 rounds
+		 * of one keystroke batch per second) with think-time PAUSES (2–12
+		 * rounds); edits are mostly text with occasional restyles and
+		 * structure changes. EVERY present client reads every round — the
+		 * polling transport's 1 s cadence — expressed as an explicit
+		 * `readers` list, so idle-but-open tabs pay their real read cost.
+		 *
+		 * @param callable $rand       Deterministic draw.
+		 * @param int      $rounds     Session length in rounds (seconds).
+		 * @param int      $clients    Client count.
+		 * @param int      $paragraphs Genesis paragraph count.
+		 * @return array Round list (each: array( 'edits', 'readers' )).
+		 */
+		private static function session_rounds( callable $rand, int $rounds, int $clients, int $paragraphs ): array {
+			$clients = max( 1, $clients );
+			$join    = array();
+			$leave   = array();
+			for ( $c = 0; $c < $clients; $c++ ) {
+				// Staggered entry across the first tenth; staggered exit
+				// across the last twentieth (nobody leaves before joining).
+				$join[ $c ]  = (int) floor( $c * $rounds / ( 10 * max( 1, $clients - 1 ) ) );
+				$leave[ $c ] = $rounds - 1 - (int) floor( ( $clients - 1 - $c ) * $rounds / ( 20 * max( 1, $clients - 1 ) ) );
+				if ( $leave[ $c ] <= $join[ $c ] ) {
+					$leave[ $c ] = min( $rounds - 1, $join[ $c ] + 1 );
+				}
+			}
+
+			// Burst state per client: > 0 = typing rounds left, < 0 = pause
+			// rounds left (as a negative count).
+			$burst      = array_fill( 0, $clients, 0 );
+			$own_blocks = array_fill( 0, $clients, array() );
+			$round_list = array();
+
+			for ( $r = 0; $r < $rounds; $r++ ) {
+				$edits   = array();
+				$readers = array();
+
+				for ( $c = 0; $c < $clients; $c++ ) {
+					if ( $r < $join[ $c ] || $r > $leave[ $c ] ) {
+						continue;
+					}
+					$readers[] = $c;
+
+					if ( 0 === $burst[ $c ] ) {
+						// Start typing (3–8 rounds) or thinking (2–12).
+						$burst[ $c ] = $rand( 2 ) ? 3 + $rand( 6 ) : -( 2 + $rand( 11 ) );
+					}
+					if ( $burst[ $c ] < 0 ) {
+						++$burst[ $c ];
+						continue; // Thinking: present, polling, not typing.
+					}
+					--$burst[ $c ];
+
+					// Typing: mostly text, ~8% restyle, ~4% insert a block,
+					// ~2% remove an own earlier insert.
+					$draw = $rand( 100 );
+					if ( $draw < 86 || ( $draw >= 98 && array() === $own_blocks[ $c ] ) ) {
+						$edits[] = array(
+							'client'    => $c,
+							'paragraph' => $rand( $paragraphs ),
+							'op'        => 'text',
+						);
+					} elseif ( $draw < 94 ) {
+						$edits[] = array(
+							'client'    => $c,
+							'paragraph' => $rand( $paragraphs ),
+							'op'        => 'attr',
+						);
+					} elseif ( $draw < 98 ) {
+						$edits[] = self::insert_edit( $c, $r, count( $edits ), $rand( $paragraphs ), $own_blocks );
+					} else {
+						$edits[] = self::remove_edit( $c, $rand( count( $own_blocks[ $c ] ) ), $own_blocks );
+					}
+				}
+
+				self::finalize_edits( $edits, $r );
+				$round_list[] = array(
+					'edits'   => $edits,
+					'readers' => $readers,
+				);
+			}
+
+			return $round_list;
+		}
+
+		/**
+		 * Builds an insert_block edit and records it in the client's roster.
+		 *
+		 * @param int   $client     Client index.
+		 * @param int   $round      Round index.
+		 * @param int   $index      Edit index within the round.
+		 * @param int   $after      Genesis paragraph index to insert after.
+		 * @param array $own_blocks Per-client roster (by reference).
+		 * @return array Edit.
+		 */
+		private static function insert_edit( int $client, int $round, int $index, int $after, array &$own_blocks ): array {
+			$block_id = 'n' . $round . 'c' . $client . '.' . $index;
+			$edit     = array(
+				'client'   => $client,
+				'op'       => 'insert_block',
+				'block_id' => $block_id,
+				'marker'   => ' b' . $block_id . ';',
+				'after'    => $after,
 			);
+
+			$own_blocks[ $client ][] = array(
+				'block_id' => $block_id,
+				'marker'   => $edit['marker'],
+				'after'    => $after,
+			);
+			return $edit;
+		}
+
+		/**
+		 * Builds a remove_block edit for one of the client's own inserts and
+		 * removes it from the roster (each block is removed at most once).
+		 *
+		 * @param int   $client     Client index.
+		 * @param int   $pick       Roster pick index.
+		 * @param array $own_blocks Per-client roster (by reference).
+		 * @return array Edit.
+		 */
+		private static function remove_edit( int $client, int $pick, array &$own_blocks ): array {
+			$block = $own_blocks[ $client ][ $pick ];
+			array_splice( $own_blocks[ $client ], $pick, 1 );
+			return array(
+				'client'   => $client,
+				'op'       => 'remove_block',
+				'block_id' => $block['block_id'],
+				'marker'   => $block['marker'],
+				'after'    => $block['after'],
+			);
+		}
+
+		/**
+		 * Stamps text/attr edits with their unique token and align value.
+		 *
+		 * @param array $edits Round edits (by reference).
+		 * @param int   $round Round index.
+		 */
+		private static function finalize_edits( array &$edits, int $round ): void {
+			foreach ( $edits as $index => &$edit ) {
+				if ( 'text' === $edit['op'] ) {
+					// A unique, delimiter-terminated token per edit: the
+					// convergence oracles count these in the materialized
+					// content, so no token may be a substring of another
+					// (';' terminates).
+					$edit['text'] = ' r' . $round . 'c' . $edit['client'] . '.' . $index . ';';
+				} elseif ( 'attr' === $edit['op'] ) {
+					$edit['align'] = 0 === ( ( $round + $edit['client'] ) % 2 ) ? 'wide' : 'full';
+				}
+			}
+			unset( $edit );
 		}
 	}
 }

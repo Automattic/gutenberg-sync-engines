@@ -62,6 +62,9 @@ $paragraphs  = (int) ( $wp_sync_bench_opts['paragraphs'] ?? 8 );
 $seed        = (int) ( $wp_sync_bench_opts['seed'] ?? 42 );
 $reps        = max( 1, (int) ( $wp_sync_bench_opts['reps'] ?? 3 ) );
 $warmup      = max( 0, min( (int) ( $wp_sync_bench_opts['warmup'] ?? 1 ), $reps - 1 ) );
+// fill=N pads every genesis paragraph to ~N chars — the document-size
+// sweep axis (unset = the scenario default).
+$fill = isset( $wp_sync_bench_opts['fill'] ) ? max( 0, (int) $wp_sync_bench_opts['fill'] ) : null;
 
 if ( ! array_key_exists( $scenario, WP_Sync_Bench_Workload::scenarios() ) ) {
 	fwrite( STDERR, "Unknown scenario: {$scenario}\n" );
@@ -70,10 +73,11 @@ if ( ! array_key_exists( $scenario, WP_Sync_Bench_Workload::scenarios() ) ) {
 }
 // Engines are resolved through the framework's registry (the
 // `wp_sync_engines` filter), so any engine registered by an active plugin —
-// including third-party ones — is benchmarkable by slug. Engines other than
-// intent-log are driven with relay-convention opaque updates (see the
-// runner's authoring profiles); the intent log gets typed intents and the
-// quality oracle.
+// including third-party ones — is benchmarkable by slug. HOW each engine is
+// driven is the authoring profile's job, resolved per slug through
+// WP_Sync_Bench_Profiles (extensible via the
+// `wp_sync_bench_authoring_profiles` filter); engines without a dedicated
+// profile fall back to relay-convention opaque updates.
 $wp_sync_bench_engine_slugs = ( new WP_Sync_Engine_Registry( new WP_Sync_Bench_Memory_Storage() ) )->get_engine_slugs();
 if ( ! in_array( $engine_slug, $wp_sync_bench_engine_slugs, true ) ) {
 	fwrite( STDERR, "Unknown engine: {$engine_slug}\n" );
@@ -120,15 +124,21 @@ if ( ! function_exists( 'wp_sync_bench_calibrate' ) ) {
 // move between reps, and timing gets independent samples. Warmup reps run
 // the same load but are excluded from timing (autoload, opcache, and the
 // first lock acquisition all land in rep 0).
-$wp_sync_bench_workload = WP_Sync_Bench_Workload::build( $scenario, $seed, $rounds, $clients, $paragraphs );
+$wp_sync_bench_workload = WP_Sync_Bench_Workload::build( $scenario, $seed, $rounds, $clients, $paragraphs, $fill );
 
 $wp_sync_bench_series       = array(
-	'service_us'   => array(),
-	'read_us'      => array(),
-	'idle_poll_us' => array(),
+	'service_us'     => array(),
+	'read_us'        => array(),
+	'idle_poll_us'   => array(),
+	'join_us'        => array(),
+	'materialize_us' => array(),
 );
 $wp_sync_bench_rep_means    = array();
 $wp_sync_bench_fingerprints = array();
+$wp_sync_bench_memory       = array(
+	'ingest_peak_bytes'      => null,
+	'materialize_peak_bytes' => null,
+);
 $report                     = null;
 for ( $wp_sync_bench_rep = 0; $wp_sync_bench_rep < $reps; $wp_sync_bench_rep++ ) {
 	$storage = new WP_Sync_Bench_Memory_Storage();
@@ -165,12 +175,95 @@ for ( $wp_sync_bench_rep = 0; $wp_sync_bench_rep < $reps; $wp_sync_bench_rep++ )
 		$wp_sync_bench_rep_means[] = count( $series['service_us'] ) > 0
 			? array_sum( $series['service_us'] ) / count( $series['service_us'] ) / 1000
 			: 0.0;
+		// Peak memory: the max across measured reps (warmup absorbs the
+		// autoload/opcache spike, like the timing warmup).
+		foreach ( $wp_sync_bench_memory as $wp_sync_bench_mem_key => $wp_sync_bench_mem_value ) {
+			$rep_value = $report['memory'][ $wp_sync_bench_mem_key ] ?? null;
+			if ( null !== $rep_value ) {
+				$wp_sync_bench_memory[ $wp_sync_bench_mem_key ] = max( (int) $wp_sync_bench_mem_value, (int) $rep_value );
+			}
+		}
 	}
 }
 
 // Timing across measured reps: pooled percentiles + spread of rep means.
 foreach ( $wp_sync_bench_series as $metric => $samples ) {
 	$report[ $metric ] = WP_Sync_Bench_Runner::summary( $samples );
+}
+// No materialize convention on this engine (e.g. an opaque relay).
+if ( array() === $wp_sync_bench_series['materialize_us'] ) {
+	$report['materialize_us'] = null;
+}
+$report['memory'] = $wp_sync_bench_memory;
+
+/*
+ * The hosting cost card: only wall-clock scenarios (1 round = N seconds)
+ * can honestly compose per-request costs into what-does-this-do-to-my-box
+ * numbers. Client-seconds = in-session reads (every present client reads
+ * exactly once per round under those scenarios), which normalizes the
+ * session to per-user-hour units a capacity plan can multiply out.
+ */
+$report['hosting'] = null;
+if ( ! empty( $wp_sync_bench_workload['seconds_per_round'] ) ) {
+	$wp_sync_bench_counts = $report['request_counts'];
+	$session_seconds      = $rounds * (int) $wp_sync_bench_workload['seconds_per_round'];
+	$client_seconds       = max( 1, (int) $wp_sync_bench_counts['reads_session'] );
+	$session_requests     = $wp_sync_bench_counts['ingests'] + $wp_sync_bench_counts['reads_session'] + $wp_sync_bench_counts['saves_session'];
+	$cpu_seconds          = (
+		$report['service_us']['mean'] * $wp_sync_bench_counts['ingests']
+		+ $report['read_us']['mean'] * $wp_sync_bench_counts['reads_session']
+		+ ( null !== $report['materialize_us'] ? $report['materialize_us']['mean'] * $wp_sync_bench_counts['saves_session'] : 0 )
+	) / 1000;
+	$wire_bytes           = $report['wire']['request_bytes'] + $report['wire']['response_bytes'];
+
+	/*
+	 * Modeled queueing: the harness executes requests one at a time, but
+	 * production edits from the same round arrive near-simultaneously. For
+	 * engines that serialize ingest per room (the GET_LOCK holders), the
+	 * K-th concurrent writer waits for K-1 merges: convolving the
+	 * workload's ingest-concurrency histogram with the MEASURED mean
+	 * service time models that wait. yjs-server is lock-free (no room
+	 * queue), but every in-flight ingest still holds a PHP WORKER, so its
+	 * peak concurrent worker demand is reported instead. MODELED, not
+	 * measured — `npm run bench -- concurrency=N` measures it for real.
+	 */
+	$wp_sync_bench_histogram  = WP_Sync_Bench_Workload::ingest_concurrency_histogram( $wp_sync_bench_workload['rounds'] );
+	$wp_sync_bench_serialized = in_array( $engine_slug, array( 'intent-log', 'de-rtc' ), true );
+	$wp_sync_bench_wait_ms    = 0.0;
+	$wp_sync_bench_wait_max   = 0.0;
+	$wp_sync_bench_hist_edits = 0;
+	foreach ( $wp_sync_bench_histogram as $wp_sync_bench_k => $wp_sync_bench_n ) {
+		$wp_sync_bench_hist_edits += $wp_sync_bench_k * $wp_sync_bench_n;
+		if ( $wp_sync_bench_serialized ) {
+			// Sum of waits in a K-deep convoy: (0+1+…+K-1) x service.
+			$wp_sync_bench_wait_ms += $wp_sync_bench_n * ( $wp_sync_bench_k * ( $wp_sync_bench_k - 1 ) / 2 ) * $report['service_us']['mean'];
+			$wp_sync_bench_wait_max = max( $wp_sync_bench_wait_max, ( $wp_sync_bench_k - 1 ) * $report['service_us']['p90'] );
+		}
+	}
+
+	$report['hosting'] = array(
+		'session_seconds'             => $session_seconds,
+		'client_seconds'              => $client_seconds,
+		'requests_session'            => $session_requests,
+		'requests_per_second'         => round( $session_requests / max( 1, $session_seconds ), 2 ),
+		'requests_per_client_hour'    => (int) round( $session_requests * 3600 / $client_seconds ),
+		'cpu_seconds_session'         => round( $cpu_seconds, 3 ),
+		'cpu_core_share'              => round( $cpu_seconds / max( 1, $session_seconds ), 4 ),
+		'cpu_seconds_per_client_hour' => round( $cpu_seconds * 3600 / $client_seconds, 2 ),
+		'wire_bytes_session'          => $wire_bytes,
+		'wire_mb_per_client_hour'     => round( $wire_bytes * 3600 / $client_seconds / 1048576, 2 ),
+		'storage_bytes_at_rest'       => $report['storage']['bytes'],
+		'join_payload_bytes'          => $report['payload_bytes']['join_response_p50'],
+		'queueing_model'              => array(
+			'ingest_concurrency'      => $wp_sync_bench_histogram,
+			'serialized_ingest'       => $wp_sync_bench_serialized,
+			'modeled_wait_ms_mean'    => $wp_sync_bench_hist_edits > 0
+				? round( $wp_sync_bench_wait_ms / $wp_sync_bench_hist_edits, 4 )
+				: 0.0,
+			'modeled_wait_ms_worst'   => round( $wp_sync_bench_wait_max, 4 ),
+			'peak_concurrent_workers' => array() === $wp_sync_bench_histogram ? 0 : max( array_keys( $wp_sync_bench_histogram ) ),
+		),
+	);
 }
 
 $wp_sync_bench_mean = array_sum( $wp_sync_bench_rep_means ) / count( $wp_sync_bench_rep_means );
@@ -215,6 +308,8 @@ $report['config'] = array(
 	'rounds'     => $rounds,
 	'clients'    => $clients,
 	'paragraphs' => $paragraphs,
+	'fill'       => $fill,
+	'doc_bytes'  => strlen( (string) $wp_sync_bench_workload['post_content'] ),
 	'seed'       => $seed,
 	'reps'       => $reps,
 	'warmup'     => $warmup,
@@ -222,7 +317,7 @@ $report['config'] = array(
 
 $q = $report['quality'];
 printf( "\n== %s / %s ==\n", $report['engine'], $report['scenario'] );
-printf( "config: rounds=%d clients=%d paragraphs=%d seed=%d reps=%d(+%d warmup)\n", $rounds, $clients, $paragraphs, $seed, $report['timing']['measured_reps'], $warmup );
+printf( "config: rounds=%d clients=%d paragraphs=%d doc=%dB seed=%d reps=%d(+%d warmup)\n", $rounds, $clients, $paragraphs, $report['config']['doc_bytes'], $seed, $report['timing']['measured_reps'], $warmup );
 printf(
 	"environment: PHP %s / WP %s / %s / %s / opcache %s\n",
 	$report['environment']['php'],
@@ -235,7 +330,7 @@ printf(
 	"calibration: db rtt p50=%.4f ms, lock pair p50=%.4f ms%s\n",
 	$report['calibration']['db_rtt_p50_ms'],
 	$report['calibration']['lock_pair_p50_ms'],
-	'intent-log' === $engine_slug ? ' (each request below holds one lock pair)' : ''
+	in_array( $engine_slug, array( 'intent-log', 'de-rtc' ), true ) ? ' (each request below holds one lock pair)' : ''
 );
 printf( "requests: %d per rep\n", $report['requests'] );
 printf(
@@ -267,13 +362,38 @@ printf(
 	$report['idle_poll_us']['mean']
 );
 printf(
+	"join ms: p50=%.4f max=%.4f mean=%.4f (cold read at cursor 0; resp bytes p50=%d max=%d)\n",
+	$report['join_us']['p50'],
+	$report['join_us']['max'],
+	$report['join_us']['mean'],
+	$report['payload_bytes']['join_response_p50'],
+	$report['payload_bytes']['join_response_max']
+);
+if ( null !== $report['materialize_us'] ) {
+	printf(
+		"materialize ms: p50=%.4f max=%.4f mean=%.4f (cold engine, the save path)\n",
+		$report['materialize_us']['p50'],
+		$report['materialize_us']['max'],
+		$report['materialize_us']['mean']
+	);
+}
+if ( null !== $report['memory']['ingest_peak_bytes'] ) {
+	printf(
+		"memory peak: ingest=%.2f MB%s\n",
+		$report['memory']['ingest_peak_bytes'] / 1048576,
+		null !== $report['memory']['materialize_peak_bytes']
+			? sprintf( ', materialize=%.2f MB', $report['memory']['materialize_peak_bytes'] / 1048576 )
+			: ''
+	);
+}
+printf(
 	"payload bytes: req p50=%d max=%d / resp p50=%d max=%d\n",
 	$report['payload_bytes']['request_p50'],
 	$report['payload_bytes']['request_max'],
 	$report['payload_bytes']['response_p50'],
 	$report['payload_bytes']['response_max']
 );
-printf( "storage: rows=%d bytes=%d compactions=%d\n", $report['storage']['rows'], $report['storage']['bytes'], $report['storage']['compactions'] );
+printf( "storage: rows=%d bytes=%d followups=%d trims=%d\n", $report['storage']['rows'], $report['storage']['bytes'], $report['storage']['followups'], $report['storage']['trims'] );
 if ( $q['observable'] ) {
 	printf(
 		"quality: converged=%s applied=%d escalated=%d voided=%d escalation_rate=%.4f lost_work=%d\n",
@@ -290,9 +410,49 @@ if ( $q['observable'] ) {
 } else {
 	printf( "quality: NOT SERVER-OBSERVABLE (client-side CRDT merge)\n" );
 }
+if ( null !== $report['hosting'] ) {
+	$h = $report['hosting'];
+	printf( "hosting cost card (1 round = 1 s; engine seam only — the transport envelope, HTTP headers and awareness add overhead on top):\n" );
+	printf(
+		"  session: %d s wall clock, %d client-seconds of presence, %d requests (%.2f req/s)\n",
+		$h['session_seconds'],
+		$h['client_seconds'],
+		$h['requests_session'],
+		$h['requests_per_second']
+	);
+	printf(
+		"  per user-hour: %d requests, %.2f PHP-CPU-seconds, %.2f MB engine wire\n",
+		$h['requests_per_client_hour'],
+		$h['cpu_seconds_per_client_hour'],
+		$h['wire_mb_per_client_hour']
+	);
+	printf(
+		"  server CPU: %.3f s over the session = %.2f%% of one core sustained\n",
+		$h['cpu_seconds_session'],
+		100 * $h['cpu_core_share']
+	);
+	printf(
+		"  at rest afterwards: %d KB stored; the next visitor downloads %d KB to join\n",
+		(int) round( $h['storage_bytes_at_rest'] / 1024 ),
+		(int) round( $h['join_payload_bytes'] / 1024 )
+	);
+	$q = $h['queueing_model'];
+	if ( $q['serialized_ingest'] ) {
+		printf(
+			"  queueing (MODELED from the workload's concurrency, not measured): +%.2f ms mean / +%.2f ms worst-case ingest wait behind the per-room lock; measure for real with `npm run bench -- concurrency=N`\n",
+			$q['modeled_wait_ms_mean'],
+			$q['modeled_wait_ms_worst']
+		);
+	} else {
+		printf(
+			"  queueing: lock-free ingest (no per-room queue), but up to %d concurrent ingests each hold a PHP worker for the full service time; measure for real with `npm run bench -- concurrency=N`\n",
+			$q['peak_concurrent_workers']
+		);
+	}
+}
 if ( 'opaque-relay' === ( $report['profile'] ?? '' ) ) {
 	printf(
-		"note: engine '%s' has no dedicated authoring profile — driven with relay-convention opaque updates ('update'/'compaction'); if the engine rejects them, the dispositions/storage counts above reflect that.\n",
+		"note: engine '%s' has no dedicated authoring profile — driven with relay-convention opaque updates ('update'/'compaction'); if the engine rejects them, the dispositions/storage counts above reflect that. An engine plugin can register a profile via the wp_sync_bench_authoring_profiles filter.\n",
 		$engine_slug
 	);
 }

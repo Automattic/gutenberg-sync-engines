@@ -68,6 +68,16 @@ if ( ! class_exists( 'WP_Sync_Bench_Memory_Storage' ) ) {
 		 */
 		private $meta = array();
 
+		/**
+		 * Per-room count of history-trim calls. Every engine's checkpoint
+		 * path (and the relay's accepted client compactions) prunes history
+		 * through exactly one remove_updates_before_cursor() call, so this
+		 * makes checkpoint/compaction cadence visible per engine.
+		 *
+		 * @var array<string, int>
+		 */
+		private $trims = array();
+
 		public function add_update( string $room, $update ): bool {
 			$marker                         = ( $this->next_marker[ $room ] ?? 0 ) + 1;
 			$this->next_marker[ $room ]     = $marker;
@@ -117,6 +127,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Memory_Storage' ) ) {
 		}
 
 		public function remove_updates_before_cursor( string $room, int $cursor ): bool {
+			$this->trims[ $room ] = ( $this->trims[ $room ] ?? 0 ) + 1;
 			foreach ( array_keys( $this->rows[ $room ] ?? array() ) as $marker ) {
 				if ( $marker < $cursor ) {
 					unset( $this->rows[ $room ][ $marker ] );
@@ -160,6 +171,17 @@ if ( ! class_exists( 'WP_Sync_Bench_Memory_Storage' ) ) {
 		public function set_room_meta( string $room, string $key, $value ): bool {
 			$this->meta[ $room ][ $key ] = $value;
 			return true;
+		}
+
+		/**
+		 * How many times history was trimmed for a room (server checkpoints;
+		 * the relay's accepted client compactions).
+		 *
+		 * @param string $room Room identifier.
+		 * @return int Trim call count.
+		 */
+		public function trim_count( string $room ): int {
+			return $this->trims[ $room ] ?? 0;
 		}
 
 		/**
