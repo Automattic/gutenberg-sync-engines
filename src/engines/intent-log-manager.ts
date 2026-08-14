@@ -10,6 +10,8 @@ import type { Awareness } from 'y-protocols/awareness';
  * WordPress dependencies
  */
 import { parse as parseBlockDelimiters } from '@wordpress/block-serialization-default-parser';
+// eslint-disable-next-line import/no-unresolved -- Provided by the editor runtime.
+import { getBlockType } from '@wordpress/blocks';
 
 /**
  * Internal dependencies
@@ -251,6 +253,49 @@ type EditorBlock = BridgeBlock & {
  * @param clientIds syncId → clientId map (grown as needed).
  * @return Editor-ready blocks.
  */
+/**
+ * Merges a block type's attribute DEFAULTS under the given attributes.
+ *
+ * Pushed blocks are built from the engine document, whose attrs mirror the
+ * serialized comment JSON — which OMITS default-valued attributes. Most
+ * blocks tolerate the gaps, but some save() implementations dereference a
+ * defaulted attribute (core/group renders `<TagName>` from `tagName`,
+ * default 'div'): with the attribute absent, save() throws, and the
+ * serializer silently emits the block as a VOID comment — children and
+ * wrapper gone from saved content, which then parses as an invalid
+ * recovery block for every future visitor (found by the fuzzer as
+ * post-reload invalid groups whenever a genesis-sourced group was saved).
+ * createBlock() is deliberately NOT used here: its schema sanitization
+ * would drop attributes the block type does not declare, and the push
+ * must remain lossless.
+ *
+ * @param name       Block name.
+ * @param attributes Attributes from the engine document.
+ * @return Attributes with block-type defaults filled in.
+ */
+function withBlockDefaults(
+	name: string,
+	attributes: Record< string, unknown >
+): Record< string, unknown > {
+	const blockType = getBlockType( name ) as
+		| { attributes?: Record< string, { default?: unknown } > }
+		| undefined;
+	if ( ! blockType?.attributes ) {
+		return attributes;
+	}
+	let merged: Record< string, unknown > | null = null;
+	for ( const [ key, schema ] of Object.entries( blockType.attributes ) ) {
+		if ( undefined === schema.default || key in attributes ) {
+			continue;
+		}
+		if ( ! merged ) {
+			merged = { ...attributes };
+		}
+		merged[ key ] = schema.default;
+	}
+	return merged ?? attributes;
+}
+
 function toEditorBlocks(
 	blocks: BridgeBlock[],
 	clientIds: Map< string, string >
@@ -267,6 +312,10 @@ function toEditorBlocks(
 		}
 		return {
 			...block,
+			attributes: withBlockDefaults(
+				block.name,
+				( block.attributes ?? {} ) as Record< string, unknown >
+			),
 			clientId,
 			isValid: true,
 			innerBlocks: toEditorBlocks( block.innerBlocks, clientIds ),

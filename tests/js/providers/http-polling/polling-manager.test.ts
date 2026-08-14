@@ -2627,8 +2627,10 @@ describe( 'polling-manager', () => {
 			};
 			let callCount = 0;
 			mockPostSyncUpdate.mockImplementation(
-				( payload: { rooms: Array< { updates: unknown[] } > },
-				  signal?: AbortSignal ) => {
+				(
+					payload: { rooms: Array< { updates: unknown[] } > },
+					signal?: AbortSignal
+				) => {
 					callCount++;
 					signals.push( signal );
 					const carriesUpdates = payload.rooms.some(
@@ -2682,5 +2684,4 @@ describe( 'polling-manager', () => {
 			).toContain( update.data );
 		} );
 	} );
-
 } );

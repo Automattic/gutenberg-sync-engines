@@ -8,6 +8,19 @@ import { afterEach, describe, expect, it, jest } from '@jest/globals';
  */
 import { addFilter, removeFilter } from '@wordpress/hooks';
 
+// The real module drags ESM-only deps into Jest; the manager only reads
+// attribute schemas for its block-default merge.
+jest.mock( '@wordpress/blocks', () => ( {
+	getBlockType: ( name: string ) =>
+		'core/group' === name
+			? {
+					attributes: {
+						tagName: { default: 'div', type: 'string' },
+					},
+			  }
+			: undefined,
+} ) );
+
 /**
  * Internal dependencies
  */
@@ -882,6 +895,44 @@ describe( 'intent-log manager', () => {
 			'remove_block',
 		] );
 		expect( sent[ 0 ].payload.syncId ).toBe( 'b1' );
+	} );
+
+	it( 'REGRESSION: pushed blocks carry their block-type attribute defaults', async () => {
+		/*
+		 * Engine-document attrs mirror serialized comment JSON, which omits
+		 * defaults. core/group save() dereferences tagName (default 'div');
+		 * pushing the block without it made save() throw and the serializer
+		 * silently emitted a VOID group — children and wrapper dropped from
+		 * saved content (fuzzer: post-reload invalid recovery blocks).
+		 */
+		const { handlers, transport } = await loadManagedEntity();
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [
+				{
+					syncId: 'group-1',
+					blockType: 'core/group',
+					attrs: { layout: { type: 'constrained' } },
+					children: [
+						{
+							syncId: 'child-1',
+							blockType: 'core/paragraph',
+							text: 'Inside',
+						},
+					],
+				},
+			] )
+		);
+
+		const push = handlers.edits.at( -1 ) as {
+			blocks: Array< {
+				attributes: Record< string, unknown >;
+			} >;
+		};
+		expect( push.blocks[ 0 ].attributes.tagName ).toBe( 'div' );
+		// Non-defaulted attrs pass through untouched.
+		expect( push.blocks[ 0 ].attributes.layout ).toEqual( {
+			type: 'constrained',
+		} );
 	} );
 
 	it( 'REGRESSION: pushed blocks carry stable clientIds so the block editor accepts them', async () => {
