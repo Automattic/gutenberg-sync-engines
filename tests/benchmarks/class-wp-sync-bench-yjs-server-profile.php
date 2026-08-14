@@ -29,8 +29,12 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 	 */
 	class WP_Sync_Bench_Yjs_Server_Profile implements WP_Sync_Bench_Authoring_Profile {
 		/** Void reasons that are NOT lost work for this engine: idempotent
-		 * redelivery (the server diffs out what it already has) or a
-		 * malformed row.
+		 * redelivery (the server diffs out what it already has), or the
+		 * resync lane (this profile models the real client's recovery: the
+		 * next authored update carries the client's full state, which
+		 * re-delivers the voided content). `invalid-payload` is NOT benign:
+		 * the engine reserves it for genuinely malformed bytes, which the
+		 * profile never sends, so its appearance means work was rejected.
 		 *
 		 * @var string[]
 		 */
@@ -39,7 +43,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 			'already-deleted',
 			'already-removed',
 			'stale-base',
-			'invalid-payload',
+			'resync-required',
 		);
 
 		/**
@@ -48,6 +52,15 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 		 * @var array
 		 */
 		private $workload;
+
+		/**
+		 * Clients whose last submission voided `resync-required`; their next
+		 * authored update is a full-state upload (the real client's recovery
+		 * lane), which the server diffs and applies idempotently.
+		 *
+		 * @var array<int, bool>
+		 */
+		private $needs_resync = array();
 
 		/**
 		 * Simulated client count.
@@ -174,10 +187,22 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 				$this->find_block( $yblocks, 'srv-' . (int) $edit['paragraph'] )->get( 'attributes' )->get( 'content' )->insert( 0, $edit['text'] );
 			}
 
+			// The recovery lane: after a `resync-required` void the real
+			// client uploads its full state (self-contained, so it carries
+			// the voided content too); the server diffs out what it already
+			// has. Otherwise the submission is the genuine incremental
+			// encoding of this edit.
+			if ( ! empty( $this->needs_resync[ $client ] ) ) {
+				unset( $this->needs_resync[ $client ] );
+				$encoded = \Yjs\encodeStateAsUpdateV2( $doc );
+			} else {
+				$encoded = \Yjs\encodeStateAsUpdateV2( $doc, $sv_before );
+			}
+
 			return array(
 				array(
 					'type' => 'update',
-					'data' => \Yjs\encodeStateAsUpdateV2( $doc, $sv_before )->toBase64(),
+					'data' => $encoded->toBase64(),
 				),
 			);
 		}
@@ -246,9 +271,12 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 		 * @param array $edit        The workload edit the disposition settles.
 		 * @param array $disposition Engine disposition.
 		 */
-		public function record_disposition( int $client, array $edit, array $disposition ): void { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable -- $client is part of the profile contract.
+		public function record_disposition( int $client, array $edit, array $disposition ): void {
 			$op     = $edit['op'] ?? 'text';
 			$status = $disposition['status'] ?? 'unknown';
+			if ( 'voided' === $status && 'resync-required' === ( $disposition['reason'] ?? '' ) ) {
+				$this->needs_resync[ $client ] = true;
+			}
 			if ( 'text' === $op ) {
 				$this->expected_texts[] = array(
 					'text'   => (string) $edit['text'],
@@ -326,18 +354,32 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 		 * (snapshot rows carry `{ doc: <base64 V2> }`; update rows carry the
 		 * base64 V2 update directly).
 		 *
+		 * Per-row apply failures are skipped rather than fataling the
+		 * simulated client: under the multi-process concurrency probe a
+		 * read-visibility race can permanently skip a row this client never
+		 * receives, and a later row referencing it trips the vendored
+		 * y-php's missing-dependency crash. A real JS Yjs client parks such
+		 * rows as pending instead of crashing, so catch-and-skip is the
+		 * faithful simulation. Unreachable in the single-process harness
+		 * (rows always arrive in causal order there), so the convergence
+		 * oracle is unaffected.
+		 *
 		 * @param \Yjs\Utils\Doc $doc  Client document.
 		 * @param array          $rows Typed rows from get_updates_since().
 		 */
 		private static function apply_yjs_rows( $doc, array $rows ): void {
 			foreach ( $rows as $row ) {
-				if ( 'snapshot' === ( $row['type'] ?? '' ) ) {
-					$decoded = json_decode( (string) $row['data'], true );
-					if ( is_array( $decoded ) && is_string( $decoded['doc'] ?? null ) ) {
-						\Yjs\applyUpdateV2( $doc, \Yjs\Lib0\Buffer::fromBase64( $decoded['doc'] ) );
+				try {
+					if ( 'snapshot' === ( $row['type'] ?? '' ) ) {
+						$decoded = json_decode( (string) $row['data'], true );
+						if ( is_array( $decoded ) && is_string( $decoded['doc'] ?? null ) ) {
+							\Yjs\applyUpdateV2( $doc, \Yjs\Lib0\Buffer::fromBase64( $decoded['doc'] ) );
+						}
+					} elseif ( 'update' === ( $row['type'] ?? '' ) ) {
+						\Yjs\applyUpdateV2( $doc, \Yjs\Lib0\Buffer::fromBase64( (string) $row['data'] ) );
 					}
-				} elseif ( 'update' === ( $row['type'] ?? '' ) ) {
-					\Yjs\applyUpdateV2( $doc, \Yjs\Lib0\Buffer::fromBase64( (string) $row['data'] ) );
+				} catch ( \Throwable $e ) {
+					continue;
 				}
 			}
 		}

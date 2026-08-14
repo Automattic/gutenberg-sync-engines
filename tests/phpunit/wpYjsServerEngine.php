@@ -538,6 +538,170 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 		}
 	}
 
+	/**
+	 * The ingest-side replay lane: a canonical snapshot that both LOST a
+	 * row's content and over-claims it in its stamp (the read-visibility
+	 * race the under-claiming stamp cannot rule out) is repaired from the
+	 * update log within the ingest request itself, instead of voiding the
+	 * dependent update.
+	 */
+	public function test_lossy_over_claimed_canonical_is_repaired_by_ingest_replay() {
+		$response_a = $this->engine()->get_updates_since( $this->room(), 101, 0, array() );
+		$doc_a      = $this->client_doc_from_response( $response_a );
+		$cursor_a   = (int) $response_a['end_cursor'];
+		$genesis    = json_decode( $response_a['updates'][0]['data'], true );
+
+		$update_a = $this->encode_edit(
+			$doc_a,
+			function ( $doc ) {
+				$this->first_block_content( $doc )->insert( 0, 'alpha ' );
+			}
+		);
+		$first    = $this->engine()->handle_updates(
+			$this->room(),
+			101,
+			$cursor_a,
+			array(
+				array(
+					'type' => 'update',
+					'data' => $update_a,
+				),
+			),
+			array()
+		);
+		$this->assertSame( 'applied', $first['dispositions'][0]['status'] );
+
+		// Corrupt the canonical the way the visibility race would: content
+		// reverted to genesis, stamp claiming the head, nothing left above
+		// the stamp for the load-path repair to apply.
+		$storage = new WP_Sync_Post_Meta_Storage();
+		$storage->get_updates_after_cursor( $this->room(), 0 );
+		$head = $storage->get_cursor( $this->room() );
+		$storage->set_room_meta(
+			$this->room(),
+			WP_Yjs_Server_Engine::META_DOC,
+			array(
+				'doc'    => $genesis['doc'],
+				'cursor' => $head,
+			)
+		);
+
+		// A's next edit depends on its first, which the canonical no longer
+		// has: ingest must fall back to the log replay and apply it.
+		$update_a2 = $this->encode_edit(
+			$doc_a,
+			function ( $doc ) {
+				$this->first_block_content( $doc )->insert( 0, 'delta ' );
+			}
+		);
+		$second    = $this->engine()->handle_updates(
+			$this->room(),
+			101,
+			$cursor_a,
+			array(
+				array(
+					'type' => 'update',
+					'data' => $update_a2,
+				),
+			),
+			array()
+		);
+		$this->assertSame( 'applied', $second['dispositions'][0]['status'] );
+
+		// The repair persisted: materialization (canonical + tail) carries
+		// both edits exactly once, and a fresh peer converges from the log.
+		$materialized = (string) $this->engine()->materialize( $this->room() );
+		foreach ( array( 'alpha ', 'delta ' ) as $token ) {
+			$this->assertSame( 1, substr_count( $materialized, $token ), "token '{$token}' in: {$materialized}" );
+		}
+
+		$doc_b  = $this->client_doc_from_response( $this->engine()->get_updates_since( $this->room(), 202, 0, array() ) );
+		$text_b = $this->first_block_content( $doc_b )->toString();
+		foreach ( array( 'alpha ', 'delta ' ) as $token ) {
+			$this->assertSame( 1, substr_count( $text_b, $token ), "token '{$token}' in: {$text_b}" );
+		}
+	}
+
+	/**
+	 * A client genuinely ahead of the room (an earlier send never landed)
+	 * settles as a `resync-required` void, NOT `invalid-payload`, stores
+	 * nothing, and the documented recovery (the client uploads its full
+	 * state as an ordinary update) heals the room.
+	 */
+	public function test_update_ahead_of_the_log_voids_resync_required_and_full_state_heals() {
+		$response_a = $this->engine()->get_updates_since( $this->room(), 101, 0, array() );
+		$doc_a      = $this->client_doc_from_response( $response_a );
+		$cursor_a   = (int) $response_a['end_cursor'];
+
+		// Edit 1 happens locally but its update is never submitted.
+		$this->encode_edit(
+			$doc_a,
+			function ( $doc ) {
+				$this->first_block_content( $doc )->insert( 0, 'lost ' );
+			}
+		);
+
+		// Edit 2's incremental update causally depends on edit 1.
+		$update_2 = $this->encode_edit(
+			$doc_a,
+			function ( $doc ) {
+				$this->first_block_content( $doc )->insert( 0, 'found ' );
+			}
+		);
+
+		$storage = new WP_Sync_Post_Meta_Storage();
+		$storage->get_updates_after_cursor( $this->room(), 0 );
+		$rows_before = $storage->get_update_count( $this->room() );
+
+		$result = $this->engine()->handle_updates(
+			$this->room(),
+			101,
+			$cursor_a,
+			array(
+				array(
+					'type' => 'update',
+					'data' => $update_2,
+				),
+			),
+			array()
+		);
+		$this->assertSame(
+			array(
+				array(
+					'status' => 'voided',
+					'reason' => 'resync-required',
+				),
+			),
+			$result['dispositions']
+		);
+
+		// Nothing was stored for the unresolvable update.
+		$storage = new WP_Sync_Post_Meta_Storage();
+		$storage->get_updates_after_cursor( $this->room(), 0 );
+		$this->assertSame( $rows_before, $storage->get_update_count( $this->room() ) );
+
+		// The recovery lane: the client uploads its full state; the server
+		// diffs out what it already has and applies the rest.
+		$recovery = $this->engine()->handle_updates(
+			$this->room(),
+			101,
+			$cursor_a,
+			array(
+				array(
+					'type' => 'update',
+					'data' => \Yjs\encodeStateAsUpdateV2( $doc_a )->toBase64(),
+				),
+			),
+			array()
+		);
+		$this->assertSame( 'applied', $recovery['dispositions'][0]['status'] );
+
+		$materialized = (string) $this->engine()->materialize( $this->room() );
+		foreach ( array( 'lost ', 'found ' ) as $token ) {
+			$this->assertSame( 1, substr_count( $materialized, $token ), "token '{$token}' in: {$materialized}" );
+		}
+	}
+
 	public function test_concurrent_genesis_writers_merge_idempotently() {
 		// Two engines race the same empty room: both build genesis. The
 		// deterministic build (fixed per-room clientID, fixed op order) must
