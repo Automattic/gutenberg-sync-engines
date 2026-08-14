@@ -875,6 +875,67 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 		$this->assertErrorResponse( 'rest_sync_engine_mismatch', $response, 409 );
 	}
 
+	public function test_materialize_nests_children_inside_their_wrapper() {
+		/*
+		 * REGRESSION (fuzzer: nested group + save + reload rendered invalid
+		 * recovery blocks): innerContent interleaves fragments with one null
+		 * per child AT ITS POSITION. The wrapper used to serialize as a
+		 * single open+close fragment, pushing every child OUTSIDE its
+		 * wrapper element; the block validator rejected the markup on the
+		 * next parse.
+		 */
+		$engine = new WP_Intent_Log_Engine( new WP_Sync_Post_Meta_Storage() );
+		$this->poll(
+			array(
+				self::intent_update(
+					array(
+						'intentId' => 'nest-1',
+						'baseSeq'  => 0,
+						'type'     => 'insert_block',
+						'payload'  => array(
+							'block'          => array(
+								'syncId'    => 'group-1',
+								'blockType' => 'core/group',
+								'attrs'     => array(
+									'_wrapper' => array(
+										'open'  => '<div class="wp-block-group">',
+										'close' => '</div>',
+									),
+								),
+								'children'  => array(
+									array(
+										'syncId'    => 'child-1',
+										'blockType' => 'core/paragraph',
+										'text'      => 'Inside',
+										'attrs'     => array(
+											'_wrapper' => array(
+												'open'  => '<p>',
+												'close' => '</p>',
+											),
+										),
+									),
+								),
+							),
+							'parentId'       => null,
+							'afterSiblingId' => null,
+						),
+					)
+				),
+			)
+		);
+
+		$content = (string) $engine->materialize( $this->room() );
+
+		$open  = strpos( $content, '<div class="wp-block-group">' );
+		$child = strpos( $content, '<p>Inside</p>' );
+		$close = strpos( $content, '</div>', (int) $open );
+		$this->assertNotFalse( $open, 'group wrapper must open' );
+		$this->assertNotFalse( $child, 'child must materialize' );
+		$this->assertNotFalse( $close, 'group wrapper must close' );
+		$this->assertLessThan( $child, $open, 'wrapper opens before the child' );
+		$this->assertGreaterThan( $child, $close, 'child must sit INSIDE the wrapper element' );
+	}
+
 	public function test_materialize_round_trips_content_with_sync_ids() {
 		$engine = new WP_Intent_Log_Engine( new WP_Sync_Post_Meta_Storage() );
 		$this->poll(
