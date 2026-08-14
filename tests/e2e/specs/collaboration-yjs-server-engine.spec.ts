@@ -329,6 +329,67 @@ test.describe( 'Collaboration - yjs-server engine', () => {
 		] );
 	} );
 
+	test( 'merely opening a post does not mark it dirty', async ( {
+		collaborationUtils,
+		requestUtils,
+		page,
+	} ) => {
+		// Regression test for the bootstrap dirty state: the server's genesis
+		// snapshot arrives as a remote change, and the dispatch that swapped
+		// in the document's blocks used to register a dirtying `content` edit
+		// even though nothing changed, activating the Save button and the
+		// autosave timer on a post nobody touched.
+		const post = await requestUtils.createPost( {
+			title: 'Yjs Server Dirty On Open Test',
+			status: 'draft',
+			content:
+				'<!-- wp:paragraph -->\n<p>Untouched content</p>\n<!-- /wp:paragraph -->',
+			date_gmt: new Date().toISOString(),
+		} );
+
+		await collaborationUtils.openPost( post.id );
+
+		const getEditKeys = () =>
+			page.evaluate( ( postId ) => {
+				const edits = window.wp.data
+					.select( 'core' )
+					.getEntityRecordEdits( 'postType', 'post', postId );
+				return Object.keys( edits ?? {} );
+			}, post.id );
+
+		// Wait for the server's genesis snapshot to bootstrap the session:
+		// its dispatch registers the (transient, non-dirtying) `blocks` edit
+		// that swaps in the document's block identities.
+		await expect
+			.poll( getEditKeys, { timeout: 20000 } )
+			.toContain( 'blocks' );
+
+		// The bootstrap dispatch is exactly the moment the regression fired.
+		// Keep watching across further poll cycles to catch a delayed flip.
+		const becameDirty = await page.evaluate(
+			() =>
+				new Promise( ( resolve ) => {
+					const started = Date.now();
+					const interval = setInterval( () => {
+						const isDirty = window.wp.data
+							.select( 'core/editor' )
+							.isEditedPostDirty();
+						if ( isDirty ) {
+							clearInterval( interval );
+							resolve( true );
+						} else if ( Date.now() - started > 8000 ) {
+							clearInterval( interval );
+							resolve( false );
+						}
+					}, 200 );
+				} )
+		);
+		expect( becameDirty ).toBe( false );
+
+		// The dirtying half of the old dispatch must be gone for good.
+		expect( await getEditKeys() ).not.toContain( 'content' );
+	} );
+
 	test( 'title edits sync between users in both directions', async ( {
 		collaborationUtils,
 		requestUtils,

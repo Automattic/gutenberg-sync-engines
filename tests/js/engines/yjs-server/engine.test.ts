@@ -142,4 +142,149 @@ describe( 'createYjsServerEngine › createEntity', () => {
 
 		expect( onRemoteChange ).toHaveBeenCalled();
 	} );
+
+	describe( 'bootstrap dirty guard', () => {
+		const BLOCK_MARKUP =
+			'<!-- wp:paragraph -->\n<p>Hello</p>\n<!-- /wp:paragraph -->';
+
+		function makeBootstrappedEntity() {
+			const entity = makeEntity();
+			entity.hydrate( {} as any, jest.fn() );
+			entity.createSession().receiveUpdate( genesisRow() );
+			return entity;
+		}
+
+		/**
+		 * The change shape the framework's post sync config reports for a
+		 * live-document remote change: doc blocks plus an injected lazy
+		 * content serializer capturing them.
+		 *
+		 * @param serialized The string the injected serializer returns.
+		 */
+		function postShapedChanges( serialized: string ) {
+			return {
+				blocks: [ { name: 'core/paragraph' } ],
+				content: () => serialized,
+			};
+		}
+
+		it( 'withholds the injected content edit when doc blocks serialize identically to the record content', () => {
+			const entity = makeBootstrappedEntity();
+			syncConfig.getChangesFromCRDTDoc.mockReturnValue(
+				postShapedChanges( BLOCK_MARKUP )
+			);
+
+			const changes = entity.getEditorChanges( {
+				content: { raw: BLOCK_MARKUP },
+			} as any );
+
+			// The blocks still dispatch (transient; the editor adopts the
+			// document's block identities), but the dirtying content edit
+			// does not.
+			expect( changes.blocks ).toBeDefined();
+			expect( changes ).not.toHaveProperty( 'content' );
+		} );
+
+		it( 'accepts plain-string record content and tolerates trailing whitespace in the serialization', () => {
+			const entity = makeBootstrappedEntity();
+			syncConfig.getChangesFromCRDTDoc.mockReturnValue(
+				postShapedChanges( `${ BLOCK_MARKUP }\n` )
+			);
+
+			const changes = entity.getEditorChanges( {
+				content: BLOCK_MARKUP,
+			} as any );
+
+			expect( changes ).not.toHaveProperty( 'content' );
+		} );
+
+		it( 'keeps withholding across repeated redundant dispatches and empty change sets', () => {
+			const entity = makeBootstrappedEntity();
+			const editedRecord = { content: { raw: BLOCK_MARKUP } } as any;
+
+			syncConfig.getChangesFromCRDTDoc.mockReturnValue(
+				postShapedChanges( BLOCK_MARKUP )
+			);
+			expect(
+				entity.getEditorChanges( editedRecord )
+			).not.toHaveProperty( 'content' );
+
+			// An empty change set must not disarm the guard.
+			syncConfig.getChangesFromCRDTDoc.mockReturnValue( {} );
+			expect( entity.getEditorChanges( editedRecord ) ).toEqual( {} );
+
+			syncConfig.getChangesFromCRDTDoc.mockReturnValue(
+				postShapedChanges( BLOCK_MARKUP )
+			);
+			expect(
+				entity.getEditorChanges( editedRecord )
+			).not.toHaveProperty( 'content' );
+		} );
+
+		it( 'passes genuine divergence through and disarms the guard permanently', () => {
+			const entity = makeBootstrappedEntity();
+			const editedRecord = { content: { raw: BLOCK_MARKUP } } as any;
+
+			// A remote edit produced content the record does not have.
+			syncConfig.getChangesFromCRDTDoc.mockReturnValue(
+				postShapedChanges( `${ BLOCK_MARKUP }\n<!-- wp:more -->` )
+			);
+			const diverged = entity.getEditorChanges( editedRecord );
+			expect( typeof diverged.content ).toBe( 'function' );
+
+			// Even a later identical-looking dispatch is no longer filtered:
+			// steady-state behavior is restored for the rest of the session.
+			syncConfig.getChangesFromCRDTDoc.mockReturnValue(
+				postShapedChanges( BLOCK_MARKUP )
+			);
+			const settled = entity.getEditorChanges( editedRecord );
+			expect( typeof settled.content ).toBe( 'function' );
+		} );
+
+		it( 'does not withhold when the edited record already carries its own content edit', () => {
+			const entity = makeBootstrappedEntity();
+			syncConfig.getChangesFromCRDTDoc.mockReturnValue(
+				postShapedChanges( BLOCK_MARKUP )
+			);
+
+			// Once the user edits, the record's content is a lazy serializer
+			// function, not a raw string; the guard must stand aside.
+			const changes = entity.getEditorChanges( {
+				content: () => BLOCK_MARKUP,
+			} as any );
+
+			expect( typeof changes.content ).toBe( 'function' );
+		} );
+
+		it( 'does not withhold when other properties changed alongside blocks', () => {
+			const entity = makeBootstrappedEntity();
+			syncConfig.getChangesFromCRDTDoc.mockReturnValue( {
+				...postShapedChanges( BLOCK_MARKUP ),
+				title: 'Remote title',
+			} );
+
+			const changes = entity.getEditorChanges( {
+				content: { raw: BLOCK_MARKUP },
+			} as any );
+
+			expect( typeof changes.content ).toBe( 'function' );
+			expect( changes.title ).toBe( 'Remote title' );
+		} );
+
+		it( 'preserves a shifted selection when withholding the content edit', () => {
+			const entity = makeBootstrappedEntity();
+			const selection = { selectionStart: {}, selectionEnd: {} };
+			syncConfig.getChangesFromCRDTDoc.mockReturnValue( {
+				...postShapedChanges( BLOCK_MARKUP ),
+				selection,
+			} );
+
+			const changes = entity.getEditorChanges( {
+				content: { raw: BLOCK_MARKUP },
+			} as any );
+
+			expect( changes.selection ).toBe( selection );
+			expect( changes ).not.toHaveProperty( 'content' );
+		} );
+	} );
 } );
