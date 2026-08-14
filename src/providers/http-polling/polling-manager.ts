@@ -341,6 +341,16 @@ let syncRequestBodySizeLimit = MAX_SYNC_REQUEST_BODY_SIZE_IN_BYTES;
  */
 let longPollMode = false;
 
+/*
+ * A parked long-poll in flight (a request that carried NO updates and is
+ * being held by the server). Local updates ABORT it so outgoing work never
+ * waits out the hold: the server answers senders immediately, but only if
+ * the client actually sends. Without the abort, an edit made right after a
+ * quiet poll sat queued for up to the full wait budget.
+ */
+let inFlightParkController: AbortController | null = null;
+let parkAbortedForLocalUpdate = false;
+
 /**
  * Enables long-poll cadence on the shared manager.
  *
@@ -610,8 +620,18 @@ function poll(): void {
 		} );
 
 		const pollStarted = Date.now();
+		const isPureReceive = payload.rooms.every(
+			( room ) => 0 === room.updates.length
+		);
+		let parkSignal: AbortSignal | undefined;
+		if ( longPollMode && isPureReceive ) {
+			inFlightParkController = new AbortController();
+			parkSignal = inFlightParkController.signal;
+		}
 		try {
-			const { rooms } = await postSyncUpdate( payload );
+			const { rooms } = await postSyncUpdate( payload, parkSignal );
+			inFlightParkController = null;
+			parkAbortedForLocalUpdate = false;
 
 			// Emit 'connected' status.
 			consecutiveFailures = 0;
@@ -787,6 +807,18 @@ function poll(): void {
 				pollInterval = POLLING_INTERVAL_BACKGROUND_TAB_IN_MS;
 			}
 		} catch ( error ) {
+			if ( parkAbortedForLocalUpdate ) {
+				/*
+				 * Deliberate wake: the parked request carried no updates, so
+				 * there is nothing to restore and no failure to record —
+				 * re-poll immediately to send the just-queued local work.
+				 */
+				parkAbortedForLocalUpdate = false;
+				inFlightParkController = null;
+				pollingTimeoutId = setTimeout( poll, 0 );
+				return;
+			}
+			inFlightParkController = null;
 			if ( isSyncDebugEnabled() ) {
 				for ( const requested of payload.rooms ) {
 					recordPoll( {
@@ -1061,6 +1093,14 @@ function registerRoom( {
 		}
 
 		updateQueue.add( update );
+
+		if ( longPollMode && inFlightParkController ) {
+			// Wake the parked poll: local work must not wait out the hold.
+			parkAbortedForLocalUpdate = true;
+			const controller = inFlightParkController;
+			inFlightParkController = null;
+			controller.abort();
+		}
 	}
 
 	function unregister(): void {

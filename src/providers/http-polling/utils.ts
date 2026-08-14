@@ -155,15 +155,19 @@ export function createUpdateQueue(
  * Post a sync update and receive updates the client is missing.
  *
  * @param payload The sync payload including data and after cursor
+ * @param signal  Optional abort signal (a parked long-poll is aborted when
+ *                local updates arrive so sends never wait out the hold).
  * @return The sync server response
  */
 export function postSyncUpdate(
-	payload: SyncPayload
+	payload: SyncPayload,
+	signal?: AbortSignal
 ): Promise< SyncResponse > {
 	return apiFetch( {
 		method: 'POST',
 		path: syncApiPath,
 		data: payload,
+		signal,
 	} );
 }
 
