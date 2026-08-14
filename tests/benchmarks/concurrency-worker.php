@@ -65,10 +65,11 @@ $profile                = WP_Sync_Bench_Profiles::for_engine( $engine_slug, $pos
 $cursors = $profile->bootstrap( $wp_sync_bench_fresh_engine(), $room );
 $cursor  = (int) ( $cursors[ $worker ] ?? 0 );
 
-$latency_us   = array();
-$errors       = array();
-$void_reasons = array();
-$dispositions = array(
+$latency_us       = array();
+$errors           = array();
+$void_reasons     = array();
+$non_benign_voids = 0;
+$dispositions     = array(
 	'applied'   => 0,
 	'escalated' => 0,
 	'voided'    => 0,
@@ -107,6 +108,12 @@ for ( $i = 0; $i < $requests; $i++ ) {
 		if ( 'voided' === $status ) {
 			$reason                  = (string) ( $disposition['reason'] ?? '(none)' );
 			$void_reasons[ $reason ] = ( $void_reasons[ $reason ] ?? 0 ) + 1;
+			// The profile knows which voids its client protocol absorbs
+			// (idempotent redelivery, modeled resync recovery); anything
+			// else is REAL lost work and fails the run.
+			if ( ! $profile->is_benign_void( $reason ) ) {
+				++$non_benign_voids;
+			}
 		}
 		$profile->record_disposition( $worker, $edit, $disposition );
 	}
@@ -114,12 +121,13 @@ for ( $i = 0; $i < $requests; $i++ ) {
 
 echo 'BENCH_WORKER ' . wp_json_encode(
 	array(
-		'worker'       => $worker,
-		'engine'       => $engine_slug,
-		'requests'     => $requests,
-		'latency_us'   => array_map( 'round', $latency_us ),
-		'errors'       => $errors,
-		'void_reasons' => $void_reasons,
-		'dispositions' => $dispositions,
+		'worker'           => $worker,
+		'engine'           => $engine_slug,
+		'requests'         => $requests,
+		'latency_us'       => array_map( 'round', $latency_us ),
+		'errors'           => $errors,
+		'void_reasons'     => $void_reasons,
+		'non_benign_voids' => $non_benign_voids,
+		'dispositions'     => $dispositions,
 	)
 ) . "\n";

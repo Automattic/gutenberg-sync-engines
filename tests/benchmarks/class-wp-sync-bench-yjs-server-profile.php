@@ -63,6 +63,18 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 		private $needs_resync = array();
 
 		/**
+		 * Edits whose submission voided `resync-required`, per client. The
+		 * client's recovery upload re-delivers them, so once it lands the
+		 * oracle must expect their content exactly as if they had applied
+		 * directly. Edits still pending when the session ends stay
+		 * unexpected (their voids were benign only because recovery was
+		 * coming; the oracle does not demand content the room never got).
+		 *
+		 * @var array<int, array<int, array>>
+		 */
+		private $resync_pending = array();
+
+		/**
 		 * Simulated client count.
 		 *
 		 * @var int
@@ -272,11 +284,41 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 		 * @param array $disposition Engine disposition.
 		 */
 		public function record_disposition( int $client, array $edit, array $disposition ): void {
-			$op     = $edit['op'] ?? 'text';
 			$status = $disposition['status'] ?? 'unknown';
-			if ( 'voided' === $status && 'resync-required' === ( $disposition['reason'] ?? '' ) ) {
-				$this->needs_resync[ $client ] = true;
+			$reason = (string) ( $disposition['reason'] ?? '' );
+
+			if ( 'voided' === $status && 'resync-required' === $reason ) {
+				// The next authored update from this client is a full-state
+				// recovery upload that re-delivers this edit; park it until
+				// the recovery lands.
+				$this->needs_resync[ $client ]     = true;
+				$this->resync_pending[ $client ][] = $edit;
+			} elseif ( ( 'applied' === $status || 'already-merged' === $reason ) && array() !== ( $this->resync_pending[ $client ] ?? array() ) ) {
+				// The recovery landed (applied, or the server already held
+				// everything it carried): every parked edit is now in the
+				// room and the oracle must expect it exactly as if it had
+				// applied directly.
+				foreach ( $this->resync_pending[ $client ] as $recovered ) {
+					$this->record_expectation( $recovered, 'applied' );
+				}
+				$this->resync_pending[ $client ] = array();
 			}
+
+			$this->record_expectation( $edit, $status );
+		}
+
+		/**
+		 * Records one edit's oracle expectation: applied text tokens must
+		 * appear in the materialized content exactly once; block markers
+		 * flip between alive and absent. Attribute registers resolve by
+		 * CRDT conflict rules (NOT server order), so their oracle is the
+		 * converged client documents, checked after the session.
+		 *
+		 * @param array  $edit   The workload edit.
+		 * @param string $status The status it settled with.
+		 */
+		private function record_expectation( array $edit, string $status ): void {
+			$op = $edit['op'] ?? 'text';
 			if ( 'text' === $op ) {
 				$this->expected_texts[] = array(
 					'text'   => (string) $edit['text'],
@@ -311,8 +353,11 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 		}
 
 		/**
-		 * The server compacts by itself and CRDT merges never reject a
-		 * stale base; clients send no follow-ups.
+		 * The server compacts by itself and never nominates a client, so
+		 * reads trigger no follow-up ingest. The one recovery this engine
+		 * asks for (`resync-required`) surfaces on an INGEST response, not
+		 * a read, and rides the client's next authored submission as a
+		 * full-state upload (see author()).
 		 *
 		 * @param int   $client   Reading client index.
 		 * @param array $response get_updates_since() response.
