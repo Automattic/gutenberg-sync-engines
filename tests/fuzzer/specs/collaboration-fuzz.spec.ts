@@ -113,6 +113,9 @@ const DISABLE_LIFECYCLE = process.env.RTC_FUZZ_DISABLE_LIFECYCLE === '1';
 // Probability that a step becomes a BURST: several actions from distinct
 // actors fired concurrently with NO convergence wait in between — the
 // timing pressure a single-action-then-converge loop never produces.
+// RTC_FUZZ_LOG_SYNC=1 records every sync request/response summary per page
+// into the fuzz-run.json attachment (wire-level triage without a debugger).
+const LOG_SYNC = process.env.RTC_FUZZ_LOG_SYNC === '1';
 const BURST_RATE = ( () => {
 	const raw = Number.parseFloat( process.env.RTC_FUZZ_BURST_RATE || '0.2' );
 	return Number.isFinite( raw ) ? Math.min( Math.max( raw, 0 ), 1 ) : 0.2;
@@ -392,11 +395,18 @@ async function armSyncFault(
  */
 async function assertNoInvalidBlocks( page: Page, label: string ) {
 	const invalid = await page.evaluate( () => {
-		const bad: string[] = [];
+		const bad: Array< { name: string; original: string } > = [];
 		const walk = ( blocks: any[] ) => {
 			for ( const block of blocks ) {
 				if ( block.isValid === false ) {
-					bad.push( block.name );
+					bad.push( {
+						name: block.name,
+						original: String(
+							block.originalContent ??
+								block.attributes?.originalContent ??
+								''
+						).slice( 0, 400 ),
+					} );
 				}
 				walk( block.innerBlocks ?? [] );
 			}
@@ -408,8 +418,8 @@ async function assertNoInvalidBlocks( page: Page, label: string ) {
 	} );
 	expect(
 		invalid,
-		`invalid-content recovery blocks after ${ label }: ${ invalid.join(
-			', '
+		`invalid-content recovery blocks after ${ label }: ${ JSON.stringify(
+			invalid
 		) }`
 	).toEqual( [] );
 }
@@ -976,6 +986,94 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 			const record = ( entry: TraceEntry ) => {
 				trace.push( entry );
 			};
+			const consoleLog: Array< {
+				page: number;
+				t: number;
+				kind: string;
+				text: string;
+			} > = [];
+			const tapSyncWire = ( pg: Page, index: number ) => {
+				if ( ! LOG_SYNC ) {
+					return;
+				}
+				pg.on( 'request', ( request ) => {
+					if (
+						request.url().includes( 'wp-sync' ) &&
+						request.method() === 'POST'
+					) {
+						const body = request.postData() || '';
+						consoleLog.push( {
+							kind: 'sync-req',
+							page: index,
+							t: Date.now(),
+							text: `after=${
+								body.match( /"after":(\d+)/ )?.[ 1 ] ?? '?'
+							} updates~${
+								( body.match( /"data"/g ) || [] ).length
+							}`,
+						} );
+					}
+				} );
+				pg.on( 'response', ( response ) => {
+					if (
+						response.url().includes( 'wp-sync' ) &&
+						response.request().method() === 'POST'
+					) {
+						response
+							.text()
+							.then( ( body ) =>
+								consoleLog.push( {
+									kind: 'sync-res',
+									page: index,
+									t: Date.now(),
+									text: `status=${ response.status() } updates~${
+										( body.match( /"data"/g ) || [] ).length
+									} end=${
+										body.match(
+											/"end_cursor":(\d+)/
+										)?.[ 1 ] ?? '?'
+									} aw~${
+										(
+											body.match( /collaboratorInfo/g ) ||
+											[]
+										).length
+									}`,
+								} )
+							)
+							.catch( () => undefined );
+					}
+				} );
+				pg.on( 'requestfailed', ( request ) => {
+					if ( request.url().includes( 'wp-sync' ) ) {
+						consoleLog.push( {
+							kind: 'sync-reqfail',
+							page: index,
+							t: Date.now(),
+							text: String( request.failure()?.errorText ),
+						} );
+					}
+				} );
+			};
+			const tapConsole = ( pg: Page, index: number ) => {
+				pg.on( 'console', ( message ) => {
+					if ( [ 'error', 'warning' ].includes( message.type() ) ) {
+						consoleLog.push( {
+							kind: message.type(),
+							page: index,
+							t: Date.now(),
+							text: message.text().slice( 0, 400 ),
+						} );
+					}
+				} );
+				pg.on( 'pageerror', ( error ) =>
+					consoleLog.push( {
+						kind: 'pageerror',
+						page: index,
+						t: Date.now(),
+						text: String( error ).slice( 0, 400 ),
+					} )
+				);
+			};
 
 			try {
 				const post = await requestUtils.createPost( {
@@ -1031,6 +1129,10 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 					},
 					{ editor: second.editor, page: second.page },
 				];
+				tapConsole( participants[ 0 ].page, 0 );
+				tapConsole( participants[ 1 ].page, 1 );
+				tapSyncWire( participants[ 0 ].page, 0 );
+				tapSyncWire( participants[ 1 ].page, 1 );
 				const activePages = () =>
 					participants.map( ( entry ) => entry.page );
 				await waitForDiscovery( collaborationUtils, activePages() );
@@ -1159,6 +1261,8 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 							editor: third.editor,
 							page: third.page,
 						} );
+						tapConsole( third.page, participants.length - 1 );
+						tapSyncWire( third.page, participants.length - 1 );
 						await waitForDiscovery(
 							collaborationUtils,
 							activePages()
@@ -1212,6 +1316,8 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 							editor: rejoined.editor,
 							page: rejoined.page,
 						} );
+						tapConsole( rejoined.page, 1 );
+						tapSyncWire( rejoined.page, 1 );
 						departed = false;
 						await waitForDiscovery(
 							collaborationUtils,
@@ -1353,6 +1459,7 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 				await testInfo.attach( 'fuzz-run.json', {
 					body: JSON.stringify(
 						{
+							consoleLog,
 							engine: ENGINE,
 							seed,
 							stepCount: STEP_COUNT,
