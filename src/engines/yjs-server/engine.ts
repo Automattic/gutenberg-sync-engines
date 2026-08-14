@@ -10,6 +10,7 @@ import * as Y from 'yjs';
 import type {
 	EngineCollection,
 	EngineEntity,
+	ObjectData,
 	SyncEngine,
 } from '@wordpress/sync';
 
@@ -52,6 +53,9 @@ import {
  * - `getEditorChanges` reports nothing until bootstrap, so an empty
  *   pre-sync document can never be dispatched into the editor as a
  *   mass deletion.
+ * - After bootstrap, the dirtying `content` edit is withheld while the
+ *   document still serializes byte-identical to the loaded record, so
+ *   merely opening a post does not mark the editor dirty.
  *
  * After bootstrap the editor's blocks originate from this document's own
  * JSON, so steady-state diffs (`mergeCrdtBlocks`) are no-ops for
@@ -77,6 +81,22 @@ export function createYjsServerEngine(): SyncEngine {
 
 			const isBootstrapped = () =>
 				undefined !== stateMap.get( VERSION_KEY );
+
+			// Because hydrate() is a no-op, the server's genesis snapshot
+			// arrives as a REMOTE change whose content typically matches the
+			// loaded record byte-for-byte. The post sync config still reports
+			// it: its `blocks` case cannot compare document blocks to editor
+			// blocks (the two sides mint different block identities), so it
+			// reports `blocks` on every remote change and injects a fresh
+			// `content` serializer alongside. `blocks` is a transient edit,
+			// but `content` is not, so merely opening a post marked the
+			// editor dirty, activated the Save button, and scheduled
+			// autosaves of unchanged content. Until the document and the
+			// record first genuinely diverge, withhold that `content` edit
+			// whenever the reported blocks serialize byte-identical to the
+			// record's raw content. The `blocks` edit still dispatches so the
+			// editor adopts the document's block identities at bootstrap.
+			let docMayStillMatchRecord = true;
 
 			// Edits made before the server snapshot arrives, replayed in
 			// order once it does.
@@ -159,10 +179,37 @@ export function createYjsServerEngine(): SyncEngine {
 					applyChanges( changes, origin, Boolean( options.isSave ) );
 				},
 
-				getEditorChanges: ( editedRecord ) =>
-					isBootstrapped()
-						? syncConfig.getChangesFromCRDTDoc( ydoc, editedRecord )
-						: {},
+				getEditorChanges: ( editedRecord ) => {
+					if ( ! isBootstrapped() ) {
+						return {};
+					}
+
+					const changes = syncConfig.getChangesFromCRDTDoc(
+						ydoc,
+						editedRecord
+					);
+
+					if ( ! docMayStillMatchRecord ) {
+						return changes;
+					}
+
+					// An empty change set neither confirms nor refutes a
+					// match; leave the guard armed for the next dispatch.
+					if ( 0 === Object.keys( changes ).length ) {
+						return changes;
+					}
+
+					if (
+						isRedundantBootstrapDispatch( changes, editedRecord )
+					) {
+						const nonDirtyingChanges = { ...changes };
+						delete nonDirtyingChanges.content;
+						return nonDirtyingChanges;
+					}
+
+					docMayStillMatchRecord = false;
+					return changes;
+				},
 
 				encodeSnapshot: () => encodeDocSnapshot( ydoc ),
 
@@ -283,4 +330,84 @@ export function createYjsServerEngine(): SyncEngine {
 			};
 		},
 	};
+}
+
+/**
+ * Change-set keys that may appear in a redundant bootstrap dispatch. `blocks`
+ * and `selection` are transient (non-dirtying) entity edits; `content` is the
+ * injected serializer the bootstrap guard withholds. Any other key means the
+ * document genuinely diverges from the record.
+ */
+const REDUNDANT_DISPATCH_KEYS = new Set( [ 'blocks', 'content', 'selection' ] );
+
+/**
+ * Extract the raw content string from an edited record's `content` property,
+ * which is represented either as a plain string or as an object with a `raw`
+ * property. Returns undefined for any other shape, notably the lazy serializer
+ * function that replaces it once the editor has registered its own content
+ * edit.
+ *
+ * @param value The edited record's `content` property.
+ */
+function getRawContentString( value: unknown ): string | undefined {
+	if ( 'string' === typeof value ) {
+		return value;
+	}
+
+	if (
+		value &&
+		'object' === typeof value &&
+		'raw' in value &&
+		'string' === typeof value.raw
+	) {
+		return value.raw;
+	}
+
+	return undefined;
+}
+
+/**
+ * Determine whether a reported change set merely re-states what the editor
+ * already shows: the document's blocks serialize byte-identical to the
+ * record's raw content, and nothing besides blocks, the injected content
+ * serializer, and selection is reported. Such a dispatch carries no
+ * information the editor lacks except the document's block identities, which
+ * ride on the transient `blocks` edit alone.
+ *
+ * @param changes      Changes reported by the sync config.
+ * @param editedRecord The edited record the changes were computed against.
+ */
+function isRedundantBootstrapDispatch(
+	changes: ObjectData,
+	editedRecord: ObjectData
+): boolean {
+	const contentEdit = changes.content;
+	const recordContent = getRawContentString( editedRecord.content );
+
+	if (
+		! changes.blocks ||
+		'function' !== typeof contentEdit ||
+		'string' !== typeof recordContent
+	) {
+		return false;
+	}
+
+	const hasOnlyRedundantKeys = Object.keys( changes ).every( ( key ) =>
+		REDUNDANT_DISPATCH_KEYS.has( key )
+	);
+
+	if ( ! hasOnlyRedundantKeys ) {
+		return false;
+	}
+
+	// The injected serializer captures the reported blocks; invoking it here
+	// trades one serialization for the comparison the sync config cannot make
+	// itself (the document and the editor mint different block identities).
+	// The trim mirrors the sync config's own persisted-document comparison.
+	const serializedDocContent = contentEdit();
+
+	return (
+		'string' === typeof serializedDocContent &&
+		serializedDocContent.trim() === recordContent
+	);
 }
