@@ -65,7 +65,10 @@ The framework/plugin split is complete: the framework ships **neither** engines
     Core/Gutenberg build that ships DE-RTC itself wins.
   - `lib/y-php/` — **vendored y-php** (PHP port of Yjs 13.6.31), imported
     verbatim from <https://github.com/alecgeatches/y-php> (MIT; upstream
-    commit recorded in the import commit). Excluded from our phpcs (it
+    commit recorded in the import commit). ONE deliberate local delta:
+    `composer.json` pins `config.platform.php` to 7.4 (with the lock
+    resolved for it) so the suite installs on WP-supported PHP — preserve
+    it when re-vendoring. Excluded from our phpcs (it
     deliberately mirrors JS Yjs style and carries its own configs). Its own
     conformance suite runs in CI:
     `composer --working-dir=includes/lib/y-php install && composer
@@ -73,9 +76,6 @@ The framework/plugin split is complete: the framework ships **neither** engines
     Treat it like the frozen intent-log core: don't casually edit — its
     contract is byte-parity with JS Yjs, enforced by translated upstream
     tests + fixtures generated from the real JS implementation.
-  - `lib/yjs/tests/compatibility.tests.js` — single fixture file from JS
-    Yjs v13.6.31 (MIT), vendored at the sibling path y-php's
-    CompatibilityTest expects.
   - `lib/y-php-loader.php` — lazy runtime loader (PSR-4 autoloader +
     Composer-`files` equivalents) so the plugin can use y-php without a
     Composer autoloader.
@@ -234,7 +234,7 @@ everywhere, so auth even succeeds); the first visible failure is
 `activatePlugin( 'gutenberg' )` in global-setup dying with
 "Unexpected end of JSON input". Always pass `WP_BASE_URL` in that case.
 
-Current green baseline: **Jest 347**, **PHPUnit 174 (763 assertions)**,
+Current green baseline: **Jest 347**, **PHPUnit 191 (886 assertions)**,
 **e2e 32/32** (occasional flake under full-suite load — a save notice, a
 fixture login navigation, or `http-only/collaboration-sync-body-size`
 failing after a preceding engine-flip suite [verified pre-existing: the
@@ -242,7 +242,7 @@ yjs suite followed by body-size reproduces it without de-rtc involved];
 each green solo), **e2e:websocket 1 skipped** (see
 below — the peer-relay WS fixture needs a client-merging engine and none
 remains), plus the vendored libraries' own conformance suites run
-separately: y-php (**436 tests**) and automerge-php (**680 mapped
+separately: y-php (**442 tests**) and automerge-php (**680 mapped
 upstream tests**, `php includes/lib/automerge-php/tests/run.php`). CI
 (`.github/workflows/ci.yml`) certifies all suites on pushes to `main` and
 PRs; the e2e job leans on the base config's 2-retries-in-CI to absorb the

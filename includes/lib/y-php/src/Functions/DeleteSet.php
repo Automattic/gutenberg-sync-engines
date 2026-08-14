@@ -253,7 +253,7 @@ function readAndApplyDeleteSet( object $decoder, Utils\Transaction $transaction,
 		}
 	}
 	if ( 0 < count( $unappliedDS->clients ) ) {
-		$ds = new Utils\UpdateEncoderV1();
+		$ds = new Utils\UpdateEncoderV2();
 		Lib0\Encoding::writeVarUint( $ds->restEncoder, 0 );
 		writeDeleteSet( $ds, $unappliedDS );
 		return $ds->toUint8Array();

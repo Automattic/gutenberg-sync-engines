@@ -1,37 +1,37 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import * as encoding from '../../yjs/node_modules/lib0/encoding.js'
-import * as decoding from '../../yjs/node_modules/lib0/decoding.js'
-import * as prng from '../../yjs/node_modules/lib0/prng.js'
-import * as Y from '../../yjs/src/index.js'
-import { ContentAny, readContentAny } from '../../yjs/src/structs/ContentAny.js'
-import { ContentBinary, readContentBinary } from '../../yjs/src/structs/ContentBinary.js'
-import { ContentDeleted, readContentDeleted } from '../../yjs/src/structs/ContentDeleted.js'
-import { ContentDoc, readContentDoc } from '../../yjs/src/structs/ContentDoc.js'
-import { ContentEmbed, readContentEmbed } from '../../yjs/src/structs/ContentEmbed.js'
-import { ContentFormat, readContentFormat } from '../../yjs/src/structs/ContentFormat.js'
-import { ContentJSON, readContentJSON } from '../../yjs/src/structs/ContentJSON.js'
-import { ContentString, readContentString } from '../../yjs/src/structs/ContentString.js'
-import { ContentType, readContentType } from '../../yjs/src/structs/ContentType.js'
-import { GC } from '../../yjs/src/structs/GC.js'
-import { Skip } from '../../yjs/src/structs/Skip.js'
-import { YArray } from '../../yjs/src/types/YArray.js'
-import { YMap } from '../../yjs/src/types/YMap.js'
-import { YText } from '../../yjs/src/types/YText.js'
-import { YXmlElement } from '../../yjs/src/types/YXmlElement.js'
-import { YXmlFragment } from '../../yjs/src/types/YXmlFragment.js'
-import { YXmlHook } from '../../yjs/src/types/YXmlHook.js'
-import { YXmlText } from '../../yjs/src/types/YXmlText.js'
+import * as encoding from 'lib0/encoding.js'
+import * as decoding from 'lib0/decoding.js'
+import * as prng from 'lib0/prng.js'
+import * as Y from '../node_modules/yjs/src/index.js'
+import { ContentAny, readContentAny } from '../node_modules/yjs/src/structs/ContentAny.js'
+import { ContentBinary, readContentBinary } from '../node_modules/yjs/src/structs/ContentBinary.js'
+import { ContentDeleted, readContentDeleted } from '../node_modules/yjs/src/structs/ContentDeleted.js'
+import { ContentDoc, readContentDoc } from '../node_modules/yjs/src/structs/ContentDoc.js'
+import { ContentEmbed, readContentEmbed } from '../node_modules/yjs/src/structs/ContentEmbed.js'
+import { ContentFormat, readContentFormat } from '../node_modules/yjs/src/structs/ContentFormat.js'
+import { ContentJSON, readContentJSON } from '../node_modules/yjs/src/structs/ContentJSON.js'
+import { ContentString, readContentString } from '../node_modules/yjs/src/structs/ContentString.js'
+import { ContentType, readContentType } from '../node_modules/yjs/src/structs/ContentType.js'
+import { GC } from '../node_modules/yjs/src/structs/GC.js'
+import { Skip } from '../node_modules/yjs/src/structs/Skip.js'
+import { YArray } from '../node_modules/yjs/src/types/YArray.js'
+import { YMap } from '../node_modules/yjs/src/types/YMap.js'
+import { YText } from '../node_modules/yjs/src/types/YText.js'
+import { YXmlElement } from '../node_modules/yjs/src/types/YXmlElement.js'
+import { YXmlFragment } from '../node_modules/yjs/src/types/YXmlFragment.js'
+import { YXmlHook } from '../node_modules/yjs/src/types/YXmlHook.js'
+import { YXmlText } from '../node_modules/yjs/src/types/YXmlText.js'
 import {
   DeleteItem as YDeleteItem,
   DeleteSet as YDeleteSet,
   readDeleteSet as yReadDeleteSet,
   writeDeleteSet as yWriteDeleteSet
-} from '../../yjs/src/utils/DeleteSet.js'
-import { readID as yReadID, writeID as yWriteID } from '../../yjs/src/utils/ID.js'
-import { DSEncoderV2 } from '../../yjs/src/utils/UpdateEncoder.js'
-import { DSDecoderV2 } from '../../yjs/src/utils/UpdateDecoder.js'
+} from '../node_modules/yjs/src/utils/DeleteSet.js'
+import { readID as yReadID, writeID as yWriteID } from '../node_modules/yjs/src/utils/ID.js'
+import { DSEncoderV2 } from '../node_modules/yjs/src/utils/UpdateEncoder.js'
+import { DSDecoderV2 } from '../node_modules/yjs/src/utils/UpdateDecoder.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const fixturesDir = path.join(__dirname, '..', 'tests', 'fixtures')
@@ -408,6 +408,86 @@ const makeUpdateUtilityV2Fixtures = () => ({
       map.set('flag', true)
       nested.delete(0, 1)
     })
+  ]
+})
+
+const capturePendingStructsCase = codec => {
+  const encodeState = codec === 'v2' ? Y.encodeStateAsUpdateV2 : Y.encodeStateAsUpdate
+  const applyUpdate = codec === 'v2' ? Y.applyUpdateV2 : Y.applyUpdate
+
+  const source = new Y.Doc({ guid: `y-php-pending-structs-${codec}` })
+  source.clientID = 42
+  const text = source.getText('t')
+  const sv0 = Y.encodeStateVector(source)
+  text.insert(0, 'abc')
+  const u1 = encodeState(source, sv0)
+  const sv1 = Y.encodeStateVector(source)
+  text.insert(3, 'def')
+  const u2 = encodeState(source, sv1)
+
+  // Deliver u2 before u1: the receiver must park the structs as pending.
+  const receiver = new Y.Doc({ guid: `y-php-pending-structs-receiver-${codec}` })
+  applyUpdate(receiver, u2)
+  const pendingUpdateHex = hex(receiver.store.pendingStructs.update)
+  const pendingMissing = Array.from(receiver.store.pendingStructs.missing.entries())
+  const encodedWithPendingHex = hex(encodeState(receiver))
+  applyUpdate(receiver, u1)
+
+  return {
+    name: `out-of-order-structs-${codec}`,
+    codec,
+    u1Hex: hex(u1),
+    u2Hex: hex(u2),
+    pendingUpdateHex,
+    pendingMissing,
+    encodedWithPendingHex,
+    finalText: receiver.getText('t').toString(),
+    finalUpdateHex: hex(encodeState(receiver))
+  }
+}
+
+const capturePendingDeleteSetCase = codec => {
+  const encodeState = codec === 'v2' ? Y.encodeStateAsUpdateV2 : Y.encodeStateAsUpdate
+  const applyUpdate = codec === 'v2' ? Y.applyUpdateV2 : Y.applyUpdate
+
+  const source = new Y.Doc({ guid: `y-php-pending-ds-${codec}` })
+  source.clientID = 42
+  const text = source.getText('t')
+  const sv0 = Y.encodeStateVector(source)
+  text.insert(0, 'abc')
+  const u1 = encodeState(source, sv0)
+  const sv1 = Y.encodeStateVector(source)
+  text.delete(0, 1)
+  const u2 = encodeState(source, sv1)
+
+  // u2 only contains a delete set; its targets are unknown to the receiver.
+  const receiver = new Y.Doc({ guid: `y-php-pending-ds-receiver-${codec}` })
+  applyUpdate(receiver, u2)
+  const pendingDsHex = hex(receiver.store.pendingDs)
+  const encodedWithPendingHex = hex(encodeState(receiver))
+  applyUpdate(receiver, u1)
+
+  return {
+    name: `pending-delete-set-${codec}`,
+    codec,
+    u1Hex: hex(u1),
+    u2Hex: hex(u2),
+    pendingDsHex,
+    encodedWithPendingHex,
+    finalText: receiver.getText('t').toString(),
+    finalUpdateHex: hex(encodeState(receiver))
+  }
+}
+
+const makePendingUpdateFixtures = () => ({
+  source: 'yjs/src/utils/encoding.js (integrateStructs, readUpdateV2, encodeStateAsUpdateV2)',
+  structsCases: [
+    capturePendingStructsCase('v1'),
+    capturePendingStructsCase('v2')
+  ],
+  deleteSetCases: [
+    capturePendingDeleteSetCase('v1'),
+    capturePendingDeleteSetCase('v2')
   ]
 })
 
@@ -1554,4 +1634,51 @@ fs.writeFileSync(
 fs.writeFileSync(
   path.join(fixturesDir, 'struct-content.json'),
   `${JSON.stringify(makeStructContentFixtures(), null, 2)}\n`
+)
+fs.writeFileSync(
+  path.join(fixturesDir, 'pending-updates.json'),
+  `${JSON.stringify(makePendingUpdateFixtures(), null, 2)}\n`
+)
+
+// The oldDoc payloads live only as string literals inside exported test
+// functions in yjs/tests/compatibility.tests.js, which the published yjs npm
+// package does not ship. tools/compatibility.tests.js is a verbatim copy of
+// that file from yjs v13.6.31, and the payloads are extracted from its source
+// text. Expected values are captured by applying each payload with real JS Yjs
+// rather than parsing the literals in the test bodies.
+const makeCompatibilityFixtures = () => {
+  const compatibilityCases = [
+    { name: 'testArrayCompatibilityV1', read: doc => doc.getArray('array').toJSON() },
+    { name: 'testMapDecodingCompatibilityV1', read: doc => doc.getMap('map').toJSON() },
+    { name: 'testTextDecodingCompatibilityV1', read: doc => doc.getText('text').toDelta() }
+  ]
+
+  const sourcePath = path.join(__dirname, 'compatibility.tests.js')
+  const source = fs.readFileSync(sourcePath, 'utf8')
+  const fixtures = {}
+
+  for (const { name, read } of compatibilityCases) {
+    const start = source.indexOf(`export const ${name}`)
+    if (start === -1) {
+      throw new Error(`Unable to find ${name} in compatibility.tests.js`)
+    }
+
+    const end = source.indexOf('\n/**', start + 1)
+    const block = source.slice(start, end === -1 ? source.length : end)
+    const oldDocMatch = block.match(/const oldDoc = '([^']+)'/)
+    if (oldDocMatch === null) {
+      throw new Error(`Unable to find oldDoc in ${name}`)
+    }
+
+    const doc = new Y.Doc()
+    Y.applyUpdate(doc, Buffer.from(oldDocMatch[1], 'base64'))
+    fixtures[name] = { oldDoc: oldDocMatch[1], oldVal: read(doc) }
+  }
+
+  return fixtures
+}
+
+fs.writeFileSync(
+  path.join(fixturesDir, 'compatibility-v1.json'),
+  `${JSON.stringify(makeCompatibilityFixtures(), null, 2)}\n`
 )

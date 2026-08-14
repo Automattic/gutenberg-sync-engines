@@ -400,14 +400,13 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 		 * base64 V2 update directly).
 		 *
 		 * Per-row apply failures are skipped rather than fataling the
-		 * simulated client: under the multi-process concurrency probe a
-		 * read-visibility race can permanently skip a row this client never
-		 * receives, and a later row referencing it trips the vendored
-		 * y-php's missing-dependency crash. A real JS Yjs client parks such
-		 * rows as pending instead of crashing, so catch-and-skip is the
-		 * faithful simulation. Unreachable in the single-process harness
-		 * (rows always arrive in causal order there), so the convergence
-		 * oracle is unaffected.
+		 * simulated client. y-php parks missing-dependency rows as pending
+		 * (JS Yjs parity), so under the multi-process concurrency probe a
+		 * row whose dependency was skipped by a read-visibility race simply
+		 * waits for the gap to fill; the catch remains as a guard against
+		 * malformed rows. Unreachable in the single-process harness (rows
+		 * always arrive in causal order there), so the convergence oracle
+		 * is unaffected.
 		 *
 		 * @param \Yjs\Utils\Doc $doc  Client document.
 		 * @param array          $rows Typed rows from get_updates_since().

@@ -208,11 +208,7 @@ noise under intent-log), with one exception noted below.
   since the engine reserves it for genuinely malformed bytes. The
   per-room-lock engines (intent-log, de-rtc) showed zero voids under
   the same load, paying instead with measured queueing (+1.9 ms and
-  +10.5 ms p50 respectively at 4 writers). One piece of this lives
-  upstream: the vendored y-php still crashes on missing-dependency
-  updates instead of parking them as pending (JS Yjs parity); the
-  engine contains and recovers from the crash, but the fix belongs in
-  y-php (see ref-crash.md there).
+  +10.5 ms p50 respectively at 4 writers).
 - **The websocket transport drops the client's engine stamps.** The
   daemon's room-request validation
   (`WP_WebSocket_Sync_Server::validate_room_request()`) normalizes away
