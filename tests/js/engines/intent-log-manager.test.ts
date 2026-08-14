@@ -614,6 +614,151 @@ describe( 'intent-log manager', () => {
 		expect( pushedIds ).toContain( ownInsert.payload.block.syncId );
 	} );
 
+	it( 'REGRESSION: deleting a just-arrived remote block before testifying it re-pushes (no silent editor/doc split), and the repeat deletion is captured', async () => {
+		/*
+		 * The fuzzer's leave/re-join lane found this: a peer's block is
+		 * pushed to the editor, and the user deletes it BEFORE any edit
+		 * echoed it back through update() — so it never became removable.
+		 * Retention correctly refuses the deletion, but the restore push
+		 * used to be suppressed because the doc still matched
+		 * lastPushedState (set by the block's own arrival push), leaving
+		 * this editor silently behind the shared document forever.
+		 */
+		const { manager, handlers, transport } = await loadManagedEntity();
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [
+				{
+					syncId: 'genesis-1',
+					blockType: 'core/paragraph',
+					text: 'Seed',
+				},
+			] )
+		);
+
+		// A remote peer (e.g. a rejoiner) inserts a block; it is pushed.
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				intentId: 'remote-rejoin-1',
+				actorId: 'u9c9',
+				baseSeq: 0,
+				txnId: null,
+				type: 'insert_block',
+				payload: {
+					block: {
+						syncId: 'rejoin-block',
+						blockType: 'core/paragraph',
+						text: 'theirs',
+					},
+					parentId: null,
+					afterSiblingId: null,
+				},
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.INTENT,
+		} );
+		const arrivalPush = handlers.edits.at( -1 ) as {
+			blocks: Array< {
+				attributes: { metadata?: { syncId?: string } };
+			} >;
+		};
+		expect(
+			arrivalPush.blocks.map(
+				( block ) => block.attributes.metadata?.syncId
+			)
+		).toContain( 'rejoin-block' );
+
+		// The user deletes it as their FIRST interaction — the testimony
+		// never contained it, so it must be retained, and the editor must
+		// be caught back up (visible resurrection), not left behind.
+		transport.captured.sent.length = 0;
+		const editsBeforeDelete = handlers.edits.length;
+		manager.update(
+			'postType/post',
+			'1',
+			{
+				blocks: [
+					{
+						name: 'core/paragraph',
+						attributes: {
+							content: 'Seed',
+							metadata: { syncId: 'genesis-1' },
+						},
+						innerBlocks: [],
+					},
+				],
+			},
+			'gutenberg'
+		);
+		expect(
+			transport.captured.sent.map(
+				( update ) => JSON.parse( update.data ).type
+			)
+		).not.toContain( 'remove_block' );
+		// A NEW push must be dispatched — the previous one (the arrival
+		// push) proves nothing about what the editor now displays.
+		expect( handlers.edits.length ).toBeGreaterThan( editsBeforeDelete );
+		const restorePush = handlers.edits.at( -1 ) as {
+			blocks: Array< {
+				attributes: { metadata?: { syncId?: string } };
+			} >;
+		};
+		expect(
+			restorePush.blocks.map(
+				( block ) => block.attributes.metadata?.syncId
+			)
+		).toContain( 'rejoin-block' );
+
+		// The editor renders the restore (echo testifies the block)…
+		manager.update(
+			'postType/post',
+			'1',
+			{
+				blocks: [
+					{
+						name: 'core/paragraph',
+						attributes: {
+							content: 'Seed',
+							metadata: { syncId: 'genesis-1' },
+						},
+						innerBlocks: [],
+					},
+					{
+						name: 'core/paragraph',
+						attributes: {
+							content: 'theirs',
+							metadata: { syncId: 'rejoin-block' },
+						},
+						innerBlocks: [],
+					},
+				],
+			},
+			'gutenberg'
+		);
+
+		// …so deleting it AGAIN is now a real, captured deletion.
+		transport.captured.sent.length = 0;
+		manager.update(
+			'postType/post',
+			'1',
+			{
+				blocks: [
+					{
+						name: 'core/paragraph',
+						attributes: {
+							content: 'Seed',
+							metadata: { syncId: 'genesis-1' },
+						},
+						innerBlocks: [],
+					},
+				],
+			},
+			'gutenberg'
+		);
+		const repeatTypes = transport.captured.sent.map(
+			( update ) => JSON.parse( update.data ).type
+		);
+		expect( repeatTypes ).toContain( 'remove_block' );
+	} );
+
 	it( 'REGRESSION: a remotely removed block is not resurrected by a stale editor tree', async () => {
 		const { manager, transport } = await loadManagedEntity();
 		transport.captured.session!.receiveUpdate(

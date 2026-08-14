@@ -878,7 +878,27 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				derived.retainedIds.size > 0 ||
 				treeHasTombstoned ||
 				idsRemapped;
-			if ( editorIsBehind && capturedJson !== state.lastPushedState ) {
+			/*
+			 * Retained blocks and tombstone-bearing trees PROVABLY diverge
+			 * from the document no matter what was pushed before:
+			 * lastPushedState equality only proves the DOC is unchanged
+			 * since the last push, not that the editor displays it. Without
+			 * this forced push, deleting a just-arrived remote block BEFORE
+			 * its push echo testified it (so it never became removable)
+			 * left the editor silently behind the document forever — the
+			 * retention won (block stays in the doc) but the suppressed
+			 * push never restored it on screen. Found by the fuzzer as
+			 * stable divergence after a peer re-joined. The push visibly
+			 * resurrects the block; its echo then makes the id removable,
+			 * so repeating the deletion works.
+			 */
+			const editorContentDiverges =
+				derived.retainedIds.size > 0 || treeHasTombstoned;
+			if (
+				editorIsBehind &&
+				( editorContentDiverges ||
+					capturedJson !== state.lastPushedState )
+			) {
 				state.handlers.editRecord(
 					{ blocks: toEditorBlocks( captured, state.clientIds ) },
 					{ undoIgnore: true }
