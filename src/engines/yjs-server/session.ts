@@ -46,6 +46,23 @@ export const YJS_SERVER_ENGINE_PROTOCOL = 1;
 export const YJS_SERVER_SNAPSHOT_TYPE = 'snapshot';
 
 /**
+ * The yjs-server session codec: EngineSessionCodec plus the transport
+ * capabilities this engine declares.
+ */
+export interface YjsServerSessionCodec extends EngineSessionCodec {
+	/**
+	 * Transport capability: flush queued updates even with no collaborator
+	 * present. The SERVER's document is the source of truth for every
+	 * (re)joining client, so the room must track a solo session too: updates
+	 * held back while solo are invisible to the client's own next page load,
+	 * which bootstraps from the server snapshot and would wipe the editor
+	 * back to the room's stale state. Ingest is idempotent (redelivered
+	 * updates settle as benign already-merged voids), so solo sends are safe.
+	 */
+	syncWhileSolo: true;
+}
+
+/**
  * Options for creating a yjs-server session codec.
  */
 export interface YjsServerSessionOptions {
@@ -89,7 +106,7 @@ function createFullStateUpdate( doc: Y.Doc ): EngineUpdate {
  */
 export function createYjsServerSessionCodec(
 	options: YjsServerSessionOptions
-): EngineSessionCodec {
+): YjsServerSessionCodec {
 	const { doc } = options;
 	const awareness = options.awareness ?? new Awareness( doc );
 
@@ -148,6 +165,7 @@ export function createYjsServerSessionCodec(
 		clientId: doc.clientID,
 		engineSlug: YJS_SERVER_ENGINE_SLUG,
 		engineProtocol: YJS_SERVER_ENGINE_PROTOCOL,
+		syncWhileSolo: true,
 		// The server compacts by itself and never nominates a client, so a
 		// compaction request should not occur — but the contract requires an
 		// answer, and a full-state update is the correct, idempotent one.
