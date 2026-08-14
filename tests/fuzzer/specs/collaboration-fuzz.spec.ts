@@ -91,6 +91,10 @@ const DISABLE_SYNC_FAULTS =
 	process.env.RTC_FUZZ_DISABLE_SYNC_FAULTS === '1' ||
 	TRANSPORT === 'websocket';
 const DISABLE_RELOAD = process.env.RTC_FUZZ_DISABLE_RELOAD === '1';
+// Engines with a documented no-title-sync gap (the runner sets this from
+// its capability map) skip title actions; untouched titles stay converged,
+// so the oracle needs no change.
+const SYNC_TITLE = process.env.RTC_FUZZ_SYNC_TITLE !== '0';
 const TEST_TIMEOUT_MS = getEnvInt(
 	'RTC_FUZZ_TEST_TIMEOUT_MS',
 	120000 + STEP_COUNT * 15000
@@ -662,6 +666,11 @@ const ACTIONS: Array< {
 	},
 ];
 
+const TITLE_ACTION_LABELS = new Set( [ 'edit-title', 'ui-type-title' ] );
+const ACTIVE_ACTIONS = SYNC_TITLE
+	? ACTIONS
+	: ACTIONS.filter( ( action ) => ! TITLE_ACTION_LABELS.has( action.label ) );
+
 /**
  * Reserve a distinct milestone step (save, reload, late join) so two
  * milestones never land on the same step.
@@ -892,7 +901,7 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 						await armSyncFault( actor, { status } );
 					}
 
-					const action = pick( rng, ACTIONS );
+					const action = pick( rng, ACTIVE_ACTIONS );
 					const detail =
 						await test.step( `seed ${ seed } step ${ step } ${ action.label } user ${ actorIndex }`, async () =>
 							( await action.run( {

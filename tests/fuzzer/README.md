@@ -13,12 +13,17 @@ pluggable engines and transports.
 npm run fuzz
 ```
 
-That runs the default matrix — `{intent-log, yjs-server} ×
+That runs the default matrix — `{intent-log, yjs-server, de-rtc} ×
 {http-polling, http-long-polling, websocket}` — with 5 seeds per combo,
-12 actions per seed, 2 collaborating browsers. It starts wp-env if needed,
-flips the engine/transport per combo, manages the websocket daemon, rechecks
-failures, and writes a summary. Exit code is non-zero when any failure
-reproduces.
+12 actions per seed, 2 collaborating browsers. It starts the TESTS wp-env
+(`.wp-env.tests.json`) if needed, flips the engine/transport per combo,
+manages the websocket daemon, rechecks failures, and writes a summary.
+Exit code is non-zero when any failure reproduces.
+
+Websocket combos need host port 8787 for a daemon serving the TESTS
+database, so the runner removes the dev env's auto-started daemon
+(`wp-sync-ws-daemon`, which serves the DEV database) for the duration of
+the run; `npm run env start` or `npm run rtc:ws` brings it back.
 
 Common variations:
 
@@ -90,7 +95,7 @@ few durable invariants instead of many brittle UI details.*
   an implementation detail of the upstream fork's client-merging engine.
   Convergence, validity, and the reload round-trip apply to any engine.
 - **Websocket lane.** The `wp collaboration sync-server` PHP daemon is run
-  through wp-env's generated compose file with the port **published**
+  through the tests env's generated compose file with the port **published**
   (`-p 8787:8787`) and the daemon bound to `0.0.0.0` — an unpublished or
   loopback-bound daemon is silently unreachable from the browser (clients
   retry forever with no error). The daemon is restarted per combo because a
@@ -149,6 +154,11 @@ including the worktree duplicate-mount handling). Engine/transport are set
   (`recheck-artifacts/`) and the `fuzz-run.json` action trace; replay with
   the command printed in `summary.md`. Shrink by re-running with smaller
   `--steps` while the failure persists.
+- Documented engine capability gaps are excluded up front: the runner's
+  `ENGINE_CAPABILITIES` map (run.mjs) disables actions an engine cannot
+  sync (currently de-rtc's missing title sync) so lanes measure real
+  defects, not known limitations. Extend the map when an engine's
+  documented capabilities change.
 - Before filing anything, check the known-issue families in AGENTS.md —
   e.g. the intent-log echo race (canvas corruption under editor pushes
   racing live keystrokes, worst over websocket), yjs-server's silent LWW on

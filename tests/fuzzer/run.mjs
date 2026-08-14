@@ -49,8 +49,26 @@ const ENGINE_OPTION = 'wp_sync_engine';
 const TRANSPORT_OPTION = 'gutenberg_sync_engines_transport';
 const WS_PORT = Number.parseInt( process.env.RTC_FUZZ_WS_PORT || '8787', 10 );
 const WS_DAEMON_CONTAINER = 'rtc-fuzz-ws-daemon';
+// The DEV env's afterStart hook auto-starts its own daemon under this name
+// (tests/e2e/bin/rtc-dev.mjs); it serves the DEV database but holds host
+// port 8787, so websocket combos must displace it. `npm run env start` (or
+// `npm run rtc:ws`) brings it back after a fuzz run.
+const DEV_WS_DAEMON_CONTAINER = 'wp-sync-ws-daemon';
+// The fuzzer targets the TESTS environment (a single-site wp-env: services
+// are plain `cli`/`wordpress`, port from WP_ENV_PORT).
+const TESTS_CONFIG = '.wp-env.tests.json';
 
-const DEFAULT_ENGINES = [ 'intent-log', 'yjs-server' ];
+const DEFAULT_ENGINES = [ 'intent-log', 'yjs-server', 'de-rtc' ];
+
+/*
+ * Documented engine capability gaps the fuzzer must not "rediscover"
+ * (docs/engine-comparison.md): actions an engine cannot sync are excluded
+ * from its lanes rather than reported as divergence.
+ */
+const ENGINE_CAPABILITIES = {
+	// "Content only (no title sync yet); title edits stay local."
+	'de-rtc': { syncsTitle: false },
+};
 const DEFAULT_TRANSPORTS = [
 	'http-polling',
 	'http-long-polling',
@@ -151,7 +169,7 @@ function printUsage() {
 		[
 			'Usage: npm run fuzz -- [options]',
 			'',
-			'  --engines=a,b        Engines to sweep (default: intent-log,yjs-server)',
+			'  --engines=a,b        Engines to sweep (default: intent-log,yjs-server,de-rtc)',
 			'  --transports=a,b     Transports to sweep (default: http-polling,http-long-polling,websocket)',
 			'  --combos=e/t,...     Explicit engine/transport pairs (overrides the cross product)',
 			'  --seeds=N            Seeds per combo (default: 5)',
@@ -235,7 +253,7 @@ function runWpCli( wpArgs, options = {} ) {
 			'run',
 			'--rm',
 			'-T',
-			'tests-cli',
+			'cli',
 			'wp',
 			...wpArgs,
 		],
@@ -249,16 +267,19 @@ function runWpCli( wpArgs, options = {} ) {
  */
 function wpEnvWorkDirectory() {
 	const home = process.env.WP_ENV_HOME || path.join( os.homedir(), '.wp-env' );
-	const configFilePath = path.join( REPO_ROOT, '.wp-env.json' );
+	const configFilePath = path.join( REPO_ROOT, TESTS_CONFIG );
 	const hash = createHash( 'md5' ).update( configFilePath ).digest( 'hex' );
 
 	const legacy = path.join( home, hash );
 	if ( existsSync( legacy ) ) {
 		return legacy;
 	}
+	// wp-env's descriptive naming: wp-env-<project-dir>[-<variant>]-<hash8>,
+	// where the variant comes from the config filename (.wp-env.tests.json
+	// -> "tests").
 	const descriptive = path.join(
 		home,
-		`wp-env-${ path.basename( REPO_ROOT ) }-${ hash.slice( 0, 8 ) }`
+		`wp-env-${ path.basename( REPO_ROOT ) }-tests-${ hash.slice( 0, 8 ) }`
 	);
 	if ( existsSync( descriptive ) ) {
 		return descriptive;
@@ -291,7 +312,7 @@ function wpEnvWorkDirectory() {
 function testsSitePort( composeFile ) {
 	try {
 		const match = readFileSync( composeFile, 'utf8' ).match(
-			/\$\{WP_ENV_TESTS_PORT:-(\d+)\}:80/
+			/\$\{WP_ENV_PORT:-(\d+)\}:80/
 		);
 		if ( match ) {
 			return Number.parseInt( match[ 1 ], 10 );
@@ -313,7 +334,7 @@ async function isEnvRunning( composeFile ) {
 			'--status',
 			'running',
 		] );
-		return stdout.split( '\n' ).includes( 'tests-wordpress' );
+		return stdout.split( '\n' ).includes( 'wordpress' );
 	} catch {
 		return false;
 	}
@@ -327,10 +348,14 @@ async function ensureEnv() {
 	if ( composeFile && ( await isEnvRunning( composeFile ) ) ) {
 		log( 'wp-env is already running.' );
 	} else {
-		log( 'Starting wp-env (this can take a while)…' );
-		await runCommand( 'npx', [ 'wp-env', 'start' ], {
-			stdio: [ 'ignore', 'inherit', 'inherit' ],
-		} );
+		log( 'Starting the tests wp-env (this can take a while)…' );
+		await runCommand(
+			'npx',
+			[ 'wp-env', '--config', TESTS_CONFIG, 'start' ],
+			{
+				stdio: [ 'ignore', 'inherit', 'inherit' ],
+			}
+		);
 		workDirectory = wpEnvWorkDirectory();
 	}
 	if ( ! workDirectory ) {
@@ -411,6 +436,18 @@ function stopWsDaemon() {
 }
 
 /**
+ * Frees host port 8787 for the fuzz daemon: removes a stale fuzz daemon and
+ * the DEV env's auto-started daemon (which serves the dev database — wrong
+ * DB for the tests site this run targets).
+ */
+function clearDaemonPortHolders() {
+	stopWsDaemon();
+	spawnSync( 'docker', [ 'rm', '-f', DEV_WS_DAEMON_CONTAINER ], {
+		stdio: 'ignore',
+	} );
+}
+
+/**
  * Start the plugin's PHP websocket sync daemon against the TESTS site via
  * the generated compose file. `-p` publishes the port to the host and
  * `--host=0.0.0.0` makes the daemon reachable through it; without BOTH the
@@ -419,7 +456,7 @@ function stopWsDaemon() {
  * @param {string} composeFile Path to docker-compose.yml.
  */
 async function startWsDaemon( composeFile ) {
-	stopWsDaemon();
+	clearDaemonPortHolders();
 	const daemon = spawn(
 		'docker',
 		[
@@ -432,7 +469,7 @@ async function startWsDaemon( composeFile ) {
 			WS_DAEMON_CONTAINER,
 			'-p',
 			`${ WS_PORT }:${ WS_PORT }`,
-			'tests-cli',
+			'cli',
 			'wp',
 			'collaboration',
 			'sync-server',
@@ -533,6 +570,7 @@ async function runPlaywright( { combo, baseUrl, comboDir, seeds, args, phase } )
 	const outputDir = path.join( comboDir, `${ phase }-artifacts` );
 	await fs.mkdir( outputDir, { recursive: true } );
 
+	const capabilities = ENGINE_CAPABILITIES[ combo.engine ] || {};
 	const env = {
 		RTC_FUZZ_ENGINE: combo.engine,
 		RTC_FUZZ_JSON_REPORT: reportPath,
@@ -547,6 +585,9 @@ async function runPlaywright( { combo, baseUrl, comboDir, seeds, args, phase } )
 		RTC_FUZZ_USERS: String( args.users ),
 		WP_BASE_URL: baseUrl,
 	};
+	if ( false === capabilities.syncsTitle ) {
+		env.RTC_FUZZ_SYNC_TITLE = '0';
+	}
 	if ( args.noFaults ) {
 		env.RTC_FUZZ_DISABLE_SYNC_FAULTS = '1';
 	}
