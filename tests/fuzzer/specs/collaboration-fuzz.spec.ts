@@ -101,6 +101,22 @@ const TEST_TIMEOUT_MS = getEnvInt(
 	120000 + STEP_COUNT * 15000
 );
 const RETRIABLE_SYNC_FAILURE_STATUSES = [ 429, 500, 503 ];
+// Probability that a step is preceded by a sync fault (60% of faults are
+// delays, the rest retryable failures).
+const FAULT_RATE = ( () => {
+	const raw = Number.parseFloat( process.env.RTC_FUZZ_FAULT_RATE || '0.25' );
+	return Number.isFinite( raw ) ? Math.min( Math.max( raw, 0 ), 1 ) : 0.25;
+} )();
+// Leave/re-join lifecycle milestones (a non-primary collaborator closes
+// their tab mid-session and later rejoins with the same account).
+const DISABLE_LIFECYCLE = process.env.RTC_FUZZ_DISABLE_LIFECYCLE === '1';
+// Probability that a step becomes a BURST: several actions from distinct
+// actors fired concurrently with NO convergence wait in between — the
+// timing pressure a single-action-then-converge loop never produces.
+const BURST_RATE = ( () => {
+	const raw = Number.parseFloat( process.env.RTC_FUZZ_BURST_RATE || '0.2' );
+	return Number.isFinite( raw ) ? Math.min( Math.max( raw, 0 ), 1 ) : 0.2;
+} )();
 
 const THIRD_USER = {
 	username: 'fuzz-collaborator-3',
@@ -272,17 +288,19 @@ interface BlockSpec {
  * Insert a block via the store. `spec` is a serializable block description
  * ({ name, attributes, inner: [...] }); index -1 appends.
  *
- * @param page  Acting page.
- * @param spec  Serializable block description.
- * @param index Top-level insertion index; -1 appends.
+ * @param page         Acting page.
+ * @param spec         Serializable block description.
+ * @param index        Top-level insertion index; -1 appends.
+ * @param rootClientId
  */
 async function insertBlockAt(
 	page: Page,
 	spec: BlockSpec,
-	index: number
+	index: number,
+	rootClientId = ''
 ): Promise< void > {
 	await page.evaluate(
-		( { blockSpec, insertIndex } ) => {
+		( { blockSpec, insertIndex, root } ) => {
 			const { createBlock } = ( window as any ).wp.blocks;
 			const build = ( node: any ): any =>
 				createBlock(
@@ -291,15 +309,16 @@ async function insertBlockAt(
 					( node.inner ?? [] ).map( build )
 				);
 			const { dispatch, select } = ( window as any ).wp.data;
-			const count = select( 'core/block-editor' ).getBlocks().length;
+			const count =
+				select( 'core/block-editor' ).getBlocks( root ).length;
 			dispatch( 'core/block-editor' ).insertBlock(
 				build( blockSpec ),
 				insertIndex < 0 || insertIndex > count ? count : insertIndex,
-				'',
+				root,
 				false
 			);
 		},
-		{ blockSpec: spec, insertIndex: index }
+		{ blockSpec: spec, insertIndex: index, root: rootClientId }
 	);
 }
 
@@ -637,6 +656,94 @@ const ACTIONS: Array< {
 		},
 	},
 	{
+		label: 'insert-into-group',
+		run: async ( { page, seed, step, userIndex, rng } ) => {
+			const groups = ( await getFlatBlocks( page ) ).filter(
+				( block ) => block.name === 'core/group'
+			);
+			if ( ! groups.length ) {
+				return { skipped: 'no groups' };
+			}
+			const target = pick( rng, groups );
+			const text = marker( seed, step, userIndex, 'ingrp' );
+			await insertBlockAt(
+				page,
+				{ attributes: { content: text }, name: 'core/paragraph' },
+				0,
+				target.clientId
+			);
+			return { group: target.clientId, text };
+		},
+	},
+	{
+		label: 'move-into-group',
+		run: async ( { page, rng } ) => {
+			const moved = await page.evaluate( ( random ) => {
+				const { dispatch, select } = ( window as any ).wp.data;
+				const top = select( 'core/block-editor' ).getBlocks();
+				const groups = top.filter(
+					( block: any ) => 'core/group' === block.name
+				);
+				const movable = top.filter(
+					( block: any ) => 'core/group' !== block.name
+				);
+				if ( ! groups.length || movable.length < 2 ) {
+					return null;
+				}
+				const source = movable[ Math.floor( random * movable.length ) ];
+				const group = groups[ 0 ];
+				dispatch( 'core/block-editor' ).moveBlocksToPosition(
+					[ source.clientId ],
+					'',
+					group.clientId,
+					0
+				);
+				return { group: group.clientId, source: source.clientId };
+			}, rng() );
+			return moved ?? { skipped: 'no group/movable pair' };
+		},
+	},
+	{
+		label: 'deep-nest-group',
+		run: async ( { page, seed, step, userIndex } ) => {
+			const text = marker( seed, step, userIndex, 'deep' );
+			await insertBlockAt(
+				page,
+				{
+					inner: [
+						{
+							attributes: { content: `${ text }-1` },
+							name: 'core/paragraph',
+						},
+						{
+							inner: [
+								{
+									attributes: { content: `${ text }-2` },
+									name: 'core/paragraph',
+								},
+								{
+									inner: [
+										{
+											attributes: {
+												content: `${ text }-3`,
+											},
+											name: 'core/paragraph',
+										},
+									],
+									name: 'core/group',
+								},
+							],
+							name: 'core/group',
+						},
+					],
+					name: 'core/group',
+				},
+				-1
+			);
+			return { text };
+		},
+	},
+	{
 		label: 'concurrent-append',
 		run: async ( { pages, seed, step, rng } ) => {
 			const secondIndex = pages.length > 2 && rng() < 0.5 ? 2 : 1;
@@ -773,19 +880,27 @@ async function waitForDiscovery(
 	collaborationUtils: CollaborationUtils,
 	pages: Page[]
 ) {
+	await Promise.all(
+		pages.map( ( pg ) =>
+			pg
+				.getByRole( 'button', { name: /Collaborators list/ } )
+				.waitFor( { timeout: DISCOVERY_TIMEOUT_MS } )
+		)
+	);
 	if ( TRANSPORT === 'websocket' ) {
-		await Promise.all(
-			pages.map( ( pg ) =>
-				pg
-					.getByRole( 'button', { name: /Collaborators list/ } )
-					.waitFor( { timeout: DISCOVERY_TIMEOUT_MS } )
-			)
-		);
+		// Sync rides WS frames; waitForConvergence covers document sync.
 		return;
 	}
-	await collaborationUtils.waitForMutualDiscovery( {
-		timeout: DISCOVERY_TIMEOUT_MS,
-	} );
+	// The fixture's waitForMutualDiscovery iterates ITS page list, which can
+	// contain closed pages after a leave — run its per-page sync-cycle wait
+	// on the active pages only.
+	await Promise.all(
+		pages.map( ( pg ) =>
+			collaborationUtils.waitForSyncCycle( pg, 3, {
+				timeout: DISCOVERY_TIMEOUT_MS,
+			} )
+		)
+	);
 }
 
 /**
@@ -866,13 +981,63 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 					title: `RTC fuzz seed ${ seed }`,
 				} );
 
+				/*
+				 * EXISTING-POST variant (~1/3 of seeds): before the
+				 * collaborative session, the primary user opens the post
+				 * ALONE, edits, saves, and navigates away. The room then
+				 * already holds log history and saved content when the real
+				 * session starts — the re-genesis path a brand-new post
+				 * never exercises.
+				 */
+				const soloPhase = seed % 3 === 2;
+				if ( soloPhase ) {
+					record( { label: 'solo-phase', step: -1, userIndex: 0 } );
+					await collaborationUtils.openPost( post.id );
+					const soloPage = collaborationUtils.allPages[ 0 ];
+					for ( let i = 0; i < 2; i++ ) {
+						await insertBlockAt(
+							soloPage,
+							{
+								attributes: {
+									content: marker( seed, 90 + i, 0, 'pre' ),
+								},
+								name: 'core/paragraph',
+							},
+							-1
+						);
+					}
+					await saveDraftFromPage( soloPage );
+					// Leaving the editor ends the solo session; the next
+					// openPost starts a fresh one against the same room.
+					await soloPage.goto( '/wp-admin/index.php' );
+				}
+
 				await collaborationUtils.openPost( post.id );
-				await collaborationUtils.joinUser( post.id, SECOND_USER );
-				let pages = collaborationUtils.allPages;
-				let editors = collaborationUtils.allEditors;
-				await waitForDiscovery( collaborationUtils, pages );
-				await waitForConvergence( pages, CONVERGENCE_TIMEOUT_MS );
-				await assertNoInvalidBlocks( pages[ 0 ], 'initial load' );
+				const second = await collaborationUtils.joinUser(
+					post.id,
+					SECOND_USER
+				);
+				// Participants are managed HERE (not via the fixture's
+				// allPages): a leave closes a context, and closed pages must
+				// drop out of every wait.
+				const participants: Array< { editor: Editor; page: Page } > = [
+					{
+						editor: collaborationUtils.allEditors[ 0 ],
+						page: collaborationUtils.allPages[ 0 ],
+					},
+					{ editor: second.editor, page: second.page },
+				];
+				const activePages = () =>
+					participants.map( ( entry ) => entry.page );
+				await waitForDiscovery( collaborationUtils, activePages() );
+				await waitForConvergence(
+					activePages(),
+					CONVERGENCE_TIMEOUT_MS
+				);
+				await assertNoInvalidBlocks(
+					participants[ 0 ].page,
+					'initial load'
+				);
 
 				const usedMilestones = new Set< number >();
 				const saveStep = chooseMilestoneStep(
@@ -887,57 +1052,45 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 					USER_COUNT > 2
 						? chooseMilestoneStep( rng, STEP_COUNT, usedMilestones )
 						: -1;
-
-				for ( let step = 0; step < STEP_COUNT; step++ ) {
-					if ( step === lateJoinStep ) {
-						record( {
-							label: 'late-join',
-							step,
-							userIndex: pages.length,
-						} );
-						await requestUtils.createUser( THIRD_USER );
-						await collaborationUtils.joinUser(
-							post.id,
-							THIRD_USER
-						);
-						await waitForDiscovery(
-							collaborationUtils,
-							collaborationUtils.allPages
-						);
-						pages = collaborationUtils.allPages;
-						editors = collaborationUtils.allEditors;
-						await waitForConvergence(
-							pages,
-							CONVERGENCE_TIMEOUT_MS
-						);
-						// A late joiner must be able to contribute, not just
-						// receive.
-						await insertBlockAt(
-							pages[ pages.length - 1 ],
-							{
-								attributes: {
-									content: marker(
-										seed,
-										step,
-										pages.length - 1,
-										'late'
-									),
-								},
-								name: 'core/paragraph',
-							},
-							-1
-						);
-						await waitForConvergence(
-							pages,
-							CONVERGENCE_TIMEOUT_MS
-						);
+				/*
+				 * LEAVE/RE-JOIN lifecycle (~60% of seeds, when enabled): the
+				 * second collaborator closes their tab at one seeded step and
+				 * rejoins with the same account at a later one. Their unacked
+				 * local edits may legitimately be lost with the tab; the
+				 * remaining participants must stay converged throughout, and
+				 * the rejoiner must both receive the current document and be
+				 * able to contribute.
+				 */
+				let leaveStep = -1;
+				let rejoinStep = -1;
+				if ( ! DISABLE_LIFECYCLE && rng() < 0.6 && STEP_COUNT >= 4 ) {
+					const first = chooseMilestoneStep(
+						rng,
+						STEP_COUNT,
+						usedMilestones
+					);
+					const secondStep = chooseMilestoneStep(
+						rng,
+						STEP_COUNT,
+						usedMilestones
+					);
+					if ( first >= 0 && secondStep >= 0 ) {
+						leaveStep = Math.min( first, secondStep );
+						rejoinStep = Math.max( first, secondStep );
 					}
+				}
+				let departed = false;
 
+				const runSingleAction = async ( step: number ) => {
+					const pages = activePages();
 					const actorIndex = pickIndex( rng, pages.length );
 					const actor = pages[ actorIndex ];
 					const faultRoll = rng();
 
-					if ( ! DISABLE_SYNC_FAULTS && faultRoll < 0.15 ) {
+					if (
+						! DISABLE_SYNC_FAULTS &&
+						faultRoll < FAULT_RATE * 0.6
+					) {
 						const delayMs = 250 + Math.floor( rng() * 1250 );
 						record( {
 							detail: { delayMs },
@@ -946,7 +1099,10 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 							userIndex: actorIndex,
 						} );
 						await armSyncFault( actor, { delayMs } );
-					} else if ( ! DISABLE_SYNC_FAULTS && faultRoll < 0.25 ) {
+					} else if (
+						! DISABLE_SYNC_FAULTS &&
+						faultRoll < FAULT_RATE
+					) {
 						const status = pick(
 							rng,
 							RETRIABLE_SYNC_FAILURE_STATUSES
@@ -964,8 +1120,10 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 					const detail =
 						await test.step( `seed ${ seed } step ${ step } ${ action.label } user ${ actorIndex }`, async () =>
 							( await action.run( {
-								editor: editors[ actorIndex ],
-								editors,
+								editor: participants[ actorIndex ].editor,
+								editors: participants.map(
+									( entry ) => entry.editor
+								),
 								page: actor,
 								pages,
 								rng,
@@ -979,15 +1137,132 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 						step,
 						userIndex: actorIndex,
 					} );
+				};
+
+				for ( let step = 0; step < STEP_COUNT; step++ ) {
+					if ( step === lateJoinStep ) {
+						record( {
+							label: 'late-join',
+							step,
+							userIndex: participants.length,
+						} );
+						await requestUtils.createUser( THIRD_USER );
+						const third = await collaborationUtils.joinUser(
+							post.id,
+							THIRD_USER
+						);
+						participants.push( {
+							editor: third.editor,
+							page: third.page,
+						} );
+						await waitForDiscovery(
+							collaborationUtils,
+							activePages()
+						);
+						await waitForConvergence(
+							activePages(),
+							CONVERGENCE_TIMEOUT_MS
+						);
+						// A late joiner must be able to contribute, not just
+						// receive.
+						await insertBlockAt(
+							third.page,
+							{
+								attributes: {
+									content: marker(
+										seed,
+										step,
+										participants.length - 1,
+										'late'
+									),
+								},
+								name: 'core/paragraph',
+							},
+							-1
+						);
+						await waitForConvergence(
+							activePages(),
+							CONVERGENCE_TIMEOUT_MS
+						);
+					}
+
+					if ( step === leaveStep && participants.length > 1 ) {
+						record( { label: 'leave', step, userIndex: 1 } );
+						const [ leaver ] = participants.splice( 1, 1 );
+						await leaver.page.context().close();
+						departed = true;
+						// Remaining participants must still be converged.
+						await waitForConvergence(
+							activePages(),
+							CONVERGENCE_TIMEOUT_MS
+						);
+					}
+
+					if ( step === rejoinStep && departed ) {
+						record( { label: 'rejoin', step, userIndex: 1 } );
+						const rejoined = await collaborationUtils.joinUser(
+							post.id,
+							SECOND_USER
+						);
+						participants.splice( 1, 0, {
+							editor: rejoined.editor,
+							page: rejoined.page,
+						} );
+						departed = false;
+						await waitForDiscovery(
+							collaborationUtils,
+							activePages()
+						);
+						await waitForConvergence(
+							activePages(),
+							CONVERGENCE_TIMEOUT_MS
+						);
+						// The rejoiner must be able to contribute.
+						await insertBlockAt(
+							rejoined.page,
+							{
+								attributes: {
+									content: marker( seed, step, 1, 'rejoin' ),
+								},
+								name: 'core/paragraph',
+							},
+							-1
+						);
+						await waitForConvergence(
+							activePages(),
+							CONVERGENCE_TIMEOUT_MS
+						);
+						await assertNoInvalidBlocks(
+							rejoined.page,
+							'post-rejoin'
+						);
+					}
+
+					const burstRoll = rng();
+					if ( burstRoll < BURST_RATE && activePages().length > 1 ) {
+						// BURST: several actions, no convergence in between.
+						const burstSize = 2 + pickIndex( rng, 2 );
+						record( {
+							detail: { burstSize },
+							label: 'burst',
+							step,
+							userIndex: -1,
+						} );
+						for ( let i = 0; i < burstSize; i++ ) {
+							await runSingleAction( step );
+						}
+					} else {
+						await runSingleAction( step );
+					}
 
 					const state = await waitForConvergence(
-						pages,
+						activePages(),
 						CONVERGENCE_TIMEOUT_MS
 					);
 					expect( state.blockCount ).toBeGreaterThan( 0 );
 					await assertNoInvalidBlocks(
-						pages[ 0 ],
-						`step ${ step } (${ action.label })`
+						participants[ 0 ].page,
+						`step ${ step }`
 					);
 
 					if ( step === saveStep ) {
@@ -996,15 +1271,18 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 							step,
 							userIndex: 0,
 						} );
-						await saveDraftFromPage( pages[ 0 ] );
+						await saveDraftFromPage( participants[ 0 ].page );
 						await waitForConvergence(
-							pages,
+							activePages(),
 							CONVERGENCE_TIMEOUT_MS
 						);
 					}
 
 					if ( step === reloadStep ) {
-						const reloadIndex = pickIndex( rng, pages.length );
+						const reloadIndex = pickIndex(
+							rng,
+							participants.length
+						);
 						record( {
 							label: 'reload-milestone',
 							step,
@@ -1012,14 +1290,14 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 						} );
 						await reloadPage(
 							collaborationUtils,
-							pages[ reloadIndex ]
+							participants[ reloadIndex ].page
 						);
 						await waitForConvergence(
-							pages,
+							activePages(),
 							CONVERGENCE_TIMEOUT_MS
 						);
 						await assertNoInvalidBlocks(
-							pages[ reloadIndex ],
+							participants[ reloadIndex ].page,
 							'post-reload'
 						);
 					}
@@ -1034,21 +1312,27 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 					step: STEP_COUNT,
 					userIndex: 0,
 				} );
-				await saveDraftFromPage( pages[ 0 ] );
+				await saveDraftFromPage( participants[ 0 ].page );
 				const finalState = await waitForConvergence(
-					pages,
+					activePages(),
 					CONVERGENCE_TIMEOUT_MS
 				);
-				if ( ! DISABLE_RELOAD ) {
-					await reloadPage( collaborationUtils, pages[ 1 ] );
+				if ( ! DISABLE_RELOAD && participants.length > 1 ) {
+					await reloadPage(
+						collaborationUtils,
+						participants[ 1 ].page
+					);
 					const settled = await waitForConvergence(
-						pages,
+						activePages(),
 						CONVERGENCE_TIMEOUT_MS
 					);
 					expect( JSON.stringify( settled ) ).toBe(
 						JSON.stringify( finalState )
 					);
-					await assertNoInvalidBlocks( pages[ 1 ], 'final reload' );
+					await assertNoInvalidBlocks(
+						participants[ 1 ].page,
+						'final reload'
+					);
 				}
 
 				expect( finalState.blockCount ).toBeGreaterThan( 0 );
