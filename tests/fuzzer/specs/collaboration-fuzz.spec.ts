@@ -746,6 +746,10 @@ const ACTIONS: Array< {
 	{
 		label: 'concurrent-append',
 		run: async ( { pages, seed, step, rng } ) => {
+			if ( pages.length < 2 ) {
+				// Solo (a collaborator left): nothing to be concurrent with.
+				return { skipped: 'single participant' };
+			}
 			const secondIndex = pages.length > 2 && rng() < 0.5 ? 2 : 1;
 			await Promise.all( [
 				insertBlockAt(
