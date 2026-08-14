@@ -39,6 +39,21 @@ describe( 'createYjsServerSessionCodec', () => {
 		expect( session.clientId ).toBe( doc.clientID );
 	} );
 
+	it( 'declares the syncWhileSolo transport capability', () => {
+		const doc = new Y.Doc();
+		const session = createYjsServerSessionCodec( { doc } );
+
+		/*
+		 * The server's document is the source of truth for every (re)joining
+		 * client, so the room must track a solo session too. Without this
+		 * capability the polling transport holds updates back until a second
+		 * collaborator appears, and a solo type-save-reload session loses its
+		 * content: the reload bootstraps from the room's stale snapshot and
+		 * wipes the editor.
+		 */
+		expect( session.syncWhileSolo ).toBe( true );
+	} );
+
 	it( 'announces nothing on join with a fresh document (the server snapshot bootstraps it)', () => {
 		const doc = new Y.Doc();
 		const session = createYjsServerSessionCodec( { doc } );

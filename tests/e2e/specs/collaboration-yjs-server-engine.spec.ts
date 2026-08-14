@@ -275,6 +275,60 @@ test.describe( 'Collaboration - yjs-server engine', () => {
 		] );
 	} );
 
+	test( 'a solo session’s edits survive save and reload (new post flow)', async ( {
+		collaborationUtils,
+		admin,
+		editor,
+		page,
+	} ) => {
+		/*
+		 * The post-new.php shape: the room's genesis snapshot is built from
+		 * an EMPTY auto-draft, so everything typed in this session reaches
+		 * the room only as sync updates. The session is SOLO, which is the
+		 * regression surface: the polling transport holds updates back until
+		 * a collaborator appears unless the engine declares syncWhileSolo,
+		 * and a reload bootstraps the editor from the server's document —
+		 * if the solo updates never landed, the stale empty snapshot wipes
+		 * the freshly loaded title and content.
+		 */
+		await admin.createNewPost();
+		await collaborationUtils.waitForCollaborationReady( page );
+
+		await editor.canvas
+			.getByRole( 'textbox', { name: 'Add title' } )
+			.fill( 'Solo reload title' );
+		await editor.canvas
+			.getByRole( 'button', { name: 'Add default block' } )
+			.click();
+		await page.keyboard.type( 'Solo reload body' );
+
+		await editor.saveDraft();
+
+		// The solo queue drains on the polling cadence, and the save's own
+		// marker update is queued as saveDraft resolves: two full cycles
+		// guarantee everything typed above has reached the room.
+		await collaborationUtils.waitForSyncCycle( page, 2 );
+
+		await page.reload();
+		await collaborationUtils.waitForCollaborationReady( page );
+
+		// Let the fresh session bootstrap from the server's snapshot and
+		// settle: before the fix this is when the editor got wiped.
+		await collaborationUtils.waitForSyncCycle( page, 2 );
+
+		await expect(
+			editor.canvas.getByRole( 'textbox', { name: 'Add title' } )
+		).toHaveText( 'Solo reload title' );
+
+		const blocks = await editor.getBlocks();
+		expect( blocks ).toMatchObject( [
+			{
+				name: 'core/paragraph',
+				attributes: { content: 'Solo reload body' },
+			},
+		] );
+	} );
+
 	test( 'title edits sync between users in both directions', async ( {
 		collaborationUtils,
 		requestUtils,
