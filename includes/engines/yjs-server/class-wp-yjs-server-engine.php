@@ -889,7 +889,20 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 			$state->set( 'version', 1 );
 
 			if ( $post instanceof WP_Post ) {
-				$record->set( 'title', new \Yjs\Types\YText( $post->post_title ) );
+				$title = $post->post_title;
+
+				/*
+				 * A fresh auto-draft is stored with the placeholder "Auto Draft"
+				 * title while the editor shows an empty title (core blanks it
+				 * with an initial edit in edit-form-blocks.php). Seeding the
+				 * placeholder into the canonical document would push the "Auto Draft"
+				 * title to everyone as a title change.
+				 */
+				if ( 'auto-draft' === $post->post_status && ( 'Auto Draft' === $title || __( 'Auto Draft', 'default' ) === $title ) ) {
+					$title = '';
+				}
+
+				$record->set( 'title', new \Yjs\Types\YText( $title ) );
 				$yblocks = new \Yjs\Types\YArray();
 				$record->set( 'blocks', $yblocks );
 				if ( '' !== $post->post_content ) {
