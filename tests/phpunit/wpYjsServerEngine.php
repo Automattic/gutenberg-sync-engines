@@ -146,6 +146,52 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 		$this->assertSame( 'yjs-server', $storage->get_room_engine( $this->room() ) );
 	}
 
+	/**
+	 * The shape post-new.php creates: an auto-draft stored with the
+	 * placeholder title while the editor shows an empty title.
+	 */
+	public function test_genesis_blanks_the_auto_draft_placeholder_title() {
+		$auto_draft_id = self::factory()->post->create(
+			array(
+				'post_author'  => self::$editor_id,
+				'post_title'   => __( 'Auto Draft', 'default' ),
+				'post_status'  => 'auto-draft',
+				'post_content' => '',
+			)
+		);
+
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( 'postType/post:' . $auto_draft_id, 101, 0, array() );
+		$doc      = $this->client_doc_from_response( $response );
+
+		$this->assertSame( '', $doc->getMap( 'document' )->get( 'title' )->toString() );
+
+		wp_delete_post( $auto_draft_id, true );
+	}
+
+	/**
+	 * The guard is gated on auto-draft status: a published post a user
+	 * genuinely titled "Auto Draft" seeds verbatim.
+	 */
+	public function test_genesis_keeps_a_real_title_that_matches_the_placeholder() {
+		$published_id = self::factory()->post->create(
+			array(
+				'post_author'  => self::$editor_id,
+				'post_title'   => 'Auto Draft',
+				'post_status'  => 'publish',
+				'post_content' => '',
+			)
+		);
+
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( 'postType/post:' . $published_id, 101, 0, array() );
+		$doc      = $this->client_doc_from_response( $response );
+
+		$this->assertSame( 'Auto Draft', $doc->getMap( 'document' )->get( 'title' )->toString() );
+
+		wp_delete_post( $published_id, true );
+	}
+
 	public function test_update_merges_into_canonical_and_relays_to_peers() {
 		$engine = $this->engine();
 
