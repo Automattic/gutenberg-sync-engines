@@ -145,11 +145,11 @@ if ( ! class_exists( 'WP_Intent_Log_Rich_Text' ) ) {
 		private static function decode_entities( string $raw ): string {
 			return preg_replace_callback(
 				'/&([a-zA-Z]+|#x?[0-9a-fA-F]+);?/',
-				static function ( $match ) {
-					if ( ';' !== substr( $match[0], -1 ) ) {
-						return $match[0];
+				static function ( $matches ) {
+					if ( ';' !== substr( $matches[0], -1 ) ) {
+						return $matches[0];
 					}
-					$body = $match[1];
+					$body = $matches[1];
 					if ( '#' === $body[0] ) {
 						$code = ( 'x' === $body[1] || 'X' === $body[1] )
 							? intval( substr( $body, 2 ), 16 )
@@ -373,9 +373,17 @@ if ( ! class_exists( 'WP_Intent_Log_Rich_Text' ) ) {
 			usort(
 				$formats,
 				static function ( $a, $b ) {
-					return ( $a['start'] <=> $b['start'] )
-						?: ( $a['end'] <=> $b['end'] )
-						?: strcmp( $a['format'], $b['format'] );
+					$order = $a['start'] <=> $b['start'];
+
+					if ( 0 === $order ) {
+						$order = $a['end'] <=> $b['end'];
+					}
+
+					if ( 0 === $order ) {
+						$order = strcmp( $a['format'], $b['format'] );
+					}
+
+					return $order;
 				}
 			);
 
@@ -409,9 +417,17 @@ if ( ! class_exists( 'WP_Intent_Log_Rich_Text' ) ) {
 			usort(
 				$format_spans,
 				static function ( $a, $b ) {
-					return ( $a['start'] <=> $b['start'] )
-						?: ( $b['end'] <=> $a['end'] )
-						?: strcmp( $a['format'], $b['format'] );
+					$order = $a['start'] <=> $b['start'];
+
+					if ( 0 === $order ) {
+						$order = $b['end'] <=> $a['end'];
+					}
+
+					if ( 0 === $order ) {
+						$order = strcmp( $a['format'], $b['format'] );
+					}
+
+					return $order;
 				}
 			);
 
@@ -457,7 +473,7 @@ if ( ! class_exists( 'WP_Intent_Log_Rich_Text' ) ) {
 			while ( true ) {
 				// Close spans ending here (with close/reopen stack repair).
 				$reopen = array();
-				while ( count( $stack ) > 0 ) {
+				while ( array() !== $stack ) {
 					$has_ender = false;
 					foreach ( $stack as $span ) {
 						if ( $span['end'] === $position ) {
@@ -508,5 +524,5 @@ if ( ! class_exists( 'WP_Intent_Log_Rich_Text' ) ) {
 	 * @since 7.2.0
 	 * @access private
 	 */
-	class WP_Intent_Log_Unsupported_Html extends Exception {}
+	class WP_Intent_Log_Unsupported_Html extends Exception {} // phpcs:ignore Generic.Files.OneObjectStructurePerFile.MultipleFound -- Internal signal exception, colocated with its only thrower.
 }

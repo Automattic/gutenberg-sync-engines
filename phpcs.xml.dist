@@ -32,20 +32,62 @@
 	<!-- WordPress-Core + Extra + Docs, as wordpress-develop uses. -->
 	<rule ref="WordPress-Core"/>
 	<rule ref="WordPress-Extra"/>
-	<rule ref="WordPress-Docs"/>
 
-	<!-- Text domain for i18n checks. -->
+	<!-- Documentation standards apply to shipping code only. Test methods
+	     and benchmark scripts are named for what they assert; requiring
+	     docblocks there adds noise, not information. -->
+	<rule ref="WordPress-Docs">
+		<exclude-pattern>/tests/*</exclude-pattern>
+	</rule>
+
+	<!-- The PHPUnit suites and the benchmark harness run under WP-CLI or
+	     the test runner, never in a web response: their echo output is
+	     terminal text, they deliberately stage WP globals, and they
+	     base64-encode binary CRDT payloads as part of the wire format
+	     they exercise. -->
+	<rule ref="WordPress.Security.EscapeOutput">
+		<exclude-pattern>/tests/*</exclude-pattern>
+	</rule>
+	<rule ref="WordPress.WP.GlobalVariablesOverride">
+		<exclude-pattern>/tests/*</exclude-pattern>
+	</rule>
+	<rule ref="WordPress.PHP.DiscouragedPHPFunctions">
+		<exclude-pattern>/tests/*</exclude-pattern>
+	</rule>
+
+	<!-- CLI tooling reads and writes local files directly; the websocket
+	     daemon operates on stream sockets, which WP_Filesystem does not
+	     cover. -->
+	<rule ref="WordPress.WP.AlternativeFunctions">
+		<exclude-pattern>/tests/*</exclude-pattern>
+		<exclude-pattern>/includes/transports/websocket/*</exclude-pattern>
+	</rule>
+
+	<!-- Test fixtures and benchmark profiles colocate small helper
+	     classes with their only consumer. -->
+	<rule ref="Generic.Files.OneObjectStructurePerFile">
+		<exclude-pattern>/tests/*</exclude-pattern>
+	</rule>
+
+	<!-- Text domain for i18n checks. The 'gutenberg' domain is allowed
+	     because engine/transport strings were relocated from (and reuse
+	     the translations of) the Gutenberg collaboration framework this
+	     plugin extends. -->
 	<rule ref="WordPress.WP.I18n">
 		<properties>
 			<property name="text_domain" type="array">
 				<element value="gutenberg-sync-engines"/>
+				<element value="gutenberg"/>
 				<element value="default"/>
 			</property>
 		</properties>
 	</rule>
 
-	<!-- Prefix enforcement for globals defined by this plugin. -->
+	<!-- Prefix enforcement for globals defined by this plugin. Tests,
+	     benchmarks, and fixtures never load in a production site, so
+	     their locals and helpers are not held to the prefix. -->
 	<rule ref="WordPress.NamingConventions.PrefixAllGlobals">
+		<exclude-pattern>/tests/*</exclude-pattern>
 		<properties>
 			<property name="prefixes" type="array">
 				<element value="gutenberg_sync_engines"/>

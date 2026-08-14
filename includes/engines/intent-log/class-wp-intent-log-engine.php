@@ -131,6 +131,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 		 * Storage backend.
 		 *
 		 * @since 7.2.0
+		 * @var WP_Sync_Storage
 		 */
 		private WP_Sync_Storage $storage;
 
@@ -314,6 +315,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 			$lock         = $this->acquire_room_lock( $room );
 			$lock_wait_ms = round( ( microtime( true ) - $lock_started ) * 1000, 1 );
 			if ( is_wp_error( $lock ) ) {
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 				do_action( 'qm/debug', "wp-sync: ingest lock timeout for {$room} after {$lock_wait_ms}ms" );
 				return $lock;
 			}
@@ -377,6 +379,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 				$intent_id = is_array( $intent ) && is_string( $intent['intentId'] ?? null ) && '' !== $intent['intentId']
 					? $intent['intentId']
 					: null;
+
 				/*
 				 * Malformed rows settle PER-INTENT as `invalid-payload`
 				 * voids instead of failing the whole request: a request-
@@ -412,6 +415,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 				$submitted_ids[]   = $intent_id;
 			}
 			if ( count( $invalid ) > 0 ) {
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 				do_action( 'qm/debug', 'wp-sync: ' . count( $invalid ) . " invalid intent(s) voided in {$room}" );
 			}
 
@@ -622,12 +626,15 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 			$plan_counts['stale']    = count( $stale );
 			$plan_counts['approval'] = array_sum( array_map( 'count', $requires_approval ) );
 			if ( $plan_counts['escalated'] > 0 ) {
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 				do_action( 'qm/debug', "wp-sync: {$plan_counts['escalated']} intent(s) escalated for review in {$room}" );
 			}
 			if ( $plan_counts['approval'] > 0 ) {
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 				do_action( 'qm/debug', "wp-sync: {$plan_counts['approval']} intent(s) parked for approval in {$room} (author lacks unfiltered_html)" );
 			}
 			if ( $plan_counts['stale'] > 0 ) {
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 				do_action( 'qm/debug', "wp-sync: {$plan_counts['stale']} stale-base intent(s) voided in {$room} (client below retention horizon)" );
 			}
 			if ( ! empty( $context['debug'] ) ) {
@@ -823,6 +830,19 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 			return false;
 		}
 
+		/**
+		 * Whether a block spec carries markup its author may not publish
+		 * without `unfiltered_html`.
+		 *
+		 * Judges the `_wrapper` internal attr, every other attr's string
+		 * leaves, the block-level and per-field format spans, and recurses
+		 * into child block specs.
+		 *
+		 * @since 7.2.0
+		 *
+		 * @param array $block Block spec (make_block() shape).
+		 * @return bool True when the spec requires `unfiltered_html`.
+		 */
 		private static function block_spec_requires_unfiltered_html( array $block ): bool {
 			/*
 			 * Attributes: the _wrapper internal attr re-emits as raw markup
@@ -1032,6 +1052,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 			if ( $cursor <= 0 ) {
 				return true;
 			}
+			// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 			do_action( 'qm/debug', "wp-sync: checkpoint at seq {$head_seq} for {$room}" );
 			$this->storage->set_room_meta(
 				$room,
@@ -1048,6 +1069,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 				// record the floor for the read path.
 				$this->storage->remove_updates_before_cursor( $room, (int) $previous['cursor'] );
 				$this->storage->set_room_meta( $room, 'intent_log_floor', (int) $previous['cursor'] );
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 				do_action( 'qm/debug', "wp-sync: trimmed history below cursor {$previous['cursor']} for {$room}" );
 			}
 			return true;

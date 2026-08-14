@@ -78,7 +78,7 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 	 * Applies a room response's rows to a client doc.
 	 *
 	 * @param \Yjs\Utils\Doc $doc      Client document.
-	 * @param array           $response Room response.
+	 * @param array          $response Room response.
 	 */
 	private function apply_response( \Yjs\Utils\Doc $doc, array $response ): void {
 		foreach ( $response['updates'] as $update ) {
@@ -106,7 +106,7 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 	 * sends: everything past the pre-edit state vector.
 	 *
 	 * @param \Yjs\Utils\Doc $doc  Client document.
-	 * @param callable        $edit Edit to perform on the doc.
+	 * @param callable       $edit Edit to perform on the doc.
 	 * @return string Base64 V2 update.
 	 */
 	private function encode_edit( \Yjs\Utils\Doc $doc, callable $edit ): string {
@@ -208,12 +208,18 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 			}
 		);
 
-		$result = $this->engine()->handle_updates( $this->room(), 101, $cursor_a, array(
+		$result = $this->engine()->handle_updates(
+			$this->room(),
+			101,
+			$cursor_a,
 			array(
-				'type' => 'update',
-				'data' => $update,
+				array(
+					'type' => 'update',
+					'data' => $update,
+				),
 			),
-		), array() );
+			array()
+		);
 
 		$this->assertIsArray( $result );
 		$this->assertSame( array( array( 'status' => 'applied' ) ), $result['dispositions'] );
@@ -288,20 +294,26 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 			}
 		);
 
-		$result = $this->engine()->handle_updates( $this->room(), 101, 0, array(
+		$result = $this->engine()->handle_updates(
+			$this->room(),
+			101,
+			0,
 			array(
-				'type' => 'update',
-				'data' => 'not!!valid@@base64',
+				array(
+					'type' => 'update',
+					'data' => 'not!!valid@@base64',
+				),
+				array(
+					'type' => 'update',
+					'data' => base64_encode( 'valid base64, junk yjs bytes' ),
+				),
+				array(
+					'type' => 'update',
+					'data' => $valid,
+				),
 			),
-			array(
-				'type' => 'update',
-				'data' => base64_encode( 'valid base64, junk yjs bytes' ),
-			),
-			array(
-				'type' => 'update',
-				'data' => $valid,
-			),
-		), array() );
+			array()
+		);
 
 		$this->assertSame( 'voided', $result['dispositions'][0]['status'] );
 		$this->assertSame( 'invalid-payload', $result['dispositions'][0]['reason'] );
@@ -317,12 +329,18 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 		$engine = $this->engine();
 		$engine->get_updates_since( $this->room(), 101, 0, array() );
 
-		$result = $engine->handle_updates( $this->room(), 101, 0, array(
+		$result = $engine->handle_updates(
+			$this->room(),
+			101,
+			0,
 			array(
-				'type' => 'sync_step1',
-				'data' => base64_encode( 'x' ),
+				array(
+					'type' => 'sync_step1',
+					'data' => base64_encode( 'x' ),
+				),
 			),
-		), array() );
+			array()
+		);
 
 		$this->assertWPError( $result );
 		$this->assertSame( 'rest_invalid_update_type', $result->get_error_code() );
@@ -340,12 +358,18 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 				$this->first_block_content( $doc )->insert( 0, 'C' );
 			}
 		);
-		$this->engine()->handle_updates( $this->room(), 101, $cursor_a, array(
+		$this->engine()->handle_updates(
+			$this->room(),
+			101,
+			$cursor_a,
 			array(
-				'type' => 'update',
-				'data' => $update,
+				array(
+					'type' => 'update',
+					'data' => $update,
+				),
 			),
-		), array() );
+			array()
+		);
 
 		$own = $this->engine()->get_updates_since( $this->room(), 101, $cursor_a, array() );
 		$this->assertSame( array(), $own['updates'] );
@@ -369,18 +393,24 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 
 			// Never nominated: the server compacts by itself.
 			for ( $i = 0; $i < 12; $i++ ) {
-				$update   = $this->encode_edit(
+				$update = $this->encode_edit(
 					$doc_a,
 					function ( $doc ) use ( $i ) {
 						$this->first_block_content( $doc )->insert( 0, 'x' . $i . ';' );
 					}
 				);
-				$result   = $this->engine()->handle_updates( $this->room(), 101, $cursor_a, array(
+				$result = $this->engine()->handle_updates(
+					$this->room(),
+					101,
+					$cursor_a,
 					array(
-						'type' => 'update',
-						'data' => $update,
+						array(
+							'type' => 'update',
+							'data' => $update,
+						),
 					),
-				), array() );
+					array()
+				);
 				$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
 				$read     = $this->engine()->get_updates_since( $this->room(), 101, $cursor_a, array() );
 				$cursor_a = (int) $read['end_cursor'];

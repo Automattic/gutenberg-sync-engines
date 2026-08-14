@@ -406,6 +406,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				: array();
 			$snapshot  = $snapshots[ $base_version ] ?? null;
 			if ( is_array( $snapshot ) && is_string( $snapshot['content_base64'] ?? null ) ) {
+				// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- Decodes a stored version snapshot's content.
 				$decoded = base64_decode( $snapshot['content_base64'], true );
 				if ( false !== $decoded ) {
 					return $decoded;

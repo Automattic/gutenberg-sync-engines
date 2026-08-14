@@ -12,7 +12,7 @@ if ( ! class_exists( 'WP_Intent_Log_Planner' ) ) {
 	 * `src/engines/intent-log/rebase.js` (and `sync-id.js` for genesis
 	 * identity).
 	 *
-	 * plan_batch() is THE shared deterministic core: a pure function of
+	 * The plan_batch() method is THE shared deterministic core: a pure function of
 	 * (units, log, doc-at) that decides, for one client's batch, which
 	 * intents apply (with transformed payloads), which escalate to the
 	 * proposal lane, and which void. The server commits a plan at ingest; a
@@ -64,6 +64,7 @@ if ( ! class_exists( 'WP_Intent_Log_Planner' ) ) {
 			$input  = $post_id . ':' . $revision_id . ':' . implode( '.', $path );
 			$digest = substr( hash( 'sha256', $input, true ), 0, 16 );
 
+			// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- Derives the base64url syncId from a binary digest.
 			return rtrim( strtr( base64_encode( $digest ), '+/', '-_' ), '=' );
 		}
 
@@ -240,6 +241,7 @@ if ( ! class_exists( 'WP_Intent_Log_Planner' ) ) {
 			$is_any             = static function (): bool {
 				return true;
 			};
+
 			/*
 			 * Block names materialize into comment delimiters UNESCAPED
 			 * (serialize_block escapes attrs, not the name), so a name
@@ -923,9 +925,10 @@ if ( ! class_exists( 'WP_Intent_Log_Planner' ) ) {
 		 *
 		 * @since 7.2.0
 		 *
-		 * @param array    $units  Batch grouped into units (group_units).
-		 * @param array    $log    Accepted log (batch's intents NOT included).
-		 * @param callable $doc_at fn( int $seq ): array document at that log position.
+		 * @param array    $units     Batch grouped into units (group_units).
+		 * @param array    $log       Accepted log (batch's intents NOT included).
+		 * @param callable $doc_at    fn( int $seq ): array document at that log position.
+		 * @param int      $first_seq Sequence number of the first entry in $log (0 for a full log).
 		 * @return array array( 'rows' => row[], 'headDoc' => array ). Each row:
 		 *               array( 'intent', 'disposition', 'accepted' => ?array, 'proposal' => ?array ).
 		 */

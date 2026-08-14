@@ -138,6 +138,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 * Storage backend for sync updates.
 		 *
 		 * @since 7.0.0
+		 * @var WP_Sync_Storage
 		 */
 		protected WP_Sync_Storage $storage;
 
@@ -145,6 +146,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 * Engine registry used to resolve the engine for each room.
 		 *
 		 * @since 7.2.0
+		 * @var WP_Sync_Engine_Registry
 		 */
 		protected WP_Sync_Engine_Registry $engines;
 
@@ -426,6 +428,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 
 			$mismatch = $this->check_engine_mismatch( $engine, $room, $room_request, $updates );
 			if ( is_wp_error( $mismatch ) ) {
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 				do_action( 'qm/debug', "wp-sync: engine mismatch for {$room} (client speaks another engine)" );
 				return $mismatch;
 			}
@@ -435,6 +438,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 
 			$context = array(
 				'awareness' => $merged_awareness,
+
 				/*
 				 * Debug envelope opt-in: the client's inspector sets `debug`
 				 * per room; honored only when the site allows it (room
@@ -590,6 +594,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 				$lineage = $this->storage->get_room_engine( $room );
 				if ( null !== $lineage && $lineage !== $engine->get_slug() ) {
 					if ( $this->reset_switched_room( $room, $room_request, $engine->get_slug() ) ) {
+						// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 						do_action( 'qm/debug', "wp-sync: reset room {$room} (lineage {$lineage} superseded by {$engine->get_slug()})" );
 						$lineage = null;
 					} else {

@@ -256,7 +256,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 	}
 
 	public function test_malformed_proposal_is_voided_per_row() {
-		$engine   = $this->engine();
+		$engine = $this->engine();
 		$engine->get_updates_since( $this->room(), 1, 0, array() );
 
 		$result = $engine->handle_updates(

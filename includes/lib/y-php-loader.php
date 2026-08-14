@@ -2,7 +2,7 @@
 /**
  * Runtime loader for the vendored y-php library.
  *
- * y-php ships Composer metadata, but the plugin cannot assume a Composer
+ * The y-php library ships Composer metadata, but the plugin cannot assume a Composer
  * autoloader at runtime, so this shim provides the equivalent wiring:
  * a PSR-4 autoloader for the `Yjs\` namespace plus the two eager files
  * Composer's `files` directive would load (namespace functions and
