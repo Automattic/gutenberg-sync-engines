@@ -13,9 +13,10 @@
  * - Actions come from a bounded grammar (block inserts/edits/moves/deletes,
  *   nested structures, title edits, real typing, concurrent edits), not
  *   arbitrary DOM mutation.
- * - After every step, all participants must CONVERGE on the same normalized
- *   title + block tree (the subtree fixture's waitForConvergence), and no
- *   block may be in the invalid-content recovery state.
+ * - After every step, all participants must CONVERGE on the same
+ *   SERIALIZED content + title (serialization is what persists; raw
+ *   attribute objects legitimately differ across engine code paths), and
+ *   no block may be in the invalid-content recovery state.
  * - One seeded step becomes a save milestone; another reloads a random
  *   participant mid-session (a server-authoritative engine must restore the
  *   live document). The run ends with save + reload + REST round-trip.
@@ -696,6 +697,68 @@ function chooseMilestoneStep(
 	}
 }
 
+interface ComparableState {
+	blockCount: number;
+	content: string;
+	title: string;
+}
+
+/**
+ * The persistence-relevant view of a page's editor: the SERIALIZED block
+ * content plus the title. Raw attribute objects are deliberately not
+ * compared — engines legitimately differ in in-memory representation (e.g.
+ * intent-log's snapshot materialization reifies empty rich-text fields as
+ * explicit "" attributes that createBlock-authored trees omit) while
+ * serializing to identical markup. Serialization is what saves, so it is
+ * the equality that matters.
+ *
+ * @param page Page to read.
+ */
+async function getComparableState( page: Page ): Promise< ComparableState > {
+	return page.evaluate( () => {
+		const blocks = ( window as any ).wp.data
+			.select( 'core/block-editor' )
+			.getBlocks();
+		return {
+			blockCount: blocks.length,
+			content: ( window as any ).wp.blocks.serialize( blocks ),
+			title:
+				( window as any ).wp.data
+					.select( 'core/editor' )
+					.getEditedPostAttribute( 'title' ) ?? '',
+		};
+	} );
+}
+
+/**
+ * Waits until every page exposes the same serialized content + title.
+ *
+ * @param pages   Pages to compare.
+ * @param timeout Budget in ms.
+ */
+async function waitForConvergence(
+	pages: Page[],
+	timeout: number
+): Promise< ComparableState > {
+	const deadline = Date.now() + timeout;
+	let states: ComparableState[] = [];
+	for (;;) {
+		states = await Promise.all( pages.map( getComparableState ) );
+		const first = JSON.stringify( states[ 0 ] );
+		if ( states.every( ( state ) => JSON.stringify( state ) === first ) ) {
+			return states[ 0 ];
+		}
+		if ( Date.now() >= deadline ) {
+			throw new Error(
+				`Serialized state did not converge within ${ timeout }ms: ${ JSON.stringify(
+					states
+				) }`
+			);
+		}
+		await pages[ 0 ].waitForTimeout( 250 );
+	}
+}
+
 /**
  * Wait for all participants to discover each other. The fixture's
  * waitForMutualDiscovery waits on wp-sync HTTP responses, which never occur
@@ -805,16 +868,10 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 
 				await collaborationUtils.openPost( post.id );
 				await collaborationUtils.joinUser( post.id, SECOND_USER );
-				await waitForDiscovery(
-					collaborationUtils,
-					collaborationUtils.allPages
-				);
-				await collaborationUtils.waitForConvergence( {
-					timeout: CONVERGENCE_TIMEOUT_MS,
-				} );
-
 				let pages = collaborationUtils.allPages;
 				let editors = collaborationUtils.allEditors;
+				await waitForDiscovery( collaborationUtils, pages );
+				await waitForConvergence( pages, CONVERGENCE_TIMEOUT_MS );
 				await assertNoInvalidBlocks( pages[ 0 ], 'initial load' );
 
 				const usedMilestones = new Set< number >();
@@ -849,9 +906,10 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 						);
 						pages = collaborationUtils.allPages;
 						editors = collaborationUtils.allEditors;
-						await collaborationUtils.waitForConvergence( {
-							timeout: CONVERGENCE_TIMEOUT_MS,
-						} );
+						await waitForConvergence(
+							pages,
+							CONVERGENCE_TIMEOUT_MS
+						);
 						// A late joiner must be able to contribute, not just
 						// receive.
 						await insertBlockAt(
@@ -869,9 +927,10 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 							},
 							-1
 						);
-						await collaborationUtils.waitForConvergence( {
-							timeout: CONVERGENCE_TIMEOUT_MS,
-						} );
+						await waitForConvergence(
+							pages,
+							CONVERGENCE_TIMEOUT_MS
+						);
 					}
 
 					const actorIndex = pickIndex( rng, pages.length );
@@ -921,10 +980,11 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 						userIndex: actorIndex,
 					} );
 
-					const state = await collaborationUtils.waitForConvergence( {
-						timeout: CONVERGENCE_TIMEOUT_MS,
-					} );
-					expect( state.blocks.length ).toBeGreaterThan( 0 );
+					const state = await waitForConvergence(
+						pages,
+						CONVERGENCE_TIMEOUT_MS
+					);
+					expect( state.blockCount ).toBeGreaterThan( 0 );
 					await assertNoInvalidBlocks(
 						pages[ 0 ],
 						`step ${ step } (${ action.label })`
@@ -937,9 +997,10 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 							userIndex: 0,
 						} );
 						await saveDraftFromPage( pages[ 0 ] );
-						await collaborationUtils.waitForConvergence( {
-							timeout: CONVERGENCE_TIMEOUT_MS,
-						} );
+						await waitForConvergence(
+							pages,
+							CONVERGENCE_TIMEOUT_MS
+						);
 					}
 
 					if ( step === reloadStep ) {
@@ -953,9 +1014,10 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 							collaborationUtils,
 							pages[ reloadIndex ]
 						);
-						await collaborationUtils.waitForConvergence( {
-							timeout: CONVERGENCE_TIMEOUT_MS,
-						} );
+						await waitForConvergence(
+							pages,
+							CONVERGENCE_TIMEOUT_MS
+						);
 						await assertNoInvalidBlocks(
 							pages[ reloadIndex ],
 							'post-reload'
@@ -973,17 +1035,15 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 					userIndex: 0,
 				} );
 				await saveDraftFromPage( pages[ 0 ] );
-				const finalState = await collaborationUtils.waitForConvergence(
-					{
-						timeout: CONVERGENCE_TIMEOUT_MS,
-					}
+				const finalState = await waitForConvergence(
+					pages,
+					CONVERGENCE_TIMEOUT_MS
 				);
 				if ( ! DISABLE_RELOAD ) {
 					await reloadPage( collaborationUtils, pages[ 1 ] );
-					const settled = await collaborationUtils.waitForConvergence(
-						{
-							timeout: CONVERGENCE_TIMEOUT_MS,
-						}
+					const settled = await waitForConvergence(
+						pages,
+						CONVERGENCE_TIMEOUT_MS
 					);
 					expect( JSON.stringify( settled ) ).toBe(
 						JSON.stringify( finalState )
@@ -991,7 +1051,7 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 					await assertNoInvalidBlocks( pages[ 1 ], 'final reload' );
 				}
 
-				expect( finalState.blocks.length ).toBeGreaterThan( 0 );
+				expect( finalState.blockCount ).toBeGreaterThan( 0 );
 				const saved = ( await requestUtils.rest( {
 					params: { context: 'edit' },
 					path: `/wp/v2/posts/${ post.id }`,
