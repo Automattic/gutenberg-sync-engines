@@ -29,11 +29,14 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 	 * - The CANONICAL DOCUMENT is derived state: a compact V2 snapshot in
 	 *   room meta, stamped with the log cursor it reflects. Loading applies
 	 *   any rows past that cursor on top, so a canonical write that loses a
-	 *   save race is repaired from the log on the next load. Yjs updates
-	 *   are commutative and idempotent, which is what makes this safe
-	 *   WITHOUT the per-room ingest lock the intent-log engine requires:
-	 *   over-application converges, and no server-assigned total order is
-	 *   needed.
+	 *   save race is repaired from the log on the next load. Ingest adds a
+	 *   second repair lane: an update that references items the loaded
+	 *   document lacks triggers a full log replay and a retry, and only a
+	 *   client genuinely ahead of the log is voided `resync-required`. Yjs
+	 *   updates are commutative and idempotent, which is what makes this
+	 *   safe WITHOUT the per-room ingest lock the intent-log engine
+	 *   requires: over-application converges, and no server-assigned total
+	 *   order is needed.
 	 * - `snapshot` rows carry the full canonical state (base64 V2): one at
 	 *   genesis (built deterministically from post content — a fixed
 	 *   per-room clientID and a fixed operation order make concurrent
@@ -227,9 +230,21 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		 * settle per-update as `invalid-payload` voids rather than failing
 		 * the batch — one bad row must not starve valid edits.
 		 *
+		 * An update that PARSES but references items the loaded document
+		 * lacks is not malformed: the canonical snapshot may have lost
+		 * content to a save or read-visibility race. The log is the source
+		 * of truth, so the document is rebuilt from the full retained log
+		 * (bypassing the canonical snapshot) and the update retried, once
+		 * per request. Only when even the log cannot supply the
+		 * dependencies does the update settle as a `resync-required` void,
+		 * telling the client an earlier send never landed and it must
+		 * upload its full state (idempotent; the server stores only the
+		 * diff).
+		 *
 		 * No ingest lock is taken: CRDT merge needs no server-assigned total
 		 * order, and a concurrent canonical save that loses the race is
-		 * repaired from the update log on the next load (see load_room()).
+		 * repaired from the update log on the next load (see load_room())
+		 * or by the in-request replay above.
 		 *
 		 * @since 0.2.0
 		 *
@@ -253,16 +268,18 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 			 * keeps the benchmark honest about per-request cost.)
 			 */
 			$this->room_docs[ $room ] = null;
-			$state = $this->load_room( $room );
+			$state                    = $this->load_room( $room );
 			if ( is_wp_error( $state ) ) {
 				return $state;
 			}
-			$doc = $state['doc'];
+			$doc         = $state['doc'];
+			$load_cursor = (int) $state['cursor'];
 
 			$before_bytes = \Yjs\encodeStateAsUpdateV2( $doc )->toBinaryString();
 
 			$dispositions = array();
 			$diffs        = array();
+			$replayed     = false;
 			foreach ( $updates as $update ) {
 				if ( self::UPDATE_TYPE_UPDATE !== $update['type'] ) {
 					return new WP_Error(
@@ -280,41 +297,86 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 					);
 					continue;
 				}
+				$buffer = \Yjs\Lib0\Buffer::fromBinaryString( $binary );
 
-				try {
-					$buffer    = \Yjs\Lib0\Buffer::fromBinaryString( $binary );
-					$sv_before = \Yjs\encodeStateVector( $doc );
-					\Yjs\applyUpdateV2( $doc, $buffer );
-					// The stored row: only what this update added beyond the
-					// server's prior state (known structs stripped; the
-					// update's own delete set kept).
-					$diffs[ count( $dispositions ) ] = \Yjs\diffUpdateV2( $buffer, $sv_before )->toBase64();
+				$diff = self::apply_update_for_row( $doc, $buffer );
+				if ( null !== $diff ) {
+					$diffs[ count( $dispositions ) ] = $diff;
 					$dispositions[]                  = array( 'status' => 'applied' );
-				} catch ( \Throwable $e ) {
-					do_action( 'qm/debug', "wp-sync: yjs-server rejected a malformed update in {$room}: " . $e->getMessage() );
+					continue;
+				}
+
+				/*
+				 * The update did not integrate cleanly: a throw can leave
+				 * the document partially mutated, and a missing-dependency
+				 * apply can integrate a prefix and park the rest as pending.
+				 * Restore the batch baseline exactly (batch-start state plus
+				 * the diffs accepted so far) before deciding how to settle.
+				 */
+				$doc                      = self::rebuild_doc( $before_bytes, $diffs );
+				$this->room_docs[ $room ] = null;
+
+				if ( ! self::is_decodable( $buffer ) ) {
+					do_action( 'qm/debug', "wp-sync: yjs-server rejected a malformed update in {$room}" );
 					$dispositions[] = array(
 						'status' => 'voided',
 						'reason' => 'invalid-payload',
 					);
-					/*
-					 * A throw can leave the document partially mutated.
-					 * Rebuild it exactly: the batch-start state plus the
-					 * diffs of the updates that succeeded so far. Rare path
-					 * (malformed input only), so the O(doc) rebuild is fine.
-					 */
-					$doc = new \Yjs\Utils\Doc();
-					\Yjs\applyUpdateV2( $doc, \Yjs\Lib0\Buffer::fromBinaryString( $before_bytes ) );
-					foreach ( $diffs as $diff ) {
-						\Yjs\applyUpdateV2( $doc, \Yjs\Lib0\Buffer::fromBase64( $diff ) );
-					}
-					$this->room_docs[ $room ] = null;
+					continue;
 				}
+
+				/*
+				 * Decodable but not integrable: the update references items
+				 * this document lacks. The canonical snapshot may have lost
+				 * content to a save or read-visibility race, so rebuild from
+				 * the full retained log (the source of truth, bypassing the
+				 * canonical) and retry, once per request. The baseline and
+				 * the stamp cursor move to the replay: the replayed document
+				 * reflects every retained row at or below the fresh
+				 * watermark, so the under-claim invariant holds.
+				 */
+				if ( ! $replayed ) {
+					$replayed     = true;
+					$replay       = $this->replay_room_log( $room );
+					$doc          = $replay['doc'];
+					$load_cursor  = $replay['cursor'];
+					$before_bytes = \Yjs\encodeStateAsUpdateV2( $doc )->toBinaryString();
+					foreach ( $diffs as $accepted ) {
+						\Yjs\applyUpdateV2( $doc, \Yjs\Lib0\Buffer::fromBase64( $accepted ) );
+					}
+				}
+
+				$diff = self::apply_update_for_row( $doc, $buffer );
+				if ( null !== $diff ) {
+					do_action( 'qm/debug', "wp-sync: yjs-server repaired {$room} from the update log during ingest" );
+					$diffs[ count( $dispositions ) ] = $diff;
+					$dispositions[]                  = array( 'status' => 'applied' );
+					continue;
+				}
+
+				/*
+				 * Even the full log cannot supply this update's
+				 * dependencies: the client is ahead of the room (an earlier
+				 * send never landed). Only the client can close that gap,
+				 * with a full-state recovery update.
+				 */
+				$doc                      = self::rebuild_doc( $before_bytes, $diffs );
+				$this->room_docs[ $room ] = null;
+				do_action( 'qm/debug', "wp-sync: yjs-server update depends on items missing from {$room}; client must resync" );
+				$dispositions[] = array(
+					'status' => 'voided',
+					'reason' => 'resync-required',
+				);
 			}
 
 			$after_bytes = \Yjs\encodeStateAsUpdateV2( $doc )->toBinaryString();
 			if ( $after_bytes === $before_bytes ) {
 				// Nothing new: settle would-be applies as benign idempotent
-				// voids and leave storage untouched.
+				// voids and leave the row log untouched. A replay-repaired
+				// canonical is still worth persisting.
+				if ( $replayed ) {
+					$this->save_canonical( $room, $doc, $load_cursor, base64_encode( $after_bytes ) );
+				}
 				foreach ( $dispositions as $i => $disposition ) {
 					if ( 'applied' === $disposition['status'] ) {
 						$dispositions[ $i ] = array(
@@ -347,9 +409,9 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				}
 			}
 
-			// $after_bytes IS the canonical encoding at the new head — reuse
+			// $after_bytes IS the canonical encoding at the new head; reuse
 			// it rather than encoding the document a third time.
-			$this->save_canonical( $room, $doc, base64_encode( $after_bytes ) );
+			$this->save_canonical( $room, $doc, $load_cursor, base64_encode( $after_bytes ) );
 			$this->maybe_checkpoint( $room, $client_id, $doc );
 
 			return array( 'dispositions' => $dispositions );
@@ -499,7 +561,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				if ( is_wp_error( $genesis ) ) {
 					return $genesis;
 				}
-				$state                     = array(
+				$state                    = array(
 					'doc'    => $doc,
 					'cursor' => $this->storage->get_cursor( $room ),
 				);
@@ -507,6 +569,42 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				return $state;
 			}
 
+			$clean = self::apply_rows_to_doc( $doc, $rows, $room );
+
+			// A skipped row is above $meta_cursor but below the watermark:
+			// the watermark would over-claim it, so fall back to the cursor
+			// the document provably reflects.
+			$state                    = array(
+				'doc'    => $doc,
+				'cursor' => $clean ? $this->storage->get_cursor( $room ) : $meta_cursor,
+			);
+			$this->room_docs[ $room ] = $state;
+
+			return $state;
+		}
+
+		/**
+		 * Applies stored rows onto a document in log order (snapshot rows
+		 * carry `{ doc: <base64 V2> }`; update rows carry the base64 V2
+		 * update directly). A row that fails to apply (malformed, or its
+		 * dependency row was momentarily invisible to this read) is skipped
+		 * rather than wedging the room.
+		 *
+		 * Returns whether every row applied cleanly. On a skip, callers
+		 * MUST NOT stamp a canonical with a cursor covering the skipped
+		 * row: rows do not carry their ids, so the safe stamp falls back to
+		 * the pre-read cursor (under-claiming is always safe; the skipped
+		 * row re-applies on a later load once its dependency is visible).
+		 *
+		 * @since 0.2.0
+		 *
+		 * @param \Yjs\Utils\Doc $doc  Document to apply onto.
+		 * @param array          $rows Stored rows.
+		 * @param string         $room Room identifier (diagnostics only).
+		 * @return bool Whether every row applied cleanly.
+		 */
+		private static function apply_rows_to_doc( \Yjs\Utils\Doc $doc, array $rows, string $room ): bool {
+			$clean = true;
 			foreach ( $rows as $row ) {
 				try {
 					if ( self::UPDATE_TYPE_SNAPSHOT === $row['type'] ) {
@@ -518,48 +616,143 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 						\Yjs\applyUpdateV2( $doc, \Yjs\Lib0\Buffer::fromBase64( (string) $row['data'] ) );
 					}
 				} catch ( \Throwable $e ) {
-					// A malformed stored row cannot be repaired here; skip it
-					// rather than wedging the room.
-					do_action( 'qm/debug', "wp-sync: yjs-server skipped a malformed stored row in {$room}" );
+					$clean = false;
+					do_action( 'qm/debug', "wp-sync: yjs-server skipped a stored row that did not apply in {$room}" );
 				}
 			}
+			return $clean;
+		}
 
-			$state                     = array(
+		/**
+		 * Rebuilds the room document from the update log alone, bypassing
+		 * the canonical snapshot. This is the ingest-side repair lane for a
+		 * canonical that lost content to a save or read-visibility race:
+		 * the log retains at least one full compaction interval plus its
+		 * checkpoint snapshot, so everything a client update can reference
+		 * is here unless the client is genuinely ahead of the room.
+		 *
+		 * @since 0.2.0
+		 *
+		 * @param string $room Room identifier.
+		 * @return array array( 'doc' => \Yjs\Utils\Doc, 'cursor' => int ).
+		 */
+		private function replay_room_log( string $room ): array {
+			$doc   = new \Yjs\Utils\Doc();
+			$rows  = $this->storage->get_updates_after_cursor( $room, 0 );
+			$clean = self::apply_rows_to_doc( $doc, $rows, $room );
+			return array(
 				'doc'    => $doc,
-				'cursor' => $this->storage->get_cursor( $room ),
+				// A skipped row would be over-claimed by the watermark;
+				// cursor 0 forces the next load to replay everything, which
+				// retries the skip once its dependency is visible.
+				'cursor' => $clean ? $this->storage->get_cursor( $room ) : 0,
 			);
-			$this->room_docs[ $room ] = $state;
+		}
 
-			return $state;
+		/**
+		 * Applies one incoming update and returns the diff row to store:
+		 * only what the update added beyond the server's prior state (known
+		 * structs stripped; the update's own delete set kept). Returns null
+		 * when the update did not integrate cleanly, either because the
+		 * apply threw or because y-php parked structs or deletes as pending
+		 * (the update references items the document lacks). A null return
+		 * leaves the document in a suspect state (partially integrated or
+		 * carrying pending state); callers must rebuild it.
+		 *
+		 * @since 0.2.0
+		 *
+		 * @param \Yjs\Utils\Doc   $doc    Document to apply onto.
+		 * @param \Yjs\Lib0\Buffer $buffer Incoming V2 update.
+		 * @return string|null Base64 diff row, or null.
+		 */
+		private static function apply_update_for_row( \Yjs\Utils\Doc $doc, \Yjs\Lib0\Buffer $buffer ): ?string {
+			try {
+				$sv_before = \Yjs\encodeStateVector( $doc );
+				\Yjs\applyUpdateV2( $doc, $buffer );
+				$store = $doc->store;
+				if ( null !== $store->pendingStructs || null !== $store->pendingDs ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- y-php mirrors the JS Yjs API.
+					return null;
+				}
+				return \Yjs\diffUpdateV2( $buffer, $sv_before )->toBase64();
+			} catch ( \Throwable $e ) {
+				return null;
+			}
+		}
+
+		/**
+		 * Rebuilds a document exactly from encoded state plus accepted diff
+		 * rows, shedding any partial mutation or pending state a failed
+		 * apply left behind. Rare path, so the O(doc) rebuild is fine.
+		 *
+		 * @since 0.2.0
+		 *
+		 * @param string $base_bytes Binary V2 encoding of the baseline.
+		 * @param array  $diffs      Accepted base64 diff rows, in order.
+		 * @return \Yjs\Utils\Doc Rebuilt document.
+		 */
+		private static function rebuild_doc( string $base_bytes, array $diffs ): \Yjs\Utils\Doc {
+			$doc = new \Yjs\Utils\Doc();
+			\Yjs\applyUpdateV2( $doc, \Yjs\Lib0\Buffer::fromBinaryString( $base_bytes ) );
+			foreach ( $diffs as $diff ) {
+				\Yjs\applyUpdateV2( $doc, \Yjs\Lib0\Buffer::fromBase64( $diff ) );
+			}
+			return $doc;
+		}
+
+		/**
+		 * Whether the payload parses as a structurally valid V2 update.
+		 * Distinguishes garbage bytes (settled as `invalid-payload`) from a
+		 * valid update whose dependencies are missing (the resync lane)
+		 * without touching any document, so malformed input never triggers
+		 * an O(log) replay.
+		 *
+		 * @since 0.2.0
+		 *
+		 * @param \Yjs\Lib0\Buffer $buffer Incoming payload.
+		 * @return bool Whether the payload decodes as a V2 update.
+		 */
+		private static function is_decodable( \Yjs\Lib0\Buffer $buffer ): bool {
+			try {
+				\Yjs\decodeUpdateV2( $buffer );
+				return true;
+			} catch ( \Throwable $e ) {
+				return false;
+			}
 		}
 
 		/**
 		 * Persists the canonical document snapshot with the cursor it
-		 * reflects. Skipped silently when the storage has no room meta —
-		 * the log alone remains authoritative.
+		 * reflects. Skipped silently when the storage has no room meta, in
+		 * which case the log alone remains authoritative.
+		 *
+		 * The stamped cursor MUST under-claim: every row at or below it is
+		 * merged into $doc. Callers pass the LOAD-time watermark, never this
+		 * request's own insert id. Concurrent ingests interleave row ids, so
+		 * an insert-id stamp claims foreign rows this process never loaded,
+		 * and the load-path repair (apply rows past the stamp) would then
+		 * skip them forever: the losing writer's merged content vanishes
+		 * from the canonical document while its row sits uselessly in the
+		 * log, and that client's next update references items the canonical
+		 * no longer has. Under-claiming instead re-applies this request's
+		 * own rows on the next load, which is safe because Yjs updates are
+		 * idempotent.
 		 *
 		 * @since 0.2.0
 		 *
-		 * @global wpdb $wpdb WordPress database abstraction object.
-		 *
-		 * @param string          $room       Room identifier.
+		 * @param string         $room       Room identifier.
 		 * @param \Yjs\Utils\Doc $doc        Canonical document.
-		 * @param string|null     $doc_base64 Pre-encoded state (base64 V2), to
-		 *                                    avoid re-encoding when the caller
-		 *                                    already has it.
+		 * @param int            $cursor     Load-time cursor $doc reflects.
+		 *                                   Rows above it (including this
+		 *                                   request's own) re-apply on the
+		 *                                   next load.
+		 * @param string|null    $doc_base64 Pre-encoded state (base64 V2), to
+		 *                                   avoid re-encoding when the caller
+		 *                                   already has it.
 		 * @return void
 		 */
-		private function save_canonical( string $room, \Yjs\Utils\Doc $doc, ?string $doc_base64 = null ): void {
+		private function save_canonical( string $room, \Yjs\Utils\Doc $doc, int $cursor, ?string $doc_base64 = null ): void {
 			if ( ! method_exists( $this->storage, 'set_room_meta' ) ) {
 				return;
-			}
-			// The rows just appended by this request are incorporated in $doc,
-			// and the connection's last insert id IS the newest such row (the
-			// storage's cached get_cursor() is stale until the next read).
-			global $wpdb;
-			$cursor = isset( $wpdb ) ? (int) $wpdb->insert_id : 0;
-			if ( $cursor <= 0 ) {
-				$cursor = $this->storage->get_cursor( $room );
 			}
 			$this->storage->set_room_meta(
 				$room,
@@ -590,8 +783,8 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
-		 * @param string          $room      Room identifier.
-		 * @param int             $client_id Requesting client id (row attribution).
+		 * @param string         $room      Room identifier.
+		 * @param int            $client_id Requesting client id (row attribution).
 		 * @param \Yjs\Utils\Doc $doc       Canonical document at the head.
 		 * @return bool Whether a checkpoint was appended.
 		 */
@@ -617,8 +810,21 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 
 			$previous    = $this->storage->get_room_meta( $room, self::META_CHECKPOINT );
 			$prev_cursor = is_array( $previous ) && isset( $previous['cursor'] ) ? (int) $previous['cursor'] : 0;
-			$window      = count( $this->storage->get_updates_after_cursor( $room, $prev_cursor ) );
-			if ( $window < $interval ) {
+			$window_rows = $this->storage->get_updates_after_cursor( $room, $prev_cursor );
+			if ( count( $window_rows ) < $interval ) {
+				return false;
+			}
+
+			/*
+			 * Fold the whole retained window into the document before
+			 * snapshotting it. The document reflects what THIS request
+			 * loaded; a row another writer interleaved (or one an earlier
+			 * load had to skip) may be missing from it, and the trim below
+			 * would otherwise make that loss durable. Re-application is
+			 * idempotent, so folding is safe; a window row that still
+			 * cannot apply defers the checkpoint to a later commit.
+			 */
+			if ( ! self::apply_rows_to_doc( $doc, $window_rows, $room ) ) {
 				return false;
 			}
 
@@ -664,7 +870,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		 *
 		 * @since 0.2.0
 		 *
-		 * @param string          $room Room identifier.
+		 * @param string         $room Room identifier.
 		 * @param \Yjs\Utils\Doc $doc  Empty document to populate in place.
 		 * @return true|WP_Error True on success.
 		 */
@@ -718,12 +924,23 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				}
 				global $wpdb;
 				$cursor = isset( $wpdb ) ? (int) $wpdb->insert_id : 0;
+
+				/*
+				 * The canonical stamp must under-claim (see save_canonical):
+				 * with two racing initializers, a client of the faster one
+				 * can append an update row with a LOWER id than this genesis
+				 * row, and stamping the genesis row id would hide that row
+				 * from the load-path repair forever. Cursor 0 re-applies the
+				 * genesis row itself on the next load, a no-op against the
+				 * identical canonical. The checkpoint stamp keeps the row id;
+				 * it only paces compaction windows.
+				 */
 				$this->storage->set_room_meta(
 					$room,
 					self::META_DOC,
 					array(
 						'doc'    => \Yjs\encodeStateAsUpdateV2( $doc )->toBase64(),
-						'cursor' => $cursor > 0 ? $cursor : $this->storage->get_cursor( $room ),
+						'cursor' => 0,
 					)
 				);
 				$this->storage->set_room_meta( $room, self::META_CHECKPOINT, array( 'cursor' => $cursor ) );

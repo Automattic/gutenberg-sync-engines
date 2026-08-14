@@ -207,7 +207,7 @@ function integrateStructs( Utils\Transaction $transaction, Utils\StructStore $st
 		}
 		if ( 0 < count( $stack ) ) {
 			$stackHead = array_pop( $stack );
-		} elseif ( null !== $target && $clientsStructRefs[ $target['client'] ]['i'] < count( $clientsStructRefs[ $target['client'] ]['refs'] ) ) {
+		} elseif ( null !== $target && array_key_exists( $target['client'], $clientsStructRefs ) && $clientsStructRefs[ $target['client'] ]['i'] < count( $clientsStructRefs[ $target['client'] ]['refs'] ) ) {
 			$stackHead = $nextFromTarget( $target['client'] );
 		} else {
 			$target = $getNextStructTarget();
@@ -218,7 +218,7 @@ function integrateStructs( Utils\Transaction $transaction, Utils\StructStore $st
 		}
 	}
 	if ( 0 < count( $restStructs->clients ) ) {
-		$encoder = new Utils\UpdateEncoderV1();
+		$encoder = new Utils\UpdateEncoderV2();
 		writeClientsStructs( $encoder, $restStructs, array() );
 		Lib0\Encoding::writeVarUint( $encoder->restEncoder, 0 );
 		return array(
@@ -282,14 +282,62 @@ function readUpdateV2( Lib0\Decoder $decoder, Utils\Doc $ydoc, $transactionOrigi
 	transact(
 		$ydoc,
 		function ( Utils\Transaction $transaction ) use ( $structDecoder ): void {
-			$transaction->local    = false;
-			$doc                   = $transaction->doc;
-			$store                 = $doc->store;
-			$ss                    = readClientsStructRefs( $structDecoder, $doc );
-			$restStructs           = integrateStructs( $transaction, $store, $ss );
-			$store->pendingStructs = $restStructs;
-			$dsRest                = readAndApplyDeleteSet( $structDecoder, $transaction, $store );
-			$store->pendingDs      = $dsRest;
+			$transaction->local = false;
+			$retry              = false;
+			$doc                = $transaction->doc;
+			$store              = $doc->store;
+			$ss                 = readClientsStructRefs( $structDecoder, $doc );
+			$restStructs        = integrateStructs( $transaction, $store, $ss );
+			$pending            = $store->pendingStructs;
+			if ( null !== $pending ) {
+				// Check if we can apply something.
+				foreach ( $pending['missing'] as $client => $clock ) {
+					if ( $clock < getState( $store, (int) $client ) ) {
+						$retry = true;
+						break;
+					}
+				}
+
+				if ( null !== $restStructs ) {
+					// Merge restStructs into store->pendingStructs.
+					foreach ( $restStructs['missing'] as $client => $clock ) {
+						if ( ! array_key_exists( $client, $pending['missing'] ) || $pending['missing'][ $client ] > $clock ) {
+							$pending['missing'][ $client ] = $clock;
+						}
+					}
+
+					$pending['update']     = mergeUpdatesV2( array( $pending['update'], $restStructs['update'] ) );
+					$store->pendingStructs = $pending;
+				}
+			} else {
+				$store->pendingStructs = $restStructs;
+			}
+
+			$dsRest = readAndApplyDeleteSet( $structDecoder, $transaction, $store );
+			if ( null !== $store->pendingDs ) {
+				// @todo we could make a lower-bound state-vector check as we do above.
+				$pendingDSUpdate = new Utils\UpdateDecoderV2( Lib0\Decoding::createDecoder( $store->pendingDs ) );
+				Lib0\Decoding::readVarUint( $pendingDSUpdate->restDecoder ); // Read 0 structs, because we only encode deletes in the pending DS update.
+				$dsRest2 = readAndApplyDeleteSet( $pendingDSUpdate, $transaction, $store );
+				if ( null !== $dsRest && null !== $dsRest2 ) {
+					// Case 1: ds1 != null && ds2 != null.
+					$store->pendingDs = mergeUpdatesV2( array( $dsRest, $dsRest2 ) );
+				} else {
+					// case 2: ds1 != null
+					// case 3: ds2 != null
+					// case 4: ds1 == null && ds2 == null.
+					$store->pendingDs = $dsRest ?? $dsRest2;
+				}
+			} else {
+				// Either dsRest == null && pendingDs == null OR dsRest != null.
+				$store->pendingDs = $dsRest;
+			}
+
+			if ( $retry ) {
+				$update                = $store->pendingStructs['update'];
+				$store->pendingStructs = null;
+				applyUpdateV2( $transaction->doc, $update );
+			}
 		},
 		$transactionOrigin,
 		false
@@ -314,10 +362,38 @@ function writeStateAsUpdate( object $encoder, Utils\Doc $doc, array $targetState
  * @return Lib0\Buffer
  */
 function encodeStateAsUpdateV2( Utils\Doc $doc, ?Lib0\Buffer $encodedTargetStateVector = null, ?object $encoder = null ): Lib0\Buffer {
-	$targetStateVector = null === $encodedTargetStateVector ? array() : decodeStateVector( $encodedTargetStateVector );
-	$encoder           = $encoder ?? new Utils\UpdateEncoderV2();
+	$encodedTargetStateVector = $encodedTargetStateVector ?? Lib0\Buffer::fromByteArray( array( 0 ) );
+	$targetStateVector        = decodeStateVector( $encodedTargetStateVector );
+	$encoder                  = $encoder ?? new Utils\UpdateEncoderV2();
 	writeStateAsUpdate( $encoder, $doc, $targetStateVector );
-	return $encoder->toUint8Array();
+	$updates = array( $encoder->toUint8Array() );
+	// Also add the pending updates (if there are any).
+	if ( null !== $doc->store->pendingDs ) {
+		$updates[] = $doc->store->pendingDs;
+	}
+
+	if ( null !== $doc->store->pendingStructs ) {
+		$updates[] = diffUpdateV2( $doc->store->pendingStructs['update'], $encodedTargetStateVector );
+	}
+
+	if ( 1 < count( $updates ) ) {
+		if ( get_class( $encoder ) === Utils\UpdateEncoderV1::class ) {
+			$converted = array();
+			foreach ( $updates as $i => $update ) {
+				if ( 0 === $i ) {
+					$converted[] = $update;
+				} else {
+					$converted[] = convertUpdateFormatV2ToV1( $update );
+				}
+			}
+
+			return mergeUpdates( $converted );
+		} elseif ( get_class( $encoder ) === Utils\UpdateEncoderV2::class ) {
+			return mergeUpdatesV2( $updates );
+		}
+	}
+
+	return $updates[0];
 }
 
 /**

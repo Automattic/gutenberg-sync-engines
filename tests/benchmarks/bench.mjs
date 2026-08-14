@@ -230,6 +230,7 @@ async function runConcurrencyPhase( engine, workers, requests, paragraphs ) {
 	const errors = {};
 	const voidReasons = {};
 	const dispositions = { applied: 0, escalated: 0, voided: 0 };
+	let nonBenignVoids = 0;
 	for ( const out of outputs ) {
 		const line = out.match( /BENCH_WORKER (\{.*\})/ );
 		if ( ! line ) {
@@ -249,6 +250,7 @@ async function runConcurrencyPhase( engine, workers, requests, paragraphs ) {
 		) ) {
 			voidReasons[ reason ] = ( voidReasons[ reason ] ?? 0 ) + count;
 		}
+		nonBenignVoids += parsed.non_benign_voids ?? 0;
 		for ( const key of Object.keys( dispositions ) ) {
 			dispositions[ key ] += parsed.dispositions[ key ];
 		}
@@ -264,6 +266,7 @@ async function runConcurrencyPhase( engine, workers, requests, paragraphs ) {
 		max_ms: latencies[ latencies.length - 1 ] / 1000,
 		errors,
 		void_reasons: voidReasons,
+		non_benign_voids: nonBenignVoids,
 		dispositions,
 	};
 }
@@ -326,6 +329,13 @@ async function runConcurrencyMode() {
 						errorList || 'none'
 					}`
 			);
+			const nonBenign =
+				baseline.non_benign_voids + loaded.non_benign_voids;
+			if ( nonBenign > 0 ) {
+				violations.push(
+					`${ engine }/concurrency: ${ nonBenign } non-benign void(s); the client protocol cannot absorb these, so real work was lost`
+				);
+			}
 			fs.writeFileSync(
 				path.join( OUT_DIR, `concurrency--${ engine }.json` ),
 				JSON.stringify( { engine, baseline, loaded }, null, '\t' )

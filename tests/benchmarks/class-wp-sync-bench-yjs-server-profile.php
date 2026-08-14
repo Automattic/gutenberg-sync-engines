@@ -29,8 +29,12 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 	 */
 	class WP_Sync_Bench_Yjs_Server_Profile implements WP_Sync_Bench_Authoring_Profile {
 		/** Void reasons that are NOT lost work for this engine: idempotent
-		 * redelivery (the server diffs out what it already has) or a
-		 * malformed row.
+		 * redelivery (the server diffs out what it already has), or the
+		 * resync lane (this profile models the real client's recovery: the
+		 * next authored update carries the client's full state, which
+		 * re-delivers the voided content). `invalid-payload` is NOT benign:
+		 * the engine reserves it for genuinely malformed bytes, which the
+		 * profile never sends, so its appearance means work was rejected.
 		 *
 		 * @var string[]
 		 */
@@ -39,7 +43,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 			'already-deleted',
 			'already-removed',
 			'stale-base',
-			'invalid-payload',
+			'resync-required',
 		);
 
 		/**
@@ -48,6 +52,27 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 		 * @var array
 		 */
 		private $workload;
+
+		/**
+		 * Clients whose last submission voided `resync-required`; their next
+		 * authored update is a full-state upload (the real client's recovery
+		 * lane), which the server diffs and applies idempotently.
+		 *
+		 * @var array<int, bool>
+		 */
+		private $needs_resync = array();
+
+		/**
+		 * Edits whose submission voided `resync-required`, per client. The
+		 * client's recovery upload re-delivers them, so once it lands the
+		 * oracle must expect their content exactly as if they had applied
+		 * directly. Edits still pending when the session ends stay
+		 * unexpected (their voids were benign only because recovery was
+		 * coming; the oracle does not demand content the room never got).
+		 *
+		 * @var array<int, array<int, array>>
+		 */
+		private $resync_pending = array();
 
 		/**
 		 * Simulated client count.
@@ -174,10 +199,22 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 				$this->find_block( $yblocks, 'srv-' . (int) $edit['paragraph'] )->get( 'attributes' )->get( 'content' )->insert( 0, $edit['text'] );
 			}
 
+			// The recovery lane: after a `resync-required` void the real
+			// client uploads its full state (self-contained, so it carries
+			// the voided content too); the server diffs out what it already
+			// has. Otherwise the submission is the genuine incremental
+			// encoding of this edit.
+			if ( ! empty( $this->needs_resync[ $client ] ) ) {
+				unset( $this->needs_resync[ $client ] );
+				$encoded = \Yjs\encodeStateAsUpdateV2( $doc );
+			} else {
+				$encoded = \Yjs\encodeStateAsUpdateV2( $doc, $sv_before );
+			}
+
 			return array(
 				array(
 					'type' => 'update',
-					'data' => \Yjs\encodeStateAsUpdateV2( $doc, $sv_before )->toBase64(),
+					'data' => $encoded->toBase64(),
 				),
 			);
 		}
@@ -246,9 +283,42 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 		 * @param array $edit        The workload edit the disposition settles.
 		 * @param array $disposition Engine disposition.
 		 */
-		public function record_disposition( int $client, array $edit, array $disposition ): void { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable -- $client is part of the profile contract.
-			$op     = $edit['op'] ?? 'text';
+		public function record_disposition( int $client, array $edit, array $disposition ): void {
 			$status = $disposition['status'] ?? 'unknown';
+			$reason = (string) ( $disposition['reason'] ?? '' );
+
+			if ( 'voided' === $status && 'resync-required' === $reason ) {
+				// The next authored update from this client is a full-state
+				// recovery upload that re-delivers this edit; park it until
+				// the recovery lands.
+				$this->needs_resync[ $client ]     = true;
+				$this->resync_pending[ $client ][] = $edit;
+			} elseif ( ( 'applied' === $status || 'already-merged' === $reason ) && array() !== ( $this->resync_pending[ $client ] ?? array() ) ) {
+				// The recovery landed (applied, or the server already held
+				// everything it carried): every parked edit is now in the
+				// room and the oracle must expect it exactly as if it had
+				// applied directly.
+				foreach ( $this->resync_pending[ $client ] as $recovered ) {
+					$this->record_expectation( $recovered, 'applied' );
+				}
+				$this->resync_pending[ $client ] = array();
+			}
+
+			$this->record_expectation( $edit, $status );
+		}
+
+		/**
+		 * Records one edit's oracle expectation: applied text tokens must
+		 * appear in the materialized content exactly once; block markers
+		 * flip between alive and absent. Attribute registers resolve by
+		 * CRDT conflict rules (NOT server order), so their oracle is the
+		 * converged client documents, checked after the session.
+		 *
+		 * @param array  $edit   The workload edit.
+		 * @param string $status The status it settled with.
+		 */
+		private function record_expectation( array $edit, string $status ): void {
+			$op = $edit['op'] ?? 'text';
 			if ( 'text' === $op ) {
 				$this->expected_texts[] = array(
 					'text'   => (string) $edit['text'],
@@ -283,8 +353,11 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 		}
 
 		/**
-		 * The server compacts by itself and CRDT merges never reject a
-		 * stale base; clients send no follow-ups.
+		 * The server compacts by itself and never nominates a client, so
+		 * reads trigger no follow-up ingest. The one recovery this engine
+		 * asks for (`resync-required`) surfaces on an INGEST response, not
+		 * a read, and rides the client's next authored submission as a
+		 * full-state upload (see author()).
 		 *
 		 * @param int   $client   Reading client index.
 		 * @param array $response get_updates_since() response.
@@ -326,18 +399,31 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 		 * (snapshot rows carry `{ doc: <base64 V2> }`; update rows carry the
 		 * base64 V2 update directly).
 		 *
+		 * Per-row apply failures are skipped rather than fataling the
+		 * simulated client. y-php parks missing-dependency rows as pending
+		 * (JS Yjs parity), so under the multi-process concurrency probe a
+		 * row whose dependency was skipped by a read-visibility race simply
+		 * waits for the gap to fill; the catch remains as a guard against
+		 * malformed rows. Unreachable in the single-process harness (rows
+		 * always arrive in causal order there), so the convergence oracle
+		 * is unaffected.
+		 *
 		 * @param \Yjs\Utils\Doc $doc  Client document.
 		 * @param array          $rows Typed rows from get_updates_since().
 		 */
 		private static function apply_yjs_rows( $doc, array $rows ): void {
 			foreach ( $rows as $row ) {
-				if ( 'snapshot' === ( $row['type'] ?? '' ) ) {
-					$decoded = json_decode( (string) $row['data'], true );
-					if ( is_array( $decoded ) && is_string( $decoded['doc'] ?? null ) ) {
-						\Yjs\applyUpdateV2( $doc, \Yjs\Lib0\Buffer::fromBase64( $decoded['doc'] ) );
+				try {
+					if ( 'snapshot' === ( $row['type'] ?? '' ) ) {
+						$decoded = json_decode( (string) $row['data'], true );
+						if ( is_array( $decoded ) && is_string( $decoded['doc'] ?? null ) ) {
+							\Yjs\applyUpdateV2( $doc, \Yjs\Lib0\Buffer::fromBase64( $decoded['doc'] ) );
+						}
+					} elseif ( 'update' === ( $row['type'] ?? '' ) ) {
+						\Yjs\applyUpdateV2( $doc, \Yjs\Lib0\Buffer::fromBase64( (string) $row['data'] ) );
 					}
-				} elseif ( 'update' === ( $row['type'] ?? '' ) ) {
-					\Yjs\applyUpdateV2( $doc, \Yjs\Lib0\Buffer::fromBase64( (string) $row['data'] ) );
+				} catch ( \Throwable $e ) {
+					continue;
 				}
 			}
 		}

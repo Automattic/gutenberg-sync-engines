@@ -102,25 +102,118 @@ final class UpdatesTest extends TranslatedTestCase {
 	}
 
 	public function testMergePendingUpdates(): void {
-		$doc     = new Doc();
-		$updates = array();
-		$doc->on(
+		$yDoc          = new Doc();
+		$serverUpdates = array();
+		$yDoc->on(
 			'update',
-			static function ( Buffer $update ) use ( &$updates ): void {
-				$updates[] = $update;
+			static function ( Buffer $update ) use ( &$serverUpdates ): void {
+				$serverUpdates[] = $update;
 			}
 		);
-		$text = $doc->getText( 'textBlock' );
+		$yText = $yDoc->getText( 'textBlock' );
 		foreach ( array( 'r', 'o', 'n', 'e', 'n' ) as $char ) {
-			$text->applyDelta( array( array( 'insert' => $char ) ) );
+			$yText->applyDelta( array( array( 'insert' => $char ) ) );
 		}
 
-		$doc1 = new Doc();
-		\Yjs\applyUpdate( $doc1, $updates[0] );
-		\Yjs\applyUpdate( $doc1, \Yjs\mergeUpdates( array_slice( $updates, 1 ) ) );
+		$yDoc1 = new Doc();
+		\Yjs\applyUpdate( $yDoc1, $serverUpdates[0] );
+		$update1 = \Yjs\encodeStateAsUpdate( $yDoc1 );
 
-		self::assertSame( $text->toString(), $doc1->getText( 'textBlock' )->toString() );
-		self::assertSame( \Yjs\encodeStateVector( $doc )->toHexString(), \Yjs\encodeStateVectorFromUpdate( \Yjs\mergeUpdates( $updates ) )->toHexString() );
+		$yDoc2 = new Doc();
+		\Yjs\applyUpdate( $yDoc2, $update1 );
+		\Yjs\applyUpdate( $yDoc2, $serverUpdates[1] );
+		$update2 = \Yjs\encodeStateAsUpdate( $yDoc2 );
+
+		$yDoc3 = new Doc();
+		\Yjs\applyUpdate( $yDoc3, $update2 );
+		\Yjs\applyUpdate( $yDoc3, $serverUpdates[3] );
+		$update3 = \Yjs\encodeStateAsUpdate( $yDoc3 );
+
+		$yDoc4 = new Doc();
+		\Yjs\applyUpdate( $yDoc4, $update3 );
+		\Yjs\applyUpdate( $yDoc4, $serverUpdates[2] );
+		$update4 = \Yjs\encodeStateAsUpdate( $yDoc4 );
+
+		$yDoc5 = new Doc();
+		\Yjs\applyUpdate( $yDoc5, $update4 );
+		\Yjs\applyUpdate( $yDoc5, $serverUpdates[4] );
+
+		$yText5 = $yDoc5->getText( 'textBlock' );
+		self::assertSame( 'nenor', $yText5->toString() );
+	}
+
+	/**
+	 * Not translated from upstream. Regression coverage for a y-php crash: applying an
+	 * update whose causal dependencies are absent threw a TypeError inside
+	 * integrateStructs() instead of parking the structs as pending like JS Yjs does.
+	 */
+	public function testOutOfOrderUpdateIsParkedAsPendingAndRecovered(): void {
+		$d1           = new Doc();
+		$d1->clientID = 42;
+		$text         = $d1->getText( 't' );
+		$sv0          = \Yjs\encodeStateVector( $d1 );
+		$text->insert( 0, 'abc' );
+		$u1  = \Yjs\encodeStateAsUpdateV2( $d1, $sv0 );
+		$sv1 = \Yjs\encodeStateVector( $d1 );
+		$text->insert( 3, 'def' );
+		$u2 = \Yjs\encodeStateAsUpdateV2( $d1, $sv1 );
+
+		$d2 = new Doc();
+		\Yjs\applyUpdateV2( $d2, $u2 );
+
+		self::assertSame( '', $d2->getText( 't' )->toString() );
+		self::assertNotNull( $d2->store->pendingStructs );
+		self::assertSame( array( 42 => 2 ), $d2->store->pendingStructs['missing'] );
+
+		// Encoding a doc with pending structs must not drop them.
+		$d3 = new Doc();
+		\Yjs\applyUpdateV2( $d3, \Yjs\encodeStateAsUpdateV2( $d2 ) );
+		self::assertNotNull( $d3->store->pendingStructs );
+
+		// Filling the causal gap integrates the parked structs.
+		\Yjs\applyUpdateV2( $d2, $u1 );
+		self::assertSame( 'abcdef', $d2->getText( 't' )->toString() );
+		self::assertNull( $d2->store->pendingStructs );
+
+		\Yjs\applyUpdateV2( $d3, $u1 );
+		self::assertSame( 'abcdef', $d3->getText( 't' )->toString() );
+		self::assertNull( $d3->store->pendingStructs );
+	}
+
+	/**
+	 * Not translated from upstream. A delete set that references structs the receiver
+	 * has not seen yet must be parked as pendingDs and re-applied once the structs
+	 * arrive, mirroring JS readUpdateV2().
+	 */
+	public function testPendingDeleteSetIsParkedAndReapplied(): void {
+		$d1           = new Doc();
+		$d1->clientID = 42;
+		$text         = $d1->getText( 't' );
+		$sv0          = \Yjs\encodeStateVector( $d1 );
+		$text->insert( 0, 'abc' );
+		$u1  = \Yjs\encodeStateAsUpdateV2( $d1, $sv0 );
+		$sv1 = \Yjs\encodeStateVector( $d1 );
+		$text->delete( 0, 1 );
+		$u2 = \Yjs\encodeStateAsUpdateV2( $d1, $sv1 );
+
+		$d2 = new Doc();
+		\Yjs\applyUpdateV2( $d2, $u2 );
+
+		self::assertSame( '', $d2->getText( 't' )->toString() );
+		self::assertNotNull( $d2->store->pendingDs );
+
+		// Encoding a doc with a pending delete set must not drop it.
+		$d3 = new Doc();
+		\Yjs\applyUpdateV2( $d3, \Yjs\encodeStateAsUpdateV2( $d2 ) );
+		self::assertNotNull( $d3->store->pendingDs );
+
+		\Yjs\applyUpdateV2( $d2, $u1 );
+		self::assertSame( 'bc', $d2->getText( 't' )->toString() );
+		self::assertNull( $d2->store->pendingDs );
+
+		\Yjs\applyUpdateV2( $d3, $u1 );
+		self::assertSame( 'bc', $d3->getText( 't' )->toString() );
+		self::assertNull( $d3->store->pendingDs );
 	}
 
 	public function testObfuscateUpdates(): void {

@@ -325,10 +325,11 @@ composer lint       # PHPCS (WordPress Coding Standards)
 composer lint:fix   # PHPCBF auto-fixes
 ```
 
-The conformance suite asserts byte-for-byte equality against fixtures generated from the real JavaScript Yjs. To regenerate fixtures you need the sibling `yjs` checkout with its dependencies installed:
+The conformance suite asserts byte-for-byte equality against fixtures generated from the real JavaScript Yjs, which is pinned as an npm dependency. To regenerate fixtures:
 
 ```bash
-node tools/gen-fixtures.mjs
+npm install
+npm run gen-fixtures
 ```
 
 See [docs/development.md](docs/development.md) for the testing architecture and how to work on the port itself. The original migration plan lives in [plan/](plan/).

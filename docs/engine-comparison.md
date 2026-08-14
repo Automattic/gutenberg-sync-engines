@@ -64,7 +64,7 @@ differently. The tables below are how the price shows up.
 | Conflict handling | Transform on the server; genuine conflicts park in the editor's review panel (escalation notice, marker chip, durable resolutions — e2e-verified) | Silent CRDT auto-merge, but ON THE SERVER — outcomes observable, still no review lane | Three-way merge on the server; genuine conflicts ESCALATE as dispositions (`manual-conflict-required`) — but no review UI yet, so the client abandons the proposal and canonical wins locally |
 | Collaborative undo | **Not yet** — WP's global undo applies (can undo a peer's work); designed fix is inverse intents | Per-peer undo manager (`src/engines/yjs/undo.ts`, inherited from the retired relay) | Per-peer undo manager (shared `src/engines/yjs/undo.ts` over the local doc bridge); undone state propagates as an ordinary proposal |
 | Refresh/offline recovery | Server materializes the document; queued intents are memory-only. Solo edits flush every poll (`syncWhileSolo`), and discarded unsent work surfaces an editor notice | Server holds the canonical doc; a rejoining client re-bootstraps from the retained snapshot + tail and uploads its own state idempotently | Server holds canonical content + version snapshots; a rejoining client re-bootstraps from the retained snapshot + content rows. Un-acked local edits re-propose (the server merges) |
-| Error recovery | Exact re-send; ingest is idempotent by intentId | Full-state recovery update, IDEMPOTENT server-side (the server diffs out what it already has — redelivery settles as a benign `already-merged` void) | Recovery re-proposes the doc's current state; if the lost send landed, the re-proposal merges as a no-op |
+| Error recovery | Exact re-send; ingest is idempotent by intentId | Full-state recovery update, IDEMPOTENT server-side (the server diffs out what it already has — redelivery settles as a benign `already-merged` void); the server explicitly requests it with a `resync-required` void when an update's dependencies are missing from the room | Recovery re-proposes the doc's current state; if the lost send landed, the re-proposal merges as a no-op |
 | History compaction | Server checkpoints every 100 intent rows and trims | Server checkpoints every 100 rows and trims — abandoned rooms stay bounded | Server checkpoints every 100 rows and trims (same retention invariant) |
 | Genesis | Server, from post content | Server, from post content — deterministic build, so racing initializers merge idempotently | Server, from post content — deterministic, and ADOPTS an upstream DE-RTC sync-meta block if one is embedded (version lineage continues) |
 | Capability enforcement | At ingest (kses lane; escalation for `unfiltered_html`-gated content) | **Not yet** — the server CAN decode content (the prerequisite the retired relay structurally lacked), but the per-update kses lane is undesigned; see Known gaps | At ingest, coarse: a proposal kses would rewrite escalates whole (`requires-unfiltered-html`). Upstream DE-RTC sequesters just the risky blocks for review — that partial-safe lane is unported |
@@ -196,24 +196,19 @@ noise under intent-log), with one exception noted below.
   this is the biggest day-to-day parity gap.
 - **The websocket transport is experimental** (one-time auth token travels
   as a URL query parameter; plaintext `ws://` must never leave a dev box).
-- **yjs-server rejects most updates under REAL write concurrency (found
-  by `npm run bench -- concurrency=4`).** With four worker processes
-  writing to one room through the real postmeta storage, 85 of 120
-  updates settled as `voided: invalid-payload` (zero voids with one
-  worker). The signature fits the lock-free design's save race: two
-  ingests load canonical vN, the last save wins, the loser's merged
-  items are absent from canonical, and that client's NEXT update
-  references now-missing items — the engine catches the apply failure
-  and voids it. The advertised update-log repair does not appear to
-  close the race under sustained concurrency, and since the client's
-  content never lands, this is potential REAL work loss (the
-  single-process harness classifies `invalid-payload` as benign — an
-  assumption this measurement invalidates for concurrent writers).
-  Needs engine-side investigation before any production claim of
-  lock-free superiority; the per-room-lock engines (intent-log, de-rtc)
-  showed zero errors and zero voids under the same load, paying instead
-  with measured queueing (+1.9 ms and +10.5 ms p50 respectively at 4
-  writers).
+- **yjs-server under heavy write concurrency can ask a client to
+  resync.** When concurrent lock-free ingests race, an update can
+  settle as `voided: resync-required`; the client recovers by uploading
+  its full state on its next submission (one extra round trip,
+  idempotent server-side, nothing lost). Measured with `npm run bench
+  -- concurrency=8`: most runs settle 320/320 applied with zero voids,
+  the occasional run 1 to 2 `resync-required` voids that heal that way.
+  The benchmark treats `resync-required` as benign (its profile models
+  the recovery) and `invalid-payload` as REAL loss that fails the run,
+  since the engine reserves it for genuinely malformed bytes. The
+  per-room-lock engines (intent-log, de-rtc) showed zero voids under
+  the same load, paying instead with measured queueing (+1.9 ms and
+  +10.5 ms p50 respectively at 4 writers).
 - **The websocket transport drops the client's engine stamps.** The
   daemon's room-request validation
   (`WP_WebSocket_Sync_Server::validate_room_request()`) normalizes away
