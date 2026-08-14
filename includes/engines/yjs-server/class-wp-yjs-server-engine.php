@@ -156,6 +156,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		 * Storage backend.
 		 *
 		 * @since 0.2.0
+		 * @var WP_Sync_Storage
 		 */
 		private WP_Sync_Storage $storage;
 
@@ -289,6 +290,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 					);
 				}
 
+				// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- Decodes the client's binary CRDT update from the wire format.
 				$binary = base64_decode( (string) $update['data'], true );
 				if ( false === $binary || '' === $binary ) {
 					$dispositions[] = array(
@@ -317,6 +319,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				$this->room_docs[ $room ] = null;
 
 				if ( ! self::is_decodable( $buffer ) ) {
+					// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 					do_action( 'qm/debug', "wp-sync: yjs-server rejected a malformed update in {$room}" );
 					$dispositions[] = array(
 						'status' => 'voided',
@@ -348,6 +351,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 
 				$diff = self::apply_update_for_row( $doc, $buffer );
 				if ( null !== $diff ) {
+					// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 					do_action( 'qm/debug', "wp-sync: yjs-server repaired {$room} from the update log during ingest" );
 					$diffs[ count( $dispositions ) ] = $diff;
 					$dispositions[]                  = array( 'status' => 'applied' );
@@ -362,6 +366,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				 */
 				$doc                      = self::rebuild_doc( $before_bytes, $diffs );
 				$this->room_docs[ $room ] = null;
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 				do_action( 'qm/debug', "wp-sync: yjs-server update depends on items missing from {$room}; client must resync" );
 				$dispositions[] = array(
 					'status' => 'voided',
@@ -375,6 +380,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				// voids and leave the row log untouched. A replay-repaired
 				// canonical is still worth persisting.
 				if ( $replayed ) {
+					// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- Encodes the canonical document's binary bytes for storage.
 					$this->save_canonical( $room, $doc, $load_cursor, base64_encode( $after_bytes ) );
 				}
 				foreach ( $dispositions as $i => $disposition ) {
@@ -411,6 +417,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 
 			// $after_bytes IS the canonical encoding at the new head; reuse
 			// it rather than encoding the document a third time.
+			// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- Encodes the canonical document's binary bytes for storage.
 			$this->save_canonical( $room, $doc, $load_cursor, base64_encode( $after_bytes ) );
 			$this->maybe_checkpoint( $room, $client_id, $doc );
 
@@ -550,6 +557,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 					// replay below.
 					$doc         = new \Yjs\Utils\Doc();
 					$meta_cursor = 0;
+					// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 					do_action( 'qm/debug', "wp-sync: yjs-server canonical snapshot corrupt for {$room}; replaying log" );
 				}
 			}
@@ -617,6 +625,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 					}
 				} catch ( \Throwable $e ) {
 					$clean = false;
+					// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 					do_action( 'qm/debug', "wp-sync: yjs-server skipped a stored row that did not apply in {$room}" );
 				}
 			}
@@ -848,12 +857,14 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 			if ( $cursor <= 0 ) {
 				return true;
 			}
+			// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 			do_action( 'qm/debug', "wp-sync: yjs-server checkpoint for {$room}" );
 			$this->storage->set_room_meta( $room, self::META_CHECKPOINT, array( 'cursor' => $cursor ) );
 
 			if ( $prev_cursor > 0 ) {
 				$this->storage->remove_updates_before_cursor( $room, $prev_cursor );
 				$this->storage->set_room_meta( $room, self::META_FLOOR, $prev_cursor );
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 				do_action( 'qm/debug', "wp-sync: yjs-server trimmed history below cursor {$prev_cursor} for {$room}" );
 			}
 
@@ -875,6 +886,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		 * @return true|WP_Error True on success.
 		 */
 		private function initialize_room( string $room, \Yjs\Utils\Doc $doc ) {
+			// phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- clientID is the y-php Doc property, mirroring JS Yjs naming.
 			$doc->clientID = self::GENESIS_CLIENT_ID;
 
 			$post     = null;

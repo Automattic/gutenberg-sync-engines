@@ -192,11 +192,11 @@ class Tests_Collaboration_WpIntentLogPlanner extends WP_UnitTestCase {
 	/**
 	 * Builds an intent envelope for the adversarial-id tests.
 	 *
-	 * @param string $actor    Actor id.
-	 * @param string $id       Intent id.
-	 * @param int    $base_seq Base sequence.
-	 * @param string $type     Intent type.
-	 * @param array  $payload  Payload.
+	 * @param string      $actor    Actor id.
+	 * @param string      $id       Intent id.
+	 * @param int         $base_seq Base sequence.
+	 * @param string      $type     Intent type.
+	 * @param array       $payload  Payload.
 	 * @param string|null $txn Transaction id.
 	 * @return array Intent envelope.
 	 */

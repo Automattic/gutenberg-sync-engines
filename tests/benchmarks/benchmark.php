@@ -293,13 +293,18 @@ $report['timing'] = array(
 $report['calibration'] = wp_sync_bench_calibrate();
 
 global $wp_version, $wpdb;
+$opcache_status = false;
+
+if ( function_exists( 'opcache_get_status' ) ) {
+	$opcache_status = opcache_get_status( false );
+}
+
 $report['environment'] = array(
 	'php'     => PHP_VERSION,
 	'os'      => php_uname( 's' ) . ' ' . php_uname( 'm' ),
 	'wp'      => (string) $wp_version,
 	'db'      => $wpdb->db_server_info(),
-	'opcache' => function_exists( 'opcache_get_status' )
-		&& ! empty( ( opcache_get_status( false ) ?: array() )['opcache_enabled'] ),
+	'opcache' => is_array( $opcache_status ) && ! empty( $opcache_status['opcache_enabled'] ),
 );
 
 $report['config'] = array(

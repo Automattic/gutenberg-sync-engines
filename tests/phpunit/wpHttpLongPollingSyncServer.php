@@ -113,7 +113,7 @@ class Tests_Collaboration_WpHttpLongPollingSyncServer extends WP_Test_REST_TestC
 	}
 
 	public function test_a_request_carrying_updates_is_answered_immediately() {
-		$insert  = array(
+		$insert   = array(
 			'type' => WP_Intent_Log_Engine::UPDATE_TYPE_INTENT,
 			'data' => wp_json_encode(
 				array(

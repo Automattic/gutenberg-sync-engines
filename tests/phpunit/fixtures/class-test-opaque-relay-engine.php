@@ -148,11 +148,11 @@ if ( ! class_exists( 'Test_Opaque_Relay_Engine' ) ) {
 		 *
 		 * @since 7.2.0
 		 *
-		 * @param string                                         $room      Room identifier.
-		 * @param int                                            $client_id Client identifier.
-		 * @param int                                            $cursor    Client cursor.
-		 * @param array<int, array{data: string, type: string}>  $updates   Updates to ingest.
-		 * @param array<string, mixed>                           $context   Transport context (unused by the relay).
+		 * @param string                                        $room      Room identifier.
+		 * @param int                                           $client_id Client identifier.
+		 * @param int                                           $cursor    Client cursor.
+		 * @param array<int, array{data: string, type: string}> $updates   Updates to ingest.
+		 * @param array<string, mixed>                          $context   Transport context (unused by the relay).
 		 * @return array{dispositions: null}|WP_Error Ingest result. The relay produces no
 		 *                                            per-update dispositions.
 		 */

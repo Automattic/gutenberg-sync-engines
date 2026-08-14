@@ -39,16 +39,16 @@ define( 'GUTENBERG_SYNC_ENGINES_FILE', __FILE__ );
 
 require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/class-gutenberg-sync-engines-plugin.php';
 
-/**
- * Boots the plugin once all plugins are loaded, so the collaborative-editing
- * framework (shipped in Gutenberg / WordPress core) is already available to
- * feature-detect.
- *
- * @since 0.1.0
- *
- * @return void
- */
 if ( ! function_exists( 'gutenberg_sync_engines_bootstrap' ) ) {
+	/**
+	 * Boots the plugin once all plugins are loaded, so the collaborative-editing
+	 * framework (shipped in Gutenberg / WordPress core) is already available to
+	 * feature-detect.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return void
+	 */
 	function gutenberg_sync_engines_bootstrap() {
 		Gutenberg_Sync_Engines_Plugin::instance()->boot();
 	}

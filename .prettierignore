@@ -3,6 +3,7 @@
 build
 vendor
 package-lock.json
+composer.lock
 
 # Pinned Gutenberg subtree — formatted by its own tooling at the pin.
 gutenberg
@@ -13,6 +14,12 @@ src/engines/intent-log
 
 # Vendored third-party code from the Yjs ecosystem.
 src/engines/yjs/y-utilities
+
+# Vendored y-php and automerge-php libraries (imported verbatim; they
+# carry their own style and configs, and must stay byte-identical to
+# their upstream pins).
+includes/lib/y-php
+includes/lib/automerge-php
 
 # Playwright e2e output.
 artifacts

@@ -130,6 +130,7 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 		 * Transport-agnostic sync server core.
 		 *
 		 * @since 7.4.0
+		 * @var WP_HTTP_Polling_Sync_Server
 		 */
 		private WP_HTTP_Polling_Sync_Server $sync;
 

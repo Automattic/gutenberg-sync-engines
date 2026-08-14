@@ -326,9 +326,17 @@ if ( ! class_exists( 'WP_Intent_Log_Document' ) ) {
 				usort(
 					$formats,
 					static function ( $a, $b ) {
-						return ( $a['start'] <=> $b['start'] )
-							?: ( $a['end'] <=> $b['end'] )
-							?: strcmp( $a['format'], $b['format'] );
+						$order = $a['start'] <=> $b['start'];
+
+						if ( 0 === $order ) {
+							$order = $a['end'] <=> $b['end'];
+						}
+
+						if ( 0 === $order ) {
+							$order = strcmp( $a['format'], $b['format'] );
+						}
+
+						return $order;
 					}
 				);
 				$fields[ $name ] = array(
