@@ -18,8 +18,11 @@ import { getBlockType } from '@wordpress/blocks';
  */
 import { createAwarenessDoc } from './awareness-sync';
 import {
+	applyDerivedIntents,
 	deriveIntents,
+	documentDistance,
 	engineDocumentToBlocks,
+	summarizeEditorTree,
 	type RawContentAdapter,
 	type RichTextFieldsResolver,
 	type BridgeBlock,
@@ -31,6 +34,7 @@ import {
 import { mintSyncId } from './intent-log/sync-id.js';
 import { fieldToHtml } from './intent-log/rich-text.js';
 import { getProviderCreators } from '../framework';
+import type { EngineDocument } from './intent-log/engine-types';
 import type {
 	ObjectData,
 	ObjectID,
@@ -56,6 +60,26 @@ import type {
  *   blocks and dispatch editRecord, guarded against echo loops by
  *   canonical-state comparison.
  *
+ * THE OBSERVED BASELINE. An editor tree is not testimony about the CURRENT
+ * shared document — it is testimony about the document state the editor
+ * last saw, plus the user's edits on top. Capture therefore diffs each tree
+ * against that observed state and authors the result AT ITS SEQ, leaving
+ * the engine's transform to merge it with everything that landed since.
+ * Diffing against the head instead is what made a push racing live
+ * keystrokes destructive: the tree, still lacking the pushed remote text,
+ * read as a deletion of it.
+ *
+ * Which state the editor last saw is not directly observable (the block
+ * editor reports nothing when it applies a push, and a push can be
+ * superseded by an in-flight editor change before it ever renders), so the
+ * manager keeps candidates: the last CONFIRMED observed state plus every
+ * push still unconfirmed. An arriving tree is matched to the candidate it
+ * differs from least (documentDistance) — a tree is always one of them plus
+ * a small edit. Ties keep the confirmed one: an unconfirmed push must never
+ * be the excuse for authoring a destructive diff. A push nobody contradicts
+ * within PUSH_OBSERVED_DELAY is confirmed on its own, since a quiet editor
+ * has certainly rendered it.
+ *
  * Scope (documented in ARCHITECTURE.md):
  * - Blocks sync through the capture bridge; whitelisted entity properties
  *   (SYNCED_PROPERTIES — currently the title) sync as per-name registers
@@ -68,6 +92,41 @@ import type {
  *   createPersistedCRDTDoc/getEntitySnapshot return null/undefined and
  *   entityContainsSnapshot returns false (callers fail open).
  */
+
+/**
+ * A document state the editor is (or may be) displaying: the module note's
+ * observed baseline, and every unconfirmed push candidate.
+ */
+interface ObservedState {
+	/** The engine document. */
+	doc: EngineDocument;
+	/** Engine log position it was read at (the seq captures author at). */
+	seq: number;
+	/** Canonical bridge-block form, for cheap divergence tests. */
+	json: string;
+}
+
+/**
+ * How long a push goes unchallenged before it counts as observed. Only a
+ * tree arriving from the editor can contradict it, and the block editor
+ * applies a push within a render — so silence for this long means it landed.
+ */
+const PUSH_OBSERVED_DELAY = 1200;
+
+/**
+ * How long a capture-driven editor sync waits for the typing burst to fall
+ * quiet (see scheduleEditorSync). Long enough that it does not reset the
+ * block store between keystrokes, short enough that identity write-backs
+ * land while the user is still on the same paragraph.
+ */
+const CAPTURE_SYNC_DELAY = 1200;
+
+/**
+ * Cap on unconfirmed push candidates. Pushes supersede each other in the
+ * editor (only the last value of the controlled block list is rendered), so
+ * the recent ones are the only plausible baselines.
+ */
+const MAX_PENDING_PUSHES = 8;
 
 interface EntityState {
 	session: IntentLogSession;
@@ -84,10 +143,22 @@ interface EntityState {
 	 * reconcile in place.
 	 */
 	clientIds: Map< string, string >;
-	/** Monotonic push counter, guarding delayed re-push staleness. */
+	/** Monotonic push counter, guarding stale confirmation timers. */
 	pushSeq: number;
-	/** Canonical form of the last state pushed to (or from) the editor. */
-	lastPushedState: string | null;
+	/** Pending capture-driven editor sync (see scheduleEditorSync). */
+	syncTimer: ReturnType< typeof setTimeout > | null;
+	/** Whether that pending sync must push regardless of divergence. */
+	syncForce: boolean;
+	/**
+	 * The state the editor is understood to display, and the seq captures
+	 * are authored at. Null until the room snapshot arrives.
+	 */
+	observed: ObservedState | null;
+	/**
+	 * Pushes dispatched but not yet confirmed as displayed (see the module
+	 * note): candidate baselines for the next tree, newest last.
+	 */
+	pendingPushes: ObservedState[];
 	/**
 	 * Whether update() is currently authoring captured intents. The
 	 * session emits change events synchronously per authored intent;
@@ -324,6 +395,218 @@ function toEditorBlocks(
 }
 
 /**
+ * Maps an engine document to the bridge blocks the editor is handed.
+ *
+ * @param state Entity state.
+ * @param doc   Engine document.
+ * @return Bridge blocks.
+ */
+function documentBlocks(
+	state: EntityState,
+	doc: EngineDocument
+): BridgeBlock[] {
+	return engineDocumentToBlocks(
+		doc,
+		state.fieldsResolver,
+		state.rawContent
+	);
+}
+
+/**
+ * Collects every block id in an engine document.
+ *
+ * @param doc  Engine document.
+ * @param into Accumulator.
+ * @return The accumulator.
+ */
+function collectDocumentIds(
+	doc: EngineDocument,
+	into: Set< string > = new Set()
+): Set< string > {
+	const walk = ( blocks: EngineDocument[ 'root' ] ) => {
+		for ( const block of blocks ) {
+			into.add( block.syncId );
+			walk( block.children );
+		}
+	};
+	walk( doc.root );
+	return into;
+}
+
+/**
+ * Records the state the editor is understood to display, and with it the
+ * seq captures are authored at (the session keeps its replica's log
+ * sliceable from there).
+ *
+ * @param state Entity state.
+ * @param next  Observed state.
+ */
+function setObserved( state: EntityState, next: ObservedState ): void {
+	// The session clamps the seq into its replica's authorable range (and
+	// skips entries this client authored itself); keep the record in step.
+	state.session.setObservedSeq( next.seq );
+	state.observed = { ...next, seq: state.session.getObservedSeq() };
+}
+
+/**
+ * Dispatches a document to the editor and files it as an unconfirmed
+ * baseline candidate (see the module note).
+ *
+ * @param state  Entity state.
+ * @param next   State being pushed.
+ * @param blocks Its bridge blocks.
+ */
+function pushDocument(
+	state: EntityState,
+	next: ObservedState,
+	blocks: BridgeBlock[]
+): void {
+	state.pendingPushes.push( next );
+	if ( state.pendingPushes.length > MAX_PENDING_PUSHES ) {
+		state.pendingPushes.shift();
+	}
+	state.handlers.editRecord(
+		{ blocks: toEditorBlocks( blocks, state.clientIds ) },
+		{ undoIgnore: true }
+	);
+	const token = ++state.pushSeq;
+	setTimeout( () => {
+		/*
+		 * Nothing arrived from the editor since this push, so it rendered:
+		 * the block editor reports nothing back for changes it applied
+		 * itself, and an editor change would have consumed the pending
+		 * candidates. Promoting it also releases the replica's log
+		 * retention down to this seq.
+		 */
+		const latest = state.pendingPushes.at( -1 );
+		if ( state.unloaded || token !== state.pushSeq || ! latest ) {
+			return;
+		}
+		state.pendingPushes = [];
+		setObserved( state, latest );
+	}, PUSH_OBSERVED_DELAY );
+}
+
+/**
+ * Brings the editor up to the shared document when it is behind it.
+ *
+ * @param state Entity state.
+ * @param force Push even when the document matches what the editor is
+ *              believed to show — for the cases where that belief is
+ *              knowably incomplete (identity write-backs, retained blocks).
+ */
+function syncEditor( state: EntityState, force = false ): void {
+	const doc = state.session.getDocument();
+	if ( ! doc || ! state.observed ) {
+		return;
+	}
+	const blocks = documentBlocks( state, doc );
+	const json = canonicalBlocksJson( blocks );
+	const shown = state.pendingPushes.at( -1 ) ?? state.observed;
+	if ( ! force && json === shown.json ) {
+		return;
+	}
+	pushDocument( state, { doc, seq: state.session.getSeq(), json }, blocks );
+}
+
+/**
+ * Queues an editor sync for after the capture that asked for it.
+ *
+ * A push dispatched from INSIDE update() never reaches the editor:
+ * core-data hands the sync manager the edits (where this runs) BEFORE it
+ * commits them, and every editor edit carries the editor's own block tree —
+ * so its commit lands on top of anything we dispatch here. Only a push made
+ * outside that call survives, which is why capture-driven syncs (identity
+ * write-backs, retained blocks, a merged document the tree is behind on)
+ * wait for the burst to fall quiet. Remote-driven pushes are dispatched
+ * immediately: they run from a transport callback, with no editor edit
+ * following them.
+ *
+ * @param state Entity state.
+ * @param force See syncEditor.
+ */
+function scheduleEditorSync( state: EntityState, force = false ): void {
+	state.syncForce = state.syncForce || force;
+	if ( state.syncTimer ) {
+		clearTimeout( state.syncTimer );
+	}
+	state.syncTimer = setTimeout( () => {
+		state.syncTimer = null;
+		const forced = state.syncForce;
+		state.syncForce = false;
+		if ( ! state.unloaded ) {
+			syncEditor( state, forced );
+		}
+	}, CAPTURE_SYNC_DELAY );
+}
+
+/**
+ * Resolves which state an arriving editor tree was authored against, and
+ * makes it the observed baseline.
+ *
+ * Every unconfirmed push is a candidate alongside the confirmed baseline;
+ * the tree is that state plus the user's own edit, so the candidate it
+ * differs from least is the one it came from. A tie is no evidence that the
+ * editor rendered a push, and treating an unrendered push as observed is
+ * exactly what turns a lost race into a destructive diff — so ties keep the
+ * confirmed baseline. Either way the candidates are consumed: the record now
+ * carries the editor's own tree, so any push it did not render is gone.
+ *
+ * @param state  Entity state.
+ * @param blocks The arriving editor tree.
+ */
+function chooseObservedBaseline(
+	state: EntityState,
+	blocks: BridgeBlock[]
+): void {
+	const observed = state.observed;
+	// Candidates that carry the same content as the confirmed baseline
+	// cannot be told apart from it by any tree, and choosing one would
+	// change nothing but the seq — drop them before doing real work (this
+	// is the common case: a push the editor was never behind on).
+	const pending = state.pendingPushes.filter(
+		( candidate ) => candidate.json !== observed?.json
+	);
+	state.pendingPushes = [];
+	// Invalidate the pending confirmation timers: this tree is the answer.
+	state.pushSeq++;
+	if ( 0 === pending.length || ! observed ) {
+		return;
+	}
+	const options = {
+		richTextFields: state.fieldsResolver,
+		rawContent: state.rawContent,
+	};
+	const summary = summarizeEditorTree( blocks, options );
+	const relevantIds = new Set< string >();
+	for ( const candidate of [ observed, ...pending ] ) {
+		collectDocumentIds( candidate.doc, relevantIds );
+	}
+	let best = observed;
+	let bestDistance = documentDistance(
+		summary,
+		best.doc,
+		relevantIds,
+		options
+	);
+	for ( const candidate of pending ) {
+		const distance = documentDistance(
+			summary,
+			candidate.doc,
+			relevantIds,
+			options
+		);
+		if ( distance < bestDistance ) {
+			best = candidate;
+			bestDistance = distance;
+		}
+	}
+	if ( best !== observed ) {
+		setObserved( state, best );
+	}
+}
+
+/**
  * Creates an intent-log sync manager.
  *
  * @param debug Whether to log debug output.
@@ -406,7 +689,8 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			handlers,
 			providers: [],
 			unloaded: false,
-			lastPushedState: null,
+			observed: null,
+			pendingPushes: [],
 			capturing: false,
 			// Record seeding (source 1 of the editorIds contract): the ids
 			// persisted in the content this editor loaded and rendered.
@@ -421,6 +705,8 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			docTombstones: new Set(),
 			clientIds: new Map(),
 			pushSeq: 0,
+			syncTimer: null,
+			syncForce: false,
 			lastPushedProps: initialProps,
 			fieldsResolver:
 				syncConfig.richTextFields ?? ( () => [ 'content' ] ),
@@ -464,11 +750,8 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			if ( state.unloaded || ! session.isInitialized() ) {
 				return;
 			}
-			const blocks = engineDocumentToBlocks(
-				session.getDocument()!,
-				state.fieldsResolver,
-				state.rawContent
-			);
+			const doc = session.getDocument()!;
+			const blocks = documentBlocks( state, doc );
 			const docIds = collectBlockIds( blocks );
 			/*
 			 * Genesis seeding (source 2 of the editorIds contract): a seq-0
@@ -516,42 +799,54 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			// Entity properties push independently of the block logic below
 			// (its early returns must not swallow a title change).
 			pushPropertyChanges();
-			/*
-			 * Never push an EMPTY shared document over a live editor as the
-			 * first push (fresh post: the genesis is empty while the user
-			 * may already be typing). The first capture seeds the document
-			 * instead.
-			 */
-			if ( 0 === blocks.length && null === state.lastPushedState ) {
+			if ( ! state.observed ) {
+				/*
+				 * Bootstrap. The snapshot is the best account of what the
+				 * editor displays: the genesis is derived from the saved
+				 * content this editor itself parsed and rendered, and a
+				 * compaction checkpoint is the nearest approximation (the
+				 * editorIds retention guard covers the difference).
+				 */
+				const bootstrap = {
+					doc,
+					seq: session.getBootstrapSeq() ?? 0,
+					json: canonicalBlocksJson( blocks ),
+				};
+				setObserved( state, bootstrap );
+				/*
+				 * Never push an EMPTY shared document over a live editor as
+				 * the first push (fresh post: the genesis is empty while the
+				 * user may already be typing). The first capture seeds the
+				 * document instead.
+				 */
+				if ( 0 === blocks.length ) {
+					return;
+				}
+				pushDocument( state, bootstrap, blocks );
 				return;
 			}
-			const canonical = canonicalBlocksJson( blocks );
-			if ( canonical === state.lastPushedState ) {
-				return; // Echo of our own capture; nothing new for the editor.
-			}
-			state.lastPushedState = canonical;
 			/*
 			 * Deliberately NOT marking the pushed ids as editor-displayed:
 			 * a push only proves we dispatched, not that the editor
 			 * rendered it. Ids become removable when the editor itself
 			 * hands us a tree containing them (its echo of this push).
 			 */
-			handlers.editRecord(
-				{ blocks: toEditorBlocks( blocks, state.clientIds ) },
-				{ undoIgnore: true }
-			);
+			syncEditor( state );
 		} );
 
 		session.onReset( () => {
 			/*
 			 * Horizon reset: the replica re-bootstrapped from a server
-			 * checkpoint and pending intents were dropped. Clear the echo
-			 * suppression state so the reset document pushes to the editor,
+			 * checkpoint and pending intents were dropped. Drop the observed
+			 * baseline (its seq belongs to trimmed history) so the change
+			 * event that follows re-seeds from the checkpoint and pushes it,
 			 * and clear staleness bookkeeping derived from the old replica.
 			 * The editor tree still holds any un-acked local work; the next
 			 * capture diffs it against the reset document and re-authors.
 			 */
-			state.lastPushedState = null;
+			state.observed = null;
+			state.pendingPushes = [];
+			state.pushSeq++;
 			state.lastPushedProps = {};
 			state.docTombstones.clear();
 			state.prevDocIds = new Set();
@@ -832,63 +1127,94 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				state.editorIds.add( id );
 			}
 
-			const derived = deriveIntents(
-				state.session.getDocument()!,
-				blocks,
-				{
-					// Only blocks the editor has displayed may be deleted
-					// by its tree's absence; never-seen blocks are retained.
-					removableIds: state.editorIds,
-					// Remotely removed blocks in a stale tree are not
-					// resurrected.
-					excludeIds: state.docTombstones,
-					richTextFields: state.fieldsResolver,
-					rawContent: state.rawContent,
-				}
-			);
-			if ( ! derived ) {
-				return;
-			}
-			// Id-less blocks in the tree confirm their adopted/minted ids.
-			const confirmIds = ( specs: typeof derived.specs ) => {
-				for ( const spec of specs ) {
-					state.editorIds.add( spec.syncId as string );
-					confirmIds(
-						( spec.children as typeof derived.specs ) ?? []
-					);
-				}
-			};
-			confirmIds( derived.specs );
-			if ( derived.coarseBlockCount > 0 ) {
-				log( 'coarse capture', {
-					origin,
-					blocks: derived.coarseBlockCount,
+			/*
+			 * Capture against the state this tree was authored against, not
+			 * the current head (see the module note): remote work that
+			 * landed since is simply absent from the baseline, so the diff
+			 * can neither delete it nor re-author it, and the intents carry
+			 * the baseline's seq for the transform to merge over.
+			 */
+			chooseObservedBaseline( state, blocks );
+			if ( ! state.observed ) {
+				// Defensive: initialized without a change event.
+				setObserved( state, {
+					doc,
+					seq: state.session.getSeq(),
+					json: canonicalBlocksJson( documentBlocks( state, doc ) ),
 				} );
 			}
-			state.capturing = true;
-			try {
-				for ( const intent of derived.intents ) {
-					state.session.author( intent.type, intent.payload );
+			const baseDoc = state.observed!.doc;
+
+			const derived = deriveIntents( baseDoc, blocks, {
+				// Only blocks the editor has displayed may be deleted
+				// by its tree's absence; never-seen blocks are retained.
+				removableIds: state.editorIds,
+				// Remotely removed blocks in a stale tree are not
+				// resurrected.
+				excludeIds: state.docTombstones,
+				richTextFields: state.fieldsResolver,
+				rawContent: state.rawContent,
+			} );
+
+			if ( derived ) {
+				// Id-less blocks in the tree confirm their adopted/minted ids.
+				const confirmIds = ( specs: typeof derived.specs ) => {
+					for ( const spec of specs ) {
+						state.editorIds.add( spec.syncId as string );
+						confirmIds(
+							( spec.children as typeof derived.specs ) ?? []
+						);
+					}
+				};
+				confirmIds( derived.specs );
+				if ( derived.coarseBlockCount > 0 ) {
+					log( 'coarse capture', {
+						origin,
+						blocks: derived.coarseBlockCount,
+					} );
 				}
-			} finally {
-				state.capturing = false;
+				state.capturing = true;
+				try {
+					state.session.authorBatch( derived.intents );
+				} finally {
+					state.capturing = false;
+				}
+				/*
+				 * The editor now displays the baseline plus what it just
+				 * told us — NOT the merged head, which it has not seen. Its
+				 * seq is unchanged: this tree observed no new remote work.
+				 */
+				const observedDoc = applyDerivedIntents(
+					baseDoc,
+					derived.intents
+				);
+				setObserved( state, {
+					doc: observedDoc,
+					seq: state.session.getObservedSeq(),
+					json: canonicalBlocksJson(
+						documentBlocks( state, observedDoc )
+					),
+				} );
 			}
-			// Record the state we just captured so later change events do
-			// not bounce it back into the editor.
-			const captured = engineDocumentToBlocks(
-				state.session.getDocument()!,
-				state.fieldsResolver,
-				state.rawContent
-			);
-			const capturedJson = canonicalBlocksJson( captured );
-			state.prevDocIds = collectBlockIds( captured );
 
 			/*
 			 * Push the editor forward when its tree was behind the shared
-			 * document: missing identities (freshly parsed or new blocks
-			 * needing their adopted/minted ids — the churn bug), retained
-			 * never-displayed remote blocks, or blocks dropped because a
-			 * remote deletion outranked the stale tree.
+			 * document. Content divergence is caught by syncEditor's own
+			 * comparison; these are the cases where the tree diverges from
+			 * the baseline in ways that comparison cannot see:
+			 *
+			 * - missing identities (freshly parsed or new blocks needing
+			 *   their adopted/minted ids — the churn bug): the baseline
+			 *   carries the ids, the editor's tree does not;
+			 * - retained never-displayed blocks: the baseline keeps them,
+			 *   the editor does not show them. Without this forced push,
+			 *   deleting a just-arrived remote block BEFORE any tree
+			 *   testified it left the editor silently behind the document
+			 *   forever (found by the fuzzer after a peer re-joined). The
+			 *   push visibly resurrects the block; the next tree then makes
+			 *   the id removable, so repeating the deletion works;
+			 * - blocks dropped because a remote deletion outranked the
+			 *   stale tree.
 			 */
 			const editorHadAllIds = blocks.every( function hasId(
 				block: BridgeBlock
@@ -901,6 +1227,18 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			const treeHasTombstoned = [ ...treeIds ].some( ( id ) =>
 				state.docTombstones.has( id )
 			);
+			const specIdSet = new Set< string >();
+			const collectFromSpecs = (
+				specs: Array< Record< string, unknown > > = []
+			) => {
+				for ( const spec of specs ) {
+					specIdSet.add( spec.syncId as string );
+					collectFromSpecs(
+						spec.children as Array< Record< string, unknown > >
+					);
+				}
+			};
+			collectFromSpecs( derived?.specs );
 			/*
 			 * Identity remapping also counts as "behind": when adoption
 			 * resolved a tree id onto a different document identity (or
@@ -909,96 +1247,16 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			 * and saved content must carry ITS ids, identical across all
 			 * peers, for identity to be durable across sessions.
 			 */
-			const specIdSet = new Set< string >();
-			const collectFromSpecs = ( specs: typeof derived.specs ) => {
-				for ( const spec of specs ) {
-					specIdSet.add( spec.syncId as string );
-					collectFromSpecs(
-						( spec.children as typeof derived.specs ) ?? []
-					);
-				}
-			};
-			collectFromSpecs( derived.specs );
 			const idsRemapped = [ ...specIdSet ].some(
 				( id ) => ! treeIds.has( id )
 			);
-			const editorIsBehind =
+			scheduleEditorSync(
+				state,
 				! editorHadAllIds ||
-				derived.retainedIds.size > 0 ||
-				treeHasTombstoned ||
-				idsRemapped;
-			/*
-			 * Retained blocks and tombstone-bearing trees PROVABLY diverge
-			 * from the document no matter what was pushed before:
-			 * lastPushedState equality only proves the DOC is unchanged
-			 * since the last push, not that the editor displays it. Without
-			 * this forced push, deleting a just-arrived remote block BEFORE
-			 * its push echo testified it (so it never became removable)
-			 * left the editor silently behind the document forever — the
-			 * retention won (block stays in the doc) but the suppressed
-			 * push never restored it on screen. Found by the fuzzer as
-			 * stable divergence after a peer re-joined. The push visibly
-			 * resurrects the block; its echo then makes the id removable,
-			 * so repeating the deletion works.
-			 */
-			const editorContentDiverges =
-				derived.retainedIds.size > 0 || treeHasTombstoned;
-			if (
-				editorIsBehind &&
-				( editorContentDiverges ||
-					capturedJson !== state.lastPushedState )
-			) {
-				state.handlers.editRecord(
-					{ blocks: toEditorBlocks( captured, state.clientIds ) },
-					{ undoIgnore: true }
-				);
-				/*
-				 * The push can lose a race with the editor's own in-flight
-				 * echo (its tree overwrites the record after us). While the
-				 * user keeps typing, the next capture re-pushes — but the
-				 * LAST capture of a burst has no successor, leaving the
-				 * tree's identity metadata stale until the next
-				 * interaction. One delayed re-dispatch of the same state
-				 * closes that window; if the first push stuck, the repeat
-				 * is a no-op for the editor.
-				 *
-				 * KNOWN LIMITATION (observed as text corruption under load,
-				 * worst over the websocket transport's per-keystroke
-				 * cadence): pushes racing live keystrokes can clobber the
-				 * editor tree, and the next capture then authors
-				 * destructive diffs from the mixed tree. Do NOT fix this by
-				 * deferring/gating pushes (e.g. on isTyping): capture diffs
-				 * the CURRENT document against the tree and treats the tree
-				 * as full testimony, so any push deferral makes the next
-				 * capture author intents REVERTING the un-pushed remote
-				 * content — field-text diffs have no never-displayed
-				 * protection the way block-level removableIds does. The
-				 * system depends on push-before-next-capture ordering. The
-				 * real fix is capturing against the document state the
-				 * editor last OBSERVED (author at that base seq; the
-				 * engine's transform machinery merges), which is a
-				 * session/bridge redesign.
-				 */
-				const pushSeq = ++state.pushSeq;
-				setTimeout( () => {
-					if (
-						! state.unloaded &&
-						pushSeq === state.pushSeq &&
-						capturedJson === state.lastPushedState
-					) {
-						state.handlers.editRecord(
-							{
-								blocks: toEditorBlocks(
-									captured,
-									state.clientIds
-								),
-							},
-							{ undoIgnore: true }
-						);
-					}
-				}, 1200 );
-			}
-			state.lastPushedState = capturedJson;
+					idsRemapped ||
+					treeHasTombstoned ||
+					( derived?.retainedIds.size ?? 0 ) > 0
+			);
 		},
 
 		getAwareness: < State extends Awareness >(
@@ -1159,6 +1417,9 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				return;
 			}
 			state.unloaded = true;
+			if ( state.syncTimer ) {
+				clearTimeout( state.syncTimer );
+			}
 			state.providers.forEach( ( provider ) => provider.destroy() );
 			state.awareness?.destroy();
 			state.session.destroy();
@@ -1168,6 +1429,9 @@ export function createIntentLogManager( debug = false ): SyncManager {
 		unloadAll() {
 			for ( const [ , state ] of entityStates ) {
 				state.unloaded = true;
+				if ( state.syncTimer ) {
+					clearTimeout( state.syncTimer );
+				}
 				state.providers.forEach( ( provider ) => provider.destroy() );
 				state.awareness?.destroy();
 				state.session.destroy();

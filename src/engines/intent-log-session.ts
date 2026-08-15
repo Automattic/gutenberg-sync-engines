@@ -6,6 +6,7 @@ import {
 	clientReceive,
 	createClient,
 	predictedDisposition,
+	replanClient,
 } from './intent-log/client.js';
 import { createIntent } from './intent-log/intents.js';
 import type {
@@ -150,6 +151,34 @@ export interface IntentLogSession extends EngineSessionCodec {
 		options?: { txnId?: string }
 	) => IntentEnvelope;
 
+	/**
+	 * Authors a batch of intents that were all derived against ONE document
+	 * state — by default the OBSERVED state (see setObservedSeq), not the
+	 * optimistic head. Every intent is stamped with that state's seq, so the
+	 * planner (here and on the server) rebases it over everything that
+	 * landed since; the optimistic document is recomputed once, from the
+	 * plan, rather than by applying stale coordinates to the head.
+	 */
+	authorBatch: (
+		intents: Array< { type: string; payload: Record< string, unknown > } >,
+		options?: { txnId?: string; baseSeq?: number }
+	) => IntentEnvelope[];
+
+	/**
+	 * Records the engine log position the consumer's own view (the editor
+	 * tree) is expressed against — the seq authorBatch stamps and the floor
+	 * below which the replica may not trim its log copy.
+	 *
+	 * The value is clamped into [firstSeq, cursor] and advanced over any
+	 * contiguous run of entries this session authored itself: those are
+	 * already part of the consumer's view (it is where they came from), and
+	 * the one-sided transform skips same-actor priors anyway.
+	 */
+	setObservedSeq: ( seq: number ) => void;
+
+	/** The engine log position captures are currently authored against. */
+	getObservedSeq: () => number;
+
 	/** The optimistic document (acked + pending), or null pre-snapshot. */
 	getDocument: () => EngineDocument | null;
 
@@ -250,6 +279,13 @@ export function createIntentLogSession(
 	let replica: ReturnType< typeof createClient > | null = null;
 	let bootstrapSeq: number | null = null;
 	/*
+	 * The log position the consumer's view is expressed against (see
+	 * setObservedSeq). It equals the cursor whenever the consumer is caught
+	 * up; it lags while updates have reached this replica but not the view
+	 * that authors against it.
+	 */
+	let observedSeq = 0;
+	/*
 	 * Log rows this replica has absorbed, by intentId. The replica's log is
 	 * positional — clientReceive() appends every entry at the cursor — so a
 	 * transport that redelivers a row (e.g. overlapping delivery windows)
@@ -280,6 +316,61 @@ export function createIntentLogSession(
 
 	const notifyChange = () => {
 		changeListeners.forEach( ( listener ) => listener() );
+	};
+
+	/**
+	 * Clamps an observed seq into the replica's authorable range and skips
+	 * the contiguous run of own entries above it (see setObservedSeq).
+	 *
+	 * @param seq Candidate observed seq.
+	 * @return The seq to record.
+	 */
+	const resolveObservedSeq = ( seq: number ): number => {
+		if ( ! replica ) {
+			return seq;
+		}
+		let resolved = Math.min(
+			Math.max( seq, replica.firstSeq ),
+			replica.cursor
+		);
+		while (
+			resolved < replica.cursor &&
+			replica.log[ resolved - replica.firstSeq ]?.actorId === actorId
+		) {
+			resolved++;
+		}
+		return resolved;
+	};
+
+	/**
+	 * Records the observed seq and keeps the replica's log sliceable from
+	 * there (the next capture authors at it, and the planner needs the
+	 * slice (observedSeq, head] to rebase).
+	 *
+	 * @param seq Candidate observed seq.
+	 * @return The recorded seq.
+	 */
+	const applyObservedSeq = ( seq: number ): number => {
+		observedSeq = resolveObservedSeq( seq );
+		if ( replica ) {
+			replica.retainFrom = observedSeq;
+		}
+		return observedSeq;
+	};
+
+	/**
+	 * Emits one authored intent to the transport.
+	 *
+	 * @param intent Intent envelope.
+	 */
+	const emitIntent = ( intent: IntentEnvelope ): void => {
+		const data = JSON.stringify( intent );
+		if ( localUpdateListener ) {
+			localUpdateListener(
+				{ data, type: INTENT_LOG_UPDATE_TYPES.INTENT },
+				new TextEncoder().encode( data ).length
+			);
+		}
 	};
 
 	/**
@@ -329,6 +420,7 @@ export function createIntentLogSession(
 							decoded.doc as EngineDocument,
 							snapshotSeq
 						);
+						observedSeq = snapshotSeq;
 						notifyChange();
 						return;
 					}
@@ -348,6 +440,7 @@ export function createIntentLogSession(
 							decoded.doc as EngineDocument,
 							snapshotSeq
 						);
+						observedSeq = snapshotSeq;
 						// New epoch: rows after the checkpoint are new to
 						// this replica even if their ids were seen before.
 						appliedIntentIds = new Set();
@@ -509,16 +602,52 @@ export function createIntentLogSession(
 				txnId: authorOptions.txnId,
 			} );
 			authorIntent( replica, intent );
-			const data = JSON.stringify( intent );
-			if ( localUpdateListener ) {
-				localUpdateListener(
-					{ data, type: INTENT_LOG_UPDATE_TYPES.INTENT },
-					new TextEncoder().encode( data ).length
-				);
-			}
+			emitIntent( intent );
 			notifyChange();
 			return intent;
 		},
+
+		authorBatch: ( intents, batchOptions = {} ) => {
+			if ( ! replica ) {
+				throw new Error(
+					'Cannot author intents before the room snapshot arrives.'
+				);
+			}
+			const baseSeq = applyObservedSeq(
+				batchOptions.baseSeq ?? observedSeq
+			);
+			const authored = intents.map( ( entry ) => {
+				const intent = createIntent( entry.type, entry.payload, {
+					actorId,
+					baseSeq,
+					txnId: batchOptions.txnId,
+				} );
+				authorIntent( replica!, intent );
+				emitIntent( intent );
+				return intent;
+			} );
+			if ( 0 === authored.length ) {
+				return authored;
+			}
+			if ( baseSeq < replica.cursor ) {
+				/*
+				 * The payloads are expressed in the observed frame, not the
+				 * head's: only a replan (the planner the server also runs)
+				 * turns them into the correct optimistic document — rebased
+				 * over everything that landed since baseSeq, with the
+				 * dispositions the server will report predicted.
+				 */
+				replanClient( replica );
+			}
+			notifyChange();
+			return authored;
+		},
+
+		setObservedSeq: ( seq ) => {
+			applyObservedSeq( seq );
+		},
+
+		getObservedSeq: () => observedSeq,
 
 		getDocument: () => replica?.doc ?? null,
 		getBaseDocument: () => replica?.baseDoc ?? null,

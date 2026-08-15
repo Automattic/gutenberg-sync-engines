@@ -425,6 +425,37 @@ const blockField = ( block: EngineBlock, name: string ): EngineField =>
 	block.fields[ name ] ?? { text: '', formats: [] };
 
 /**
+ * Splits two plain texts on their common prefix/suffix.
+ *
+ * @param before Old text.
+ * @param after  New text.
+ * @return The prefix length and the removed/inserted middles.
+ */
+function textDelta(
+	before: string,
+	after: string
+): { prefix: number; removed: string; inserted: string } {
+	let prefix = 0;
+	const maxPrefix = Math.min( before.length, after.length );
+	while ( prefix < maxPrefix && before[ prefix ] === after[ prefix ] ) {
+		prefix++;
+	}
+	let suffix = 0;
+	while (
+		suffix < Math.min( before.length, after.length ) - prefix &&
+		before[ before.length - 1 - suffix ] ===
+			after[ after.length - 1 - suffix ]
+	) {
+		suffix++;
+	}
+	return {
+		prefix,
+		removed: before.slice( prefix, before.length - suffix ),
+		inserted: after.slice( prefix, after.length - suffix ),
+	};
+}
+
+/**
  * Diffs two plain texts by common prefix/suffix into at most one text intent
  * payload.
  *
@@ -443,21 +474,7 @@ function diffText(
 	if ( before === after ) {
 		return null;
 	}
-	let prefix = 0;
-	const maxPrefix = Math.min( before.length, after.length );
-	while ( prefix < maxPrefix && before[ prefix ] === after[ prefix ] ) {
-		prefix++;
-	}
-	let suffix = 0;
-	while (
-		suffix < Math.min( before.length, after.length ) - prefix &&
-		before[ before.length - 1 - suffix ] ===
-			after[ after.length - 1 - suffix ]
-	) {
-		suffix++;
-	}
-	const removed = before.slice( prefix, before.length - suffix );
-	const inserted = after.slice( prefix, after.length - suffix );
+	const { prefix, removed, inserted } = textDelta( before, after );
 	const base = { syncId, field };
 	if ( '' === removed ) {
 		return {
@@ -471,7 +488,7 @@ function diffText(
 			payload: {
 				...base,
 				start: prefix,
-				end: before.length - suffix,
+				end: prefix + removed.length,
 				removedText: removed,
 			},
 		};
@@ -481,7 +498,7 @@ function diffText(
 		payload: {
 			...base,
 			start: prefix,
-			end: before.length - suffix,
+			end: prefix + removed.length,
 			removedText: removed,
 			text: inserted,
 		},
@@ -973,6 +990,16 @@ export function deriveIntents(
 	// computed against the new tree).
 	for ( const [ syncId ] of oldFlat ) {
 		if ( ! newFlat.has( syncId ) ) {
+			if ( options.excludeIds?.has( syncId ) ) {
+				/*
+				 * Removed remotely already: the tree may still show it (it
+				 * was filtered out of the specs above), and the baseline
+				 * document — the state that tree reflects — still carries
+				 * it. Authoring a removal would only earn an
+				 * already-removed void.
+				 */
+				continue;
+			}
 			if (
 				options.removableIds &&
 				! options.removableIds.has( syncId )
@@ -1195,6 +1222,179 @@ export function deriveIntents(
 	}
 
 	return { intents: coarse, coarseBlockCount, retainedIds, specs };
+}
+
+/**
+ * One block of an editor tree, reduced to the engine's projection.
+ */
+interface SummaryBlock {
+	blockType: string;
+	fields: Record< string, EngineField >;
+	attrs: Record< string, unknown >;
+}
+
+/**
+ * An editor tree indexed by block identity, in engine terms.
+ */
+export interface EditorTreeSummary {
+	blocks: Map< string, SummaryBlock >;
+}
+
+/**
+ * Reduces an editor tree to id → engine projection, for comparing it
+ * against candidate documents (see documentDistance). Blocks without a
+ * syncId land under a freshly minted one and are simply never looked up.
+ *
+ * @param blocks  Editor block tree.
+ * @param options Field scoping (see DeriveOptions).
+ * @return The summary.
+ */
+export function summarizeEditorTree(
+	blocks: BridgeBlock[],
+	options: DeriveOptions = {}
+): EditorTreeSummary {
+	const resolver = options.richTextFields ?? defaultRichTextFields;
+	const seenIds = new Set< string >();
+	const summary: EditorTreeSummary = { blocks: new Map() };
+	const collect = ( specs: Array< Record< string, unknown > > ) => {
+		for ( const spec of specs ) {
+			summary.blocks.set( spec.syncId as string, {
+				blockType: spec.blockType as string,
+				fields: ( spec.fields ?? {} ) as Record< string, EngineField >,
+				attrs: ( spec.attrs ?? {} ) as Record< string, unknown >,
+			} );
+			collect(
+				( spec.children as Array< Record< string, unknown > > ) ?? []
+			);
+		}
+	};
+	collect(
+		blocks.map( ( block ) =>
+			blockToEngineSpec(
+				block,
+				resolver,
+				undefined,
+				seenIds,
+				options.rawContent
+			)
+		)
+	);
+	return summary;
+}
+
+/**
+ * The block's own weight in a distance comparison: one for existing, plus
+ * its text.
+ *
+ * @param fields Engine fields.
+ * @param names  Field names to weigh.
+ * @return Weight.
+ */
+function fieldWeight(
+	fields: Record< string, EngineField >,
+	names: string[]
+): number {
+	let weight = 1;
+	for ( const name of names ) {
+		weight += fields[ name ]?.text.length ?? 0;
+	}
+	return weight;
+}
+
+/**
+ * How far an editor tree is from a candidate document, in characters.
+ *
+ * The manager keeps several candidates for the state a tree was authored
+ * against — the last confirmed one plus every push the editor may or may
+ * not have rendered yet — and this picks between them: the tree is a
+ * candidate plus the user's own edit, so the candidate it derives from is
+ * the one it differs from LEAST. Ids the tree introduced on its own are
+ * equally new to every candidate and are therefore ignored; the comparison
+ * runs over `relevantIds`, the union of the candidates' block ids.
+ *
+ * @param summary     Editor tree summary (summarizeEditorTree).
+ * @param doc         Candidate document.
+ * @param relevantIds Block ids to compare over.
+ * @param options     Field scoping (see DeriveOptions).
+ * @return Distance (0 = the tree is exactly this document).
+ */
+export function documentDistance(
+	summary: EditorTreeSummary,
+	doc: EngineDocument,
+	relevantIds: Set< string >,
+	options: DeriveOptions = {}
+): number {
+	const resolver = options.richTextFields ?? defaultRichTextFields;
+	const fieldNames: RichTextFieldsResolver = ( name ) =>
+		fieldNamesFor( name, resolver, options.rawContent );
+	const docFlat = flattenDocument( doc );
+	let distance = 0;
+	for ( const id of relevantIds ) {
+		const docEntry = docFlat.get( id );
+		const treeEntry = summary.blocks.get( id );
+		if ( docEntry && ! treeEntry ) {
+			distance += fieldWeight(
+				docEntry.block.fields,
+				fieldNames( docEntry.block.blockType )
+			);
+			continue;
+		}
+		if ( treeEntry && ! docEntry ) {
+			distance += fieldWeight(
+				treeEntry.fields,
+				fieldNames( treeEntry.blockType )
+			);
+			continue;
+		}
+		if ( ! docEntry || ! treeEntry ) {
+			continue;
+		}
+		if ( docEntry.block.blockType !== treeEntry.blockType ) {
+			distance += 1;
+		}
+		for ( const name of fieldNames( treeEntry.blockType ) ) {
+			const { removed, inserted } = textDelta(
+				blockField( docEntry.block, name ).text,
+				treeEntry.fields[ name ]?.text ?? ''
+			);
+			distance += removed.length + inserted.length;
+		}
+		const keys = new Set( [
+			...Object.keys( docEntry.block.attrs ).filter(
+				// Engine-internal attrs never appear in editor trees.
+				( key ) => ! key.startsWith( '_' )
+			),
+			...Object.keys( treeEntry.attrs ),
+		] );
+		for ( const key of keys ) {
+			if (
+				JSON.stringify( docEntry.block.attrs[ key ] ) !==
+				JSON.stringify( treeEntry.attrs[ key ] )
+			) {
+				distance += 1;
+			}
+		}
+	}
+	return distance;
+}
+
+/**
+ * Applies a derived batch to a document, off the wire — the state the
+ * editor tree the batch was derived from represents.
+ *
+ * @param doc     Starting document.
+ * @param intents Derived intents.
+ * @return The resulting document.
+ */
+export function applyDerivedIntents(
+	doc: EngineDocument,
+	intents: DerivedIntents[ 'intents' ]
+): EngineDocument {
+	let current = doc;
+	for ( const intent of intents ) {
+		current = applyScratch( current, intent );
+	}
+	return current;
 }
 
 /**

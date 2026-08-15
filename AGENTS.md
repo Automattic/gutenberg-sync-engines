@@ -113,7 +113,11 @@ The framework/plugin split is complete: the framework ships **neither** engines
     lives at `src/engines/intent-log/sync-id.js`. Don't casually edit — changes
     must stay in lockstep with the PHP core and test vectors. Its Jest harness
     lives in `tests/js/engines/intent-log/`; its vector generators in
-    `tests/tools/`.
+    `tests/tools/`. One file is client-only: `client.js` (the replica —
+    outbox, optimistic replan, log retention) has no PHP twin and no vector
+    coverage, since the server plans with the planner directly. It is still
+    core, still frozen-by-default; changes there are additive and covered by
+    `tests/js/engines/intent-log/client.test.js`.
   - `engines/yjs/` — the shared Yjs client modules (CRDT doc schema,
     snapshot helpers, `undo.ts`, vendored `y-utilities/` — the latter ignored
     by eslint), inherited from the retired yjs-relay engine and used by
@@ -236,8 +240,8 @@ everywhere, so auth even succeeds); the first visible failure is
 `activatePlugin( 'gutenberg' )` in global-setup dying with
 "Unexpected end of JSON input". Always pass `WP_BASE_URL` in that case.
 
-Current green baseline: **Jest 347**, **PHPUnit 191 (886 assertions)**,
-**e2e 32/32** (occasional flake under full-suite load — a save notice, a
+Current green baseline: **Jest 368**, **PHPUnit 197 (898 assertions)**,
+**e2e 45/45** (occasional flake under full-suite load — a save notice, a
 fixture login navigation, or `http-only/collaboration-sync-body-size`
 failing after a preceding engine-flip suite [verified pre-existing: the
 yjs suite followed by body-size reproduces it without de-rtc involved];
@@ -341,6 +345,16 @@ and the test suites never start a daemon.
   Related trap: the postmeta storage's `get_cursor()`/`get_update_count()`
   are per-request caches refreshed ONLY by `get_updates_after_cursor()` —
   never gate genesis (or anything) on them before a read has run.
+- **A push dispatched from inside `SyncManager.update()` never reaches the
+  editor.** core-data's `editEntityRecord` hands the sync manager the edits
+  BEFORE it commits them, and every editor edit carries the editor's own
+  block tree (`updateFootnotesFromMeta` always returns `{ blocks }`) — so
+  the commit lands on top of any `editRecord` dispatched during the call.
+  This is deterministic, not a race: capture-driven pushes must be
+  dispatched from a later task (intent-log defers them past the typing
+  burst; see `scheduleEditorSync`). Pushes made from a transport callback
+  (a poll response) land normally. Rediscovering this costs an afternoon —
+  the symptom is an editor whose tree silently never gets its syncIds.
 - **Worktrees mount the plugin twice in wp-env:** `.wp-env.json` maps `.` to
   `wp-content/plugins/gutenberg-sync-engines` AND lists `.` in `plugins`,
   which also mounts it under the checkout's directory name. In the canonical
@@ -401,16 +415,25 @@ and the test suites never start a daemon.
   serializes per room under the intent-log-style GET_LOCK, and every
   accepted proposal broadcasts FULL content rows (storage bounded by
   checkpoints, but row bytes scale with document size).
-- **Intent-log echo race:** editor pushes racing live keystrokes can corrupt
-  canvas text (observed under load; worst over websocket's per-keystroke
-  cadence — benchmark that transport under yjs-server meanwhile). Deferring or
-  gating pushes is NOT a fix: capture treats the editor tree as full testimony
-  against the current document, so a deferred push makes the next capture
-  author intents reverting the un-pushed remote content. The designed fix is
-  capturing against the editor's last-observed document state (author at that
-  base seq; the engine transform merges) — a session/bridge redesign. See the
-  KNOWN LIMITATION comment at the delayed re-push in
-  `src/engines/intent-log-manager.ts`.
+- **Intent-log observed-baseline residuals** (the echo race is FIXED — capture
+  now diffs the editor tree against the document state that tree reflects and
+  authors at its seq; see the "THE OBSERVED BASELINE" note in
+  `src/engines/intent-log-manager.ts`). What remains:
+  - Which state the editor last displayed is inferred, not observed: an
+    arriving tree is matched to the nearest candidate (`documentDistance`)
+    among the confirmed baseline and the unconfirmed pushes. Ties keep the
+    confirmed baseline, so the failure direction is a re-pushed block rather
+    than a destroyed edit.
+  - Typing INTO a paragraph a peer is editing, while this editor is still
+    behind on their change, escalates the later keystrokes of the burst
+    (`frame-conflict`, engine rule 5) instead of merging them: their offsets
+    sit in a frame both an earlier own edit and a remote edit wrote. They go
+    to the review lane — parked, never lost — and normal merging resumes as
+    soon as the editor observes the remote change.
+  - Capture-driven pushes wait for the typing burst to fall quiet
+    (`CAPTURE_SYNC_DELAY`, 1.2 s), so identity write-backs and merged views
+    reach the canvas that late. This is forced by core-data (see the gotcha
+    on pushes from inside `update()`), not by choice.
 
 ## Deep history
 

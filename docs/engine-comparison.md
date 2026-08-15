@@ -185,13 +185,16 @@ noise under intent-log), with one exception noted below.
   proof-carrying proposals (tamper detection is active only for clients
   that send descriptors).
 
-- **Intent-log echo race.** Editor pushes racing live keystrokes can
-  corrupt canvas text; it is rare over the HTTP transports' batched cadence
-  and severe over websocket's per-keystroke cadence — benchmark the
-  websocket transport under yjs-server until it is fixed. The fix is a
-  session/bridge redesign (capture against the editor's last-observed
-  document state); see the `KNOWN LIMITATION` comment in
-  `src/engines/intent-log-manager.ts` and the AGENTS.md known issue.
+- **Intent-log same-paragraph typing can escalate instead of merging.**
+  The echo race that corrupted canvas text is fixed: capture diffs the
+  editor tree against the document state that tree reflects and authors at
+  its seq, so a push racing live keystrokes merges instead of destroying
+  (see "THE OBSERVED BASELINE" in `src/engines/intent-log-manager.ts`). The
+  residual: while this editor is still behind on a peer's edit to the SAME
+  paragraph, the later keystrokes of a burst escalate as `frame-conflict`
+  rather than merging — parked in the review lane, never lost, and normal
+  merging resumes once the editor observes the peer's change. AGENTS.md
+  lists the rest of the residuals.
 - **Intent-log has no collaborative undo yet** — for many editorial teams
   this is the biggest day-to-day parity gap.
 - **The websocket transport is experimental** (one-time auth token travels

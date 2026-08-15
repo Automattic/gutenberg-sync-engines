@@ -53,6 +53,12 @@ export function createClient( actorId, initialDoc, firstSeq = 0 ) {
 		// on both). firstSeq > 0 when initialized from a server compaction
 		// checkpoint, or after trimClientLog().
 		firstSeq,
+		// Lowest seq the log must stay sliceable from, beyond what the outbox
+		// needs (see trimClientLog); null imposes nothing. Owners that author
+		// against an OLDER observed state — the entity bridge captures the
+		// editor tree against the document that tree last reflected — set it
+		// to that state's seq.
+		retainFrom: null,
 		log: [],
 		docCache: new Map( [ [ firstSeq, cloneDocument( initialDoc ) ] ] ),
 		baseDoc: cloneDocument( initialDoc ),
@@ -83,8 +89,9 @@ function replan( client ) {
 /**
  * Drops log entries (and cached documents) the replica can never need
  * again: nothing below the oldest pending intent's baseSeq (or the cursor,
- * when the outbox is empty) is ever sliced by a replan. Without this the
- * client's log copy grows for the lifetime of the session.
+ * when the outbox is empty) is ever sliced by a replan, and nothing below
+ * `retainFrom`, the oldest seq the owner may still author at. Without this
+ * the client's log copy grows for the lifetime of the session.
  *
  * Planner-neutral by construction: planBatch only ever slices the log from
  * a pending intent's baseSeq, and rebases against docAt(baseSeq) — both
@@ -93,9 +100,10 @@ function replan( client ) {
  * @param {Object} client Client.
  */
 export function trimClientLog( client ) {
-	const floor = client.outbox.length
+	const pendingFloor = client.outbox.length
 		? Math.min( ...client.outbox.map( ( intent ) => intent.baseSeq ) )
 		: client.cursor;
+	const floor = Math.min( pendingFloor, client.retainFrom ?? pendingFloor );
 	if ( floor <= client.firstSeq ) {
 		return;
 	}
@@ -123,6 +131,21 @@ export function authorIntent( client, intent ) {
 	client.doc = doc;
 	client.predictions.set( intent.intentId, disposition );
 	return disposition;
+}
+
+/**
+ * Recomputes the optimistic document and predictions from the outbox.
+ *
+ * authorIntent() applies each new intent straight onto the optimistic head,
+ * which is only correct when the intent was authored at that head. An intent
+ * authored against an OLDER observed state carries coordinates in that older
+ * frame, so its effect on the head is whatever the planner's rebase makes of
+ * it — exactly what a replan computes.
+ *
+ * @param {Object} client Client.
+ */
+export function replanClient( client ) {
+	replan( client );
 }
 
 /**

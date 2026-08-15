@@ -1,7 +1,14 @@
 /**
  * External dependencies
  */
-import { afterEach, describe, expect, it, jest } from '@jest/globals';
+import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	jest,
+} from '@jest/globals';
 
 /**
  * WordPress dependencies
@@ -102,8 +109,23 @@ const snapshotRow = (
 const FILTER = 'sync.providers';
 const HOOK = 'test/intent-log-manager';
 
+/**
+ * Runs the manager's deferred editor sync (see scheduleEditorSync): pushes
+ * driven by a capture wait for the typing burst to fall quiet, because
+ * core-data commits the editor's own tree AFTER handing it to the manager.
+ */
+const flushEditorSync = () => {
+	jest.advanceTimersByTime( 1500 );
+};
+
 describe( 'intent-log manager', () => {
+	beforeEach( () => {
+		jest.useFakeTimers();
+	} );
+
 	afterEach( () => {
+		jest.clearAllTimers();
+		jest.useRealTimers();
 		removeFilter( FILTER, HOOK );
 		resetEngineAdaptersForTesting();
 		resetProviderCreatorsForTesting();
@@ -479,6 +501,7 @@ describe( 'intent-log manager', () => {
 		}
 		// The editor was handed the adopted identity so its next tree
 		// carries it (the write-back half of the fix).
+		flushEditorSync();
 		const lastPush = handlers.edits.at( -1 ) as {
 			blocks: Array< { attributes: { metadata?: { syncId?: string } } } >;
 		};
@@ -617,6 +640,7 @@ describe( 'intent-log manager', () => {
 		);
 		expect( sentTypes ).not.toContain( 'remove_block' );
 		// The merged view (both blocks) reached the editor.
+		flushEditorSync();
 		const lastPush = handlers.edits.at( -1 ) as {
 			blocks: Array< { attributes: { metadata?: { syncId?: string } } } >;
 		};
@@ -708,6 +732,7 @@ describe( 'intent-log manager', () => {
 		).not.toContain( 'remove_block' );
 		// A NEW push must be dispatched — the previous one (the arrival
 		// push) proves nothing about what the editor now displays.
+		flushEditorSync();
 		expect( handlers.edits.length ).toBeGreaterThan( editsBeforeDelete );
 		const restorePush = handlers.edits.at( -1 ) as {
 			blocks: Array< {
@@ -770,6 +795,253 @@ describe( 'intent-log manager', () => {
 			( update ) => JSON.parse( update.data ).type
 		);
 		expect( repeatTypes ).toContain( 'remove_block' );
+	} );
+
+	describe( 'the echo race (capture against the OBSERVED document)', () => {
+		/**
+		 * Loads a room holding one paragraph the editor has testified to.
+		 *
+		 * @return The managed entity plus its handles.
+		 */
+		async function loadTypedRoom() {
+			const loaded = await loadManagedEntity();
+			loaded.transport.captured.session!.receiveUpdate(
+				snapshotRow( [
+					{
+						syncId: 'p1',
+						blockType: 'core/paragraph',
+						text: 'Hello',
+					},
+				] )
+			);
+			// The editor renders the snapshot and hands the tree back.
+			loaded.manager.update(
+				'postType/post',
+				'1',
+				{ blocks: paragraphTree( 'Hello' ) },
+				'gutenberg'
+			);
+			return loaded;
+		}
+
+		const paragraphTree = ( content: string ) => [
+			{
+				name: 'core/paragraph',
+				attributes: { content, metadata: { syncId: 'p1' } },
+				innerBlocks: [],
+			},
+		];
+
+		const remoteAppend = ( text: string, baseSeq = 0 ) => ( {
+			data: JSON.stringify( {
+				intentId: `remote-${ text }`,
+				actorId: 'u9c9',
+				baseSeq,
+				txnId: null,
+				type: 'insert_text',
+				payload: {
+					syncId: 'p1',
+					field: 'content',
+					offset: 'Hello'.length,
+					text,
+				},
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.INTENT,
+		} );
+
+		const lastPushedContent = ( handlers: { edits: unknown[] } ) =>
+			(
+				handlers.edits.at( -1 ) as {
+					blocks: Array< { attributes: { content: string } } >;
+				}
+			 ).blocks[ 0 ].attributes.content;
+
+		const documentContent = ( session: EngineSessionCodec ) =>
+			( session as IntentLogSession ).getDocument()!.root[ 0 ].fields
+				.content.text;
+
+		it( 'REGRESSION: a keystroke racing a push does not clobber the remote text', async () => {
+			/*
+			 * The push (remote text → editor) and a live keystroke cross: the
+			 * editor's tree still shows the PRE-push text plus the new
+			 * character. Diffing that tree against the current head read the
+			 * remote text as deleted and authored a replace_text destroying
+			 * it — the corruption seen under load, worst over websocket's
+			 * per-keystroke cadence. Captured against the state the tree
+			 * actually reflects, the same tree derives one insert, stamped at
+			 * that state's seq for the transform to merge.
+			 */
+			const { manager, handlers, transport } = await loadTypedRoom();
+			transport.captured.session!.receiveUpdate(
+				remoteAppend( ' there' )
+			);
+			expect( lastPushedContent( handlers ) ).toBe( 'Hello there' );
+
+			// The editor never rendered that push: its tree is the old text
+			// plus the keystroke.
+			transport.captured.sent.length = 0;
+			manager.update(
+				'postType/post',
+				'1',
+				{ blocks: paragraphTree( 'Hello!' ) },
+				'gutenberg'
+			);
+
+			const sent = transport.captured.sent.map( ( update ) =>
+				JSON.parse( update.data )
+			);
+			expect( sent.map( ( intent ) => intent.type ) ).toEqual( [
+				'insert_text',
+			] );
+			expect( sent[ 0 ].payload ).toMatchObject( {
+				syncId: 'p1',
+				offset: 'Hello'.length,
+				text: '!',
+			} );
+			// Authored against the observed state, not the head.
+			expect( sent[ 0 ].baseSeq ).toBe( 0 );
+			// Locally merged exactly as the server will merge it, and the
+			// merged text goes back to the editor.
+			flushEditorSync();
+			expect( lastPushedContent( handlers ) ).toBe( 'Hello there!' );
+		} );
+
+		it( 'a keystroke on top of a RENDERED push does not duplicate the remote text', async () => {
+			// The mirror image: when the tree does carry the pushed text, the
+			// baseline must follow it, or the diff would re-author the remote
+			// insert as local content.
+			const { manager, handlers, transport } = await loadTypedRoom();
+			transport.captured.session!.receiveUpdate(
+				remoteAppend( ' there' )
+			);
+
+			transport.captured.sent.length = 0;
+			manager.update(
+				'postType/post',
+				'1',
+				{ blocks: paragraphTree( 'Hello there!' ) },
+				'gutenberg'
+			);
+
+			const sent = transport.captured.sent.map( ( update ) =>
+				JSON.parse( update.data )
+			);
+			expect( sent.map( ( intent ) => intent.type ) ).toEqual( [
+				'insert_text',
+			] );
+			expect( sent[ 0 ].payload ).toMatchObject( {
+				offset: 'Hello there'.length,
+				text: '!',
+			} );
+			expect( sent[ 0 ].baseSeq ).toBe( 1 );
+			// Nothing to push back: the editor typed this state itself.
+			expect( documentContent( transport.captured.session! ) ).toBe(
+				'Hello there!'
+			);
+			expect( handlers.edits.at( -1 ) ).toBeDefined();
+		} );
+
+		it( 'a whole burst of stale keystrokes stays disjoint from the remote text', async () => {
+			/*
+			 * The race is not a single event: while the editor keeps handing
+			 * over trees built on the pre-push state, every capture keeps
+			 * authoring against it. Later keystrokes of such a burst may be
+			 * ESCALATED rather than merged — the engine's rule 5, since their
+			 * offsets sit in a frame that both an earlier own edit and a
+			 * remote edit have written — but nothing is ever authored that
+			 * destroys the remote text.
+			 */
+			const { manager, transport } = await loadTypedRoom();
+			transport.captured.session!.receiveUpdate(
+				remoteAppend( ' there' )
+			);
+
+			transport.captured.sent.length = 0;
+			for ( const content of [ 'Hello!', 'Hello!!', 'Hello!!!' ] ) {
+				manager.update(
+					'postType/post',
+					'1',
+					{ blocks: paragraphTree( content ) },
+					'gutenberg'
+				);
+			}
+
+			const sent = transport.captured.sent.map( ( update ) =>
+				JSON.parse( update.data )
+			);
+			expect(
+				sent.map( ( intent ) => intent.type as string )
+			).not.toContain( 'replace_text' );
+			expect(
+				sent.map( ( intent ) => intent.type as string )
+			).not.toContain( 'delete_text' );
+			expect(
+				documentContent( transport.captured.session! ).startsWith(
+					'Hello there'
+				)
+			).toBe( true );
+		} );
+
+		it( 'REGRESSION: a capture-driven push is dispatched AFTER the capture, not during it', async () => {
+			/*
+			 * core-data hands the sync manager the edits before it commits
+			 * them, and every editor edit carries the editor's block tree —
+			 * so an editRecord dispatched from inside update() is
+			 * immediately overwritten and the editor never renders it. The
+			 * fuzzer found this as new blocks whose syncId never reached the
+			 * canvas. Capture-driven pushes must wait for the burst.
+			 */
+			const { manager, handlers } = await loadTypedRoom();
+
+			const editsBefore = handlers.edits.length;
+			manager.update(
+				'postType/post',
+				'1',
+				{
+					blocks: [
+						...paragraphTree( 'Hello' ),
+						{
+							name: 'core/paragraph',
+							// Freshly typed: no identity yet.
+							attributes: { content: 'brand new' },
+							innerBlocks: [],
+						},
+					],
+				},
+				'gutenberg'
+			);
+			expect( handlers.edits ).toHaveLength( editsBefore );
+
+			flushEditorSync();
+			const pushed = handlers.edits.at( -1 ) as {
+				blocks: Array< {
+					attributes: { metadata?: { syncId?: string } };
+				} >;
+			};
+			expect( pushed.blocks ).toHaveLength( 2 );
+			expect( pushed.blocks[ 1 ].attributes.metadata?.syncId ).toEqual(
+				expect.any( String )
+			);
+		} );
+
+		it( 'a quiet editor confirms the push, so later captures author at the new seq', async () => {
+			const { manager, transport } = await loadTypedRoom();
+			transport.captured.session!.receiveUpdate(
+				remoteAppend( ' there' )
+			);
+			// Nothing contradicts the push while the editor is idle.
+			jest.advanceTimersByTime( 5000 );
+
+			transport.captured.sent.length = 0;
+			manager.update(
+				'postType/post',
+				'1',
+				{ blocks: paragraphTree( 'Hello there!' ) },
+				'gutenberg'
+			);
+			const sent = JSON.parse( transport.captured.sent[ 0 ].data );
+			expect( sent.baseSeq ).toBe( 1 );
+		} );
 	} );
 
 	it( 'REGRESSION: a remotely removed block is not resurrected by a stale editor tree', async () => {
