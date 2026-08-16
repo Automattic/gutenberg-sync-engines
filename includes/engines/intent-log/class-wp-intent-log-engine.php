@@ -1368,6 +1368,26 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 					: array();
 			}
 
+			/*
+			 * Registered post meta as per-key registers (`meta.<key>`),
+			 * serialized by the SAME code path the REST record's `meta`
+			 * object uses (WP_REST_Post_Meta_Fields) so a joining client's
+			 * echo suppression sees byte-identical values — defaults,
+			 * single/multiple shapes, and prepare callbacks included. The
+			 * persisted-CRDT snapshot key is transport state and never
+			 * syncs (framework parity: disallowedPostMetaKeys).
+			 */
+			if ( class_exists( 'WP_REST_Post_Meta_Fields' ) ) {
+				$meta_fields = new WP_REST_Post_Meta_Fields( $post->post_type );
+				$meta_values = $meta_fields->get_value( $post->ID, new WP_REST_Request() );
+				foreach ( (array) $meta_values as $meta_key => $meta_value ) {
+					if ( '_crdt_document' === $meta_key ) {
+						continue;
+					}
+					$props[ 'meta.' . $meta_key ] = $meta_value;
+				}
+			}
+
 			return $props;
 		}
 

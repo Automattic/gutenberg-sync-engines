@@ -154,6 +154,47 @@ class Tests_Collaboration_WpIntentLogEngineInternals extends WP_UnitTestCase {
 		$this->assertSame( array(), $props['tags'] );
 	}
 
+	public function test_genesis_seeds_registered_meta_registers_in_rest_shape() {
+		register_post_meta(
+			'post',
+			'phase3_note',
+			array(
+				'show_in_rest' => true,
+				'single'       => true,
+				'type'         => 'string',
+				'default'      => '',
+			)
+		);
+		register_post_meta(
+			'post',
+			'phase3_default',
+			array(
+				'show_in_rest' => true,
+				'single'       => true,
+				'type'         => 'string',
+				'default'      => 'the-default',
+			)
+		);
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		update_post_meta( $post_id, 'phase3_note', 'A note' );
+		update_post_meta( $post_id, '_crdt_document', 'transport-state' );
+
+		$doc   = self::snapshot_doc( self::engine(), 'postType/post:' . $post_id );
+		$props = $doc['props'];
+
+		unregister_post_meta( 'post', 'phase3_note' );
+		unregister_post_meta( 'post', 'phase3_default' );
+
+		$this->assertSame( 'A note', $props['meta.phase3_note'] );
+		// Unset keys seed their registered default — exactly what the
+		// REST record's meta object serves, so joining clients see their
+		// own record's value.
+		$this->assertSame( 'the-default', $props['meta.phase3_default'] );
+		// The persisted-CRDT snapshot is transport state, never a register.
+		$this->assertArrayNotHasKey( 'meta._crdt_document', $props );
+	}
+
 	public function test_genesis_seeds_taxonomy_registers_in_rest_order_and_respects_show_in_rest() {
 		register_taxonomy(
 			'genre',

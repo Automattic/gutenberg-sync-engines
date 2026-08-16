@@ -1208,10 +1208,39 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 				self::property_intent( 'prop-ok-1', 'title', 'Hello <em>world</em>' ),
 				self::property_intent( 'prop-ok-2', 'sticky', true ),
 				self::property_intent( 'prop-ok-3', 'featured_media', 42 ),
+				// Meta registers: object values pass through the same lane;
+				// benign string leaves apply.
+				self::property_intent(
+					'prop-ok-4',
+					'meta.settings',
+					array(
+						'color' => 'red',
+						'sizes' => array( 1, 2 ),
+					)
+				),
 			)
 		);
 		$statuses = wp_list_pluck( $response['dispositions'], 'status' );
-		$this->assertSame( array( 'applied', 'applied', 'applied' ), $statuses );
+		$this->assertSame( array( 'applied', 'applied', 'applied', 'applied' ), $statuses );
+	}
+
+	public function test_protected_markup_inside_a_meta_object_value_parks_for_approval() {
+		$this->revoke_unfiltered_html();
+
+		$response = $this->poll(
+			array(
+				self::property_intent(
+					'kses-meta-obj',
+					'meta.widget',
+					array( 'inner' => '<script>alert(1)</script>' )
+				),
+			)
+		);
+		$this->assertSame( 'escalated', $response['dispositions'][0]['status'] );
+		$this->assertSame(
+			WP_Intent_Log_Engine::ESCALATION_REQUIRES_APPROVAL,
+			$response['dispositions'][0]['reason']
+		);
 	}
 
 	public function test_plain_text_markup_is_entity_encoded_and_applies() {

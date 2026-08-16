@@ -1609,6 +1609,137 @@ describe( 'intent-log manager', () => {
 		expect( transport.captured.sent ).toHaveLength( 0 );
 	} );
 
+	it( 'meta: registers round-trip per key, merge over sibling keys, and suppress deep echoes', async () => {
+		const { manager, handlers, transport } = await loadManagedEntity( {
+			meta: { footnotes: '', color: 'blue', obj: { x: 1 } },
+		} );
+		// Genesis matching the record's meta (fresh instances, nested
+		// object included) pushes nothing.
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [], {
+				'meta.footnotes': '',
+				'meta.color': 'blue',
+				'meta.obj': { x: 1 },
+			} )
+		);
+		expect( handlers.edits ).toHaveLength( 0 );
+
+		// A local meta edit arrives as the FULL merged object; only the
+		// changed key authors an intent.
+		manager.update(
+			'postType/post',
+			'1',
+			{ meta: { footnotes: '[1]', color: 'blue', obj: { x: 1 } } },
+			'e'
+		);
+		const sent = transport.captured.sent.map( ( update ) =>
+			JSON.parse( update.data )
+		);
+		expect( sent ).toHaveLength( 1 );
+		expect( sent[ 0 ].payload ).toMatchObject( {
+			name: 'meta.footnotes',
+			value: '[1]',
+		} );
+
+		// A remote register change pushes ONE whole meta object, merged
+		// over the locally-known values of the sibling keys.
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				intentId: 'remote-meta-1',
+				actorId: 'u9c9',
+				baseSeq: 2,
+				txnId: null,
+				type: 'set_property',
+				payload: {
+					name: 'meta.color',
+					value: 'red',
+					observedVersion: 1,
+				},
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.INTENT,
+		} );
+		expect( handlers.edits.at( -1 ) ).toEqual( {
+			meta: { footnotes: '[1]', color: 'red', obj: { x: 1 } },
+		} );
+
+		// The editor's echo of the pushed state is inert.
+		const editsBefore = handlers.edits.length;
+		manager.update(
+			'postType/post',
+			'1',
+			{ meta: { footnotes: '[1]', color: 'red', obj: { x: 1 } } },
+			'e'
+		);
+		expect( transport.captured.sent ).toHaveLength( 1 );
+		expect( handlers.edits ).toHaveLength( editsBefore );
+	} );
+
+	it( 'meta: the persisted-CRDT key never captures, and an orphaned register never pushes', async () => {
+		const { manager, handlers, transport } = await loadManagedEntity( {
+			meta: { known: 'a' },
+		} );
+		// The room carries a register for a key this post does not have
+		// registered (absent from its record meta): pushing it would mark
+		// the post permanently dirty.
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [], {
+				'meta.known': 'a',
+				'meta.unknown_key': 'x',
+			} )
+		);
+		expect( handlers.edits ).toHaveLength( 0 );
+
+		// The persisted-CRDT snapshot key is transport state, not content.
+		manager.update(
+			'postType/post',
+			'1',
+			{ meta: { known: 'a', _crdt_document: 'blob' } },
+			'e'
+		);
+		expect( transport.captured.sent ).toHaveLength( 0 );
+	} );
+
+	it( 'meta: a partial save-feed meta object merges instead of replacing the known meta', async () => {
+		const { manager, handlers, transport } = await loadManagedEntity( {
+			meta: { a: '1', b: '2' },
+		} );
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [], { 'meta.a': '1', 'meta.b': '2' } )
+		);
+
+		// The post-save server-mutation feed sends only mutated subkeys.
+		manager.update( 'postType/post', '1', { meta: { a: '9' } }, 'e' );
+		const sent = transport.captured.sent.map( ( update ) =>
+			JSON.parse( update.data )
+		);
+		expect( sent ).toHaveLength( 1 );
+		expect( sent[ 0 ].payload ).toMatchObject( {
+			name: 'meta.a',
+			value: '9',
+		} );
+
+		// A remote change to the OTHER key pushes a merge that kept both
+		// the partial arrival and the untouched sibling.
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				intentId: 'remote-meta-b',
+				actorId: 'u9c9',
+				baseSeq: 2,
+				txnId: null,
+				type: 'set_property',
+				payload: {
+					name: 'meta.b',
+					value: '3',
+					observedVersion: 1,
+				},
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.INTENT,
+		} );
+		expect( handlers.edits.at( -1 ) ).toEqual( {
+			meta: { a: '9', b: '3' },
+		} );
+	} );
+
 	it( 'properties: a malformed (non-scalar) remote register value is never pushed', async () => {
 		const { handlers, transport } = await loadManagedEntity( {
 			title: { raw: 'Original' },

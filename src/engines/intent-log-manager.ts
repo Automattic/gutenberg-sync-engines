@@ -82,11 +82,12 @@ import type {
  * has certainly rendered it.
  *
  * Scope (documented in ARCHITECTURE.md):
- * - Blocks sync through the capture bridge; whitelisted entity properties
- *   (SYNCED_PROPERTIES — the framework's scalar synced-property set —
- *   plus the post type's attached taxonomies as term-ID-array registers)
- *   sync as per-name registers via set_property intents. Post meta flows
- *   through WordPress saves as usual (a later phase).
+ * - Blocks sync through the capture bridge; entity properties sync as
+ *   per-name registers via set_property intents — the framework's scalar
+ *   synced-property set (SYNCED_PROPERTIES), the post type's attached
+ *   taxonomies (term-ID-array registers by rest_base), and registered
+ *   post meta (per-key registers under `meta.<key>` names, minus the
+ *   persisted-CRDT denylist).
  * - Undo rides core's default WPUndoManager (`undoManager` stays
  *   undefined; core-data falls back automatically). Escalated intents are
  *   surfaced via console warning; the review-lane UI is Phase 2d.
@@ -197,16 +198,29 @@ interface EntityState {
 	docTombstones: Set< string >;
 	/**
 	 * Last property values pushed to (or captured from) the editor, for
-	 * property echo suppression. Seeded from the loaded record so the
-	 * genesis snapshot's properties are not re-pushed as edits.
+	 * property echo suppression (meta registers included, under their
+	 * `meta.<key>` names). Seeded from the loaded record so the genesis
+	 * snapshot's properties are not re-pushed as edits.
 	 */
-	lastPushedProps: Record< string, SyncedPropertyValue >;
+	lastPushedProps: Record< string, unknown >;
 	/**
 	 * The property names this entity syncs: the static scalar whitelist
 	 * plus the post type's attached taxonomies (by rest_base), resolved
 	 * once at load.
 	 */
 	syncedProperties: string[];
+	/**
+	 * Mirror of the edited record's meta object. Every meta edit flows
+	 * through update() — as the FULL merged object from editor edits
+	 * (mergedEdits) or a PARTIAL subkey set from the post-save feed — so
+	 * merging each arrival keeps this current. Meta pushes merge changed
+	 * registers over it (the raw editRecord dispatch replaces `meta`
+	 * wholesale, so a partial push would wipe sibling keys), and its key
+	 * set is the orphaned-register guard: a `meta.<key>` register with no
+	 * counterpart key here is unregistered for this post and pushing it
+	 * would mark the post permanently dirty.
+	 */
+	knownMeta: Record< string, unknown >;
 	/**
 	 * Rich-text attribute names per block type (from the entity syncConfig,
 	 * backed by the block registry). Names both the fields the bridge
@@ -336,6 +350,86 @@ function samePropertyValue( a: unknown, b: unknown ): boolean {
 		a.length === b.length &&
 		a.every( ( item, index ) => item === b[ index ] )
 	);
+}
+
+/**
+ * Register-name prefix for post-meta properties: each registered meta key
+ * syncs as its own register (`meta.<key>`), giving concurrent edits to
+ * DIFFERENT keys independence and same-key conflicts the per-register
+ * escalation grain.
+ */
+const META_PROPERTY_PREFIX = 'meta.';
+
+/**
+ * Meta keys that never sync, mirroring the framework sync config's
+ * `disallowedPostMetaKeys`: the persisted CRDT snapshot is transport
+ * state, not content.
+ */
+const DISALLOWED_META_KEYS = new Set( [ '_crdt_document' ] );
+
+/**
+ * Deep equality over JSON values, for meta registers (whose values may be
+ * arbitrary registered-schema JSON). One deliberate looseness: an empty
+ * array and an empty plain object compare EQUAL, because PHP's JSON
+ * encoding cannot distinguish an empty assoc array from an empty list —
+ * a genesis seeded from PHP would otherwise ping-pong an empty
+ * object-typed meta value forever.
+ *
+ * @param a One value.
+ * @param b Other value.
+ * @return True when the values are structurally equal.
+ */
+function jsonDeepEqual( a: unknown, b: unknown ): boolean {
+	if ( a === b ) {
+		return true;
+	}
+	const aIsArray = Array.isArray( a );
+	const bIsArray = Array.isArray( b );
+	if ( aIsArray && bIsArray ) {
+		return (
+			( a as unknown[] ).length === ( b as unknown[] ).length &&
+			( a as unknown[] ).every( ( item, index ) =>
+				jsonDeepEqual( item, ( b as unknown[] )[ index ] )
+			)
+		);
+	}
+	const aIsObject = ! aIsArray && a && 'object' === typeof a;
+	const bIsObject = ! bIsArray && b && 'object' === typeof b;
+	if ( aIsObject && bIsObject ) {
+		const aEntries = Object.entries( a as Record< string, unknown > );
+		const bRecord = b as Record< string, unknown >;
+		return (
+			aEntries.length === Object.keys( bRecord ).length &&
+			aEntries.every(
+				( [ key, value ] ) =>
+					key in bRecord && jsonDeepEqual( value, bRecord[ key ] )
+			)
+		);
+	}
+	// The PHP JSON boundary: empty assoc array === empty list.
+	const isEmptyContainer = ( value: unknown ) =>
+		( Array.isArray( value ) && 0 === value.length ) ||
+		( !! value &&
+			'object' === typeof value &&
+			! Array.isArray( value ) &&
+			0 === Object.keys( value as object ).length );
+	return isEmptyContainer( a ) && isEmptyContainer( b );
+}
+
+/**
+ * A record or edits object's `meta` as a plain object, or undefined.
+ *
+ * @param source Record or edits object.
+ * @return The meta object, or undefined.
+ */
+function metaObject(
+	source: Record< string, unknown >
+): Record< string, unknown > | undefined {
+	const value = source.meta;
+	if ( value && 'object' === typeof value && ! Array.isArray( value ) ) {
+		return value as Record< string, unknown >;
+	}
+	return undefined;
 }
 
 /**
@@ -828,7 +922,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 		 * title while the editor shows an empty field), so opening a new
 		 * post does not push a spurious title edit.
 		 */
-		const initialProps: Record< string, SyncedPropertyValue > = {};
+		const initialProps: Record< string, unknown > = {};
 		for ( const name of syncedProperties ) {
 			let value = rawPropertyValue(
 				record as Record< string, unknown >,
@@ -845,6 +939,18 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				value = '';
 			}
 			initialProps[ name ] = value;
+		}
+		// Meta registers seed the same way, under their prefixed names.
+		const recordMeta =
+			metaObject( record as Record< string, unknown > ) ?? {};
+		for ( const [ metaKey, metaValue ] of Object.entries( recordMeta ) ) {
+			if (
+				DISALLOWED_META_KEYS.has( metaKey ) ||
+				undefined === metaValue
+			) {
+				continue;
+			}
+			initialProps[ META_PROPERTY_PREFIX + metaKey ] = metaValue;
 		}
 
 		const recordContent = rawPropertyValue(
@@ -875,6 +981,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			syncForce: false,
 			lastPushedProps: initialProps,
 			syncedProperties,
+			knownMeta: { ...recordMeta },
 			fieldsResolver:
 				syncConfig.richTextFields ?? ( () => [ 'content' ] ),
 			rawContent:
@@ -936,7 +1043,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			if ( ! doc ) {
 				return;
 			}
-			const edits: Record< string, SyncedPropertyValue > = {};
+			const edits: Record< string, unknown > = {};
 			for ( const name of state.syncedProperties ) {
 				const value = doc.props?.[ name ];
 				if (
@@ -961,6 +1068,37 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				}
 				state.lastPushedProps[ name ] = value;
 				edits[ name ] = value;
+			}
+			/*
+			 * Meta registers: changed `meta.<key>` values merge over the
+			 * known meta and dispatch as ONE whole meta object (the raw
+			 * editRecord dispatch replaces `meta`, so a partial object
+			 * would wipe sibling keys' local edits).
+			 */
+			const metaEdits: Record< string, unknown > = {};
+			for ( const [ name, value ] of Object.entries( doc.props ?? {} ) ) {
+				if ( ! name.startsWith( META_PROPERTY_PREFIX ) ) {
+					continue;
+				}
+				const metaKey = name.slice( META_PROPERTY_PREFIX.length );
+				if ( DISALLOWED_META_KEYS.has( metaKey ) ) {
+					continue;
+				}
+				if ( jsonDeepEqual( state.lastPushedProps[ name ], value ) ) {
+					continue;
+				}
+				// Orphaned-register guard: a key with no counterpart in
+				// this post's meta is not registered here; pushing it
+				// would mark the post permanently dirty.
+				if ( ! ( metaKey in state.knownMeta ) ) {
+					continue;
+				}
+				state.lastPushedProps[ name ] = value;
+				metaEdits[ metaKey ] = value;
+			}
+			if ( Object.keys( metaEdits ).length > 0 ) {
+				state.knownMeta = { ...state.knownMeta, ...metaEdits };
+				edits.meta = state.knownMeta;
 			}
 			if ( Object.keys( edits ).length > 0 ) {
 				handlers.editRecord( edits, { undoIgnore: true } );
@@ -1353,6 +1491,46 @@ export function createIntentLogManager( debug = false ): SyncManager {
 					} );
 				} finally {
 					state.capturing = false;
+				}
+			}
+
+			/*
+			 * Meta capture: per-key registers under `meta.<key>` names. The
+			 * edits object carries meta as the FULL merged object (editor
+			 * edits, via mergedEdits) or a PARTIAL subkey set (the
+			 * post-save server-mutation feed) — merging into knownMeta and
+			 * per-key echo suppression handle both shapes.
+			 */
+			const metaChanges = metaObject(
+				changes as Record< string, unknown >
+			);
+			if ( metaChanges ) {
+				state.knownMeta = { ...state.knownMeta, ...metaChanges };
+				for ( const [ metaKey, metaValue ] of Object.entries(
+					metaChanges
+				) ) {
+					if (
+						DISALLOWED_META_KEYS.has( metaKey ) ||
+						undefined === metaValue ||
+						'function' === typeof metaValue
+					) {
+						continue;
+					}
+					const name = META_PROPERTY_PREFIX + metaKey;
+					if ( jsonDeepEqual( doc.props?.[ name ], metaValue ) ) {
+						continue;
+					}
+					state.lastPushedProps[ name ] = metaValue;
+					state.capturing = true;
+					try {
+						state.session.author( 'set_property', {
+							name,
+							value: metaValue,
+							observedVersion: doc.propVersions?.[ name ] ?? 0,
+						} );
+					} finally {
+						state.capturing = false;
+					}
 				}
 			}
 

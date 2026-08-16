@@ -1343,7 +1343,7 @@ test.describe( 'Collaboration - intent-log engine', () => {
 		expect( saved.title.raw ).toBe( 'Title from user two' );
 	} );
 
-	test( 'entity properties (excerpt, status, sticky, tags) sync live in both directions and survive a save', async ( {
+	test( 'entity properties (excerpt, status, sticky, tags, meta) sync live in both directions and survive a save', async ( {
 		collaborationUtils,
 		requestUtils,
 		editor,
@@ -1420,6 +1420,24 @@ test.describe( 'Collaboration - intent-log engine', () => {
 			expect( sticky ).toBe( true );
 		} ).toPass( { timeout: 15000 } );
 
+		// Registered post meta syncs per key: user 2 writes footnotes
+		// (registered meta) and user 1 receives them live.
+		const footnotes = '[{"content":"A live footnote","id":"phase3-fn"}]';
+		await page2.evaluate( ( value ) => {
+			( window as any ).wp.data
+				.dispatch( 'core/editor' )
+				.editPost( { meta: { footnotes: value } } );
+		}, footnotes );
+		await expect( async () => {
+			const received = await page1.evaluate(
+				() =>
+					( window as any ).wp.data
+						.select( 'core/editor' )
+						.getEditedPostAttribute( 'meta' )?.footnotes
+			);
+			expect( received ).toBe( footnotes );
+		} ).toPass( { timeout: 15000 } );
+
 		// One save (user 2, who never touched excerpt, status, or tags)
 		// persists the whole synced state.
 		await page2.evaluate( async () => {
@@ -1432,6 +1450,7 @@ test.describe( 'Collaboration - intent-log engine', () => {
 			status: string;
 			sticky: boolean;
 			tags: number[];
+			meta: { footnotes: string };
 		} >( {
 			path: `/wp/v2/posts/${ post.id }`,
 			params: { context: 'edit' },
@@ -1440,6 +1459,7 @@ test.describe( 'Collaboration - intent-log engine', () => {
 		expect( saved.status ).toBe( 'pending' );
 		expect( saved.sticky ).toBe( true );
 		expect( saved.tags ).toEqual( expect.arrayContaining( tagIds ) );
+		expect( saved.meta.footnotes ).toBe( footnotes );
 	} );
 
 	test( 'concurrent divergent title edits surface an escalation notice, and editors converge', async ( {
