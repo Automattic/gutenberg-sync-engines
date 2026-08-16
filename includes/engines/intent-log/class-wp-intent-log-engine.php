@@ -1457,22 +1457,46 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 					'formats' => array(),
 				)
 			);
+
+			/*
+			 * innerContent is an ORDERED interleave of HTML fragments and one
+			 * null per inner block AT ITS POSITION. A container's wrapper must
+			 * therefore split into an OPEN fragment before the child slots and
+			 * a CLOSE fragment after them — concatenating open+close into one
+			 * fragment serialized every child OUTSIDE its wrapper element, and
+			 * the block validator rejected the materialized markup on the next
+			 * parse (invalid-content recovery blocks after reload; found by
+			 * the fuzzer's nested-group + save + reload lane).
+			 */
+			$open_fragment  = $text;
+			$close_fragment = '';
 			if ( is_array( $wrapper ) ) {
-				$text = ( $wrapper['open'] ?? '' ) . $text . ( $wrapper['close'] ?? '' );
+				$open_fragment  = ( $wrapper['open'] ?? '' ) . $text;
+				$close_fragment = (string) ( $wrapper['close'] ?? '' );
 			}
 			$inner_content = array();
-			if ( '' !== $text ) {
-				$inner_content[] = $text;
-			}
-			foreach ( $inner_blocks as $unused ) {
-				$inner_content[] = null;
+			if ( count( $inner_blocks ) > 0 ) {
+				if ( '' !== $open_fragment ) {
+					$inner_content[] = $open_fragment;
+				}
+				foreach ( $inner_blocks as $unused ) {
+					$inner_content[] = null;
+				}
+				if ( '' !== $close_fragment ) {
+					$inner_content[] = $close_fragment;
+				}
+			} else {
+				$whole = $open_fragment . $close_fragment;
+				if ( '' !== $whole ) {
+					$inner_content[] = $whole;
+				}
 			}
 
 			return array(
 				'blockName'    => $block['blockType'],
 				'attrs'        => $attrs,
 				'innerBlocks'  => $inner_blocks,
-				'innerHTML'    => $text,
+				'innerHTML'    => $open_fragment . $close_fragment,
 				'innerContent' => $inner_content,
 			);
 		}

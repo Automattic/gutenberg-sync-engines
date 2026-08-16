@@ -8,6 +8,19 @@ import { afterEach, describe, expect, it, jest } from '@jest/globals';
  */
 import { addFilter, removeFilter } from '@wordpress/hooks';
 
+// The real module drags ESM-only deps into Jest; the manager only reads
+// attribute schemas for its block-default merge.
+jest.mock( '@wordpress/blocks', () => ( {
+	getBlockType: ( name: string ) =>
+		'core/group' === name
+			? {
+					attributes: {
+						tagName: { default: 'div', type: 'string' },
+					},
+			  }
+			: undefined,
+} ) );
+
 /**
  * Internal dependencies
  */
@@ -614,6 +627,151 @@ describe( 'intent-log manager', () => {
 		expect( pushedIds ).toContain( ownInsert.payload.block.syncId );
 	} );
 
+	it( 'REGRESSION: deleting a just-arrived remote block before testifying it re-pushes (no silent editor/doc split), and the repeat deletion is captured', async () => {
+		/*
+		 * The fuzzer's leave/re-join lane found this: a peer's block is
+		 * pushed to the editor, and the user deletes it BEFORE any edit
+		 * echoed it back through update() — so it never became removable.
+		 * Retention correctly refuses the deletion, but the restore push
+		 * used to be suppressed because the doc still matched
+		 * lastPushedState (set by the block's own arrival push), leaving
+		 * this editor silently behind the shared document forever.
+		 */
+		const { manager, handlers, transport } = await loadManagedEntity();
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [
+				{
+					syncId: 'genesis-1',
+					blockType: 'core/paragraph',
+					text: 'Seed',
+				},
+			] )
+		);
+
+		// A remote peer (e.g. a rejoiner) inserts a block; it is pushed.
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				intentId: 'remote-rejoin-1',
+				actorId: 'u9c9',
+				baseSeq: 0,
+				txnId: null,
+				type: 'insert_block',
+				payload: {
+					block: {
+						syncId: 'rejoin-block',
+						blockType: 'core/paragraph',
+						text: 'theirs',
+					},
+					parentId: null,
+					afterSiblingId: null,
+				},
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.INTENT,
+		} );
+		const arrivalPush = handlers.edits.at( -1 ) as {
+			blocks: Array< {
+				attributes: { metadata?: { syncId?: string } };
+			} >;
+		};
+		expect(
+			arrivalPush.blocks.map(
+				( block ) => block.attributes.metadata?.syncId
+			)
+		).toContain( 'rejoin-block' );
+
+		// The user deletes it as their FIRST interaction — the testimony
+		// never contained it, so it must be retained, and the editor must
+		// be caught back up (visible resurrection), not left behind.
+		transport.captured.sent.length = 0;
+		const editsBeforeDelete = handlers.edits.length;
+		manager.update(
+			'postType/post',
+			'1',
+			{
+				blocks: [
+					{
+						name: 'core/paragraph',
+						attributes: {
+							content: 'Seed',
+							metadata: { syncId: 'genesis-1' },
+						},
+						innerBlocks: [],
+					},
+				],
+			},
+			'gutenberg'
+		);
+		expect(
+			transport.captured.sent.map(
+				( update ) => JSON.parse( update.data ).type
+			)
+		).not.toContain( 'remove_block' );
+		// A NEW push must be dispatched — the previous one (the arrival
+		// push) proves nothing about what the editor now displays.
+		expect( handlers.edits.length ).toBeGreaterThan( editsBeforeDelete );
+		const restorePush = handlers.edits.at( -1 ) as {
+			blocks: Array< {
+				attributes: { metadata?: { syncId?: string } };
+			} >;
+		};
+		expect(
+			restorePush.blocks.map(
+				( block ) => block.attributes.metadata?.syncId
+			)
+		).toContain( 'rejoin-block' );
+
+		// The editor renders the restore (echo testifies the block)…
+		manager.update(
+			'postType/post',
+			'1',
+			{
+				blocks: [
+					{
+						name: 'core/paragraph',
+						attributes: {
+							content: 'Seed',
+							metadata: { syncId: 'genesis-1' },
+						},
+						innerBlocks: [],
+					},
+					{
+						name: 'core/paragraph',
+						attributes: {
+							content: 'theirs',
+							metadata: { syncId: 'rejoin-block' },
+						},
+						innerBlocks: [],
+					},
+				],
+			},
+			'gutenberg'
+		);
+
+		// …so deleting it AGAIN is now a real, captured deletion.
+		transport.captured.sent.length = 0;
+		manager.update(
+			'postType/post',
+			'1',
+			{
+				blocks: [
+					{
+						name: 'core/paragraph',
+						attributes: {
+							content: 'Seed',
+							metadata: { syncId: 'genesis-1' },
+						},
+						innerBlocks: [],
+					},
+				],
+			},
+			'gutenberg'
+		);
+		const repeatTypes = transport.captured.sent.map(
+			( update ) => JSON.parse( update.data ).type
+		);
+		expect( repeatTypes ).toContain( 'remove_block' );
+	} );
+
 	it( 'REGRESSION: a remotely removed block is not resurrected by a stale editor tree', async () => {
 		const { manager, transport } = await loadManagedEntity();
 		transport.captured.session!.receiveUpdate(
@@ -737,6 +895,44 @@ describe( 'intent-log manager', () => {
 			'remove_block',
 		] );
 		expect( sent[ 0 ].payload.syncId ).toBe( 'b1' );
+	} );
+
+	it( 'REGRESSION: pushed blocks carry their block-type attribute defaults', async () => {
+		/*
+		 * Engine-document attrs mirror serialized comment JSON, which omits
+		 * defaults. core/group save() dereferences tagName (default 'div');
+		 * pushing the block without it made save() throw and the serializer
+		 * silently emitted a VOID group — children and wrapper dropped from
+		 * saved content (fuzzer: post-reload invalid recovery blocks).
+		 */
+		const { handlers, transport } = await loadManagedEntity();
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [
+				{
+					syncId: 'group-1',
+					blockType: 'core/group',
+					attrs: { layout: { type: 'constrained' } },
+					children: [
+						{
+							syncId: 'child-1',
+							blockType: 'core/paragraph',
+							text: 'Inside',
+						},
+					],
+				},
+			] )
+		);
+
+		const push = handlers.edits.at( -1 ) as {
+			blocks: Array< {
+				attributes: Record< string, unknown >;
+			} >;
+		};
+		expect( push.blocks[ 0 ].attributes.tagName ).toBe( 'div' );
+		// Non-defaulted attrs pass through untouched.
+		expect( push.blocks[ 0 ].attributes.layout ).toEqual( {
+			type: 'constrained',
+		} );
 	} );
 
 	it( 'REGRESSION: pushed blocks carry stable clientIds so the block editor accepts them', async () => {

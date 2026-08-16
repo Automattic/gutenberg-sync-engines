@@ -162,9 +162,62 @@ if ( ! class_exists( 'WP_HTTP_Long_Polling_Sync_Server' ) ) {
 			 * Re-run the parent handler so awareness is re-merged (refreshing
 			 * this client's timestamp, expiring stale peers) and the response
 			 * reflects updates that arrived during the wait. This branch
-			 * carried no updates, so re-processing is side-effect-safe.
+			 * carried no updates, so re-processing is side-effect-safe —
+			 * EXCEPT for awareness of a client that disconnected mid-wait:
+			 * strip that first (see strip_disconnected_awareness).
 			 */
+			$this->strip_disconnected_awareness( $request );
+
 			return parent::handle_request( $request );
+		}
+
+		/**
+		 * Removes the request's awareness payload for any room where this
+		 * client's presence entry was DELETED while the request was parked.
+		 *
+		 * The park-start pass wrote this client's awareness, and a parked
+		 * request cannot expire its own entry (the wait budget is shorter
+		 * than the awareness timeout), so an absent entry at park end means
+		 * a DISCONNECT signal (the page-unload beacon) landed during the
+		 * wait: the tab is gone. Re-merging the parked request's awareness
+		 * would resurrect the departed client as a ghost with a fresh
+		 * timestamp — outliving its real death by the full awareness
+		 * timeout and counting against peers' connection limits (observed
+		 * as a fast leave-and-rejoin being refused because ghosts pushed
+		 * the room over the client cap).
+		 *
+		 * @since 0.2.0
+		 *
+		 * @param WP_REST_Request $request The parked request, mutated in place.
+		 * @return void
+		 */
+		protected function strip_disconnected_awareness( WP_REST_Request $request ): void {
+			$rooms    = $request['rooms'];
+			$stripped = false;
+
+			foreach ( (array) $rooms as $index => $room_request ) {
+				if ( ! isset( $room_request['awareness'] ) || null === $room_request['awareness'] ) {
+					continue;
+				}
+
+				$client_id = (int) $room_request['client_id'];
+				$present   = false;
+				foreach ( $this->storage->get_awareness_state( (string) $room_request['room'] ) as $entry ) {
+					if ( (int) $entry['client_id'] === $client_id ) {
+						$present = true;
+						break;
+					}
+				}
+
+				if ( ! $present ) {
+					unset( $rooms[ $index ]['awareness'] );
+					$stripped = true;
+				}
+			}
+
+			if ( $stripped ) {
+				$request->set_param( 'rooms', $rooms );
+			}
 		}
 
 		/**
@@ -191,8 +244,25 @@ if ( ! class_exists( 'WP_HTTP_Long_Polling_Sync_Server' ) ) {
 					return true;
 				}
 
-				// phpcs:ignore Universal.Operators.StrictComparisons.LooseNotEqual -- Order-insensitive comparison intended.
-				if ( $this->storage->get_awareness_state( $room ) != ( $initial_awareness[ $room ] ?? array() ) ) {
+				/*
+				 * The snapshot taken at park start is the RESPONSE shape (a
+				 * client_id => state map, expired entries pruned); storage
+				 * returns raw entry rows. Compare like with like — the raw
+				 * rows never equal the map, which made every park release on
+				 * its first tick (long-polling degenerated to 500 ms
+				 * polling and the whole hold budget was dead code).
+				 */
+				$current_awareness = array();
+				$current_time      = time();
+				foreach ( $this->storage->get_awareness_state( $room ) as $entry ) {
+					if ( $current_time - $entry['updated_at'] >= self::AWARENESS_TIMEOUT ) {
+						continue;
+					}
+					$current_awareness[ $entry['client_id'] ] = $entry['state'];
+				}
+
+				// phpcs:ignore Universal.Operators.StrictComparisons.LooseNotEqual, WordPress.PHP.YodaConditions.NotYoda -- Order-insensitive comparison intended.
+				if ( $current_awareness != ( $initial_awareness[ $room ] ?? array() ) ) {
 					return true;
 				}
 			}

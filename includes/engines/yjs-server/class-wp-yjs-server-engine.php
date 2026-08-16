@@ -1128,11 +1128,14 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				);
 			}
 
-			$wrapper = $wrappers[ $client_id ] ?? self::default_wrapper( $name, $attrs );
+			$wrapper        = $wrappers[ $client_id ] ?? self::default_wrapper( $name, $attrs );
+			$open_fragment  = $text;
+			$close_fragment = '';
 			if ( is_array( $wrapper ) ) {
 				// The surrounding newlines match core's block serializer
 				// convention, so genesis content round-trips byte-identically.
-				$text = "\n" . ( $wrapper['open'] ?? '' ) . $text . ( $wrapper['close'] ?? '' ) . "\n";
+				$open_fragment  = "\n" . ( $wrapper['open'] ?? '' ) . $text;
+				$close_fragment = ( $wrapper['close'] ?? '' ) . "\n";
 			}
 
 			$inner_blocks = array();
@@ -1143,19 +1146,37 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				}
 			}
 
+			/*
+			 * innerContent interleaves HTML fragments with one null per inner
+			 * block AT ITS POSITION: a container's wrapper splits into an open
+			 * fragment before the child slots and a close fragment after.
+			 * Concatenating them into one fragment serialized children OUTSIDE
+			 * their wrapper element and the validator rejected the markup on
+			 * the next parse (fuzzer: invalid recovery blocks after reload).
+			 */
 			$inner_content = array();
-			if ( '' !== $text ) {
-				$inner_content[] = $text;
-			}
-			foreach ( $inner_blocks as $unused ) {
-				$inner_content[] = null;
+			if ( count( $inner_blocks ) > 0 ) {
+				if ( '' !== $open_fragment ) {
+					$inner_content[] = $open_fragment;
+				}
+				foreach ( $inner_blocks as $unused ) {
+					$inner_content[] = null;
+				}
+				if ( '' !== $close_fragment ) {
+					$inner_content[] = $close_fragment;
+				}
+			} else {
+				$whole = $open_fragment . $close_fragment;
+				if ( '' !== $whole ) {
+					$inner_content[] = $whole;
+				}
 			}
 
 			return array(
 				'blockName'    => $name,
 				'attrs'        => $attrs,
 				'innerBlocks'  => $inner_blocks,
-				'innerHTML'    => $text,
+				'innerHTML'    => $open_fragment . $close_fragment,
 				'innerContent' => $inner_content,
 			);
 		}

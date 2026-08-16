@@ -138,6 +138,127 @@ class Tests_Collaboration_WpHttpLongPollingSyncServer extends WP_Test_REST_TestC
 		$this->assertLessThan( 0.5, $elapsed, 'a sender must never be held' );
 	}
 
+	/**
+	 * Builds the server with its protected internals exposed for direct
+	 * assertions (the wait loop runs single-threaded in tests, so mid-park
+	 * concurrency is exercised at the method level).
+	 *
+	 * @return WP_HTTP_Long_Polling_Sync_Server Exposed server.
+	 */
+	private function exposed_server() {
+		$storage = new WP_Sync_Post_Meta_Storage();
+		return new class( $storage ) extends WP_HTTP_Long_Polling_Sync_Server {
+			// phpcs:ignore Squiz.Commenting.FunctionComment.Missing
+			public function rooms_have_new_data_exposed( array $rooms, array $initial_awareness ): bool {
+				return $this->rooms_have_new_data( $rooms, $initial_awareness );
+			}
+			// phpcs:ignore Squiz.Commenting.FunctionComment.Missing
+			public function strip_disconnected_awareness_exposed( WP_REST_Request $request ): void {
+				$this->strip_disconnected_awareness( $request );
+			}
+		};
+	}
+
+	public function test_unchanged_awareness_does_not_release_the_hold() {
+		/*
+		 * REGRESSION: the wait loop compared raw storage entry rows against
+		 * the response-shaped client_id => state map — never equal, so every
+		 * park released on its first tick and long-polling degenerated to
+		 * 500 ms polling.
+		 */
+		$server = $this->exposed_server();
+
+		// Prime the room (genesis + this client's awareness).
+		$primed = $this->long_poll();
+		$rooms  = array(
+			array(
+				'after'     => (int) $primed['end_cursor'],
+				'client_id' => 101,
+				'room'      => $this->room(),
+			),
+		);
+
+		// Snapshot exactly as handle_request does: the response awareness map.
+		$initial = array( $this->room() => $primed['awareness'] );
+
+		$this->assertFalse(
+			$server->rooms_have_new_data_exposed( $rooms, $initial ),
+			'an unchanged room must keep the request parked'
+		);
+
+		// A peer joining (new awareness entry) must release the hold.
+		$server->update_awareness( $this->room(), 202, array( 'user' => 'peer' ) );
+		$this->assertTrue(
+			$server->rooms_have_new_data_exposed( $rooms, $initial ),
+			'a peer awareness change must release the park'
+		);
+	}
+
+	public function test_a_mid_wait_disconnect_is_not_resurrected_by_the_parked_request() {
+		/*
+		 * REGRESSION (found by the RTC fuzzer's leave/re-join lane): a page
+		 * reload's disconnect beacon lands while that client's previous
+		 * long-poll is parked; the park's final re-merge then re-added the
+		 * departed client's awareness — a ghost with a fresh timestamp that
+		 * counted against peers' connection limits and blocked a fast
+		 * rejoin.
+		 */
+		$server = $this->exposed_server();
+
+		// The parked request carried this client's awareness…
+		$this->long_poll();
+		$request = new WP_REST_Request( 'POST', '/wp-sync/v1/long-poll' );
+		$request->set_body_params(
+			array(
+				'rooms' => array(
+					array(
+						'after'     => 0,
+						'awareness' => array( 'user' => 'test' ),
+						'client_id' => 101,
+						'room'      => $this->room(),
+						'updates'   => array(),
+					),
+				),
+			)
+		);
+
+		// …and while it was parked, the disconnect beacon removed the entry.
+		$server->update_awareness( $this->room(), 101, null );
+
+		// The park-end guard must strip the stale awareness so the re-merge
+		// cannot resurrect the departed client.
+		$server->strip_disconnected_awareness_exposed( $request );
+		$this->assertArrayNotHasKey(
+			'awareness',
+			$request['rooms'][0],
+			'a mid-wait disconnect must strip the parked awareness'
+		);
+
+		// A client whose entry still EXISTS keeps its awareness (the normal
+		// refresh path).
+		$server->update_awareness( $this->room(), 303, array( 'user' => 'live' ) );
+		$live = new WP_REST_Request( 'POST', '/wp-sync/v1/long-poll' );
+		$live->set_body_params(
+			array(
+				'rooms' => array(
+					array(
+						'after'     => 0,
+						'awareness' => array( 'user' => 'live' ),
+						'client_id' => 303,
+						'room'      => $this->room(),
+						'updates'   => array(),
+					),
+				),
+			)
+		);
+		$server->strip_disconnected_awareness_exposed( $live );
+		$this->assertSame(
+			array( 'user' => 'live' ),
+			$live['rooms'][0]['awareness'],
+			'a still-present client keeps its awareness refresh'
+		);
+	}
+
 	public function test_a_caught_up_client_is_held_until_the_budget_elapses() {
 		// Catch the client up first.
 		$primed = $this->long_poll();

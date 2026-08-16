@@ -80,7 +80,10 @@ function parseArgs( argv ) {
 		combos: null,
 		engines: DEFAULT_ENGINES,
 		headed: false,
+		burstRate: null,
+		faultRate: null,
 		noFaults: false,
+		noLifecycle: false,
 		noReload: false,
 		out: path.join( FUZZER_ROOT, 'artifacts' ),
 		recheck: true,
@@ -142,6 +145,15 @@ function parseArgs( argv ) {
 				break;
 			case '--no-faults':
 				args.noFaults = true;
+				break;
+			case '--no-lifecycle':
+				args.noLifecycle = true;
+				break;
+			case '--fault-rate':
+				args.faultRate = value;
+				break;
+			case '--burst-rate':
+				args.burstRate = value;
 				break;
 			case '--no-reload':
 				args.noReload = true;
@@ -590,6 +602,15 @@ async function runPlaywright( { combo, baseUrl, comboDir, seeds, args, phase } )
 	}
 	if ( args.noFaults ) {
 		env.RTC_FUZZ_DISABLE_SYNC_FAULTS = '1';
+	}
+	if ( args.noLifecycle ) {
+		env.RTC_FUZZ_DISABLE_LIFECYCLE = '1';
+	}
+	if ( args.faultRate !== null ) {
+		env.RTC_FUZZ_FAULT_RATE = args.faultRate;
+	}
+	if ( args.burstRate !== null ) {
+		env.RTC_FUZZ_BURST_RATE = args.burstRate;
 	}
 	if ( args.noReload ) {
 		env.RTC_FUZZ_DISABLE_RELOAD = '1';

@@ -172,6 +172,7 @@ describe( 'polling-manager', () => {
 		typeof import('../../../../src/providers/http-polling/utils').postSyncUpdateNonBlocking
 	>;
 	let mockApplyFilters: jest.Mock;
+	let setLongPollMode: ( enabled: boolean ) => void;
 	let inspector: typeof import('../../../../src/providers/http-polling/../../../src/debug/inspector').syncDebugApi;
 
 	beforeEach( () => {
@@ -180,8 +181,9 @@ describe( 'polling-manager', () => {
 		// Use isolateModules so each test gets fresh module-level state
 		// (isPolling, pollingTimeoutId, roomStates, etc.).
 		jest.isolateModules( () => {
-			pollingManager =
-				require( '../../../../src/providers/http-polling/polling-manager' ).pollingManager;
+			const managerModule = require( '../../../../src/providers/http-polling/polling-manager' );
+			pollingManager = managerModule.pollingManager;
+			setLongPollMode = managerModule.setLongPollMode;
 			mockPostSyncUpdate =
 				require( '../../../../src/providers/http-polling/utils' ).postSyncUpdate;
 			mockPostSyncUpdateNonBlocking =
@@ -2594,6 +2596,92 @@ describe( 'polling-manager', () => {
 			};
 			expect( payload.rooms[ 0 ].debug ).toBeUndefined();
 			expect( inspector.log() ).toHaveLength( 0 );
+		} );
+	} );
+	describe( 'long-poll park wake', () => {
+		afterEach( () => {
+			setLongPollMode( false );
+		} );
+
+		it( 'aborts a parked pure-receive poll when local work arrives, then re-sends immediately', async () => {
+			/*
+			 * REGRESSION (fuzzer, long-polling lanes): once the server hold
+			 * actually worked, an edit made right after a quiet poll sat
+			 * queued behind the client's own parked request for up to the
+			 * full wait budget, blowing every convergence window. A local
+			 * update must abort the park and go out at once.
+			 */
+			setLongPollMode( true );
+			const session = createMockSession( 1 );
+			const signals: Array< AbortSignal | undefined > = [];
+			// Collaborators present: room queues resume (paused while solo).
+			const collabResponse = {
+				rooms: [
+					{
+						room: 'test-room',
+						end_cursor: 1,
+						awareness: { 1: {}, 2: {} },
+						updates: [],
+					},
+				],
+			};
+			let callCount = 0;
+			mockPostSyncUpdate.mockImplementation(
+				(
+					payload: { rooms: Array< { updates: unknown[] } > },
+					signal?: AbortSignal
+				) => {
+					callCount++;
+					signals.push( signal );
+					const carriesUpdates = payload.rooms.some(
+						( room ) => room.updates.length > 0
+					);
+					if ( carriesUpdates || 1 === callCount ) {
+						return Promise.resolve( collabResponse );
+					}
+					// Pure receive: emulate the server hold — resolve never,
+					// reject on abort.
+					return new Promise( ( _resolve, reject ) => {
+						signal?.addEventListener( 'abort', () =>
+							reject(
+								new DOMException( 'Aborted', 'AbortError' )
+							)
+						);
+					} );
+				}
+			);
+
+			pollingManager.registerRoom( {
+				room: 'test-room',
+				session,
+				log: jest.fn(),
+				onStatusChange: jest.fn(),
+			} );
+
+			// Let polling settle into a parked pure-receive request (the
+			// long-poll reissue is 50 ms; update-carrying calls resolve).
+			await jest.advanceTimersByTimeAsync( 120 );
+			const parkedCalls = mockPostSyncUpdate.mock.calls.length;
+			expect( parkedCalls ).toBeGreaterThan( 0 );
+			expect( signals[ parkedCalls - 1 ] ).toBeDefined();
+
+			// A local update arrives while parked: the park aborts and the
+			// immediate re-poll carries it.
+			const update = createMockUpdate( 4 );
+			getOnLocalUpdate( session )( update, 4 );
+			await jest.advanceTimersByTimeAsync( 0 );
+
+			expect( mockPostSyncUpdate.mock.calls.length ).toBe(
+				parkedCalls + 1
+			);
+			const resent = mockPostSyncUpdate.mock.calls[
+				parkedCalls
+			][ 0 ] as unknown as {
+				rooms: Array< { updates: Array< { data: string } > } >;
+			};
+			expect(
+				resent.rooms[ 0 ].updates.map( ( entry ) => entry.data )
+			).toContain( update.data );
 		} );
 	} );
 } );

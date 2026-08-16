@@ -246,6 +246,41 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 		);
 	}
 
+	public function test_materialize_roundtrips_nested_group_genesis() {
+		/*
+		 * REGRESSION (fuzzer: nested group + save + reload rendered invalid
+		 * recovery blocks): a container's wrapper must split into open and
+		 * close innerContent fragments around the child slots; a single
+		 * concatenated fragment serialized children OUTSIDE the wrapper
+		 * element, breaking the byte roundtrip and block validation.
+		 */
+		$nested_content = implode(
+			"\n",
+			array(
+				'<!-- wp:group -->',
+				'<div class="wp-block-group"><!-- wp:paragraph -->',
+				'<p>Inside the group</p>',
+				'<!-- /wp:paragraph --></div>',
+				'<!-- /wp:group -->',
+			)
+		);
+		$nested_post_id = self::factory()->post->create(
+			array( 'post_content' => $nested_content )
+		);
+		$room           = 'postType/post:' . $nested_post_id;
+
+		$engine = $this->engine();
+		$engine->get_updates_since( $room, 101, 0, array() );
+
+		$this->assertSame(
+			get_post( $nested_post_id )->post_content,
+			$engine->materialize( $room ),
+			'nested genesis content must roundtrip byte-identically'
+		);
+
+		wp_delete_post( $nested_post_id, true );
+	}
+
 	public function test_redelivered_update_settles_as_already_merged() {
 		$engine     = $this->engine();
 		$response_a = $engine->get_updates_since( $this->room(), 101, 0, array() );
