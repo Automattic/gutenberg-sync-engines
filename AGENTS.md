@@ -134,7 +134,9 @@ The framework/plugin split is complete: the framework ships **neither** engines
   `tests/benchmarks/` (the sync-engine benchmark harness, run via `wp
   eval-file tests/benchmarks/benchmark.php`, plus the browser-driven
   transport benchmark in `tests/benchmarks/transport/`; see their READMEs),
-  and
+  `tests/fuzzer/` (the seeded browser fuzzer swept across every
+  engine × transport combo — `npm run fuzz`; see its README for strategy,
+  replay, and triage), and
   `tests/tools/` (Node CLI scripts: vector generators, the simulator sweep,
   the manual two-tab observer). The frozen intent-log vectors exist as TWO
   deliberate copies — `tests/js/engines/intent-log/test-vectors/` (replayed by

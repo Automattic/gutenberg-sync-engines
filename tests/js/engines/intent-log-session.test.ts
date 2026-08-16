@@ -277,6 +277,49 @@ describe( 'intent-log session codec', () => {
 		);
 	} );
 
+	it( 'a redelivered log row does not desync the replica (overlapping transport windows)', () => {
+		// Regression: the WS daemon's response window (client-supplied
+		// cursor) can overlap its broadcast window (server-side cursor),
+		// redelivering a row. The log is positional, so before the
+		// intentId guard the duplicate counted as a NEW entry, the local
+		// head passed the server's, and every later local intent was
+		// voided as invalid-payload — silent permanent divergence.
+		const wire = makeWireServer();
+		const alice = makeSession( 1, 11 );
+		const bob = makeSession( 2, 22 );
+		const aliceLink = connect( wire, alice );
+		const bobLink = connect( wire, bob );
+		aliceLink.poll();
+		bobLink.poll();
+
+		alice.author( 'insert_text', {
+			syncId: 'p1',
+			offset: 0,
+			text: 'AA',
+		} );
+		aliceLink.poll();
+		bobLink.poll();
+
+		// Redeliver Alice's accepted row to Bob (the overlap).
+		const aliceRow = wire.rowsAfter( 1 )[ 0 ];
+		bob.receiveUpdate( aliceRow );
+
+		// Bob's next intent must still be accepted and converge — before
+		// the guard, the inflated local head made the server void it.
+		bob.author( 'insert_text', {
+			syncId: 'p1',
+			offset: 5,
+			text: 'B',
+		} );
+		const dispositions = bobLink.poll()!;
+		aliceLink.poll();
+
+		expect( dispositions[ 0 ].status ).toBe( 'applied' );
+		const serverJson = canonicalJson( wire.doc() );
+		expect( canonicalJson( bob.getDocument()! ) ).toBe( serverJson );
+		expect( canonicalJson( alice.getDocument()! ) ).toBe( serverJson );
+	} );
+
 	it( 'escalates a register conflict into a proposal on every session and stays converged', () => {
 		const wire = makeWireServer();
 		const alice = makeSession( 1, 11 );
