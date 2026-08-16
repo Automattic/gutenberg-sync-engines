@@ -1343,11 +1343,23 @@ test.describe( 'Collaboration - intent-log engine', () => {
 		expect( saved.title.raw ).toBe( 'Title from user two' );
 	} );
 
-	test( 'scalar entity properties (excerpt, status, sticky) sync live in both directions and survive a save', async ( {
+	test( 'entity properties (excerpt, status, sticky, tags) sync live in both directions and survive a save', async ( {
 		collaborationUtils,
 		requestUtils,
 		editor,
 	} ) => {
+		// Fresh tags per run so reruns never collide on term names.
+		const stamp = Date.now();
+		const tagIds: number[] = [];
+		for ( const name of [ 'live-one', 'live-two' ] ) {
+			const tag = await requestUtils.rest( {
+				method: 'POST',
+				path: '/wp/v2/tags',
+				data: { name: `rtc-prop-${ name }-${ stamp }` },
+			} );
+			tagIds.push( tag.id );
+		}
+
 		const post = await requestUtils.createPost( {
 			title: 'Property Sync',
 			status: 'draft',
@@ -1361,13 +1373,15 @@ test.describe( 'Collaboration - intent-log engine', () => {
 		const { page2 } = collaborationUtils;
 		const page1 = editor.page;
 
-		// User 1 updates workflow fields; user 2 sees them live (no save).
-		await page1.evaluate( () => {
+		// User 1 updates workflow fields and terms; user 2 sees them live
+		// (no save).
+		await page1.evaluate( ( ids ) => {
 			( window as any ).wp.data.dispatch( 'core/editor' ).editPost( {
 				excerpt: 'Excerpt from user one',
 				status: 'pending',
+				tags: ids,
 			} );
-		} );
+		}, tagIds );
 		await expect( async () => {
 			const values = await page2.evaluate( () => {
 				const { select } = ( window as any ).wp.data;
@@ -1379,11 +1393,15 @@ test.describe( 'Collaboration - intent-log engine', () => {
 					status: select( 'core/editor' ).getEditedPostAttribute(
 						'status'
 					),
+					tags: select( 'core/editor' ).getEditedPostAttribute(
+						'tags'
+					),
 				};
 			} );
 			expect( values ).toEqual( {
 				excerpt: 'Excerpt from user one',
 				status: 'pending',
+				tags: tagIds,
 			} );
 		} ).toPass( { timeout: 15000 } );
 
@@ -1402,8 +1420,8 @@ test.describe( 'Collaboration - intent-log engine', () => {
 			expect( sticky ).toBe( true );
 		} ).toPass( { timeout: 15000 } );
 
-		// One save (user 2, who never touched excerpt or status) persists
-		// the whole synced state.
+		// One save (user 2, who never touched excerpt, status, or tags)
+		// persists the whole synced state.
 		await page2.evaluate( async () => {
 			await ( window as any ).wp.data
 				.dispatch( 'core/editor' )
@@ -1413,6 +1431,7 @@ test.describe( 'Collaboration - intent-log engine', () => {
 			excerpt: { raw: string };
 			status: string;
 			sticky: boolean;
+			tags: number[];
 		} >( {
 			path: `/wp/v2/posts/${ post.id }`,
 			params: { context: 'edit' },
@@ -1420,6 +1439,7 @@ test.describe( 'Collaboration - intent-log engine', () => {
 		expect( saved.excerpt.raw ).toBe( 'Excerpt from user one' );
 		expect( saved.status ).toBe( 'pending' );
 		expect( saved.sticky ).toBe( true );
+		expect( saved.tags ).toEqual( expect.arrayContaining( tagIds ) );
 	} );
 
 	test( 'concurrent divergent title edits surface an escalation notice, and editors converge', async ( {

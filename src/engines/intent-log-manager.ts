@@ -9,6 +9,7 @@ import type { Awareness } from 'y-protocols/awareness';
 /**
  * WordPress dependencies
  */
+import apiFetch from '@wordpress/api-fetch';
 import { parse as parseBlockDelimiters } from '@wordpress/block-serialization-default-parser';
 // eslint-disable-next-line import/no-unresolved -- Provided by the editor runtime.
 import { getBlockType } from '@wordpress/blocks';
@@ -82,10 +83,10 @@ import type {
  *
  * Scope (documented in ARCHITECTURE.md):
  * - Blocks sync through the capture bridge; whitelisted entity properties
- *   (SYNCED_PROPERTIES — the framework's scalar synced-property set:
- *   title, excerpt, slug, status, and the rest) sync as per-name registers
- *   via set_property intents. Post meta and taxonomy terms flow through
- *   WordPress saves as usual (later phases).
+ *   (SYNCED_PROPERTIES — the framework's scalar synced-property set —
+ *   plus the post type's attached taxonomies as term-ID-array registers)
+ *   sync as per-name registers via set_property intents. Post meta flows
+ *   through WordPress saves as usual (a later phase).
  * - Undo rides core's default WPUndoManager (`undoManager` stays
  *   undefined; core-data falls back automatically). Escalated intents are
  *   surfaced via console warning; the review-lane UI is Phase 2d.
@@ -201,6 +202,12 @@ interface EntityState {
 	 */
 	lastPushedProps: Record< string, SyncedPropertyValue >;
 	/**
+	 * The property names this entity syncs: the static scalar whitelist
+	 * plus the post type's attached taxonomies (by rest_base), resolved
+	 * once at load.
+	 */
+	syncedProperties: string[];
+	/**
 	 * Rich-text attribute names per block type (from the entity syncConfig,
 	 * backed by the block registry). Names both the fields the bridge
 	 * captures and the fields it serializes back into attributes.
@@ -213,9 +220,12 @@ interface EntityState {
  * Entity properties synced as per-name registers (set_property intents).
  * The scalar subset of the framework's synced-property contract (see
  * `syncedProperties` in core-data's entities.js) — blocks/content sync
- * through the capture bridge, and `meta`/taxonomies are later phases.
- * Values are raw JSON scalars (string, number, boolean, or null) in both
- * the edited record and the engine document.
+ * through the capture bridge, and `meta` is a later phase. Each entity
+ * extends this static set with its post type's attached taxonomies (by
+ * rest_base, mirroring the framework's dynamic entries — term-ID arrays
+ * as whole-array registers). Values are raw JSON scalars (string, number,
+ * boolean, or null) or term-ID arrays in both the edited record and the
+ * engine document.
  */
 const SYNCED_PROPERTIES = [
 	'title',
@@ -232,18 +242,35 @@ const SYNCED_PROPERTIES = [
 	'template',
 ];
 
-/** A raw scalar value a synced property register may hold. */
-type SyncedPropertyValue = string | number | boolean | null;
+/**
+ * A raw value a synced property register may hold: a JSON scalar, or a
+ * term-ID array (taxonomy properties sync as whole-array registers).
+ */
+type SyncedPropertyValue = string | number | boolean | null | number[];
 
 /**
- * Reads a synced property from a record or edits object as a raw scalar.
+ * Whether a value is a term-ID array (every element a number).
+ *
+ * @param value Candidate value.
+ * @return True for arrays of numbers (including empty).
+ */
+function isTermIdArray( value: unknown ): value is number[] {
+	return (
+		Array.isArray( value ) &&
+		value.every( ( item ) => 'number' === typeof item )
+	);
+}
+
+/**
+ * Reads a synced property from a record or edits object as a raw value.
  * REST records carry title/excerpt as `{ raw, rendered }`; editor edits
  * carry them as plain strings. Other properties are plain scalars in both
- * shapes (`date` may be null: a "floating" publish-immediately date).
+ * shapes (`date` may be null: a "floating" publish-immediately date), and
+ * taxonomy properties are term-ID arrays.
  *
  * @param source Record or edits object.
  * @param name   Property name.
- * @return The raw scalar value, or undefined when absent/unsyncable.
+ * @return The raw value, or undefined when absent/unsyncable.
  */
 function rawPropertyValue(
 	source: Record< string, unknown >,
@@ -254,7 +281,8 @@ function rawPropertyValue(
 		null === value ||
 		'string' === typeof value ||
 		'number' === typeof value ||
-		'boolean' === typeof value
+		'boolean' === typeof value ||
+		isTermIdArray( value )
 	) {
 		return value;
 	}
@@ -269,12 +297,12 @@ function rawPropertyValue(
 }
 
 /**
- * Whether an engine-document register value is a scalar the property lane
- * may push into the editor. Guards against malformed remote payloads
+ * Whether an engine-document register value is one the property lane may
+ * push into the editor. Guards against malformed remote payloads
  * (set_property values are unvalidated `isAny` on the wire).
  *
  * @param value Register value from the engine document.
- * @return True for string/number/boolean/null.
+ * @return True for string/number/boolean/null and term-ID arrays.
  */
 function isSyncablePropertyValue(
 	value: unknown
@@ -283,7 +311,30 @@ function isSyncablePropertyValue(
 		null === value ||
 		'string' === typeof value ||
 		'number' === typeof value ||
-		'boolean' === typeof value
+		'boolean' === typeof value ||
+		isTermIdArray( value )
+	);
+}
+
+/**
+ * Value equality for property registers: strict for scalars, elementwise
+ * (order-sensitive, matching the framework's deep comparison) for term-ID
+ * arrays. Array registers arrive as fresh instances on every read, so
+ * reference equality would author an echo intent per render.
+ *
+ * @param a One value (may be undefined: absent).
+ * @param b Other value.
+ * @return True when the register values are the same.
+ */
+function samePropertyValue( a: unknown, b: unknown ): boolean {
+	if ( a === b ) {
+		return true;
+	}
+	return (
+		Array.isArray( a ) &&
+		Array.isArray( b ) &&
+		a.length === b.length &&
+		a.every( ( item, index ) => item === b[ index ] )
 	);
 }
 
@@ -676,6 +727,44 @@ export function createIntentLogManager( debug = false ): SyncManager {
 	const entityKey = ( objectType: ObjectType, objectId: ObjectID | null ) =>
 		`${ objectType }_${ objectId }`;
 
+	/**
+	 * The post type's attached taxonomies as synced-property names (their
+	 * rest_base), mirroring how the framework's entities.js builds its
+	 * dynamic syncedProperties entries. Cached per post type for the
+	 * manager's lifetime; failure degrades to the static scalar set (terms
+	 * then ride saves, as before).
+	 */
+	const taxonomyPropertiesByPostType = new Map<
+		string,
+		Promise< string[] >
+	>();
+	const taxonomyProperties = ( postType: string ): Promise< string[] > => {
+		let promise = taxonomyPropertiesByPostType.get( postType );
+		if ( ! promise ) {
+			promise = ( async () => {
+				try {
+					const [ types, taxonomies ] = await Promise.all( [
+						apiFetch< {
+							[ name: string ]: { taxonomies?: string[] };
+						} >( { path: '/wp/v2/types?context=view' } ),
+						apiFetch< {
+							[ name: string ]: { rest_base?: string };
+						} >( { path: '/wp/v2/taxonomies?context=view' } ),
+					] );
+					return ( types?.[ postType ]?.taxonomies ?? [] )
+						.map(
+							( taxonomy ) => taxonomies?.[ taxonomy ]?.rest_base
+						)
+						.filter( ( base ): base is string => Boolean( base ) );
+				} catch {
+					return [];
+				}
+			} )();
+			taxonomyPropertiesByPostType.set( postType, promise );
+		}
+		return promise;
+	};
+
 	async function loadEntity(
 		syncConfig: SyncConfig,
 		objectType: ObjectType,
@@ -692,6 +781,22 @@ export function createIntentLogManager( debug = false ): SyncManager {
 		}
 		const providerCreators = getProviderCreators();
 		if ( 0 === providerCreators.length ) {
+			return;
+		}
+
+		/*
+		 * This entity's synced properties: the static scalar whitelist plus
+		 * the post type's attached taxonomies (objectType is
+		 * `postType/<slug>`). Resolved before any state exists; re-check
+		 * for a racing load after the await.
+		 */
+		const syncedProperties = [
+			...SYNCED_PROPERTIES,
+			...( await taxonomyProperties(
+				objectType.split( '/' )[ 1 ] ?? ''
+			) ),
+		];
+		if ( entityStates.has( key ) ) {
 			return;
 		}
 
@@ -724,7 +829,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 		 * post does not push a spurious title edit.
 		 */
 		const initialProps: Record< string, SyncedPropertyValue > = {};
-		for ( const name of SYNCED_PROPERTIES ) {
+		for ( const name of syncedProperties ) {
 			let value = rawPropertyValue(
 				record as Record< string, unknown >,
 				name
@@ -769,6 +874,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			syncTimer: null,
 			syncForce: false,
 			lastPushedProps: initialProps,
+			syncedProperties,
 			fieldsResolver:
 				syncConfig.richTextFields ?? ( () => [ 'content' ] ),
 			rawContent:
@@ -831,7 +937,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				return;
 			}
 			const edits: Record< string, SyncedPropertyValue > = {};
-			for ( const name of SYNCED_PROPERTIES ) {
+			for ( const name of state.syncedProperties ) {
 				const value = doc.props?.[ name ];
 				if (
 					undefined === value ||
@@ -839,7 +945,9 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				) {
 					continue;
 				}
-				if ( state.lastPushedProps[ name ] === value ) {
+				if (
+					samePropertyValue( state.lastPushedProps[ name ], value )
+				) {
 					continue;
 				}
 				// An invalid status never reaches the editor.
@@ -1201,7 +1309,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			 * push or of the document state and are suppressed.
 			 */
 			const doc = state.session.getDocument()!;
-			for ( const name of SYNCED_PROPERTIES ) {
+			for ( const name of state.syncedProperties ) {
 				if ( ! ( name in changes ) ) {
 					continue;
 				}
@@ -1232,7 +1340,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				if ( 'slug' === name && ! value ) {
 					continue;
 				}
-				if ( doc.props?.[ name ] === value ) {
+				if ( samePropertyValue( doc.props?.[ name ], value ) ) {
 					continue;
 				}
 				state.lastPushedProps[ name ] = value;

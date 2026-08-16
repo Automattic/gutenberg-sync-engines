@@ -720,10 +720,10 @@ for ( const engine of ENGINES ) {
 			const page1 = editor.page;
 
 			// User A updates non-content fields in the editor. Scalar
-			// properties (status, excerpt) live-sync under both engines;
-			// taxonomy terms (tags) do not live-sync under intent-log yet
-			// and ride A's save. Either way, the engine must neither corrupt
-			// these fields nor let a collaborator's later save clobber them.
+			// properties (status, excerpt) and taxonomy terms (tags)
+			// live-sync under both engines; either way, the engine must
+			// neither corrupt these fields nor let a collaborator's later
+			// save clobber them.
 			await page1.evaluate( ( ids ) => {
 				( window as any ).wp.data.dispatch( 'core/editor' ).editPost( {
 					status: 'pending',

@@ -148,6 +148,56 @@ class Tests_Collaboration_WpIntentLogEngineInternals extends WP_UnitTestCase {
 		// suppression sees the value its own record carries.
 		$this->assertSame( mysql_to_rfc3339( $post->post_date ), $props['date'] );
 		$this->assertSame( '', $props['template'] );
+		// Attached taxonomies as whole term-ID arrays: the default
+		// category assigned at insert, and no tags.
+		$this->assertSame( array( (int) get_option( 'default_category' ) ), $props['categories'] );
+		$this->assertSame( array(), $props['tags'] );
+	}
+
+	public function test_genesis_seeds_taxonomy_registers_in_rest_order_and_respects_show_in_rest() {
+		register_taxonomy(
+			'genre',
+			'post',
+			array(
+				'show_in_rest' => true,
+				'rest_base'    => 'genres',
+			)
+		);
+		register_taxonomy( 'internal_tax', 'post', array( 'show_in_rest' => false ) );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		$tag_b   = self::factory()->term->create(
+			array(
+				'taxonomy' => 'post_tag',
+				'name'     => 'bravo',
+			)
+		);
+		$tag_a   = self::factory()->term->create(
+			array(
+				'taxonomy' => 'post_tag',
+				'name'     => 'alpha',
+			)
+		);
+		wp_set_post_terms( $post_id, array( $tag_b, $tag_a ), 'post_tag' );
+		$genre = self::factory()->term->create( array( 'taxonomy' => 'genre' ) );
+		wp_set_post_terms( $post_id, array( $genre ), 'genre' );
+		$internal = self::factory()->term->create( array( 'taxonomy' => 'internal_tax' ) );
+		wp_set_post_terms( $post_id, array( $internal ), 'internal_tax' );
+
+		$doc   = self::snapshot_doc( self::engine(), 'postType/post:' . $post_id );
+		$props = $doc['props'];
+
+		unregister_taxonomy( 'genre' );
+		unregister_taxonomy( 'internal_tax' );
+
+		// Byte-parity with the REST record: get_the_terms() order (by
+		// name), plucked term ids.
+		$this->assertSame( array( $tag_a, $tag_b ), $props['tags'] );
+		// Custom taxonomies key by rest_base…
+		$this->assertSame( array( $genre ), $props['genres'] );
+		// …and non-REST taxonomies never enter the document (absent from
+		// the client record, so seeding them would push spurious edits).
+		$this->assertArrayNotHasKey( 'internal_tax', $props );
 	}
 
 	public function test_genesis_blanks_the_auto_draft_placeholder_and_omits_invalid_registers() {

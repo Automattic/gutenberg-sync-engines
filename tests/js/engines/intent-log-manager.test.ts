@@ -28,6 +28,27 @@ jest.mock( '@wordpress/blocks', () => ( {
 			: undefined,
 } ) );
 
+// Taxonomy discovery (the manager mirrors entities.js: post-type
+// taxonomies by rest_base). The built-in post type carries the two
+// standard taxonomies.
+jest.mock( '@wordpress/api-fetch', () => ( {
+	__esModule: true,
+	default: jest.fn( ( { path }: { path: string } ) => {
+		if ( path.startsWith( '/wp/v2/types' ) ) {
+			return Promise.resolve( {
+				post: { taxonomies: [ 'category', 'post_tag' ] },
+			} );
+		}
+		if ( path.startsWith( '/wp/v2/taxonomies' ) ) {
+			return Promise.resolve( {
+				category: { rest_base: 'categories' },
+				post_tag: { rest_base: 'tags' },
+			} );
+		}
+		return Promise.resolve( {} );
+	} ),
+} ) );
+
 /**
  * Internal dependencies
  */
@@ -1522,6 +1543,70 @@ describe( 'intent-log manager', () => {
 		expect( handlers.edits.at( -1 ) ).toEqual( {
 			date: '2026-10-01T09:00:00',
 		} );
+	} );
+
+	it( 'taxonomies: term-ID arrays round-trip as whole-array registers with value-based echo suppression', async () => {
+		const { manager, handlers, transport } = await loadManagedEntity( {
+			categories: [ 1 ],
+			tags: [ 4, 7 ],
+		} );
+		// Genesis carrying equal (but fresh) arrays pushes nothing.
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [], { categories: [ 1 ], tags: [ 4, 7 ] } )
+		);
+		expect( handlers.edits ).toHaveLength( 0 );
+
+		// A local term change authors one whole-array set_property…
+		manager.update( 'postType/post', '1', { tags: [ 4, 7, 9 ] }, 'e' );
+		const sent = transport.captured.sent.map( ( update ) =>
+			JSON.parse( update.data )
+		);
+		expect( sent.at( -1 ).payload ).toMatchObject( {
+			name: 'tags',
+			value: [ 4, 7, 9 ],
+		} );
+
+		// …and the editor echoing the same terms (a NEW array instance)
+		// authors nothing further.
+		manager.update( 'postType/post', '1', { tags: [ 4, 7, 9 ] }, 'e' );
+		expect(
+			transport.captured.sent.map(
+				( update ) => JSON.parse( update.data ).type
+			)
+		).toHaveLength( 1 );
+
+		// A remote term change pushes the whole array into the editor.
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				intentId: 'remote-cats-1',
+				actorId: 'u9c9',
+				baseSeq: 2,
+				txnId: null,
+				type: 'set_property',
+				payload: {
+					name: 'categories',
+					value: [ 5, 6 ],
+					observedVersion: 1,
+				},
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.INTENT,
+		} );
+		expect( handlers.edits.at( -1 ) ).toEqual( { categories: [ 5, 6 ] } );
+	} );
+
+	it( 'taxonomies: a non-numeric array is not capturable', async () => {
+		const { manager, transport } = await loadManagedEntity( {
+			tags: [],
+		} );
+		transport.captured.session!.receiveUpdate( snapshotRow( [] ) );
+
+		manager.update(
+			'postType/post',
+			'1',
+			{ tags: [ 'not-a-term-id' ] },
+			'e'
+		);
+		expect( transport.captured.sent ).toHaveLength( 0 );
 	} );
 
 	it( 'properties: a malformed (non-scalar) remote register value is never pushed', async () => {
