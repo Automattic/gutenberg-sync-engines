@@ -82,9 +82,10 @@ import type {
  *
  * Scope (documented in ARCHITECTURE.md):
  * - Blocks sync through the capture bridge; whitelisted entity properties
- *   (SYNCED_PROPERTIES — currently the title) sync as per-name registers
- *   via set_property intents. Other entity properties (status, …) flow
- *   through WordPress saves as usual.
+ *   (SYNCED_PROPERTIES — the framework's scalar synced-property set:
+ *   title, excerpt, slug, status, and the rest) sync as per-name registers
+ *   via set_property intents. Post meta and taxonomy terms flow through
+ *   WordPress saves as usual (later phases).
  * - Undo rides core's default WPUndoManager (`undoManager` stays
  *   undefined; core-data falls back automatically). Escalated intents are
  *   surfaced via console warning; the review-lane UI is Phase 2d.
@@ -198,7 +199,7 @@ interface EntityState {
 	 * property echo suppression. Seeded from the loaded record so the
 	 * genesis snapshot's properties are not re-pushed as edits.
 	 */
-	lastPushedProps: Record< string, string >;
+	lastPushedProps: Record< string, SyncedPropertyValue >;
 	/**
 	 * Rich-text attribute names per block type (from the entity syncConfig,
 	 * backed by the block registry). Names both the fields the bridge
@@ -210,25 +211,51 @@ interface EntityState {
 
 /**
  * Entity properties synced as per-name registers (set_property intents).
- * Must be raw strings in both the edited record and the engine document.
+ * The scalar subset of the framework's synced-property contract (see
+ * `syncedProperties` in core-data's entities.js) — blocks/content sync
+ * through the capture bridge, and `meta`/taxonomies are later phases.
+ * Values are raw JSON scalars (string, number, boolean, or null) in both
+ * the edited record and the engine document.
  */
-const SYNCED_PROPERTIES = [ 'title' ];
+const SYNCED_PROPERTIES = [
+	'title',
+	'excerpt',
+	'slug',
+	'status',
+	'comment_status',
+	'ping_status',
+	'format',
+	'sticky',
+	'author',
+	'featured_media',
+	'date',
+	'template',
+];
+
+/** A raw scalar value a synced property register may hold. */
+type SyncedPropertyValue = string | number | boolean | null;
 
 /**
- * Reads a synced property from a record or edits object as a raw string.
- * REST records carry title as `{ raw, rendered }`; editor edits carry it as
- * a plain string.
+ * Reads a synced property from a record or edits object as a raw scalar.
+ * REST records carry title/excerpt as `{ raw, rendered }`; editor edits
+ * carry them as plain strings. Other properties are plain scalars in both
+ * shapes (`date` may be null: a "floating" publish-immediately date).
  *
  * @param source Record or edits object.
  * @param name   Property name.
- * @return The raw string value, or undefined.
+ * @return The raw scalar value, or undefined when absent/unsyncable.
  */
 function rawPropertyValue(
 	source: Record< string, unknown >,
 	name: string
-): string | undefined {
+): SyncedPropertyValue | undefined {
 	const value = source[ name ];
-	if ( 'string' === typeof value ) {
+	if (
+		null === value ||
+		'string' === typeof value ||
+		'number' === typeof value ||
+		'boolean' === typeof value
+	) {
 		return value;
 	}
 	if (
@@ -239,6 +266,25 @@ function rawPropertyValue(
 		return ( value as { raw: string } ).raw;
 	}
 	return undefined;
+}
+
+/**
+ * Whether an engine-document register value is a scalar the property lane
+ * may push into the editor. Guards against malformed remote payloads
+ * (set_property values are unvalidated `isAny` on the wire).
+ *
+ * @param value Register value from the engine document.
+ * @return True for string/number/boolean/null.
+ */
+function isSyncablePropertyValue(
+	value: unknown
+): value is SyncedPropertyValue {
+	return (
+		null === value ||
+		'string' === typeof value ||
+		'number' === typeof value ||
+		'boolean' === typeof value
+	);
 }
 
 /**
@@ -671,17 +717,35 @@ export function createIntentLogManager( debug = false ): SyncManager {
 		 * a genesis snapshot whose properties match what the editor already
 		 * shows must not be re-pushed as an edit. A ROOM value that differs
 		 * (another client changed the title before we joined) still pushes.
+		 *
+		 * The "Auto Draft" placeholder is normalized to the empty string the
+		 * server genesis seeds (a fresh auto-draft stores the placeholder
+		 * title while the editor shows an empty field), so opening a new
+		 * post does not push a spurious title edit.
 		 */
-		const initialProps: Record< string, string > = {};
+		const initialProps: Record< string, SyncedPropertyValue > = {};
 		for ( const name of SYNCED_PROPERTIES ) {
-			const value = rawPropertyValue(
+			let value = rawPropertyValue(
 				record as Record< string, unknown >,
 				name
 			);
-			if ( undefined !== value ) {
-				initialProps[ name ] = value;
+			if ( undefined === value ) {
+				continue;
 			}
+			if (
+				'title' === name &&
+				'Auto Draft' === value &&
+				'auto-draft' === ( record as Record< string, unknown > ).status
+			) {
+				value = '';
+			}
+			initialProps[ name ] = value;
 		}
+
+		const recordContent = rawPropertyValue(
+			record as Record< string, unknown >,
+			'content'
+		);
 
 		const state: EntityState = {
 			session,
@@ -695,10 +759,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			// Record seeding (source 1 of the editorIds contract): the ids
 			// persisted in the content this editor loaded and rendered.
 			editorIds: collectPersistedSyncIds(
-				rawPropertyValue(
-					record as Record< string, unknown >,
-					'content'
-				)
+				'string' === typeof recordContent ? recordContent : undefined
 			),
 			genesisSeeded: false,
 			prevDocIds: new Set(),
@@ -722,6 +783,46 @@ export function createIntentLogManager( debug = false ): SyncManager {
 		entityStates.set( key, state );
 
 		/**
+		 * Pushes a remote date change once the edited record confirms the
+		 * local date is not "floating" (publish immediately). A floating
+		 * date is never overwritten — same policy as the framework's
+		 * getPostChangesFromCRDTDoc. The record read is async, so the date
+		 * lane runs after the synchronous property push; echo state is only
+		 * recorded when the edit actually dispatches, so a skipped push is
+		 * re-evaluated on the next change event.
+		 *
+		 * @param value Register value observed at schedule time.
+		 */
+		const pushDateChange = async ( value: SyncedPropertyValue ) => {
+			let editedRecord: Record< string, unknown > | undefined;
+			try {
+				editedRecord = ( await handlers.getEditedRecord() ) as Record<
+					string,
+					unknown
+				>;
+			} catch {
+				return;
+			}
+			const doc = session.getDocument();
+			if (
+				state.unloaded ||
+				! doc ||
+				doc.props?.date !== value ||
+				state.lastPushedProps.date === value
+			) {
+				return;
+			}
+			const currentDate = editedRecord?.date ?? null;
+			const isFloating =
+				null === currentDate || editedRecord?.modified === currentDate;
+			if ( isFloating ) {
+				return;
+			}
+			state.lastPushedProps.date = value;
+			handlers.editRecord( { date: value }, { undoIgnore: true } );
+		};
+
+		/**
 		 * Pushes engine property values the editor has not seen yet.
 		 */
 		const pushPropertyChanges = () => {
@@ -729,13 +830,25 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			if ( ! doc ) {
 				return;
 			}
-			const edits: Record< string, string > = {};
+			const edits: Record< string, SyncedPropertyValue > = {};
 			for ( const name of SYNCED_PROPERTIES ) {
 				const value = doc.props?.[ name ];
-				if ( 'string' !== typeof value ) {
+				if (
+					undefined === value ||
+					! isSyncablePropertyValue( value )
+				) {
 					continue;
 				}
 				if ( state.lastPushedProps[ name ] === value ) {
+					continue;
+				}
+				// An invalid status never reaches the editor.
+				if ( 'status' === name && 'auto-draft' === value ) {
+					continue;
+				}
+				// The date lane is async (needs the edited record).
+				if ( 'date' === name ) {
+					void pushDateChange( value );
 					continue;
 				}
 				state.lastPushedProps[ name ] = value;
@@ -1092,11 +1205,34 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				if ( ! ( name in changes ) ) {
 					continue;
 				}
-				const value = rawPropertyValue(
+				let value = rawPropertyValue(
 					changes as Record< string, unknown >,
 					name
 				);
-				if ( undefined === value || doc.props?.[ name ] === value ) {
+				if ( undefined === value ) {
+					continue;
+				}
+				/*
+				 * Per-property capture guards, mirroring the framework's
+				 * applyPostChangesToCRDTDoc: the "Auto Draft" placeholder
+				 * never overwrites an empty shared title, an invalid
+				 * auto-draft status never syncs, and an empty slug (the
+				 * auto-generated default) never syncs.
+				 */
+				if (
+					'title' === name &&
+					'Auto Draft' === value &&
+					! doc.props?.title
+				) {
+					value = '';
+				}
+				if ( 'status' === name && 'auto-draft' === value ) {
+					continue;
+				}
+				if ( 'slug' === name && ! value ) {
+					continue;
+				}
+				if ( doc.props?.[ name ] === value ) {
 					continue;
 				}
 				state.lastPushedProps[ name ] = value;

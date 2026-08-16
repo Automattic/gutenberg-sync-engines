@@ -1326,6 +1326,218 @@ describe( 'intent-log manager', () => {
 		expect( handlers.edits ).toHaveLength( editsBefore );
 	} );
 
+	it( 'properties: non-string scalars (sticky, featured_media, author) round-trip with their types', async () => {
+		const { manager, handlers, transport } = await loadManagedEntity( {
+			sticky: false,
+			featured_media: 0,
+			author: 1,
+		} );
+		// Genesis matching the loaded record pushes nothing (typed echo
+		// suppression).
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [], { sticky: false, featured_media: 0, author: 1 } )
+		);
+		expect( handlers.edits ).toHaveLength( 0 );
+
+		// Local edits author typed set_property intents.
+		manager.update(
+			'postType/post',
+			'1',
+			{ sticky: true, featured_media: 42 },
+			'e'
+		);
+		const sent = transport.captured.sent.map( ( update ) =>
+			JSON.parse( update.data )
+		);
+		const byName = Object.fromEntries(
+			sent
+				.filter( ( intent ) => 'set_property' === intent.type )
+				.map( ( intent ) => [
+					intent.payload.name,
+					intent.payload.value,
+				] )
+		);
+		expect( byName ).toEqual( { sticky: true, featured_media: 42 } );
+
+		// A remote value pushes with its type preserved.
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				intentId: 'remote-author-1',
+				actorId: 'u9c9',
+				baseSeq: 3,
+				txnId: null,
+				type: 'set_property',
+				payload: { name: 'author', value: 7, observedVersion: 1 },
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.INTENT,
+		} );
+		expect( handlers.edits.at( -1 ) ).toEqual( { author: 7 } );
+	} );
+
+	it( 'properties: an auto-draft status neither captures nor pushes; a real status syncs', async () => {
+		const { manager, handlers, transport } = await loadManagedEntity( {
+			status: 'draft',
+		} );
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [], { status: 'draft' } )
+		);
+
+		// Capture guard: the invalid status never becomes an intent.
+		manager.update( 'postType/post', '1', { status: 'auto-draft' }, 'e' );
+		expect( transport.captured.sent ).toHaveLength( 0 );
+
+		// A genuine workflow change authors an intent…
+		manager.update( 'postType/post', '1', { status: 'pending' }, 'e' );
+		const sent = transport.captured.sent.map( ( update ) =>
+			JSON.parse( update.data )
+		);
+		expect( sent.at( -1 ).payload ).toMatchObject( {
+			name: 'status',
+			value: 'pending',
+		} );
+
+		// …and a remote auto-draft register value never reaches the editor.
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				intentId: 'remote-status-1',
+				actorId: 'u9c9',
+				baseSeq: 3,
+				txnId: null,
+				type: 'set_property',
+				payload: {
+					name: 'status',
+					value: 'auto-draft',
+					observedVersion: 2,
+				},
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.INTENT,
+		} );
+		expect(
+			handlers.edits.filter(
+				( edit ) => 'status' in ( edit as Record< string, unknown > )
+			)
+		).toHaveLength( 0 );
+	} );
+
+	it( 'properties: an empty slug (auto-generated default) is not captured; a real slug is', async () => {
+		const { manager, transport } = await loadManagedEntity( {
+			slug: '',
+		} );
+		transport.captured.session!.receiveUpdate( snapshotRow( [] ) );
+
+		manager.update( 'postType/post', '1', { slug: '' }, 'e' );
+		expect( transport.captured.sent ).toHaveLength( 0 );
+
+		manager.update( 'postType/post', '1', { slug: 'hello-world' }, 'e' );
+		const sent = transport.captured.sent.map( ( update ) =>
+			JSON.parse( update.data )
+		);
+		expect( sent.at( -1 ).payload ).toMatchObject( {
+			name: 'slug',
+			value: 'hello-world',
+		} );
+	} );
+
+	it( 'properties: the "Auto Draft" placeholder title is inert against a blanked genesis', async () => {
+		// A fresh auto-draft: the record carries the stored placeholder,
+		// the server genesis seeds the blanked title. Neither joining nor
+		// the editor reporting the placeholder may author or push an edit.
+		const { manager, handlers, transport } = await loadManagedEntity( {
+			title: { raw: 'Auto Draft' },
+			status: 'auto-draft',
+		} );
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [], { title: '' } )
+		);
+		expect(
+			handlers.edits.filter(
+				( edit ) => 'title' in ( edit as Record< string, unknown > )
+			)
+		).toHaveLength( 0 );
+
+		manager.update( 'postType/post', '1', { title: 'Auto Draft' }, 'e' );
+		expect( transport.captured.sent ).toHaveLength( 0 );
+	} );
+
+	it( 'properties: a remote date never overwrites a floating local date, and lands once the date is real', async () => {
+		const { handlers, transport } = await loadManagedEntity( {
+			date: '2026-08-01T10:00:00',
+		} );
+		// Floating: the edited record's date equals its modified time.
+		let editedRecord: Record< string, unknown > = {
+			date: '2026-08-01T10:00:00',
+			modified: '2026-08-01T10:00:00',
+		};
+		handlers.getEditedRecord = ( async () =>
+			editedRecord ) as RecordHandlers[ 'getEditedRecord' ];
+
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [], { date: '2026-08-01T10:00:00' } )
+		);
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				intentId: 'remote-date-1',
+				actorId: 'u9c9',
+				baseSeq: 1,
+				txnId: null,
+				type: 'set_property',
+				payload: {
+					name: 'date',
+					value: '2026-09-01T09:00:00',
+					observedVersion: 1,
+				},
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.INTENT,
+		} );
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(
+			handlers.edits.filter(
+				( edit ) => 'date' in ( edit as Record< string, unknown > )
+			)
+		).toHaveLength( 0 );
+
+		// A scheduled (non-floating) local date accepts the remote value.
+		editedRecord = {
+			date: '2026-08-01T10:00:00',
+			modified: '2026-08-05T12:00:00',
+		};
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				intentId: 'remote-date-2',
+				actorId: 'u9c9',
+				baseSeq: 2,
+				txnId: null,
+				type: 'set_property',
+				payload: {
+					name: 'date',
+					value: '2026-10-01T09:00:00',
+					observedVersion: 2,
+				},
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.INTENT,
+		} );
+		await Promise.resolve();
+		await Promise.resolve();
+		expect( handlers.edits.at( -1 ) ).toEqual( {
+			date: '2026-10-01T09:00:00',
+		} );
+	} );
+
+	it( 'properties: a malformed (non-scalar) remote register value is never pushed', async () => {
+		const { handlers, transport } = await loadManagedEntity( {
+			title: { raw: 'Original' },
+		} );
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [], { title: { nested: 'object' } } )
+		);
+		expect(
+			handlers.edits.filter(
+				( edit ) => 'title' in ( edit as Record< string, unknown > )
+			)
+		).toHaveLength( 0 );
+	} );
+
 	it( 'surfaces proposals through onEscalation with local/remote attribution', async () => {
 		const { handlers, transport } = await loadManagedEntity();
 		const onEscalation = jest.fn();

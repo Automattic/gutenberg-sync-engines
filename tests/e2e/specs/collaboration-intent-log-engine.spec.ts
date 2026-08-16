@@ -1343,6 +1343,85 @@ test.describe( 'Collaboration - intent-log engine', () => {
 		expect( saved.title.raw ).toBe( 'Title from user two' );
 	} );
 
+	test( 'scalar entity properties (excerpt, status, sticky) sync live in both directions and survive a save', async ( {
+		collaborationUtils,
+		requestUtils,
+		editor,
+	} ) => {
+		const post = await requestUtils.createPost( {
+			title: 'Property Sync',
+			status: 'draft',
+			excerpt: 'Original excerpt',
+			content:
+				'<!-- wp:paragraph -->\n<p>Body</p>\n<!-- /wp:paragraph -->',
+			date_gmt: new Date().toISOString(),
+		} );
+
+		await collaborationUtils.openCollaborativeSession( post.id );
+		const { page2 } = collaborationUtils;
+		const page1 = editor.page;
+
+		// User 1 updates workflow fields; user 2 sees them live (no save).
+		await page1.evaluate( () => {
+			( window as any ).wp.data.dispatch( 'core/editor' ).editPost( {
+				excerpt: 'Excerpt from user one',
+				status: 'pending',
+			} );
+		} );
+		await expect( async () => {
+			const values = await page2.evaluate( () => {
+				const { select } = ( window as any ).wp.data;
+				return {
+					excerpt:
+						select( 'core/editor' ).getEditedPostAttribute(
+							'excerpt'
+						),
+					status: select( 'core/editor' ).getEditedPostAttribute(
+						'status'
+					),
+				};
+			} );
+			expect( values ).toEqual( {
+				excerpt: 'Excerpt from user one',
+				status: 'pending',
+			} );
+		} ).toPass( { timeout: 15000 } );
+
+		// A boolean flows the other way with its type intact.
+		await page2.evaluate( () => {
+			( window as any ).wp.data
+				.dispatch( 'core/editor' )
+				.editPost( { sticky: true } );
+		} );
+		await expect( async () => {
+			const sticky = await page1.evaluate( () =>
+				( window as any ).wp.data
+					.select( 'core/editor' )
+					.getEditedPostAttribute( 'sticky' )
+			);
+			expect( sticky ).toBe( true );
+		} ).toPass( { timeout: 15000 } );
+
+		// One save (user 2, who never touched excerpt or status) persists
+		// the whole synced state.
+		await page2.evaluate( async () => {
+			await ( window as any ).wp.data
+				.dispatch( 'core/editor' )
+				.savePost();
+		} );
+		const saved = await requestUtils.rest< {
+			excerpt: { raw: string };
+			status: string;
+			sticky: boolean;
+		} >( {
+			path: `/wp/v2/posts/${ post.id }`,
+			params: { context: 'edit' },
+		} );
+		expect( saved.excerpt.raw ).toBe( 'Excerpt from user one' );
+		expect( saved.status ).toBe( 'pending' );
+		expect( saved.sticky ).toBe( true );
+	} );
+
 	test( 'concurrent divergent title edits surface an escalation notice, and editors converge', async ( {
 		collaborationUtils,
 		requestUtils,

@@ -1155,6 +1155,65 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 		$this->assertStringContainsString( '<a href="https://example.com/">Hello</a>', $content );
 	}
 
+	/**
+	 * A set_property intent (entity property register write).
+	 *
+	 * @param string $intent_id Intent id.
+	 * @param string $name      Property name.
+	 * @param mixed  $value     Property value.
+	 * @return array Typed update.
+	 */
+	private static function property_intent( string $intent_id, string $name, $value ): array {
+		return self::intent_update(
+			array(
+				'intentId' => $intent_id,
+				'baseSeq'  => 0,
+				'type'     => 'set_property',
+				'payload'  => array(
+					'name'            => $name,
+					'value'           => $value,
+					'observedVersion' => 0,
+				),
+			)
+		);
+	}
+
+	public function test_protected_markup_in_a_property_value_parks_for_approval() {
+		$this->revoke_unfiltered_html();
+
+		$response = $this->poll(
+			array(
+				self::property_intent(
+					'kses-prop',
+					'title',
+					'Title <script>alert(1)</script>'
+				),
+			)
+		);
+		$this->assertSame(
+			array(
+				'intentId' => 'kses-prop',
+				'status'   => 'escalated',
+				'reason'   => WP_Intent_Log_Engine::ESCALATION_REQUIRES_APPROVAL,
+			),
+			$response['dispositions'][0]
+		);
+	}
+
+	public function test_benign_property_values_from_filtered_author_apply() {
+		$this->revoke_unfiltered_html();
+
+		$response = $this->poll(
+			array(
+				self::property_intent( 'prop-ok-1', 'title', 'Hello <em>world</em>' ),
+				self::property_intent( 'prop-ok-2', 'sticky', true ),
+				self::property_intent( 'prop-ok-3', 'featured_media', 42 ),
+			)
+		);
+		$statuses = wp_list_pluck( $response['dispositions'], 'status' );
+		$this->assertSame( array( 'applied', 'applied', 'applied' ), $statuses );
+	}
+
 	public function test_plain_text_markup_is_entity_encoded_and_applies() {
 		$this->revoke_unfiltered_html();
 

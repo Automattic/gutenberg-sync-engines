@@ -887,10 +887,13 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 		 *
 		 * Markup-bearing payload surfaces: format_text (the span format id,
 		 * when turning a format ON), insert_block (the block spec's field
-		 * formats, plus every attr's string leaves), and set_attr (string
-		 * leaves; blocks like core/html render an attr as raw markup).
-		 * Plain text payloads (field text) are entity-encoded by the
-		 * serializer and are always safe.
+		 * formats, plus every attr's string leaves), set_attr (string
+		 * leaves; blocks like core/html render an attr as raw markup), and
+		 * set_property (string values — title and excerpt are kses-filtered
+		 * at save for authors without the capability, so markup kses would
+		 * rewrite must not relay to peers unreviewed). Plain text payloads
+		 * (field text) are entity-encoded by the serializer and are always
+		 * safe.
 		 *
 		 * @since 7.2.0
 		 *
@@ -912,6 +915,10 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 					return '_wrapper' === $payload['key']
 						? self::wrapper_requires_unfiltered_html( $payload['value'] )
 						: self::attr_value_requires_unfiltered_html( $payload['value'] );
+				case 'set_property':
+					// String values judged like attr string leaves; numbers,
+					// booleans, and null carry no markup.
+					return self::attr_value_requires_unfiltered_html( $payload['value'] );
 				default:
 					return false;
 			}
@@ -1267,6 +1274,85 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 		}
 
 		/**
+		 * Entity property registers seeded into a post room's genesis.
+		 *
+		 * Mirrors the scalar subset of the framework's synced-property
+		 * contract with values in REST shape, gated on the same post-type
+		 * supports the REST schema uses. The gating matters: a property
+		 * seeded here that the client's REST record lacks would push a
+		 * spurious edit (and mark the post dirty) the moment a client
+		 * joins. Reads only the post row and its derived state, so racing
+		 * initializers build identical documents.
+		 *
+		 * @since 7.2.0
+		 *
+		 * @param WP_Post $post The room's post.
+		 * @return array Property name => raw scalar value.
+		 */
+		private static function genesis_props( WP_Post $post ): array {
+			$props = array();
+
+			if ( post_type_supports( $post->post_type, 'title' ) ) {
+				$title = $post->post_title;
+
+				/*
+				 * A fresh auto-draft stores the placeholder "Auto Draft"
+				 * title while the editor shows an empty field; seeding the
+				 * placeholder would push it to every client as a title
+				 * change. Same rule as the yjs-server genesis.
+				 */
+				if (
+					'auto-draft' === $post->post_status
+					&& ( 'Auto Draft' === $title || __( 'Auto Draft', 'default' ) === $title )
+				) {
+					$title = '';
+				}
+				$props['title'] = $title;
+			}
+			if ( post_type_supports( $post->post_type, 'excerpt' ) ) {
+				$props['excerpt'] = $post->post_excerpt;
+			}
+			if ( post_type_supports( $post->post_type, 'author' ) ) {
+				$props['author'] = (int) $post->post_author;
+			}
+			if ( post_type_supports( $post->post_type, 'thumbnail' ) ) {
+				$props['featured_media'] = (int) get_post_thumbnail_id( $post->ID );
+			}
+			if ( post_type_supports( $post->post_type, 'comments' ) ) {
+				$props['comment_status'] = $post->comment_status;
+				$props['ping_status']    = $post->ping_status;
+			}
+			if ( post_type_supports( $post->post_type, 'post-formats' ) ) {
+				$format          = get_post_format( $post->ID );
+				$props['format'] = $format ? $format : 'standard';
+			}
+			// The REST schema exposes `sticky` for the built-in post type only.
+			if ( 'post' === $post->post_type ) {
+				$props['sticky'] = is_sticky( $post->ID );
+			}
+			// An auto-draft status is invalid in the editor and never syncs.
+			if ( 'auto-draft' !== $post->post_status ) {
+				$props['status'] = $post->post_status;
+			}
+			// An empty slug means the auto-generated default and never syncs.
+			if ( '' !== $post->post_name ) {
+				$props['slug'] = $post->post_name;
+			}
+
+			/*
+			 * A zeroed date_gmt is a "floating" (publish immediately) date;
+			 * the REST record serves null for it, so seed only real dates,
+			 * in the REST record's RFC3339 shape.
+			 */
+			if ( '0000-00-00 00:00:00' !== $post->post_date_gmt ) {
+				$props['date'] = mysql_to_rfc3339( $post->post_date );
+			}
+			$props['template'] = (string) get_page_template_slug( $post->ID );
+
+			return $props;
+		}
+
+		/**
 		 * Builds and stores the room's genesis snapshot.
 		 *
 		 * For a single post-type entity room, genesis derives from the post's
@@ -1295,10 +1381,10 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 						);
 					// Entity properties are per-name registers on the
 					// document; genesis seeds them from the post so a
-					// joining client sees the current title.
+					// joining client sees the current values.
 					$genesis = WP_Intent_Log_Document::create_document(
 						$specs,
-						array( 'title' => $post->post_title )
+						self::genesis_props( $post )
 					);
 				}
 			}

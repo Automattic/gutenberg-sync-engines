@@ -119,6 +119,81 @@ class Tests_Collaboration_WpIntentLogEngineInternals extends WP_UnitTestCase {
 		$this->assertSame( array(), $doc['root'] );
 	}
 
+	public function test_genesis_seeds_scalar_entity_properties_in_rest_shape() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Seeded title',
+				'post_excerpt' => 'Seeded excerpt',
+				'post_status'  => 'publish',
+				'post_author'  => self::$editor_id,
+				'post_content' => "<!-- wp:paragraph -->\n<p>Body</p>\n<!-- /wp:paragraph -->",
+			)
+		);
+		$post    = get_post( $post_id );
+
+		$doc   = self::snapshot_doc( self::engine(), 'postType/post:' . $post_id );
+		$props = $doc['props'];
+
+		$this->assertSame( 'Seeded title', $props['title'] );
+		$this->assertSame( 'Seeded excerpt', $props['excerpt'] );
+		$this->assertSame( 'publish', $props['status'] );
+		$this->assertSame( $post->post_name, $props['slug'] );
+		$this->assertSame( $post->comment_status, $props['comment_status'] );
+		$this->assertSame( $post->ping_status, $props['ping_status'] );
+		$this->assertSame( 'standard', $props['format'] );
+		$this->assertFalse( $props['sticky'] );
+		$this->assertSame( self::$editor_id, $props['author'] );
+		$this->assertSame( 0, $props['featured_media'] );
+		// The REST record's RFC3339 shape, so a joining client's echo
+		// suppression sees the value its own record carries.
+		$this->assertSame( mysql_to_rfc3339( $post->post_date ), $props['date'] );
+		$this->assertSame( '', $props['template'] );
+	}
+
+	public function test_genesis_blanks_the_auto_draft_placeholder_and_omits_invalid_registers() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'  => 'Auto Draft',
+				'post_status' => 'auto-draft',
+			)
+		);
+
+		$doc   = self::snapshot_doc( self::engine(), 'postType/post:' . $post_id );
+		$props = $doc['props'];
+
+		// The stored placeholder title never reaches collaborators.
+		$this->assertSame( '', $props['title'] );
+		// An auto-draft status is invalid in the editor and never syncs.
+		$this->assertArrayNotHasKey( 'status', $props );
+		// An empty slug means the auto-generated default.
+		$this->assertArrayNotHasKey( 'slug', $props );
+		// A zeroed date_gmt is a floating date the REST record serves null.
+		$this->assertArrayNotHasKey( 'date', $props );
+	}
+
+	public function test_genesis_omits_property_registers_the_post_type_does_not_support() {
+		$page_id = self::factory()->post->create(
+			array(
+				'post_type'   => 'page',
+				'post_title'  => 'A page',
+				'post_status' => 'publish',
+			)
+		);
+
+		$doc   = self::snapshot_doc( self::engine(), 'postType/page:' . $page_id );
+		$props = $doc['props'];
+
+		// Absent from the page REST schema (pages support none of these);
+		// seeding them would push a spurious edit into every joining
+		// client's editor.
+		$this->assertArrayNotHasKey( 'format', $props );
+		$this->assertArrayNotHasKey( 'sticky', $props );
+		$this->assertArrayNotHasKey( 'excerpt', $props );
+		// Pages support title, and template is universal.
+		$this->assertSame( 'A page', $props['title'] );
+		$this->assertSame( '', $props['template'] );
+	}
+
 	public function test_first_snapshot_wins_over_a_duplicate_from_a_concurrent_initializer() {
 		$post_id = self::factory()->post->create(
 			array( 'post_content' => "<!-- wp:paragraph -->\n<p>Real</p>\n<!-- /wp:paragraph -->" )

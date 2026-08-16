@@ -719,10 +719,11 @@ for ( const engine of ENGINES ) {
 			const { editor2, page2 } = collaborationUtils;
 			const page1 = editor.page;
 
-			// User A updates non-content fields in the editor. These are NOT
-			// live-synced (only whitelisted properties like the title are) —
-			// they ride A's save, and the engine must neither corrupt them
-			// nor let a collaborator's later save clobber them.
+			// User A updates non-content fields in the editor. Scalar
+			// properties (status, excerpt) live-sync under both engines;
+			// taxonomy terms (tags) do not live-sync under intent-log yet
+			// and ride A's save. Either way, the engine must neither corrupt
+			// these fields nor let a collaborator's later save clobber them.
 			await page1.evaluate( ( ids ) => {
 				( window as any ).wp.data.dispatch( 'core/editor' ).editPost( {
 					status: 'pending',
