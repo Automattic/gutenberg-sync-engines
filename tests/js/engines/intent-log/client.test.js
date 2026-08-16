@@ -21,6 +21,7 @@ import {
 	createClient,
 	flushClient,
 	predictedDisposition,
+	replanClient,
 } from '../../../../src/engines/intent-log/client.js';
 
 const baseDoc = () =>
@@ -488,6 +489,52 @@ test( 'trimClientLog bounds the replica: history below the replan floor drops, p
 	for ( const row of report ) {
 		assert.deepEqual( row.predicted, row.actual );
 	}
+} );
+
+test( 'retainFrom keeps history an owner may still author at, and a replan rebases such an intent', () => {
+	// The entity bridge captures the editor tree against the state that tree
+	// last reflected and authors at ITS seq — even with an empty outbox, so
+	// the trim floor alone would have dropped the entries the rebase needs.
+	const server = createServer( baseDoc() );
+	const alice = makeActorClient( 'alice' );
+	const bob = makeActorClient( 'bob' );
+	bob.client.retainFrom = bob.client.cursor; // Bob's view sits at seq 0.
+
+	alice.author( IntentTypes.INSERT_TEXT, {
+		syncId: 'p1',
+		offset: 0,
+		text: 'REMOTE ',
+	} );
+	flushClient( server, alice.client );
+	catchUp( server, bob.client );
+	assert.equal( bob.client.outbox.length, 0 );
+	assert.equal( bob.client.firstSeq, 0, 'history is retained for seq 0' );
+
+	// Bob's view has not seen Alice's insert: his intent's offset counts the
+	// ORIGINAL text, and its baseSeq says so.
+	const pending = createIntent(
+		IntentTypes.INSERT_TEXT,
+		{ syncId: 'p1', offset: 'Hello world'.length, text: '!' },
+		{ actorId: 'bob', baseSeq: 0, intentId: 'bob#observed' }
+	);
+	authorIntent( bob.client, pending );
+	replanClient( bob.client );
+
+	// The replan rebases it over Alice's insert — the same result the server
+	// reaches from the same envelope.
+	assert.equal(
+		getBlock( bob.client.doc, 'p1' ).fields.content.text,
+		'REMOTE Hello world!'
+	);
+	const [ actual ] = serverIngestBatch( server, [ pending ] );
+	assert.deepEqual(
+		predictedDisposition( bob.client, 'bob#observed' ),
+		actual
+	);
+	assert.equal(
+		getBlock( headDoc( server ), 'p1' ).fields.content.text,
+		'REMOTE Hello world!'
+	);
 } );
 
 test( 'a replica bootstrapped from a checkpoint (firstSeq > 0) plans identically to a genesis replica', () => {

@@ -18,6 +18,8 @@ export function createClient(
 
 export function trimClientLog( client: ClientReplica ): void;
 
+export function replanClient( client: ClientReplica ): void;
+
 export function authorIntent(
 	client: ClientReplica,
 	intent: IntentEnvelope

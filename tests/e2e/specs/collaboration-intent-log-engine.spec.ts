@@ -216,16 +216,18 @@ test.describe( 'Collaboration - intent-log engine', () => {
 		 * Both editors converge on BOTH paragraphs (order may vary by
 		 * arrival; neither may vanish).
 		 *
-		 * KNOWN FAILURE MODE: under CI load this can fail with the SECOND
-		 * author's paragraph settling on a truncated prefix (for example
-		 * "Second author par") while both paragraphs survive. That is the
-		 * intent-log echo race, a real product bug: a peer push landing
-		 * mid-typing reverts the tail of the typer's own paragraph, and the
-		 * next capture treats the truncated canvas as testimony, so the
-		 * tail never returns. See the KNOWN LIMITATION note at the delayed
-		 * re-push in src/engines/intent-log-manager.ts. Such a failure is
-		 * CORRECT and should stand until the session/bridge redesign fixes
-		 * the race; do not loosen these assertions to make CI green.
+		 * HISTORICAL FAILURE MODE (fixed): under CI load this used to fail
+		 * with the SECOND author's paragraph settling on a truncated prefix
+		 * (for example "Second author par") while both paragraphs survived
+		 * — the intent-log echo race. A peer push landing mid-typing
+		 * reverted the tail of the typer's own paragraph, and the next
+		 * capture treated the truncated canvas as testimony against the
+		 * current document, so the tail never returned. Capture now diffs
+		 * each tree against the state that tree reflects (see "THE OBSERVED
+		 * BASELINE" in src/engines/intent-log-manager.ts), which merges the
+		 * two instead. If a truncation like that reappears, it is a
+		 * regression of that mechanism — do not loosen these assertions to
+		 * make CI green.
 		 */
 		for ( const currentEditor of [ editor, editor2 ] ) {
 			await expect( async () => {

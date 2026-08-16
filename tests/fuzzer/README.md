@@ -57,7 +57,7 @@ few durable invariants instead of many brittle UI details.*
 - **Bounded action grammar.** Block insert/edit/move/delete, nested
   groups/lists/quotes, headings, title edits, real keystrokes (typing
   exercises capture paths that programmatic edits bypass — this is what
-  surfaces the intent-log echo race), and concurrent same-step edits from
+  surfaced the intent-log echo race), and concurrent same-step edits from
   two browsers.
 - **Durable invariants.**
   - *Convergence*: after every step all participants expose the same
@@ -160,11 +160,11 @@ including the worktree duplicate-mount handling). Engine/transport are set
   defects, not known limitations. Extend the map when an engine's
   documented capabilities change.
 - Before filing anything, check the known-issue families in AGENTS.md —
-  e.g. the intent-log echo race (canvas corruption under editor pushes
-  racing live keystrokes, worst over websocket), yjs-server's silent LWW on
-  register conflicts, and the websocket daemon's missing engine-stamp
-  fencing. Finding these again validates the harness; it does not need a
-  new report.
+  e.g. intent-log escalating (rather than merging) later keystrokes typed
+  into a paragraph a peer is editing while this editor is behind on their
+  change, yjs-server's silent LWW on register conflicts, and the websocket
+  daemon's missing engine-stamp fencing. Finding these again validates the
+  harness; it does not need a new report.
 
 ## Env knobs (spec level)
 

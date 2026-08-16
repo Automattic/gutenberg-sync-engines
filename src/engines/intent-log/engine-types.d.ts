@@ -58,6 +58,11 @@ export interface ClientReplica {
 	nextIntent: number;
 	/** Engine seq of log[0] (> 0 after a checkpoint bootstrap or trim). */
 	firstSeq: number;
+	/**
+	 * Lowest seq the log must stay sliceable from beyond what the outbox
+	 * needs; null imposes nothing (see trimClientLog).
+	 */
+	retainFrom: number | null;
 	log: IntentEnvelope[];
 	docCache: Map< number, EngineDocument >;
 	baseDoc: EngineDocument;
