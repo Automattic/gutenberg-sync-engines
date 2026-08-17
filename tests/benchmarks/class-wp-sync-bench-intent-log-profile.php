@@ -192,12 +192,27 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 
 		/**
 		 * Field text lengths each client observed at its own last read
-		 * ( client => syncId => UTF-16 code-unit length ) — the coordinate
-		 * a tail-positioned insert authors its offset from.
+		 * ( client => syncId => UTF-16 code-unit length ) — the delivered
+		 * half of the coordinate a tail-positioned insert authors its
+		 * offset from.
 		 *
 		 * @var array<int, array<string, int>>
 		 */
 		private $observed_text_len = array();
+
+		/**
+		 * Text length each client's own APPLIED edits added on top of its
+		 * last read ( client => syncId => UTF-16 code units ). A production
+		 * client authors offsets from its editor tree, which contains its
+		 * own pending edits, and the engine's transform skips priors from
+		 * the intent's own actor for exactly that reason. Tail offsets are
+		 * therefore authored from observed PLUS own-pending length; every
+		 * read fully catches up in this runner, so the pending set drains
+		 * to empty at each read.
+		 *
+		 * @var array<int, array<string, int>>
+		 */
+		private $own_pending_text_len = array();
 
 		/**
 		 * Genesis syncId => paragraph index (the inverse of $paragraph_ids),
@@ -466,13 +481,17 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 				}
 
 				// The abstract position maps to a concrete offset in the
-				// client's OBSERVED text coordinates: head is offset 0,
-				// tail the observed length of the target field — the state
-				// the intent's baseSeq names, which is exactly where the
-				// server's transform picks the offset up.
+				// client's EDITOR-TREE coordinates: head is offset 0, tail
+				// the length of the target field as the client's canvas
+				// shows it. That canvas is the state the intent's baseSeq
+				// names PLUS the client's own applied-but-unread edits,
+				// because the server's transform shifts offsets only over
+				// priors from OTHER actors (the author's tree already
+				// contains its own).
 				$offset = 0;
 				if ( 'tail' === ( $edit['position'] ?? 'head' ) ) {
-					$offset = (int) ( $this->observed_text_len[ $client ][ $sync_id ] ?? 0 );
+					$offset = (int) ( $this->observed_text_len[ $client ][ $sync_id ] ?? 0 )
+						+ (int) ( $this->own_pending_text_len[ $client ][ $sync_id ] ?? 0 );
 				}
 
 				$payload = array(
@@ -545,10 +564,21 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 
 					$this->text_len[ $sync_id ] = ( $this->text_len[ $sync_id ] ?? 0 )
 						+ WP_Intent_Log_Document::text_length( (string) $edit['text'] );
+
+					// The author's editor tree now carries this text on top
+					// of its last-read state; later tail offsets from this
+					// client must include it (see own_pending_text_len).
+					$this->own_pending_text_len[ $client ][ $sync_id ] = ( $this->own_pending_text_len[ $client ][ $sync_id ] ?? 0 )
+						+ WP_Intent_Log_Document::text_length( (string) $edit['text'] );
 				} elseif ( 'insert_block' === $op ) {
 					$this->text_len[ 'ins-' . $edit['block_id'] ] = WP_Intent_Log_Document::text_length( (string) $edit['marker'] );
+
+					// The whole field is pending until this client's next
+					// read delivers the insert back to it.
+					$this->own_pending_text_len[ $client ][ 'ins-' . $edit['block_id'] ] = WP_Intent_Log_Document::text_length( (string) $edit['marker'] );
 				} elseif ( 'remove_block' === $op ) {
 					unset( $this->text_len[ 'ins-' . $edit['block_id'] ] );
+					unset( $this->own_pending_text_len[ $client ][ 'ins-' . $edit['block_id'] ] );
 				}
 			} elseif ( 'voided' === $status && in_array( $disposition['reason'] ?? '', self::LOGGED_VOID_REASONS, true ) ) {
 				// Apply-time voids append their intent row before the void
@@ -694,6 +724,11 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 			$this->observed_prop_versions[ $client ] = $prop_versions;
 			$this->observed_props[ $client ]         = $props;
 			$this->observed_text_len[ $client ]      = $lengths;
+
+			// Every read fully catches up, so the client's own applied
+			// edits are now part of the delivered lengths: the pending
+			// editor-tree surplus drains to zero.
+			$this->own_pending_text_len[ $client ] = array();
 
 			if ( ! $this->assert_model ) {
 				return;
