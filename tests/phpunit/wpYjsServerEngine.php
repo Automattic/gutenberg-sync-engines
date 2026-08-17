@@ -898,6 +898,49 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 		wp_delete_post( $post_id, true );
 	}
 
+	public function test_genesis_size_gate_refuses_oversized_posts_and_respects_the_filter() {
+		$big_id = self::factory()->post->create(
+			array(
+				'post_author'  => self::$editor_id,
+				'post_content' => "<!-- wp:paragraph -->\n<p>" . str_repeat( 'x', 2048 ) . "</p>\n<!-- /wp:paragraph -->",
+			)
+		);
+		$room   = 'postType/post:' . $big_id;
+
+		add_filter( 'wp_sync_yjs_server_max_genesis_bytes', $gate_filter = static fn() => 1024 );
+		try {
+			// A read never bootstraps the room: no snapshot row is built or
+			// stored, so RTC simply never activates for the oversized post.
+			$response = $this->engine()->get_updates_since( $room, 101, 0, array() );
+			$this->assertSame( array(), $response['updates'] );
+
+			// A write states the refusal explicitly through the transport.
+			$result = $this->engine()->handle_updates(
+				$room,
+				101,
+				0,
+				array(
+					array(
+						'type' => 'update',
+						'data' => 'AAA=',
+					),
+				),
+				array()
+			);
+			$this->assertWPError( $result );
+			$this->assertSame( 'rest_sync_document_too_large', $result->get_error_code() );
+		} finally {
+			remove_filter( 'wp_sync_yjs_server_max_genesis_bytes', $gate_filter );
+		}
+
+		// With the default gate the same post initializes normally.
+		$response = $this->engine()->get_updates_since( $room, 101, 0, array() );
+		$this->assertNotEmpty( $response['updates'] );
+		$this->assertSame( WP_Yjs_Server_Engine::UPDATE_TYPE_SNAPSHOT, $response['updates'][0]['type'] );
+
+		wp_delete_post( $big_id, true );
+	}
+
 	public function test_kses_lane_sanitizes_a_filtered_authors_markup_and_every_client_converges() {
 		$engine     = $this->engine();
 		$response_a = $engine->get_updates_since( $this->room(), 101, 0, array() );

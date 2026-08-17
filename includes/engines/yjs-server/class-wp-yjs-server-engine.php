@@ -1115,6 +1115,34 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				$post = get_post( (int) $parsed['object_id'] );
 			}
 
+			if ( $post instanceof WP_Post ) {
+				/**
+				 * Filters the maximum post_content size (bytes) yjs-server
+				 * genesis will build a room for. Server-side counterpart of
+				 * the framework's client update-size guard: with server
+				 * genesis, later joiners never re-author the document, so
+				 * only this gate keeps an oversized post from creating (and
+				 * every ingest from re-merging) a huge canonical document.
+				 * Zero disables the gate. Per-room growth after genesis
+				 * remains future work.
+				 *
+				 * @since 0.4.0
+				 *
+				 * @param int    $max_bytes Threshold in bytes.
+				 * @param string $room      Room identifier.
+				 */
+				$max_bytes = (int) apply_filters( 'wp_sync_yjs_server_max_genesis_bytes', MB_IN_BYTES, $room );
+				if ( $max_bytes > 0 && strlen( $post->post_content ) > $max_bytes ) {
+					// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+					do_action( 'qm/debug', "wp-sync: yjs-server refused genesis for {$room} (post_content exceeds the size gate)" );
+					return new WP_Error(
+						'rest_sync_document_too_large',
+						__( 'This document is too large for real-time collaboration.', 'gutenberg' ),
+						array( 'status' => 413 )
+					);
+				}
+			}
+
 			$record = $doc->getMap( 'document' );
 			$state  = $doc->getMap( 'state' );
 			$state->set( 'version', 1 );
