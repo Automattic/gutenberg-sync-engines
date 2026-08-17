@@ -97,9 +97,11 @@ The framework/plugin split is complete: the framework ships **neither** engines
     the runner reads live under `automerge-php/upstream/automerge/`
     (fetched from automerge/automerge; pin recorded in
     `VENDORED_FROM_COMMIT.txt` — the source branches referenced an
-    upstream submodule that was never committed). Running the suite
-    rewrites the tracked `PORTING_STATUS.json` (timestamps); revert that
-    side-effect after local runs. NOTE: the DE-RTC
+    upstream submodule that was never committed). The runner leaves the
+    tracked `PORTING_STATUS.json` alone by default (a marked `DELTA` in
+    `tests/run.php` — upstream rewrote it, timestamp included, on every
+    run, dirtying the tree); set `AUTOMERGE_PHP_UPDATE_STATUS=1` to
+    refresh it deliberately. NOTE: the DE-RTC
     *shipping* merge path (`native-automerge-blocks-v1`) never calls this
     library — it backs only the dead legacy whole-text lane and
     external-repair; it is vendored for fidelity and future use.
@@ -223,6 +225,40 @@ npm run test:e2e:websocket  # Playwright: websocket-only suite (test WS provider
                             # plugin + y-websocket daemon, auto-started)
 ```
 
+**Iterate at the cheapest layer that can catch the change.** The ladder,
+fast → slow (only the last three need wp-env):
+
+1. **Intent-log simulator sweep** — `node tests/tools/sweep.js [seeds]
+   [steps] [clients]` (defaults 60/400/3; deterministic, sub-second at
+   small sizes, no WordPress). First stop for any intent-log
+   planner/merge-behavior change: fails loudly on oracle violations and
+   prints disposition/escalation stats so drift is visible.
+2. **Jest + frozen vectors** — `npm run test:js` (needs only the built
+   subtree). Engines, providers, and the cross-language vector contract.
+3. **Vendored conformance suites** — y-php (~4 s) and automerge-php
+   (<1 s), commands above; no WordPress. Only when touching the vendored
+   libs (rare — they're frozen).
+4. **PHPUnit** — `npm run test:php`. Server engines, transports, storage.
+5. **e2e** — `npm run test:e2e` (minutes, browser collaboration).
+6. **Fuzzer** — `npm run fuzz:quick` as a post-change smoke (all engines
+   over http-polling, 2 seeds each, faults/reloads off — a few minutes
+   against the running tests env); the full `npm run fuzz` matrix for
+   real bug hunting (see `tests/fuzzer/README.md`).
+
+Single-test loops — don't rerun a whole suite while iterating on one
+failure:
+
+```bash
+npm run test:js -- sync-id                    # Jest files matching a pattern
+npm run test:js -- -t 'name substring'        # single Jest test by name
+npm run test:php -- --filter Test_Class_Name  # single PHPUnit class/method
+npm run test:e2e -- collaboration-intent-log  # single e2e spec by filename
+```
+
+Never run `test:php` while an e2e run is in flight against the same env:
+PHPUnit wipes the tests-env database, killing every in-flight spec
+(auth and plugin activation vanish mid-run). Serialize the suites.
+
 `test:js` and `npm run typecheck` resolve `@wordpress/sync`/`yjs` from the
 **built subtree** (see Setup); `WP_SYNC_FRAMEWORK_ROOT=<framework-checkout>`
 points Jest at a live framework checkout instead when co-developing (tsconfig
@@ -240,19 +276,19 @@ everywhere, so auth even succeeds); the first visible failure is
 `activatePlugin( 'gutenberg' )` in global-setup dying with
 "Unexpected end of JSON input". Always pass `WP_BASE_URL` in that case.
 
-Current green baseline: **Jest 368**, **PHPUnit 197 (898 assertions)**,
-**e2e 45/45** (occasional flake under full-suite load — a save notice, a
-fixture login navigation, or `http-only/collaboration-sync-body-size`
-failing after a preceding engine-flip suite [verified pre-existing: the
-yjs suite followed by body-size reproduces it without de-rtc involved];
-each green solo), **e2e:websocket 1 skipped** (see
-below — the peer-relay WS fixture needs a client-merging engine and none
-remains), plus the vendored libraries' own conformance suites run
-separately: y-php (**442 tests**) and automerge-php (**680 mapped
-upstream tests**, `php includes/lib/automerge-php/tests/run.php`). CI
-(`.github/workflows/ci.yml`) certifies all suites on pushes to `main` and
-PRs; the e2e job leans on the base config's 2-retries-in-CI to absorb the
-flakes.
+All suites are green at head; CI (`.github/workflows/ci.yml`) is the
+source of truth for exact test counts — it certifies every suite on
+pushes to `main` and PRs. Known qualifications: e2e flakes occasionally
+under full-suite load — a save notice, a fixture login navigation, or
+`http-only/collaboration-sync-body-size` failing after a preceding
+engine-flip suite [verified pre-existing: the yjs suite followed by
+body-size reproduces it without de-rtc involved]; each spec is green
+solo, and the e2e CI job leans on the base config's 2-retries-in-CI to
+absorb them. e2e:websocket carries one `test.fixme` skip (see below —
+the peer-relay WS fixture needs a client-merging engine and none
+remains). The vendored libraries' own conformance suites run separately:
+y-php (`composer --working-dir=includes/lib/y-php test`) and
+automerge-php (`php includes/lib/automerge-php/tests/run.php`).
 
 The transport-specific e2e suites live here (relocated from the framework):
 `tests/e2e/specs/http-only/` runs in the default suite; `tests/e2e/specs/

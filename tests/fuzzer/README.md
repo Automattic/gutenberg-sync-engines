@@ -28,6 +28,9 @@ the run; `npm run env start` or `npm run rtc:ws` brings it back.
 Common variations:
 
 ```bash
+npm run fuzz:quick                               # post-change smoke: all engines
+                                                 # over http-polling, 2 seeds,
+                                                 # no faults/reloads
 npm run fuzz -- --seeds=20 --steps=15            # deeper sweep
 npm run fuzz -- --engines=yjs-server             # one engine, all transports
 npm run fuzz -- --transports=websocket           # all engines, one transport
