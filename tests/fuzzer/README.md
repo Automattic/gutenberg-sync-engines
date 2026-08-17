@@ -40,7 +40,16 @@ npm run fuzz -- --combos=intent-log/http-polling \
     --seed-list=42 --trace=retain-on-failure     # replay one failing seed
 npm run fuzz -- --combos=yjs-server/http-polling \
     --seed-list=8 --steps=14 --shrink            # bisect to minimal steps
+npm run fuzz -- --profile=undo --transports=http-polling \
+    --seeds=10                                   # undo/redo-weighted campaign
+npm run fuzz -- --profile=concurrency --burst-rate=0.5   # same-block
+                                                 # concurrent-edit campaign
 ```
+
+`--profile` tilts the seeded action distribution (`undo` or `concurrency`)
+without removing the rest of the grammar. The profile is part of the seed's
+identity: replay a profiled failure with the same `--profile` flag (the
+summary's replay commands include it).
 
 `--help` lists everything. Prerequisites are the standard repo setup
 (README/AGENTS.md): plugin `npm install` + `npm run build`, the subtree
@@ -63,13 +72,29 @@ few durable invariants instead of many brittle UI details.*
   groups/lists/quotes, headings, title edits, real keystrokes (typing
   exercises capture paths that programmatic edits bypass — this is what
   surfaced the intent-log echo race), and concurrent same-step edits from
-  two browsers.
+  two browsers. Extended here with **history and tight-timing actions**:
+  `undo` / `redo` (dispatched through `core/editor`, the same path the
+  toolbar and shortcut take, routed to the engine's collaborative undo
+  manager), `type-then-undo-quick` (undo fired 0–900 ms after typing —
+  inside intent-log's unsettled-unit window), `edit-then-undo-settled`
+  (waits for `hasUndo` before undoing: the deterministic inverse-derivation
+  exercise), `concurrent-same-block-edit` (both browsers append to the SAME
+  paragraph via the store), `concurrent-type-same-paragraph` (both carets
+  at the end of the same paragraph, real keystrokes, fired together), and
+  `concurrent-edit-and-undo` (one user undoes while a peer edits — the
+  inverse must transform over the peer's rows).
 - **Durable invariants.**
   - *Convergence*: after every step all participants expose the same
     normalized title + block tree (`waitForConvergence` from the subtree's
     collaboration fixtures).
   - *Structural validity*: no block may become an invalid-content recovery
     block (`isValid: false`) — the classic engine-genesis failure mode.
+  - *No duplication*: every authored marker is unique per authoring op, so
+    a marker appearing MORE than once in converged content is content
+    duplication — a class convergence checking cannot see (all pages agree
+    on the duplicated text): bad undo inverse derivation, a re-pushed
+    block, or a capture echo. (Loss is deliberately not asserted: parked
+    escalations and documented LWW gaps make absence legitimate.)
   - *Persistence*: a mid-run save milestone plus a final
     save → reload → reconverge round-trip. A server-authoritative engine
     must rebuild the same document for a fresh session; the REST title must

@@ -68,7 +68,17 @@ import {
 	resolveEngineAdapter,
 	resetProviderCreatorsForTesting,
 } from '../../../src/framework';
-import { createDocument } from '../../../src/engines/intent-log/document.js';
+import {
+	createDocument,
+	getBlock,
+} from '../../../src/engines/intent-log/document.js';
+// The frozen core's real server: the regression harness below runs two
+// managers against it to reproduce cross-client schedules.
+import {
+	createServer as rebaseCreateServer,
+	serverDocAt as serverDocAtForTest,
+	serverIngestBatch,
+} from '../../../src/engines/intent-log/rebase.js';
 import type {
 	EngineSessionCodec,
 	EngineUpdate,
@@ -2496,6 +2506,169 @@ describe( 'intent-log manager', () => {
 		const { manager, transport } = await loadManagedEntity();
 		manager.unload( 'postType/post', '1' );
 		expect( transport.captured.destroyed ).toBe( true );
+	} );
+
+	it( 'REGRESSION: concurrent same-paragraph typing converges both canvases to the server document (fuzzer one-keystroke divergence)', async () => {
+		/*
+		 * The fuzzer's highest-frequency intent-log failure (2026-08-17,
+		 * concurrency profile, 7/8 seeds): two editors type at the end of
+		 * the SAME paragraph concurrently. The later burst escalates
+		 * (engine rule 5 — parked for review, correct), but the loser's
+		 * canvas permanently kept its first escalated keystroke while the
+		 * winner's canvas never showed it: a one-character divergence that
+		 * no amount of polling healed. This test drives two real managers
+		 * against the frozen core's real server and requires both canvases
+		 * to settle on exactly the server's materialized text.
+		 */
+		const paragraph = {
+			blockType: 'core/paragraph',
+			syncId: 'p1',
+			text: 'Alpha paragraph',
+		};
+		const server = rebaseCreateServer(
+			createDocument( [ paragraph ] )
+		) as unknown as {
+			log: Array< Record< string, unknown > >;
+			proposals: Array< Record< string, unknown > >;
+		};
+
+		const clientA = await loadManagedEntity();
+		// The framework caches provider creators module-wide; without a
+		// reset the second manager would reuse client A's transport.
+		resetProviderCreatorsForTesting();
+		const clientB = await loadManagedEntity();
+		for ( const client of [ clientA, clientB ] ) {
+			client.transport.captured.session!.receiveUpdate(
+				snapshotRow( [ paragraph ] )
+			);
+		}
+
+		const deliveredProposals = new WeakMap< object, number >();
+		/*
+		 * One HTTP poll: flush the client's queued intents into the server,
+		 * then deliver new accepted rows, new proposals, and the
+		 * dispositions ack — the same order the polling transport uses.
+		 */
+		const pollCycle = ( client: typeof clientA ) => {
+			const session = client.transport.captured
+				.session! as IntentLogSession;
+			const batch = client.transport.captured.sent
+				.splice( 0 )
+				.filter(
+					( update ) => update.type === INTENT_LOG_UPDATE_TYPES.INTENT
+				)
+				.map( ( update ) => JSON.parse( update.data ) );
+			const dispositions = batch.length
+				? ( serverIngestBatch( server as never, batch ) as Array< {
+						status: string;
+						reason?: string;
+				  } > )
+				: [];
+			const cursor = session.getSeq();
+			for ( const row of server.log.slice( cursor ) ) {
+				session.receiveUpdate( {
+					data: JSON.stringify( row ),
+					type: INTENT_LOG_UPDATE_TYPES.INTENT,
+				} );
+			}
+			const seenProposals = deliveredProposals.get( session ) ?? 0;
+			for ( const proposal of server.proposals.slice( seenProposals ) ) {
+				session.receiveUpdate( {
+					data: JSON.stringify( proposal ),
+					type: INTENT_LOG_UPDATE_TYPES.PROPOSAL,
+				} );
+			}
+			deliveredProposals.set( session, server.proposals.length );
+			if ( dispositions.length ) {
+				session.receiveDispositions!(
+					dispositions.map( ( disposition, index ) => ( {
+						...disposition,
+						intentId: batch[ index ].intentId as string,
+					} ) ) as never
+				);
+			}
+		};
+
+		const editorTree = ( content: string ) => [
+			{
+				attributes: {
+					content,
+					metadata: { syncId: 'p1' },
+				},
+				innerBlocks: [],
+				name: 'core/paragraph',
+			},
+		];
+		/*
+		 * A typing burst: one update() per keystroke, each tree the
+		 * editor's own testimony (the genesis paragraph plus what THIS
+		 * user typed — pushes during a burst are superseded before they
+		 * render, so peer text never appears in these trees).
+		 */
+		const typeBurst = ( client: typeof clientA, text: string ) => {
+			for ( let i = 1; i <= text.length; i++ ) {
+				client.manager.update(
+					'postType/post',
+					'1',
+					{
+						blocks: editorTree(
+							`Alpha paragraph${ text.slice( 0, i ) }`
+						),
+					},
+					'gutenberg'
+				);
+				jest.advanceTimersByTime( 80 );
+			}
+		};
+
+		// Both users type concurrently: neither has polled since genesis.
+		typeBurst( clientA, ' from-A' );
+		typeBurst( clientB, ' from-B' );
+
+		// A's poll lands first: its whole burst is accepted. B's poll then
+		// ingests B's burst against A's rows — the escalation zone.
+		pollCycle( clientA );
+		pollCycle( clientB );
+
+		// Let deferred capture-driven syncs run, then settle a few more
+		// poll rounds so any corrective work flushes both ways.
+		for ( let round = 0; round < 4; round++ ) {
+			flushEditorSync();
+			pollCycle( clientA );
+			pollCycle( clientB );
+		}
+		flushEditorSync();
+
+		const canvasText = ( client: typeof clientA ) => {
+			const last = client.handlers.edits.at( -1 ) as {
+				blocks: Array< { attributes: { content?: unknown } } >;
+			};
+			return String( last.blocks[ 0 ].attributes.content );
+		};
+		expect( server.log.length ).toBeGreaterThan( 0 );
+		const serverHead = serverDocAtForTest(
+			server as never,
+			server.log.length
+		);
+		const serverText = (
+			getBlock( serverHead, 'p1' ) as {
+				fields: Record< string, { text: string } >;
+			} | null
+		 )?.fields.content.text;
+
+		// Flush the manager's microtask-scheduled proposal notifications.
+		await Promise.resolve();
+		await Promise.resolve();
+
+		// The losing burst escalated (the scenario's premise).
+		(
+			expect( console ) as unknown as { toHaveWarned: () => void }
+		 ).toHaveWarned();
+
+		// Both canvases must show the server's canonical text — the
+		// escalated remainder is parked for review, not on the canvas.
+		expect( canvasText( clientA ) ).toBe( serverText );
+		expect( canvasText( clientB ) ).toBe( serverText );
 	} );
 } );
 

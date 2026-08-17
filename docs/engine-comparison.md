@@ -207,10 +207,15 @@ noise under intent-log), with one exception noted below.
   lists the rest of the residuals.
 - **Intent-log undo arms after the settle round trip.** An undo unit
   becomes available once its rows and acks land (~a poll cycle after the
-  burst quiets), unlike the yjs engines' instant local undo. Two inverse
+  burst quiets), unlike the yjs engines' instant local undo. Measured
+  (fuzzer undo profile, 2026-08-17): undo dispatched 0–900 ms after
+  typing was armed 34/34 times on yjs-server/de-rtc and 1/12 on
+  intent-log — inside the window it is a silent no-op. Two inverse
   derivations are best-effort: un-merging blocks restores only the joined
   field (the merge dropped the rest — editor semantics), and un-formatting
-  need not restore pre-existing overlapping format spans exactly.
+  need not restore pre-existing overlapping format spans exactly. An undo
+  whose inverse intents are still unacked when that tab reloads loses
+  them with the outbox — the undone (already-accepted) edit resurrects.
 - **The websocket transport is experimental** (one-time auth token travels
   as a URL query parameter; plaintext `ws://` must never leave a dev box).
 - **yjs-server under heavy write concurrency can ask a client to
