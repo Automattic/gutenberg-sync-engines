@@ -17418,6 +17418,13 @@ $status = [
     'unmappedNextTargets' => [],
 ];
 
-file_put_contents(__DIR__ . '/../PORTING_STATUS.json', json_encode($status, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+// DELTA (gutenberg-sync-engines): upstream unconditionally rewrites the
+// tracked PORTING_STATUS.json on every run, dirtying the working tree with
+// a timestamp-only diff (lastTestAt). Make the rewrite opt-in so ordinary
+// conformance runs leave git status clean; set AUTOMERGE_PHP_UPDATE_STATUS=1
+// to refresh the tracked status file deliberately.
+if (getenv('AUTOMERGE_PHP_UPDATE_STATUS')) {
+    file_put_contents(__DIR__ . '/../PORTING_STATUS.json', json_encode($status, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+}
 echo json_encode($status, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
 exit($registeredPassing === $registeredTotal && $wordpressPassing === count($wordpressScenarios) ? 0 : 1);

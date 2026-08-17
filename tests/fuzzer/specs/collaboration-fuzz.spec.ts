@@ -239,6 +239,23 @@ function getInitialContent( seed: number ): string {
 	return templates[ seed % templates.length ];
 }
 
+/**
+ * Actions that add at least one block when they don't report `skipped`.
+ * Once one has run, a zero-block converged state means content was lost —
+ * until a delete makes an empty document legitimate again.
+ */
+const BLOCK_INSERTING_ACTIONS = new Set( [
+	'insert-paragraph',
+	'append-paragraph',
+	'insert-heading',
+	'insert-list',
+	'insert-quote',
+	'insert-nested-group',
+	'insert-into-group',
+	'deep-nest-group',
+	'concurrent-append',
+] );
+
 interface FlatBlock {
 	clientId: string;
 	content: string;
@@ -1187,6 +1204,13 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 				}
 				let departed = false;
 
+				// A zero-block converged state is legitimate when the seed
+				// starts from the empty-genesis template, or after deletes
+				// (two pages can each pass delete-block's own single-block
+				// guard and concurrently empty the document). Only treat
+				// zero blocks as content LOSS while this is false.
+				let documentMayBeEmpty = getInitialContent( seed ) === '';
+
 				const runSingleAction = async ( step: number ) => {
 					const pages = activePages();
 					const actorIndex = pickIndex( rng, pages.length );
@@ -1243,6 +1267,15 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 						step,
 						userIndex: actorIndex,
 					} );
+					if ( ! ( detail as { skipped?: string } ).skipped ) {
+						if ( action.label === 'delete-block' ) {
+							documentMayBeEmpty = true;
+						} else if (
+							BLOCK_INSERTING_ACTIONS.has( action.label )
+						) {
+							documentMayBeEmpty = false;
+						}
+					}
 				};
 
 				for ( let step = 0; step < STEP_COUNT; step++ ) {
@@ -1338,6 +1371,7 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 							},
 							-1
 						);
+						documentMayBeEmpty = false;
 						await waitForConvergence(
 							activePages(),
 							CONVERGENCE_TIMEOUT_MS
@@ -1369,7 +1403,9 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 						activePages(),
 						CONVERGENCE_TIMEOUT_MS
 					);
-					expect( state.blockCount ).toBeGreaterThan( 0 );
+					if ( ! documentMayBeEmpty ) {
+						expect( state.blockCount ).toBeGreaterThan( 0 );
+					}
 					await assertNoInvalidBlocks(
 						participants[ 0 ].page,
 						`step ${ step }`
@@ -1445,7 +1481,9 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 					);
 				}
 
-				expect( finalState.blockCount ).toBeGreaterThan( 0 );
+				if ( ! documentMayBeEmpty ) {
+					expect( finalState.blockCount ).toBeGreaterThan( 0 );
+				}
 				const saved = ( await requestUtils.rest( {
 					params: { context: 'edit' },
 					path: `/wp/v2/posts/${ post.id }`,
@@ -1454,7 +1492,9 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 					title: { raw: string };
 				};
 				expect( saved.title.raw ).toBe( finalState.title );
-				expect( saved.content.raw.length ).toBeGreaterThan( 0 );
+				if ( ! documentMayBeEmpty ) {
+					expect( saved.content.raw.length ).toBeGreaterThan( 0 );
+				}
 			} finally {
 				await testInfo.attach( 'fuzz-run.json', {
 					body: JSON.stringify(

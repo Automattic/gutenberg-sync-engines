@@ -12,6 +12,13 @@ import type {
 	EngineSessionCodec,
 	EngineUpdate,
 } from '@wordpress/sync';
+import {
+	installSyncDebug,
+	isSyncDebugEnabled,
+	recordPoll,
+	registerDebugSession,
+	unregisterDebugSession,
+} from '../../debug/inspector';
 
 /**
  * A codec-driven WebSocket transport, symmetric with the HTTP polling
@@ -48,6 +55,9 @@ interface ServerRoom {
 }
 
 const rooms = new Map< string, RoomState >();
+
+// Console stub for the sync inspector (wpSync.enable() and friends).
+installSyncDebug();
 
 let socket: WebSocket | null = null;
 let reconnectAttempts = 0;
@@ -117,9 +127,37 @@ function buildSyncFrame( pending: Map< string, EngineUpdate[] > ): string {
 						engine_protocol: state.session.engineProtocol,
 				  }
 				: {} ),
+			// The inspector's server-envelope opt-in (see debug/inspector.ts).
+			...( isSyncDebugEnabled() ? { debug: true } : {} ),
 		} );
 	}
 	return JSON.stringify( { type: 'sync', rooms: payloadRooms } );
+}
+
+/**
+ * Sends a frame carrying the given per-room updates, feeding the inspector's
+ * wire tap. The socket is push-based, so sends and receives are recorded as
+ * separate one-directional entries (unlike the polling transport's paired
+ * request/response records).
+ *
+ * @param {Map<string, EngineUpdate[]>} pending Per-room updates to send.
+ */
+function sendFrame( pending: Map< string, EngineUpdate[] > ): void {
+	if ( ! socket || WebSocket.OPEN !== socket.readyState ) {
+		return;
+	}
+	socket.send( buildSyncFrame( pending ) );
+	if ( ! isSyncDebugEnabled() ) {
+		return;
+	}
+	for ( const [ room, updates ] of pending ) {
+		recordPoll( {
+			room,
+			sent: updates,
+			received: [],
+			cursorBefore: rooms.get( room )?.cursor,
+		} );
+	}
 }
 
 /**
@@ -135,7 +173,7 @@ function sendUpdate( room: string, update: EngineUpdate ): void {
 		connect();
 		return;
 	}
-	socket.send( buildSyncFrame( new Map( [ [ room, [ update ] ] ] ) ) );
+	sendFrame( new Map( [ [ room, [ update ] ] ] ) );
 }
 
 /**
@@ -148,6 +186,26 @@ function applyServerRoom( serverRoom: ServerRoom ): void {
 	if ( ! state ) {
 		return;
 	}
+
+	// The inspector's wire tap: pushed traffic, decoded.
+	if ( isSyncDebugEnabled() ) {
+		recordPoll( {
+			room: serverRoom.room,
+			sent: [],
+			received: serverRoom.updates ?? [],
+			dispositions: serverRoom.dispositions as
+				| Array< Record< string, unknown > >
+				| undefined,
+			cursorBefore: state.cursor,
+			cursorAfter: serverRoom.end_cursor,
+			serverDebug: (
+				serverRoom as {
+					_debug?: Record< string, unknown >;
+				}
+			 )._debug,
+		} );
+	}
+
 	state.session.applyRemoteAwareness( serverRoom.awareness );
 
 	const responses: EngineUpdate[] = [];
@@ -167,14 +225,10 @@ function applyServerRoom( serverRoom: ServerRoom ): void {
 	state.cursor = serverRoom.end_cursor;
 
 	// Updates produced while applying (an engine's ack/response) go back out.
-	if (
-		responses.length > 0 &&
-		socket &&
-		WebSocket.OPEN === socket.readyState
-	) {
+	if ( responses.length > 0 ) {
 		const pending = new Map< string, EngineUpdate[] >();
 		pending.set( serverRoom.room, responses );
-		socket.send( buildSyncFrame( pending ) );
+		sendFrame( pending );
 	}
 }
 
@@ -209,7 +263,7 @@ function sendInitialSync(): void {
 	for ( const state of rooms.values() ) {
 		pending.set( state.room, state.session.getInitialUpdates() );
 	}
-	socket.send( buildSyncFrame( pending ) );
+	sendFrame( pending );
 }
 
 /**
@@ -224,7 +278,7 @@ function sendAwareness(): void {
 	) {
 		return;
 	}
-	socket.send( buildSyncFrame( new Map() ) );
+	sendFrame( new Map() );
 }
 
 /**
@@ -335,14 +389,14 @@ function registerRoom( options: WebSocketRoomOptions ): void {
 		sendUpdate( options.room, update )
 	);
 
+	// State accessors for the console inspector (duck-typed; inert unless
+	// the inspector is enabled).
+	registerDebugSession( options.room, options.session );
+
 	if ( socket && WebSocket.OPEN === socket.readyState ) {
 		// Socket already open: send this room's initial sync now.
-		socket.send(
-			buildSyncFrame(
-				new Map( [
-					[ options.room, options.session.getInitialUpdates() ],
-				] )
-			)
+		sendFrame(
+			new Map( [ [ options.room, options.session.getInitialUpdates() ] ] )
 		);
 	} else {
 		connect();
@@ -360,6 +414,7 @@ function unregisterRoom( room: string ): void {
 		state.session.destroy();
 		rooms.delete( room );
 	}
+	unregisterDebugSession( room );
 	if ( 0 === rooms.size ) {
 		if ( reconnectTimer ) {
 			clearTimeout( reconnectTimer );

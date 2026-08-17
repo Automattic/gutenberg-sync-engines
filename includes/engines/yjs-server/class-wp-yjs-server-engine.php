@@ -170,6 +170,16 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		private array $room_docs = array();
 
 		/**
+		 * Per-request debug info stash, keyed by room (ingest fills it,
+		 * get_updates_since attaches it as the `_debug` envelope when the
+		 * request opted in). Mirrors the intent-log engine's stash.
+		 *
+		 * @since 0.2.0
+		 * @var array<string, array>
+		 */
+		private array $debug_stash = array();
+
+		/**
 		 * Constructor. Loads the vendored y-php library on first use.
 		 *
 		 * @since 0.2.0
@@ -256,7 +266,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		 * @param array  $context   Transport context (unused).
 		 * @return array|WP_Error array( 'dispositions' => array ) or error.
 		 */
-		public function handle_updates( string $room, int $client_id, int $cursor, array $updates, array $context ) { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable -- $cursor/$context are part of the WP_Sync_Engine contract.
+		public function handle_updates( string $room, int $client_id, int $cursor, array $updates, array $context ) { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable -- $cursor is part of the WP_Sync_Engine contract.
 			if ( array() === $updates ) {
 				return array( 'dispositions' => null );
 			}
@@ -391,6 +401,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 						);
 					}
 				}
+				$this->stash_ingest_debug( $room, $context, $dispositions, 0, $replayed, strlen( $after_bytes ) );
 				return array( 'dispositions' => $dispositions );
 			}
 
@@ -402,6 +413,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				 * next load rebuilds a clean document from it.
 				 */
 				$this->room_docs[ $room ] = null;
+				$this->stash_ingest_debug( $room, $context, $dispositions, 0, $replayed, strlen( $after_bytes ) );
 				return array( 'dispositions' => $dispositions );
 			}
 
@@ -421,6 +433,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 			$this->save_canonical( $room, $doc, $load_cursor, base64_encode( $after_bytes ) );
 			$this->maybe_checkpoint( $room, $client_id, $doc );
 
+			$this->stash_ingest_debug( $room, $context, $dispositions, count( $diffs ), $replayed, strlen( $after_bytes ) );
 			return array( 'dispositions' => $dispositions );
 		}
 
@@ -440,7 +453,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		 * @param array  $context   Transport context (unused).
 		 * @return array Room response data.
 		 */
-		public function get_updates_since( string $room, int $client_id, int $cursor, array $context ): array { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable -- $context is part of the WP_Sync_Engine contract.
+		public function get_updates_since( string $room, int $client_id, int $cursor, array $context ): array {
 			if ( $cursor > 0 && method_exists( $this->storage, 'get_room_meta' ) ) {
 				$floor = $this->storage->get_room_meta( $room, self::META_FLOOR );
 				if ( is_numeric( $floor ) && $cursor < (int) $floor ) {
@@ -477,12 +490,58 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				);
 			}
 
-			return array(
+			$response = array(
 				'end_cursor'     => $this->storage->get_cursor( $room ),
 				'room'           => $room,
 				'should_compact' => false,
 				'total_updates'  => $this->storage->get_update_count( $room ),
 				'updates'        => $typed_updates,
+			);
+
+			// The debug envelope: engine facts from this request's ingest
+			// half (the stash) plus read-side counts. Attached only when
+			// the request opted in AND the site allows it (transport gate).
+			if ( ! empty( $context['debug'] ) ) {
+				$response['_debug'] = array_merge(
+					$this->debug_stash[ $room ] ?? array(),
+					array(
+						'rows_returned' => count( $typed_updates ),
+						'total_rows'    => $response['total_updates'],
+					)
+				);
+				unset( $this->debug_stash[ $room ] );
+			}
+
+			return $response;
+		}
+
+		/**
+		 * Fills the per-request debug stash from an ingest's outcome when the
+		 * request opted into the debug envelope.
+		 *
+		 * @since 0.2.0
+		 *
+		 * @param string $room          Room identifier.
+		 * @param array  $context       Transport context.
+		 * @param array  $dispositions  Final per-update dispositions.
+		 * @param int    $appended_rows Rows appended to the log.
+		 * @param bool   $replayed      Whether ingest repaired from the log.
+		 * @param int    $doc_bytes     Canonical document size in bytes.
+		 */
+		private function stash_ingest_debug( string $room, array $context, array $dispositions, int $appended_rows, bool $replayed, int $doc_bytes ): void {
+			if ( empty( $context['debug'] ) ) {
+				return;
+			}
+			$counts = array();
+			foreach ( $dispositions as $disposition ) {
+				$key            = $disposition['status'] . ( isset( $disposition['reason'] ) ? ':' . $disposition['reason'] : '' );
+				$counts[ $key ] = ( $counts[ $key ] ?? 0 ) + 1;
+			}
+			$this->debug_stash[ $room ] = array(
+				'doc_bytes'     => $doc_bytes,
+				'appended_rows' => $appended_rows,
+				'replayed'      => $replayed,
+				'ingest'        => $counts,
 			);
 		}
 
