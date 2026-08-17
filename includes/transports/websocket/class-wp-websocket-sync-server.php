@@ -805,6 +805,23 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 				return new WP_Error( 'websocket_invalid_room', 'Invalid awareness state.', array( 'rooms' => array( $room ) ) );
 			}
 
+			/*
+			 * Optional engine handshake stamps, forwarded VERBATIM to
+			 * process_room_request like the HTTP transports forward them:
+			 * they power the stale-tab engine fence (409
+			 * rest_sync_engine_mismatch) and the switched-engine
+			 * collection-room healing (reset_switched_room). Stripping them
+			 * here used to disable both over websocket.
+			 */
+			$engine = $room_request['engine'] ?? null;
+			if ( null !== $engine && ( ! is_string( $engine ) || '' === $engine ) ) {
+				return new WP_Error( 'websocket_invalid_room', 'Invalid engine stamp.', array( 'rooms' => array( $room ) ) );
+			}
+			$engine_protocol = $room_request['engine_protocol'] ?? null;
+			if ( null !== $engine_protocol && ( ! is_int( $engine_protocol ) || $engine_protocol < 1 ) ) {
+				return new WP_Error( 'websocket_invalid_room', 'Invalid engine protocol.', array( 'rooms' => array( $room ) ) );
+			}
+
 			$updates = $room_request['updates'] ?? null;
 			if ( ! is_array( $updates ) ) {
 				return new WP_Error( 'websocket_invalid_room', 'Invalid updates list.', array( 'rooms' => array( $room ) ) );
@@ -829,7 +846,7 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 				);
 			}
 
-			return array(
+			$validated = array(
 				'after'     => $after,
 				'awareness' => $awareness,
 				'client_id' => $client_id,
@@ -839,6 +856,16 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 				'room'      => $room,
 				'updates'   => $validated_updates,
 			);
+			// Optional keys stay ABSENT when unset (the fence and the
+			// healing both key on presence, mirroring the REST schema).
+			if ( null !== $engine ) {
+				$validated['engine'] = $engine;
+			}
+			if ( null !== $engine_protocol ) {
+				$validated['engine_protocol'] = $engine_protocol;
+			}
+
+			return $validated;
 		}
 
 		/**
