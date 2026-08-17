@@ -13,7 +13,9 @@
  * `proposedProperties` re-carries the client's FULL entity-property map on
  * every proposal (the shipping client's rule; the server merges each
  * property three-way against the same base version, so unchanged entries
- * are no-ops). A conflicting property parks as its own `proposal-parked`
+ * are no-ops). Scalar properties, taxonomy term sets (rest_base names,
+ * whole term-ID arrays the engine set-compares), and `meta.<key>` meta
+ * registers are all just entries in that map. A conflicting property parks as its own `proposal-parked`
  * row while the proposal itself still reports `applied` — the engine's
  * escalation grain for fields is a property, not the proposal — so the
  * profile mirrors the engine's per-property three-way rule to know how
@@ -930,7 +932,14 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 					'retried'       => false,
 				);
 			}
-			if ( 'set_property' === $op ) {
+			if ( in_array( $op, WP_Sync_Bench_Workload::FIELD_OPS, true ) ) {
+				// Terms and meta are entries in the SAME proposal property
+				// map as scalar properties — taxonomy registers by
+				// rest_base (whole term-ID sets, which the engine's
+				// property_values_equal compares order-insensitively) and
+				// meta registers under `meta.<key>` names — so all three
+				// ops normalize to one record shape and share the
+				// settle/apply/revert lanes.
 				return array(
 					'op'         => 'set_property',
 					'name'       => (string) $edit['name'],

@@ -9,8 +9,9 @@
  * The matrix runs each engine over five complementary scenarios
  * (mixed-newsroom for steady concurrent editing, structural-churn for
  * block-structure conflict policy, remove-contention for the
- * edit-vs-remove conflict class, field-sync for entity-property register
- * traffic and its contention policy, editorial-session for wall-clock
+ * edit-vs-remove conflict class, field-sync for entity-field register
+ * traffic — scalar properties, taxonomy term sets, post meta — and its
+ * contention policy, editorial-session for wall-clock
  * session behavior + the hosting cost card), writes every JSON report to
  * bench-results/, and renders the per-scenario comparison tables. The run
  * FAILS (nonzero exit) if any engine loses work or fails convergence —

@@ -4,8 +4,10 @@
  *
  * Each simulated client holds a y-php document. Edits happen in that
  * document (text inserts into the paragraph's content Y.Text; align set on
- * the attributes Y.Map; entity-property registers as plain values on the
- * document map — exactly what the editor's session codec sends), and the
+ * the attributes Y.Map; entity-property and taxonomy term-set registers as
+ * plain values on the document map; meta registers nested per key under
+ * the document's `meta` Y.Map — exactly what the editor's session codec
+ * sends), and the
  * submitted update is the genuine incremental V2 encoding of the edit, so
  * payload and storage bytes are REAL for this engine. Read
  * responses are applied back into the client document (untimed client
@@ -193,13 +195,30 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 
 			if ( 'attr' === $op ) {
 				$this->find_block( $yblocks, 'srv-' . (int) $edit['paragraph'] )->get( 'attributes' )->set( 'align', $edit['align'] );
-			} elseif ( 'set_property' === $op ) {
-				// A scalar entity-property register: a plain value on the
-				// document map, exactly what the core-data CRDT codec's
-				// updateMapValue writes for non-rich-text properties
-				// (title/excerpt are Y.Text and are a different op class).
+			} elseif ( 'set_property' === $op || 'set_terms' === $op ) {
+				// A scalar entity-property or taxonomy term-set register: a
+				// plain value on the document map, exactly what the
+				// core-data CRDT codec's updateMapValue writes for
+				// non-rich-text properties (terms are whole term-ID-array
+				// values on the rest_base key; title/excerpt are Y.Text and
+				// are a different op class).
 				$name = (string) $edit['name'];
 				$doc->getMap( 'document' )->set( $name, $edit['value'] );
+				$this->written_props[ $name ][] = $edit['value'];
+			} elseif ( 'set_meta' === $op ) {
+				// A registered-meta register: the codec nests meta per key
+				// under the document's `meta` Y.Map (updateMapValue into
+				// metaMap). The map itself is genesis-seeded — the harness
+				// registers the palette's keys before genesis, so clients
+				// never race to create it; the guard mirrors the codec's
+				// lazy-create path all the same.
+				$name  = (string) $edit['name'];
+				$ymeta = $doc->getMap( 'document' )->get( 'meta' );
+				if ( ! ( $ymeta instanceof \Yjs\Types\YMap ) ) {
+					$ymeta = new \Yjs\Types\YMap();
+					$doc->getMap( 'document' )->set( 'meta', $ymeta );
+				}
+				$ymeta->set( substr( $name, strlen( 'meta.' ) ), $edit['value'] );
 				$this->written_props[ $name ][] = $edit['value'];
 			} elseif ( 'insert_block' === $op ) {
 				// A client-born paragraph, mirroring the codec's shape (the
@@ -628,9 +647,18 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 				// server order) — so the assertable expectation is that each
 				// written register converged to a value somebody actually
 				// wrote (the client-convergence check above already
-				// guarantees every client agrees on it).
+				// guarantees every client agrees on it). Term-set registers
+				// are compared as written: values are generated sorted, the
+				// register holds them whole, and normalize_for_compare()
+				// leaves list order alone. Meta registers live nested under
+				// the document's `meta` map (`meta.<key>` names).
 				foreach ( $written_props as $name => $values ) {
-					$converged = $doc_json[ $name ] ?? null;
+					if ( 0 === strpos( $name, 'meta.' ) ) {
+						$meta_json = is_array( $doc_json['meta'] ?? null ) ? $doc_json['meta'] : array();
+						$converged = $meta_json[ substr( $name, strlen( 'meta.' ) ) ] ?? null;
+					} else {
+						$converged = $doc_json[ $name ] ?? null;
+					}
 					if ( ! in_array( $converged, $values, true ) ) {
 						$failures[] = array(
 							'check'  => 'prop-register',

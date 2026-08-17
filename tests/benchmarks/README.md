@@ -175,7 +175,8 @@ is NOT lost work — it is the protocol asking the client to retry against
 a fresher base, which the profile models (the retry's settlement is what
 counts).
 
-**Entity-property registers** (the `set_property` op) never materialize
+**Entity-field registers** (the `set_property`, `set_terms`, and
+`set_meta` ops) never materialize
 into post content, so their oracles use the engine's other observables.
 Intent-log: concurrent writes to the same property escalate the later
 writer (`property-conflict`, the attr-conflict analog); the profile
@@ -194,6 +195,19 @@ row, the caught-up clients' adopted maps, and the parked rows all match
 that model exactly. The de-rtc client re-carries its FULL property map on
 every proposal (production behavior), so field sync also adds real bytes
 to every de-rtc request.
+
+All three field ops are the same register lane; only the naming and
+transport shape differ. `set_terms` writes a taxonomy's whole term-ID set
+to the register named by its rest_base (`categories`, `tags`), as a
+numerically-sorted array — the engines compare term sets
+order-insensitively, exactly like the shipping clients and the genesis
+seed normalize them. `set_meta` writes a registered-meta register:
+intent-log and de-rtc carry it as a flat `meta.<key>` register, while the
+CRDT codec nests it per key under the document's `meta` Y.Map. The
+harness registers the meta palette's keys before genesis
+(`WP_Sync_Bench_Workload::register_bench_meta()`) because synced meta IS
+registered meta — that is what puts the `meta.<key>` registers (and the
+CRDT's nested meta map) in every engine's genesis seed.
 
 For an engine that merges on the client (the retired `yjs-relay` did, and
 the opaque-relay fallback profile models one), quality is reported as
@@ -223,18 +237,20 @@ review* (an outcome, not a demerit).
 | `laggy-newsroom`      | Mixed newsroom, but the last client reads only every 10th round: stale bases, deep transforms, heavy catch-up reads. |
 | `structural-churn`    | Concurrent block INSERTS and REMOVALS alongside typing — the block-structure stress the pure-typing scenarios never exercise. |
 | `remove-contention`   | One client types into an inserted block while ANOTHER client concurrently removes it (the edit-vs-remove conflict class, where the three merge policies differ most sharply). |
-| `field-sync`          | Entity-property register writes (slug, template, …) alongside typing: clean parallel field sync, plus ~25% of rounds where every client writes the SAME register — the register-contention analog of `contended-paragraph`, on the field traffic PR #22 added. |
+| `field-sync`          | Entity-field register writes (scalar properties, taxonomy term sets, post meta) alongside typing: clean parallel field sync, plus ~25% of rounds where every client writes the SAME register — the register-contention analog of `contended-paragraph`, on the field traffic PR #22 added. |
 | `editorial-session`   | A wall-clock session, one round per second: staggered joins/leaves, typing bursts with think-time pauses, every present client polling every round, an autosave every 60 rounds. `rounds=3600 clients=3` is a one-hour three-user session. |
 
-The workload speaks five operations: `text` (a keystroke batch into a
+The workload speaks seven operations: `text` (a keystroke batch into a
 genesis paragraph, or, in `remove-contention`, into an inserted block
 addressed by `block_id`), `attr` (an align restyle), `set_property` (an
 entity-property register write — slug, template, …, the field-sync
 traffic PR #22 added; title/excerpt are deliberately excluded because the
-CRDT codec models them as merging Y.Text, not registers), `insert_block`
+CRDT codec models them as merging Y.Text, not registers), `set_terms` (a
+taxonomy's whole term-ID set, on the rest_base-named register), `set_meta`
+(a registered-meta `meta.<key>` register), `insert_block`
 (a new paragraph), and `remove_block` (of a block the same client
 inserted earlier; `remove-contention`: any client's earlier insert).
-Register contention is modelled on align and on entity properties because
+Register contention is modelled on align and on entity fields because
 concurrent *text* inserts merge cleanly (the text interleaves — correct,
 not a conflict). Structural
 discipline keeps the oracles decidable: attr edits target genesis

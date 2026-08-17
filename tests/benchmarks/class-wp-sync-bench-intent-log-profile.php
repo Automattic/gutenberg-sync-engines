@@ -4,7 +4,9 @@
  *
  * Speaks to the engine in typed intents (insert_text into a paragraph's
  * content field; set_attr on its align register; set_property on the
- * document's entity-property registers), authored from the state each
+ * document's entity-property registers — scalar properties, taxonomy
+ * term sets by rest_base, and `meta.<key>` meta registers all ride it),
+ * authored from the state each
  * simulated client OBSERVED at its own last read. Observation is
  * READ-DRIVEN: observe() decodes the rows the engine actually delivered
  * and advances the client's observed head and register versions from the
@@ -351,11 +353,15 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 						'observedVersion' => $this->observed_versions[ $client ][ $paragraph ],
 					),
 				);
-			} elseif ( 'set_property' === $op ) {
+			} elseif ( in_array( $op, WP_Sync_Bench_Workload::FIELD_OPS, true ) ) {
 				// The document-level register write the production manager
 				// authors for a synced entity field, versioned from the
 				// state this client observed (a lost register race
 				// escalates `property-conflict`, the attr-conflict analog).
+				// Terms and meta ride the SAME set_property intent — the
+				// production manager names taxonomy registers by rest_base
+				// (whole term-ID-array values) and meta registers
+				// `meta.<key>`; only the workload op differs.
 				$payload = array(
 					'type'    => 'set_property',
 					'payload' => array(
@@ -457,7 +463,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 					// Ingest is serialized, so processing order IS server
 					// order: last applied write wins.
 					$this->expected_align[ (int) $edit['paragraph'] ] = $edit['align'];
-				} elseif ( 'set_property' === $op ) {
+				} elseif ( in_array( $op, WP_Sync_Bench_Workload::FIELD_OPS, true ) ) {
 					$name                        = (string) $edit['name'];
 					$this->prop_version[ $name ] = ( $this->prop_version[ $name ] ?? 0 ) + 1;
 					// Same server-order rule as align registers.

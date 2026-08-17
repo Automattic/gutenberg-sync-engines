@@ -10,7 +10,7 @@
  * race); typing DIFFERENT paragraphs merges clean. Scenarios pick that mix,
  * so the quality metric has a controllable escalation rate to report.
  *
- * Five operations:
+ * Seven operations:
  *
  * - `text` — insert a unique token at offset 0 of a paragraph's content
  *   field (a keystroke batch). Targets a genesis paragraph by index, or,
@@ -22,6 +22,15 @@
  *   session codec carries as a plain last-writer register (title/excerpt
  *   are deliberately absent — the CRDT codec models them as merging
  *   Y.Text, a different op class).
+ * - `set_terms` — replace a taxonomy's whole term-ID set. The register is
+ *   named by the taxonomy's rest_base (TAXONOMY_PALETTE) and its value is
+ *   a numerically-sorted term-ID array; the engines compare term sets
+ *   order-insensitively, exactly like the shipping clients send them.
+ * - `set_meta` — set a registered post-meta register (`meta.<key>` names
+ *   from META_PALETTE). Intent-log and de-rtc carry these as flat
+ *   per-name registers; the CRDT codec nests them per key under the
+ *   document's `meta` Y.Map. The harness registers the palette's keys
+ *   (see register_bench_meta()) because synced meta IS registered meta.
  * - `insert_block` — insert a NEW paragraph (its body is a unique marker)
  *   after a genesis paragraph.
  * - `remove_block` — remove a block the SAME client inserted earlier
@@ -76,6 +85,42 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 		const PROPERTY_PALETTE = array( 'slug', 'template', 'comment_status', 'ping_status', 'format' );
 
 		/**
+		 * Taxonomy registers the set_terms op writes, named by rest_base
+		 * like the REST record and the shared genesis seed. Both built-in
+		 * post taxonomies are show_in_rest, so genesis seeds both registers
+		 * on every engine (values are whole term-ID sets, compared
+		 * order-insensitively).
+		 *
+		 * @var string[]
+		 */
+		const TAXONOMY_PALETTE = array( 'categories', 'tags' );
+
+		/**
+		 * Post-meta registers the set_meta op writes (`meta.<key>` names,
+		 * the shared register-name convention). The harness registers the
+		 * bare keys before genesis (register_bench_meta()): synced meta IS
+		 * registered meta, and the registration is what makes every
+		 * engine's genesis seed these registers — in particular the CRDT
+		 * genesis creates the nested `meta` Y.Map, without which
+		 * concurrent first meta writes would each create their own nested
+		 * map and the CRDT would drop one wholesale (a genesis-avoidable
+		 * artifact, not an engine policy difference).
+		 *
+		 * @var string[]
+		 */
+		const META_PALETTE = array( 'meta.bench_subtitle', 'meta.bench_kicker', 'meta.bench_byline' );
+
+		/**
+		 * The field-sync register ops (every op whose edit carries a
+		 * `name` + whole-value register write). Profiles treat all three
+		 * as the same register lane; only the naming and, for the CRDT
+		 * codec, the meta nesting differ.
+		 *
+		 * @var string[]
+		 */
+		const FIELD_OPS = array( 'set_property', 'set_terms', 'set_meta' );
+
+		/**
 		 * The available scenarios and their descriptions.
 		 *
 		 * @return array<string, string> Slug => description.
@@ -89,10 +134,76 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 				'mixed-newsroom'      => 'Mostly parallel editing with occasional collisions.',
 				'laggy-newsroom'      => 'Mixed newsroom where the last client reads only every 10th round (stale bases, deep transforms, catch-up reads).',
 				'structural-churn'    => 'Concurrent block inserts/removals alongside typing (block-structure stress).',
-				'field-sync'          => 'Entity-property register writes alongside typing: clean parallel field sync plus rounds where every client writes the SAME register (the register-contention analog of contended-paragraph).',
+				'field-sync'          => 'Entity-field register writes (scalar properties, taxonomy term sets, post meta) alongside typing: clean parallel field sync plus rounds where every client writes the SAME register (the register-contention analog of contended-paragraph).',
 				'remove-contention'   => 'One client edits an inserted block another client concurrently removes (edit-vs-remove conflict class; degenerates to sequential same-client edit-then-remove at clients=1).',
 				'editorial-session'   => 'A wall-clock editing session: one round per second, staggered joins/leaves, typing bursts with think-time pauses, every present client polling every round, periodic saves. rounds=3600 clients=3 is a one-hour three-user session.',
 			);
+		}
+
+		/**
+		 * The combined field-register surface the field ops draw from:
+		 * one ( op, name ) descriptor per register, spanning scalar
+		 * properties, taxonomy term sets, and post meta.
+		 *
+		 * @return array<int, array{op: string, name: string}> Registers.
+		 */
+		public static function field_registers(): array {
+			$registers = array();
+			foreach ( self::PROPERTY_PALETTE as $name ) {
+				$registers[] = array(
+					'op'   => 'set_property',
+					'name' => $name,
+				);
+			}
+
+			foreach ( self::TAXONOMY_PALETTE as $name ) {
+				$registers[] = array(
+					'op'   => 'set_terms',
+					'name' => $name,
+				);
+			}
+
+			foreach ( self::META_PALETTE as $name ) {
+				$registers[] = array(
+					'op'   => 'set_meta',
+					'name' => $name,
+				);
+			}
+
+			return $registers;
+		}
+
+		/**
+		 * Registers the META_PALETTE keys as show_in_rest post meta.
+		 *
+		 * Call BEFORE any room genesis is primed (the runner, the
+		 * concurrency setup, the PHPUnit tests). Synced meta is registered
+		 * meta — the framework only syncs registered keys — and
+		 * registration is what makes WP_Sync_Post_Genesis_Props include
+		 * `meta.<key>` registers in every engine's genesis seed. The CRDT
+		 * genesis in particular creates the nested `meta` Y.Map only when
+		 * registered meta exists; without it, concurrent first meta writes
+		 * would race to create the nested map (see META_PALETTE).
+		 */
+		public static function register_bench_meta(): void {
+			foreach ( self::META_PALETTE as $name ) {
+				$key = substr( $name, strlen( 'meta.' ) );
+
+				if ( registered_meta_key_exists( 'post', $key, 'post' ) ) {
+					continue;
+				}
+
+				register_post_meta(
+					'post',
+					$key,
+					array(
+						'show_in_rest' => true,
+						'single'       => true,
+						'type'         => 'string',
+						'default'      => '',
+					)
+				);
+			}
 		}
 
 		/**
@@ -244,28 +355,32 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 						break;
 
 					case 'field-sync':
-						// Entity-property register traffic. ~25% of rounds
-						// every client writes the SAME register concurrently
-						// from the same observed base (contention: intent-log
-						// escalates the later writers, de-rtc parks
-						// property-conflict rows, the CRDT resolves by its
-						// own rules); the rest is clean parallel field sync —
-						// each client on its own register — mixed with
-						// typing so field and content traffic coexist.
+						// Entity-field register traffic across the whole
+						// register surface (scalar properties, taxonomy term
+						// sets, post meta). ~25% of rounds every client
+						// writes the SAME register concurrently from the same
+						// observed base (contention: intent-log escalates the
+						// later writers, de-rtc parks property-conflict rows,
+						// the CRDT resolves by its own rules); the rest is
+						// clean parallel field sync — each client on its own
+						// register — mixed with typing so field and content
+						// traffic coexist.
+						$registers       = self::field_registers();
 						$field_collision = $rand( 100 ) < 25;
-						$field_target    = self::PROPERTY_PALETTE[ $rand( count( self::PROPERTY_PALETTE ) ) ];
+						$field_target    = $registers[ $rand( count( $registers ) ) ];
 						for ( $c = 0; $c < $clients; $c++ ) {
 							if ( $field_collision ) {
 								$edits[] = array(
 									'client' => $c,
-									'op'     => 'set_property',
-									'name'   => $field_target,
+									'op'     => $field_target['op'],
+									'name'   => $field_target['name'],
 								);
 							} elseif ( $rand( 100 ) < 50 ) {
-								$edits[] = array(
+								$register = $registers[ $c % count( $registers ) ];
+								$edits[]  = array(
 									'client' => $c,
-									'op'     => 'set_property',
-									'name'   => self::PROPERTY_PALETTE[ $c % count( self::PROPERTY_PALETTE ) ],
+									'op'     => $register['op'],
+									'name'   => $register['name'],
 								);
 							} else {
 								$edits[] = array(
@@ -471,9 +586,10 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 					}
 					--$burst[ $c ];
 
-					// Typing: mostly text, ~8% restyle, ~2% an entity-property
-					// tweak (slug, template, …), ~4% insert a block, ~2%
-					// remove an own earlier insert.
+					// Typing: mostly text, ~8% restyle, ~2% an entity-field
+					// tweak (a scalar property, taxonomy term set, or meta
+					// register), ~4% insert a block, ~2% remove an own
+					// earlier insert.
 					$draw = $rand( 100 );
 					if ( $draw < 84 || ( $draw >= 98 && array() === $own_blocks[ $c ] ) ) {
 						$edits[] = array(
@@ -488,10 +604,12 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 							'op'        => 'attr',
 						);
 					} elseif ( $draw < 94 ) {
-						$edits[] = array(
+						$registers = self::field_registers();
+						$register  = $registers[ $rand( count( $registers ) ) ];
+						$edits[]   = array(
 							'client' => $c,
-							'op'     => 'set_property',
-							'name'   => self::PROPERTY_PALETTE[ $rand( count( self::PROPERTY_PALETTE ) ) ],
+							'op'     => $register['op'],
+							'name'   => $register['name'],
 						);
 					} elseif ( $draw < 98 ) {
 						$edits[] = self::insert_edit( $c, $r, count( $edits ), $rand( $paragraphs ), $own_blocks );
@@ -585,6 +703,20 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 					// measured policy differences into artifacts. Registers
 					// are compared whole, so no delimiter is needed.
 					$edit['value'] = 'f' . $round . 'c' . $edit['client'];
+				} elseif ( 'set_terms' === $edit['op'] ) {
+					// A whole term-ID set, numerically sorted like the
+					// shipping clients and the genesis seed normalize it
+					// (engines compare term sets order-insensitively, but
+					// generating sorted keeps whole-value comparisons
+					// byte-stable for the register oracles). The small ID is
+					// client-scoped and the large one rotates per round, so
+					// sets follow the same distinctness discipline as
+					// set_property values. The IDs need not exist as real
+					// terms: registers are opaque to the engines.
+					$edit['value'] = array( 2 + (int) $edit['client'], 5000 + $round );
+				} elseif ( 'set_meta' === $edit['op'] ) {
+					// Same distinctness discipline as set_property values.
+					$edit['value'] = 'm' . $round . 'c' . $edit['client'];
 				}
 			}
 			unset( $edit );

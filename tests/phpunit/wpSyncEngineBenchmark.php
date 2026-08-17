@@ -23,6 +23,18 @@ require_once dirname( __DIR__ ) . '/benchmarks/class-wp-sync-bench-runner.php';
 class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 
 	/**
+	 * The set_meta op's keys must be registered before any room genesis is
+	 * primed (synced meta is registered meta): registration puts the
+	 * `meta.<key>` registers, and the CRDT's nested meta map, in every
+	 * engine's genesis seed. Every engine-driving scenario can carry field
+	 * ops (editorial-session included), so register for every test.
+	 */
+	public function set_up() {
+		parent::set_up();
+		WP_Sync_Bench_Workload::register_bench_meta();
+	}
+
+	/**
 	 * Runs a workload for one scenario against the intent-log engine.
 	 *
 	 * @param string $scenario Scenario slug.
@@ -361,21 +373,44 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 	public function test_field_sync_generates_property_writes_with_discipline() {
 		$workload = WP_Sync_Bench_Workload::build( 'field-sync', 7, 30, 3, 4 );
 
-		$writes    = 0;
+		$writes    = array(
+			'set_property' => 0,
+			'set_terms'    => 0,
+			'set_meta'     => 0,
+		);
 		$contended = 0;
 		foreach ( $workload['rounds'] as $edits ) {
 			$names  = array();
 			$values = array();
 			foreach ( $edits as $edit ) {
-				if ( 'set_property' !== $edit['op'] ) {
+				if ( ! in_array( $edit['op'], WP_Sync_Bench_Workload::FIELD_OPS, true ) ) {
 					continue;
 				}
-				++$writes;
-				// Names come from the shared register palette; values are
+				++$writes[ $edit['op'] ];
+				// Names come from the op's register palette; values are
 				// DISTINCT within a round (the policy-isolation discipline:
 				// identical concurrent writes read as agreement to a
 				// three-way merge but escalate under a version check).
-				$this->assertContains( $edit['name'], WP_Sync_Bench_Workload::PROPERTY_PALETTE );
+				if ( 'set_property' === $edit['op'] ) {
+					$this->assertContains( $edit['name'], WP_Sync_Bench_Workload::PROPERTY_PALETTE );
+					$this->assertIsString( $edit['value'] );
+				} elseif ( 'set_terms' === $edit['op'] ) {
+					// A taxonomy register: rest_base name, numerically
+					// sorted whole term-ID set.
+					$this->assertContains( $edit['name'], WP_Sync_Bench_Workload::TAXONOMY_PALETTE );
+					$this->assertIsArray( $edit['value'] );
+					$sorted = $edit['value'];
+					sort( $sorted, SORT_NUMERIC );
+					$this->assertSame( $sorted, $edit['value'] );
+					foreach ( $edit['value'] as $term_id ) {
+						$this->assertIsInt( $term_id );
+					}
+				} else {
+					// A meta register: `meta.<key>` name from the palette.
+					$this->assertContains( $edit['name'], WP_Sync_Bench_Workload::META_PALETTE );
+					$this->assertStringStartsWith( 'meta.', $edit['name'] );
+					$this->assertIsString( $edit['value'] );
+				}
 				$this->assertNotContains( $edit['value'], $values );
 				$values[]               = $edit['value'];
 				$names[ $edit['name'] ] = ( $names[ $edit['name'] ] ?? 0 ) + 1;
@@ -384,7 +419,11 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 				++$contended;
 			}
 		}
-		$this->assertGreaterThan( 0, $writes );
+		// The scenario exercises the whole register surface: scalar
+		// properties, taxonomy term sets, and post meta all appear.
+		$this->assertGreaterThan( 0, $writes['set_property'] );
+		$this->assertGreaterThan( 0, $writes['set_terms'] );
+		$this->assertGreaterThan( 0, $writes['set_meta'] );
 		// ~25% of rounds put every client on the SAME register.
 		$this->assertGreaterThan( 0, $contended );
 	}
