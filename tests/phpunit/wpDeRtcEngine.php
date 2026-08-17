@@ -488,14 +488,14 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 		$this->assertStringNotContainsString( '<', $row['excerpt'], 'the excerpt is plain text' );
 	}
 
-	public function test_kses_escalation_parks_with_its_reason() {
+	public function test_kses_sequestration_drops_a_risky_new_block_and_parks_it() {
 		$engine   = $this->engine();
 		$response = $engine->get_updates_since( $this->room(), 3, 0, array() );
 		$latest   = $this->latest_from_response( $response );
 
 		wp_set_current_user( self::$author_id );
 		$proposed = $latest['content'] . "\n\n<!-- wp:html -->\n<script>alert(1)</script>\n<!-- /wp:html -->";
-		$engine->handle_updates(
+		$result   = $engine->handle_updates(
 			$this->room(),
 			3,
 			0,
@@ -503,6 +503,14 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 			array()
 		);
 
+		// Sequestration: the proposal APPLIES (a risky NEW block has no
+		// base counterpart, so it drops from the laundered content)…
+		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
+		$materialized = (string) $this->engine()->materialize( $this->room() );
+		$this->assertStringNotContainsString( '<script>', $materialized );
+		$this->assertStringNotContainsString( 'wp:html', $materialized );
+
+		// …and the risky block parks for a privileged reviewer.
 		$parked = $this->rows_of_type(
 			$this->engine()->get_updates_since( $this->room(), 4, 0, array() ),
 			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
@@ -511,6 +519,104 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 		$this->assertSame( 'p-risky', $parked[0]['proposalId'] );
 		$this->assertSame( 'requires-unfiltered-html', $parked[0]['reason'] );
 		$this->assertSame( self::$author_id, $parked[0]['author'] );
+		$this->assertCount( 1, $parked[0]['changedBlocks'] );
+		$this->assertStringContainsString( '<script>alert(1)</script>', $parked[0]['changedBlocks'][0]['html'] );
+	}
+
+	public function test_kses_sequestration_lands_safe_edits_and_reverts_only_the_risky_block() {
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( $this->room(), 3, 0, array() );
+		$latest   = $this->latest_from_response( $response );
+
+		wp_set_current_user( self::$author_id );
+		// One proposal, two edits: a SAFE rewrite of the Alpha block and a
+		// risky rewrite of the Beta block.
+		$proposed = str_replace( 'Alpha block original text', 'Alpha block SAFE-EDIT text', $latest['content'] );
+		$proposed = str_replace( 'Beta block original text', 'Beta block <script>bad()</script> text', $proposed );
+		$result   = $engine->handle_updates(
+			$this->room(),
+			3,
+			0,
+			array( $this->proposal( 'p-mixed', $latest['version'], $latest['content'], $proposed, false ) ),
+			array()
+		);
+
+		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
+
+		// The safe edit LANDED; the risky block reverted to its base form.
+		$materialized = (string) $this->engine()->materialize( $this->room() );
+		$this->assertStringContainsString( 'Alpha block SAFE-EDIT text', $materialized );
+		$this->assertStringContainsString( 'Beta block original text', $materialized );
+		$this->assertStringNotContainsString( '<script>', $materialized );
+
+		// Only the risky block parked (index 1 — the Beta paragraph).
+		$parked = $this->rows_of_type(
+			$this->engine()->get_updates_since( $this->room(), 4, 0, array() ),
+			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+		);
+		$this->assertCount( 1, $parked );
+		$this->assertCount( 1, $parked[0]['changedBlocks'] );
+		$this->assertSame( 1, $parked[0]['changedBlocks'][0]['index'] );
+		$this->assertStringContainsString( '<script>bad()</script>', $parked[0]['changedBlocks'][0]['html'] );
+		$this->assertStringNotContainsString( 'SAFE-EDIT', $parked[0]['changedBlocks'][0]['html'] );
+	}
+
+	public function test_kses_sequestration_dedupes_identical_risky_reproposals() {
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( $this->room(), 3, 0, array() );
+		$latest   = $this->latest_from_response( $response );
+
+		wp_set_current_user( self::$author_id );
+		$proposed = str_replace( 'Beta block original text', 'Beta block <script>bad()</script> text', $latest['content'] );
+
+		// The client's next cycles re-carry the same risky content (its
+		// local doc keeps the block until canonical wins locally): each
+		// proposal gets a NEW id, but only the first parks.
+		foreach ( array( 'p-loop-1', 'p-loop-2', 'p-loop-3' ) as $proposal_id ) {
+			$result = $this->engine()->handle_updates(
+				$this->room(),
+				3,
+				0,
+				array( $this->proposal( $proposal_id, $latest['version'], $latest['content'], $proposed, false ) ),
+				array()
+			);
+			$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
+		}
+
+		$parked = $this->rows_of_type(
+			$this->engine()->get_updates_since( $this->room(), 4, 0, array() ),
+			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+		);
+		$this->assertCount( 1, $parked, 'identical risky content must park once, not once per poll cycle' );
+	}
+
+	public function test_kses_falls_back_to_whole_proposal_escalation_on_freeform_boundaries() {
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( $this->room(), 3, 0, array() );
+		$latest   = $this->latest_from_response( $response );
+
+		wp_set_current_user( self::$author_id );
+		// Loose classic HTML outside any block defeats per-block record
+		// extraction; the lane degrades to the whole-proposal escalation.
+		$proposed = $latest['content'] . "\n\n<div>loose classic <script>bad()</script> markup</div>";
+		$result   = $engine->handle_updates(
+			$this->room(),
+			3,
+			0,
+			array( $this->proposal( 'p-classic', $latest['version'], $latest['content'], $proposed, false ) ),
+			array()
+		);
+
+		$this->assertSame( 'escalated', $result['dispositions'][0]['status'] );
+		$this->assertSame( 'requires-unfiltered-html', $result['dispositions'][0]['reason'] );
+		$this->assertStringNotContainsString( '<script>', (string) $this->engine()->materialize( $this->room() ) );
+
+		$parked = $this->rows_of_type(
+			$this->engine()->get_updates_since( $this->room(), 4, 0, array() ),
+			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+		);
+		$this->assertCount( 1, $parked );
+		$this->assertSame( 'p-classic', $parked[0]['proposalId'] );
 	}
 
 	public function test_redelivered_escalation_does_not_double_park() {

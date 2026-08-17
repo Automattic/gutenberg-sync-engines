@@ -510,8 +510,10 @@ they exist so a failure is observable without re-instrumenting:
   the client sends `clientUpdate: null` and relies on the server's
   engine-unaware-writer lane to derive block-native operations (the
   client-side descriptor builder + cross-language fingerprint vectors are
-  unported); kses parks whole proposals (upstream's per-block
-  sequestration is unported); ingest serializes per room under the
+  unported); kses SEQUESTERS per block (risky blocks revert to base and
+  park for review while the safe remainder lands; whole-proposal
+  escalation remains the fallback for freeform boundaries and
+  descriptor-carrying proposals); ingest serializes per room under the
   intent-log-style GET_LOCK, and every accepted proposal broadcasts FULL
   content rows (storage bounded by checkpoints, but row bytes scale with
   document size).

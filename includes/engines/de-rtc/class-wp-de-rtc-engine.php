@@ -426,20 +426,30 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			/*
 			 * The capability lane, at ingest: an author without
 			 * unfiltered_html cannot land content that kses would rewrite.
-			 * Upstream DE-RTC sequesters exactly the risky blocks for a
-			 * privileged reviewer; here the whole proposal escalates AND
-			 * parks for review — restoring it re-proposes the parked blocks
-			 * under the RESTORER's capability, so restore IS the approval
-			 * (per-block sequestration remains a documented gap).
+			 * Upstream DE-RTC's model, restored here: SEQUESTER exactly the
+			 * risky blocks — revert them to their base form in the proposal,
+			 * merge the safe remainder normally, and park the risky blocks
+			 * for a privileged reviewer (restore re-proposes them under the
+			 * RESTORER's capability, so restore IS the approval). The whole
+			 * proposal escalates only when per-block extraction is
+			 * unavailable (freeform boundaries) or the proposal carries a
+			 * block-native descriptor laundering would invalidate.
 			 */
 			if ( ! current_user_can( 'unfiltered_html' ) ) {
 				$sanitized = wp_kses_post( $proposed_content );
 				if ( $sanitized !== $proposed_content ) {
-					$this->park_proposal( $room, $client_id, $proposal, 'requires-unfiltered-html', $base_content, $review );
-					return array(
-						'status' => 'escalated',
-						'reason' => 'requires-unfiltered-html',
-					);
+					$laundered = null;
+					if ( null === ( $proposal['clientUpdate'] ?? null ) ) {
+						$laundered = $this->sequester_unfiltered_blocks( $room, $client_id, $proposal, $base_content, $review );
+					}
+					if ( null === $laundered ) {
+						$this->park_proposal( $room, $client_id, $proposal, 'requires-unfiltered-html', $base_content, $review );
+						return array(
+							'status' => 'escalated',
+							'reason' => 'requires-unfiltered-html',
+						);
+					}
+					$proposed_content = $laundered;
 				}
 			}
 
@@ -775,16 +785,52 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * @return void
 		 */
 		private function park_proposal( string $room, int $client_id, array $proposal, string $reason, string $base_content, &$review ): void {
-			$proposal_id = $proposal['proposalId'];
+			$changed_blocks = $this->changed_blocks( $base_content, (string) $proposal['proposedContent'] );
+			$this->park_changed_blocks( $room, $client_id, (string) $proposal['proposalId'], $reason, (string) $proposal['baseVersion'], $changed_blocks, $review, false );
+		}
+
+		/**
+		 * Parks a set of changed blocks as one durable review row.
+		 *
+		 * Idempotent by parked id (a redelivered escalation never
+		 * double-parks). With $dedupe_by_content, an OPEN row from the same
+		 * author with the same reason and byte-identical changed blocks
+		 * also suppresses the park — the sequestration lane's guard against
+		 * an author re-proposing the same risky content every poll cycle.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param string $room              Room identifier.
+		 * @param int    $client_id         Escalating client id.
+		 * @param string $parked_id         Parked row id.
+		 * @param string $reason            Escalation reason.
+		 * @param string $base_version      Proposal base version label.
+		 * @param array  $changed_blocks    Blocks to park ({index, html}).
+		 * @param array  $review            Review ledger (lazily loaded, by reference).
+		 * @param bool   $dedupe_by_content Whether to suppress same-content re-parks.
+		 * @return void
+		 */
+		private function park_changed_blocks( string $room, int $client_id, string $parked_id, string $reason, string $base_version, array $changed_blocks, &$review, bool $dedupe_by_content ): void {
 			if ( null === $review ) {
 				$review = $this->load_review_ledger( $room );
 			}
-			if ( isset( $review['open'][ $proposal_id ] ) || isset( $review['resolved'][ $proposal_id ] ) ) {
+			if ( isset( $review['open'][ $parked_id ] ) || isset( $review['resolved'][ $parked_id ] ) ) {
 				return; // Redelivery: already parked (or already resolved).
 			}
+			if ( $dedupe_by_content ) {
+				foreach ( $review['open'] as $open_row ) {
+					if (
+						is_array( $open_row ) &&
+						( $open_row['reason'] ?? null ) === $reason &&
+						(int) ( $open_row['authorClientId'] ?? -1 ) === $client_id &&
+						wp_json_encode( $open_row['changedBlocks'] ?? null ) === wp_json_encode( $changed_blocks )
+					) {
+						return;
+					}
+				}
+			}
 
-			$changed_blocks = $this->changed_blocks( $base_content, (string) $proposal['proposedContent'] );
-			$changed_text   = '';
+			$changed_text = '';
 			foreach ( $changed_blocks as $block ) {
 				$changed_text .= ' ' . wp_strip_all_tags( $block['html'] );
 			}
@@ -795,26 +841,106 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				$excerpt = substr( $excerpt, 0, 80 );
 			}
 
+			$payload = array(
+				'proposalId'     => $parked_id,
+				'reason'         => $reason,
+				'authorClientId' => $client_id,
+				'author'         => get_current_user_id(),
+				'at'             => time(),
+				'baseVersion'    => $base_version,
+				'changedBlocks'  => $changed_blocks,
+				'excerpt'        => $excerpt,
+			);
+
 			$stored = $this->add_row(
 				$room,
 				$client_id,
 				self::UPDATE_TYPE_PROPOSAL_PARKED,
-				wp_json_encode(
-					array(
-						'proposalId'     => $proposal_id,
-						'reason'         => $reason,
-						'authorClientId' => $client_id,
-						'author'         => get_current_user_id(),
-						'at'             => time(),
-						'baseVersion'    => $proposal['baseVersion'],
-						'changedBlocks'  => $changed_blocks,
-						'excerpt'        => $excerpt,
-					)
-				)
+				wp_json_encode( $payload )
 			);
 			if ( $stored ) {
-				$review['open'][ $proposal_id ] = true;
+				$review['open'][ $parked_id ] = $payload;
 			}
+		}
+
+		/**
+		 * Sequesters the kses-risky blocks out of a filtered author's
+		 * proposal: each risky changed block reverts to its base-version
+		 * form (a risky NEW block drops), the reverted blocks park for
+		 * review, and the laundered content merges normally — the safe
+		 * remainder of the edit lands instead of parking with the risky
+		 * part.
+		 *
+		 * Returns null when per-block extraction is unavailable (freeform
+		 * boundaries) or nothing block-attributable was found; the caller
+		 * falls back to whole-proposal escalation.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param string $room         Room identifier.
+		 * @param int    $client_id    Proposing client id.
+		 * @param array  $proposal     Decoded proposal payload.
+		 * @param string $base_content Content of the proposal's base version.
+		 * @param array  $review       Review ledger (lazily loaded, by reference).
+		 * @return string|null Laundered proposed content, or null.
+		 */
+		private function sequester_unfiltered_blocks( string $room, int $client_id, array $proposal, string $base_content, &$review ): ?string {
+			$base_records     = wp_de_rtc_get_top_level_serialized_block_records( $base_content );
+			$proposed_records = wp_de_rtc_get_top_level_serialized_block_records( (string) $proposal['proposedContent'] );
+			if ( is_wp_error( $base_records ) || is_wp_error( $proposed_records ) ) {
+				return null;
+			}
+
+			$base_set  = array_fill_keys( $base_records, true );
+			$laundered = array();
+			$risky     = array();
+			foreach ( $proposed_records as $index => $serialized ) {
+				// A block byte-identical to a base block was not written by
+				// this author here; a changed block that kses round-trips is
+				// safe. Both pass through.
+				if ( isset( $base_set[ $serialized ] ) || wp_kses_post( $serialized ) === $serialized ) {
+					$laundered[] = $serialized;
+					continue;
+				}
+				$risky[] = array(
+					'index' => (int) $index,
+					'html'  => $serialized,
+				);
+				// An EDITED risky block reverts to its base form (same
+				// position, same block type); a risky NEW block has no base
+				// counterpart and drops from the laundered content.
+				$base_at = $base_records[ $index ] ?? null;
+				if ( is_string( $base_at ) && self::block_name_of( $base_at ) === self::block_name_of( $serialized ) ) {
+					$laundered[] = $base_at;
+				}
+			}
+
+			if ( array() === $risky ) {
+				// kses flagged something block extraction cannot attribute.
+				return null;
+			}
+
+			$this->park_changed_blocks( $room, $client_id, (string) $proposal['proposalId'], 'requires-unfiltered-html', (string) $proposal['baseVersion'], $risky, $review, true );
+
+			// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+			do_action( 'qm/debug', 'wp-sync: de-rtc sequestered ' . count( $risky ) . " risky block(s) from a filtered author in {$room}" );
+
+			// The standard serializer convention joins blocks with blank
+			// lines; matching it keeps the laundered canonical byte-stable
+			// against the client's next serialization of the same blocks.
+			return implode( "\n\n", $laundered );
+		}
+
+		/**
+		 * The block name of a serialized top-level block.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param string $serialized Serialized block.
+		 * @return string|null Block name, or null when unparsable.
+		 */
+		private static function block_name_of( string $serialized ): ?string {
+			return preg_match( '/^<!--\s+wp:([a-z0-9\/_-]+)/i', $serialized, $matches ) ? $matches[1] : null;
 		}
 
 		/**
