@@ -833,6 +833,9 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 				'after'     => $after,
 				'awareness' => $awareness,
 				'client_id' => $client_id,
+				// The inspector's opt-in server envelope; process_room_request
+				// gates it behind is_debug_allowed() like the REST transports.
+				'debug'     => ! empty( $room_request['debug'] ),
 				'room'      => $room,
 				'updates'   => $validated_updates,
 			);

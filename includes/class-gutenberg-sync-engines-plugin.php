@@ -117,6 +117,19 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			require_once $transports . 'websocket/class-wp-websocket-sync-transport.php';
 			if ( defined( 'WP_CLI' ) && WP_CLI ) {
 				require_once $transports . 'websocket/class-wp-sync-server-cli-command.php';
+
+				/*
+				 * Room diagnostics (`wp collaboration rooms`) are a development
+				 * tool, deliberately kept OUT of the production path: the file
+				 * only loads on local/development sites (wp-env reports
+				 * 'local'), or when a site opts in explicitly by defining the
+				 * GUTENBERG_SYNC_ENGINES_DIAGNOSTICS constant.
+				 */
+				$diagnostics_allowed = in_array( wp_get_environment_type(), array( 'local', 'development' ), true )
+					|| ( defined( 'GUTENBERG_SYNC_ENGINES_DIAGNOSTICS' ) && GUTENBERG_SYNC_ENGINES_DIAGNOSTICS );
+				if ( $diagnostics_allowed ) {
+					require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/diagnostics/class-gutenberg-sync-engines-rooms-cli-command.php';
+				}
 			}
 
 			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/admin/class-gutenberg-sync-engines-settings.php';

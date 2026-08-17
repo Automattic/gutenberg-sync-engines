@@ -124,6 +124,16 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		private $room_states = array();
 
 		/**
+		 * Per-request debug info stash, keyed by room (ingest fills it,
+		 * get_updates_since attaches it as the `_debug` envelope when the
+		 * request opted in). Mirrors the intent-log engine's stash.
+		 *
+		 * @since 0.3.0
+		 * @var array<string, array>
+		 */
+		private $debug_stash = array();
+
+		/**
 		 * Constructor.
 		 *
 		 * @since 0.3.0
@@ -193,7 +203,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * @param array  $context   Transport context.
 		 * @return array|WP_Error array( 'dispositions' => array|null ) or error.
 		 */
-		public function handle_updates( string $room, int $client_id, int $cursor, array $updates, array $context ) { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable -- $cursor and $context are part of the WP_Sync_Engine contract.
+		public function handle_updates( string $room, int $client_id, int $cursor, array $updates, array $context ) { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable -- $cursor is part of the WP_Sync_Engine contract.
 			if ( array() === $updates ) {
 				return array( 'dispositions' => null );
 			}
@@ -208,12 +218,16 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				}
 			}
 
-			$lock = $this->acquire_room_lock( $room );
+			$lock_started = microtime( true );
+			$lock         = $this->acquire_room_lock( $room );
+			$lock_wait_ms = (int) round( 1000 * ( microtime( true ) - $lock_started ) );
 			if ( is_wp_error( $lock ) ) {
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+				do_action( 'qm/debug', "wp-sync: de-rtc ingest lock timeout for {$room} after {$lock_wait_ms}ms" );
 				return $lock;
 			}
 			try {
-				return $this->handle_updates_locked( $room, $client_id, $updates );
+				return $this->handle_updates_locked( $room, $client_id, $updates, $context, $lock_wait_ms );
 			} finally {
 				$this->release_room_lock( $room );
 			}
@@ -224,12 +238,14 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 *
 		 * @since 0.3.0
 		 *
-		 * @param string $room      Room identifier.
-		 * @param int    $client_id Client identifier.
-		 * @param array  $updates   Proposal updates.
+		 * @param string $room         Room identifier.
+		 * @param int    $client_id    Client identifier.
+		 * @param array  $updates      Proposal updates.
+		 * @param array  $context      Transport context.
+		 * @param int    $lock_wait_ms Milliseconds spent waiting for the lock.
 		 * @return array|WP_Error array( 'dispositions' => array ) or error.
 		 */
-		private function handle_updates_locked( string $room, int $client_id, array $updates ) {
+		private function handle_updates_locked( string $room, int $client_id, array $updates, array $context, int $lock_wait_ms ) {
 			$state = $this->load_room( $room );
 			if ( is_wp_error( $state ) ) {
 				return $state;
@@ -269,7 +285,28 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				$dispositions[] = $disposition;
 			}
 
-			$this->maybe_checkpoint( $room, $state );
+			$counts = array();
+			foreach ( $dispositions as $disposition ) {
+				$key            = $disposition['status'] . ( isset( $disposition['reason'] ) ? ':' . $disposition['reason'] : '' );
+				$counts[ $key ] = ( $counts[ $key ] ?? 0 ) + 1;
+			}
+			$escalated = ( $counts['escalated:manual-conflict-required'] ?? 0 ) + ( $counts['escalated:requires-unfiltered-html'] ?? 0 );
+			if ( $escalated > 0 ) {
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+				do_action( 'qm/debug', "wp-sync: de-rtc escalated {$escalated} proposal(s) in {$room}" );
+			}
+
+			$checkpointed = $this->maybe_checkpoint( $room, $state );
+
+			if ( ! empty( $context['debug'] ) ) {
+				$this->debug_stash[ $room ] = array(
+					'lock_wait_ms'  => $lock_wait_ms,
+					'version'       => $state['version'],
+					'content_bytes' => strlen( (string) $state['content'] ),
+					'ingest'        => $counts,
+					'checkpoint'    => $checkpointed,
+				);
+			}
 
 			return array( 'dispositions' => $dispositions );
 		}
@@ -427,7 +464,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * @param array  $context   Transport context.
 		 * @return array Response envelope.
 		 */
-		public function get_updates_since( string $room, int $client_id, int $cursor, array $context ): array { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable -- $client_id and $context are part of the WP_Sync_Engine contract.
+		public function get_updates_since( string $room, int $client_id, int $cursor, array $context ): array { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable -- $client_id is part of the WP_Sync_Engine contract.
 			if ( $cursor > 0 && method_exists( $this->storage, 'get_room_meta' ) ) {
 				$floor = $this->storage->get_room_meta( $room, self::META_FLOOR );
 				if ( is_numeric( $floor ) && $cursor < (int) $floor ) {
@@ -457,13 +494,29 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				);
 			}
 
-			return array(
+			$response = array(
 				'end_cursor'     => $this->storage->get_cursor( $room ),
 				'room'           => $room,
 				'should_compact' => false,
 				'total_updates'  => $this->storage->get_update_count( $room ),
 				'updates'        => $typed_updates,
 			);
+
+			// The debug envelope: engine facts from this request's ingest
+			// half (the stash) plus read-side counts. Attached only when
+			// the request opted in AND the site allows it (transport gate).
+			if ( ! empty( $context['debug'] ) ) {
+				$response['_debug'] = array_merge(
+					$this->debug_stash[ $room ] ?? array(),
+					array(
+						'rows_returned' => count( $typed_updates ),
+						'total_rows'    => $response['total_updates'],
+					)
+				);
+				unset( $this->debug_stash[ $room ] );
+			}
+
+			return $response;
 		}
 
 		/**
@@ -730,10 +783,14 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				return true;
 			}
 			$this->storage->set_room_meta( $room, self::META_CHECKPOINT, array( 'cursor' => $cursor ) );
+			// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+			do_action( 'qm/debug', "wp-sync: de-rtc checkpoint at {$state['version']} for {$room}" );
 
 			if ( $prev_cursor > 0 ) {
 				$this->storage->remove_updates_before_cursor( $room, $prev_cursor );
 				$this->storage->set_room_meta( $room, self::META_FLOOR, $prev_cursor );
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+				do_action( 'qm/debug', "wp-sync: de-rtc trimmed history below cursor {$prev_cursor} for {$room}" );
 			}
 
 			return true;
