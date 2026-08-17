@@ -96,6 +96,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/lib/automerge-php-loader.php';
 
 			$engines = GUTENBERG_SYNC_ENGINES_PATH . 'includes/engines/';
+			require_once $engines . 'class-wp-sync-post-genesis-props.php';
 			require_once $engines . 'intent-log/class-wp-intent-log-document.php';
 			require_once $engines . 'intent-log/class-wp-intent-log-planner.php';
 			require_once $engines . 'intent-log/class-wp-intent-log-rich-text.php';
