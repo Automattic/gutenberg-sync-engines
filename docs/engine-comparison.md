@@ -61,14 +61,14 @@ differently. The tables below are how the price shows up.
 
 | Area | intent-log | yjs-server | de-rtc |
 | --- | --- | --- | --- |
-| Conflict handling | Transform on the server; genuine conflicts park in the editor's review panel (escalation notice, marker chip, durable resolutions — e2e-verified) | Silent CRDT auto-merge, but ON THE SERVER — outcomes observable, still no review lane | Three-way merge on the server; genuine conflicts ESCALATE as dispositions (`manual-conflict-required`) — but no review UI yet, so the client abandons the proposal and canonical wins locally |
-| Collaborative undo | **Not yet** — WP's global undo applies (can undo a peer's work); designed fix is inverse intents | Per-peer undo manager (`src/engines/yjs/undo.ts`, inherited from the retired relay) | Per-peer undo manager (shared `src/engines/yjs/undo.ts` over the local doc bridge); undone state propagates as an ordinary proposal |
+| Conflict handling | Transform on the server; genuine conflicts park in the editor's review panel (escalation notice, marker chip, durable resolutions — e2e-verified) | Silent CRDT auto-merge, but ON THE SERVER — outcomes observable, still no review lane (conflict DETECTION is the undesigned prerequisite) | Three-way merge on the server; genuine conflicts PARK as durable `proposal-parked` rows and present in the same review panel (restore re-proposes under the reviewer; dismiss resolves; retention survives compaction — e2e-verified) |
+| Collaborative undo | Inverse intents over the accepted log (`src/engines/intent-log-undo.ts`): per-user undo/redo, transformed over peers' rows, conflicts park for review; arms once the unit settles (rows + acks, ~a poll cycle) | Per-peer undo manager (`src/engines/yjs/undo.ts`, inherited from the retired relay) | Per-peer undo manager (shared `src/engines/yjs/undo.ts` over the local doc bridge); undone state propagates as an ordinary proposal |
 | Refresh/offline recovery | Server materializes the document; queued intents are memory-only. Solo edits flush every poll (`syncWhileSolo`), and discarded unsent work surfaces an editor notice | Server holds the canonical doc; a rejoining client re-bootstraps from the retained snapshot + tail and uploads its own state idempotently. Solo edits flush every poll (`syncWhileSolo`) — REQUIRED here, not an optimization: a page reload holds no local state to upload, so a room that never saw the solo session's updates would bootstrap the editor back to its stale snapshot, wiping the freshly loaded record (e2e-covered: the solo save-and-reload spec) | Server holds canonical content + version snapshots; a rejoining client re-bootstraps from the retained snapshot + content rows. Un-acked local edits re-propose (the server merges); the save-centric model keeps the room tracking saves, so a solo save-and-reload survives without `syncWhileSolo` (verified) |
 | Error recovery | Exact re-send; ingest is idempotent by intentId | Full-state recovery update, IDEMPOTENT server-side (the server diffs out what it already has — redelivery settles as a benign `already-merged` void); the server explicitly requests it with a `resync-required` void when an update's dependencies are missing from the room | Recovery re-proposes the doc's current state; if the lost send landed, the re-proposal merges as a no-op |
 | History compaction | Server checkpoints every 100 intent rows and trims | Server checkpoints every 100 rows and trims — abandoned rooms stay bounded | Server checkpoints every 100 rows and trims (same retention invariant) |
 | Genesis | Server, from post content | Server, from post content — deterministic build, so racing initializers merge idempotently | Server, from post content — deterministic, and ADOPTS an upstream DE-RTC sync-meta block if one is embedded (version lineage continues) |
-| Capability enforcement | At ingest (kses lane; escalation for `unfiltered_html`-gated content) | **Not yet** — the server CAN decode content (the prerequisite the retired relay structurally lacked), but the per-update kses lane is undesigned; see Known gaps | At ingest, coarse: a proposal kses would rewrite escalates whole (`requires-unfiltered-html`). Upstream DE-RTC sequesters just the risky blocks for review — that partial-safe lane is unported |
-| Synced entity properties | The framework's full set as per-name registers: the scalar whitelist (title, excerpt, slug, status, comment_status, ping_status, format, sticky, author, featured_media, date, template), attached taxonomies (whole term-ID arrays by rest_base), and registered post meta (per-key `meta.<key>` registers, `_crdt_document` excluded). Collection rooms implement the framework's save-notification contract (per-client save registers), so a newly created term reaches every peer's term list by refetch | Whatever the sync config maps into the CRDT (the full framework set, including per-key post meta and taxonomies); collection rooms carry the savedAt state key for the same refetch contract | Content only (**no title sync yet**) |
+| Capability enforcement | At ingest (kses lane; escalation for `unfiltered_html`-gated content parks for approval — restore by a privileged reviewer IS the approval) | At ingest, sanitize-and-compensate: blocks a filtered author's batch touched that kses would rewrite are REPLACED with their sanitized form and the compensating delta broadcasts (filter-on-save semantics; nothing parks — coarser than intent-log by design) | At ingest, whole-proposal grain: content kses would rewrite escalates AND parks (`requires-unfiltered-html`; restore under a privileged reviewer approves); markup-bearing property values park per property. Upstream's per-block sequestration is unported |
+| Synced entity properties | The framework's full set as per-name registers: the scalar whitelist (title, excerpt, slug, status, comment_status, ping_status, format, sticky, author, featured_media, date, template), attached taxonomies (whole term-ID arrays by rest_base), and registered post meta (per-key `meta.<key>` registers, `_crdt_document` excluded). Collection rooms implement the framework's save-notification contract (per-client save registers), so a newly created term reaches every peer's term list by refetch | Whatever the sync config maps into the CRDT (the full framework set, including per-key post meta and taxonomies), and genesis seeds the same shared REST-shaped property map the other engines seed; collection rooms carry the savedAt state key for the same refetch contract | The full flattened register map rides every proposal beside the content (title, scalars, taxonomies, `meta.<key>`); the server three-way-merges per property against the base version — sole-writer changes and agreements apply, concurrent divergent writes park per property for review. Genesis seeds the shared property map |
 | Presence/awareness | Yes (shared Yjs-free awareness doc) | Yes (Yjs awareness, relayed opaquely — the server does not decode it) | Yes (Yjs awareness over the doc bridge, relayed opaquely) |
 | Server observability | Dispositions, debug envelope, benchmark quality metrics | Per-update dispositions, CRDT convergence oracle, materialization | Per-proposal dispositions (applied/escalated/voided with reasons), version lineage, materialization |
 | Materialize to post_content | Yes (server-side) | Yes (server-side, from the canonical doc) | Trivially — the canonical document IS post content |
@@ -162,11 +162,6 @@ noise under intent-log), with one exception noted below.
   engine's 20-version snapshot window its proposals void as
   `unknown-base-version` and the client must retry against a fresher base
   (the benchmark models one retry per edit; nothing is lost either way).
-- **de-rtc has no review lane UI and no title sync.** Escalations
-  (`manual-conflict-required`, `requires-unfiltered-html`) are observable
-  dispositions, but nothing presents them to a human yet — the client
-  abandons an escalated proposal once canonical applies. Proposals carry
-  content only; title edits stay local.
 - **de-rtc same-block concurrency is block-level last-writer-wins.** When
   truly concurrent edits hit the SAME block, the client's incorporation
   policy keeps its local block and re-proposes it (the yjs-server
@@ -175,9 +170,10 @@ noise under intent-log), with one exception noted below.
   under concurrent STRUCTURE changes the whole-proposal grain bites
   hard: the benchmark's `structural-churn` scenario measures ~50% of
   proposals escalating (vs 0 for intent-log and yjs-server on the same
-  workload). Nothing is lost, but every escalation is a human decision
-  the review-lane UI (above) does not exist to present yet — the two
-  gaps compound.
+  workload). Nothing is lost, and every escalation now parks durably and
+  presents in the review panel — but a workload that escalates half its
+  proposals is still a workload asking humans to arbitrate constantly;
+  prefer another engine for structure-churn-heavy sessions.
 - **de-rtc clients do not author block-native update descriptors yet**
   (`clientUpdate: null`; the server's engine-unaware-writer lane derives
   operations). Porting the client-side descriptor builder and its
@@ -195,8 +191,12 @@ noise under intent-log), with one exception noted below.
   rather than merging — parked in the review lane, never lost, and normal
   merging resumes once the editor observes the peer's change. AGENTS.md
   lists the rest of the residuals.
-- **Intent-log has no collaborative undo yet** — for many editorial teams
-  this is the biggest day-to-day parity gap.
+- **Intent-log undo arms after the settle round trip.** An undo unit
+  becomes available once its rows and acks land (~a poll cycle after the
+  burst quiets), unlike the yjs engines' instant local undo. Two inverse
+  derivations are best-effort: un-merging blocks restores only the joined
+  field (the merge dropped the rest — editor semantics), and un-formatting
+  need not restore pre-existing overlapping format spans exactly.
 - **The websocket transport is experimental** (one-time auth token travels
   as a URL query parameter; plaintext `ws://` must never leave a dev box).
 - **yjs-server under heavy write concurrency can ask a client to
@@ -212,18 +212,6 @@ noise under intent-log), with one exception noted below.
   per-room-lock engines (intent-log, de-rtc) showed zero voids under
   the same load, paying instead with measured queueing (+1.9 ms and
   +10.5 ms p50 respectively at 4 writers).
-- **The websocket transport drops the client's engine stamps.** The
-  daemon's room-request validation
-  (`WP_WebSocket_Sync_Server::validate_room_request()`) normalizes away
-  the `engine`/`engine_protocol` fields the HTTP transports forward to the
-  engine layer. Two consequences: there is no stale-tab engine fence over
-  websocket, and the switched-engine collection-room healing
-  (`reset_switched_room`, HTTP polling only) can never trigger — a global
-  collection/taxonomy room with stale engine lineage 409s
-  (`rest_sync_engine_mismatch`) forever over websocket while an HTTP
-  client would heal it. Since comparing engines means switching them,
-  flip engines over an HTTP transport first (letting it heal the global
-  rooms) before benchmarking websocket.
 - **yjs-server ingest cost is real and scales with document size.** Every
   ingest decodes, merges, and re-encodes the canonical document in pure
   PHP (~30 ms at benchmark sizes vs intent-log's ~0.6 ms) — and the SAVE
@@ -233,19 +221,16 @@ noise under intent-log), with one exception noted below.
   production use this needs either an incremental canonical-maintenance
   strategy, y-php optimization, or acceptance of the latency at target
   document sizes — run `long-form` benchmarks at YOUR sizes first.
-- **yjs-server has no kses/capability lane yet.** The prerequisite the
-  retired relay structurally lacked is now present (the server can decode
-  and inspect CRDT content), but per-update capability enforcement is not
-  designed or built. Until it is, content security is enforced at save
-  only.
-- **yjs-server has no document-size gate for later joiners.** The
-  framework's size guard fences a client whose OWN outgoing update exceeds
-  the limit (that still works — the author's tab drops out of
-  collaboration). Under the retired relay every visitor re-authored the
-  whole document at init, so later joiners tripped the same guard and fell
-  back to the post lock; under yjs-server the server owns genesis and
-  clients only send small diffs, so an oversized document never fences a
-  joiner — a server-side genesis size policy is undesigned.
+- **yjs-server kses is sanitize, not park.** The per-update capability
+  lane replaces a filtered author's offending blocks with their
+  kses-sanitized form and broadcasts the compensation (WordPress's
+  filter-on-save semantics at per-update grain) — the protected markup is
+  gone, but no human reviews it, unlike intent-log's and de-rtc's parked
+  `requires-approval` lanes.
+- **yjs-server's genesis size gate is genesis-only.** Rooms refuse to
+  initialize above `wp_sync_yjs_server_max_genesis_bytes` (default 1 MB;
+  RTC never activates, writes 413). A room that GROWS past any threshold
+  after genesis is unpoliced — per-room growth limits remain future work.
 - **yjs-server has no review lane.** Register conflicts (two editors
   restyling the same block) resolve by deterministic CRDT last-writer-wins,
   silently — observable in dispositions, but not surfaced to humans. That
