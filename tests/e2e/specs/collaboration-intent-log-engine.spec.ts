@@ -1343,6 +1343,196 @@ test.describe( 'Collaboration - intent-log engine', () => {
 		expect( saved.title.raw ).toBe( 'Title from user two' );
 	} );
 
+	test( 'entity properties (excerpt, status, sticky, tags, meta) sync live in both directions and survive a save', async ( {
+		collaborationUtils,
+		requestUtils,
+		editor,
+	} ) => {
+		// Fresh tags per run so reruns never collide on term names.
+		const stamp = Date.now();
+		const tagIds: number[] = [];
+		for ( const name of [ 'live-one', 'live-two' ] ) {
+			const tag = await requestUtils.rest( {
+				method: 'POST',
+				path: '/wp/v2/tags',
+				data: { name: `rtc-prop-${ name }-${ stamp }` },
+			} );
+			tagIds.push( tag.id );
+		}
+
+		const post = await requestUtils.createPost( {
+			title: 'Property Sync',
+			status: 'draft',
+			excerpt: 'Original excerpt',
+			content:
+				'<!-- wp:paragraph -->\n<p>Body</p>\n<!-- /wp:paragraph -->',
+			date_gmt: new Date().toISOString(),
+		} );
+
+		await collaborationUtils.openCollaborativeSession( post.id );
+		const { page2 } = collaborationUtils;
+		const page1 = editor.page;
+
+		// User 1 updates workflow fields and terms; user 2 sees them live
+		// (no save).
+		await page1.evaluate( ( ids ) => {
+			( window as any ).wp.data.dispatch( 'core/editor' ).editPost( {
+				excerpt: 'Excerpt from user one',
+				status: 'pending',
+				tags: ids,
+			} );
+		}, tagIds );
+		await expect( async () => {
+			const values = await page2.evaluate( () => {
+				const { select } = ( window as any ).wp.data;
+				return {
+					excerpt:
+						select( 'core/editor' ).getEditedPostAttribute(
+							'excerpt'
+						),
+					status: select( 'core/editor' ).getEditedPostAttribute(
+						'status'
+					),
+					tags: select( 'core/editor' ).getEditedPostAttribute(
+						'tags'
+					),
+				};
+			} );
+			expect( values ).toEqual( {
+				excerpt: 'Excerpt from user one',
+				status: 'pending',
+				tags: tagIds,
+			} );
+		} ).toPass( { timeout: 15000 } );
+
+		// A boolean flows the other way with its type intact.
+		await page2.evaluate( () => {
+			( window as any ).wp.data
+				.dispatch( 'core/editor' )
+				.editPost( { sticky: true } );
+		} );
+		await expect( async () => {
+			const sticky = await page1.evaluate( () =>
+				( window as any ).wp.data
+					.select( 'core/editor' )
+					.getEditedPostAttribute( 'sticky' )
+			);
+			expect( sticky ).toBe( true );
+		} ).toPass( { timeout: 15000 } );
+
+		// Registered post meta syncs per key: user 2 writes footnotes
+		// (registered meta) and user 1 receives them live.
+		const footnotes = '[{"content":"A live footnote","id":"phase3-fn"}]';
+		await page2.evaluate( ( value ) => {
+			( window as any ).wp.data
+				.dispatch( 'core/editor' )
+				.editPost( { meta: { footnotes: value } } );
+		}, footnotes );
+		await expect( async () => {
+			const received = await page1.evaluate(
+				() =>
+					( window as any ).wp.data
+						.select( 'core/editor' )
+						.getEditedPostAttribute( 'meta' )?.footnotes
+			);
+			expect( received ).toBe( footnotes );
+		} ).toPass( { timeout: 15000 } );
+
+		// One save (user 2, who never touched excerpt, status, or tags)
+		// persists the whole synced state.
+		await page2.evaluate( async () => {
+			await ( window as any ).wp.data
+				.dispatch( 'core/editor' )
+				.savePost();
+		} );
+		const saved = await requestUtils.rest< {
+			excerpt: { raw: string };
+			status: string;
+			sticky: boolean;
+			tags: number[];
+			meta: { footnotes: string };
+		} >( {
+			path: `/wp/v2/posts/${ post.id }`,
+			params: { context: 'edit' },
+		} );
+		expect( saved.excerpt.raw ).toBe( 'Excerpt from user one' );
+		expect( saved.status ).toBe( 'pending' );
+		expect( saved.sticky ).toBe( true );
+		expect( saved.tags ).toEqual( expect.arrayContaining( tagIds ) );
+		expect( saved.meta.footnotes ).toBe( footnotes );
+	} );
+
+	test( 'a category created mid-session appears in the peer’s term list and assignment', async ( {
+		collaborationUtils,
+		requestUtils,
+		editor,
+	} ) => {
+		const post = await requestUtils.createPost( {
+			title: 'New Term Sync',
+			status: 'draft',
+			content:
+				'<!-- wp:paragraph -->\n<p>Body</p>\n<!-- /wp:paragraph -->',
+			date_gmt: new Date().toISOString(),
+		} );
+
+		await collaborationUtils.openCollaborativeSession( post.id );
+		const { page2 } = collaborationUtils;
+		const page1 = editor.page;
+
+		// Both clients resolve the term list, which loads the
+		// taxonomy/category collection room (the notification lane).
+		for ( const page of [ page1, page2 ] ) {
+			await page.evaluate( async () => {
+				await ( window as any ).wp.data
+					.resolveSelect( 'core' )
+					.getEntityRecords( 'taxonomy', 'category', {
+						per_page: -1,
+					} );
+			} );
+		}
+
+		// User 1 creates a brand-new category (the sidebar's "Add New
+		// Category" flow) and assigns it to the post.
+		const categoryName = `Live Category ${ Date.now() }`;
+		const termId = await page1.evaluate( async ( name ) => {
+			const { dispatch } = ( window as any ).wp.data;
+			const record = await dispatch( 'core' ).saveEntityRecord(
+				'taxonomy',
+				'category',
+				{ name }
+			);
+			dispatch( 'core/editor' ).editPost( {
+				categories: [ record.id ],
+			} );
+			return record.id;
+		}, categoryName );
+
+		// User 2's term list gains the new category WITHOUT any save —
+		// the peer save signal refetches the collection…
+		await expect( async () => {
+			const names = await page2.evaluate( () =>
+				(
+					( window as any ).wp.data
+						.select( 'core' )
+						.getEntityRecords( 'taxonomy', 'category', {
+							per_page: -1,
+						} ) ?? []
+				).map( ( term: { name: string } ) => term.name )
+			);
+			expect( names ).toContain( categoryName );
+		} ).toPass( { timeout: 15000 } );
+
+		// …and the post's category assignment synced alongside it.
+		await expect( async () => {
+			const categories = await page2.evaluate( () =>
+				( window as any ).wp.data
+					.select( 'core/editor' )
+					.getEditedPostAttribute( 'categories' )
+			);
+			expect( categories ).toEqual( [ termId ] );
+		} ).toPass( { timeout: 15000 } );
+	} );
+
 	test( 'concurrent divergent title edits surface an escalation notice, and editors converge', async ( {
 		collaborationUtils,
 		requestUtils,

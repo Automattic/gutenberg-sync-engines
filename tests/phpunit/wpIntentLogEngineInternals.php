@@ -119,6 +119,174 @@ class Tests_Collaboration_WpIntentLogEngineInternals extends WP_UnitTestCase {
 		$this->assertSame( array(), $doc['root'] );
 	}
 
+	public function test_genesis_seeds_scalar_entity_properties_in_rest_shape() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Seeded title',
+				'post_excerpt' => 'Seeded excerpt',
+				'post_status'  => 'publish',
+				'post_author'  => self::$editor_id,
+				'post_content' => "<!-- wp:paragraph -->\n<p>Body</p>\n<!-- /wp:paragraph -->",
+			)
+		);
+		$post    = get_post( $post_id );
+
+		$doc   = self::snapshot_doc( self::engine(), 'postType/post:' . $post_id );
+		$props = $doc['props'];
+
+		$this->assertSame( 'Seeded title', $props['title'] );
+		$this->assertSame( 'Seeded excerpt', $props['excerpt'] );
+		$this->assertSame( 'publish', $props['status'] );
+		$this->assertSame( $post->post_name, $props['slug'] );
+		$this->assertSame( $post->comment_status, $props['comment_status'] );
+		$this->assertSame( $post->ping_status, $props['ping_status'] );
+		$this->assertSame( 'standard', $props['format'] );
+		$this->assertFalse( $props['sticky'] );
+		$this->assertSame( self::$editor_id, $props['author'] );
+		$this->assertSame( 0, $props['featured_media'] );
+		// The REST record's RFC3339 shape, so a joining client's echo
+		// suppression sees the value its own record carries.
+		$this->assertSame( mysql_to_rfc3339( $post->post_date ), $props['date'] );
+		$this->assertSame( '', $props['template'] );
+		// Attached taxonomies as whole term-ID arrays: the default
+		// category assigned at insert, and no tags.
+		$this->assertSame( array( (int) get_option( 'default_category' ) ), $props['categories'] );
+		$this->assertSame( array(), $props['tags'] );
+	}
+
+	public function test_genesis_seeds_registered_meta_registers_in_rest_shape() {
+		register_post_meta(
+			'post',
+			'phase3_note',
+			array(
+				'show_in_rest' => true,
+				'single'       => true,
+				'type'         => 'string',
+				'default'      => '',
+			)
+		);
+		register_post_meta(
+			'post',
+			'phase3_default',
+			array(
+				'show_in_rest' => true,
+				'single'       => true,
+				'type'         => 'string',
+				'default'      => 'the-default',
+			)
+		);
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		update_post_meta( $post_id, 'phase3_note', 'A note' );
+		update_post_meta( $post_id, '_crdt_document', 'transport-state' );
+
+		$doc   = self::snapshot_doc( self::engine(), 'postType/post:' . $post_id );
+		$props = $doc['props'];
+
+		unregister_post_meta( 'post', 'phase3_note' );
+		unregister_post_meta( 'post', 'phase3_default' );
+
+		$this->assertSame( 'A note', $props['meta.phase3_note'] );
+		// Unset keys seed their registered default — exactly what the
+		// REST record's meta object serves, so joining clients see their
+		// own record's value.
+		$this->assertSame( 'the-default', $props['meta.phase3_default'] );
+		// The persisted-CRDT snapshot is transport state, never a register.
+		$this->assertArrayNotHasKey( 'meta._crdt_document', $props );
+	}
+
+	public function test_genesis_seeds_taxonomy_registers_in_rest_order_and_respects_show_in_rest() {
+		register_taxonomy(
+			'genre',
+			'post',
+			array(
+				'show_in_rest' => true,
+				'rest_base'    => 'genres',
+			)
+		);
+		register_taxonomy( 'internal_tax', 'post', array( 'show_in_rest' => false ) );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		$tag_b   = self::factory()->term->create(
+			array(
+				'taxonomy' => 'post_tag',
+				'name'     => 'bravo',
+			)
+		);
+		$tag_a   = self::factory()->term->create(
+			array(
+				'taxonomy' => 'post_tag',
+				'name'     => 'alpha',
+			)
+		);
+		wp_set_post_terms( $post_id, array( $tag_b, $tag_a ), 'post_tag' );
+		$genre = self::factory()->term->create( array( 'taxonomy' => 'genre' ) );
+		wp_set_post_terms( $post_id, array( $genre ), 'genre' );
+		$internal = self::factory()->term->create( array( 'taxonomy' => 'internal_tax' ) );
+		wp_set_post_terms( $post_id, array( $internal ), 'internal_tax' );
+
+		$doc   = self::snapshot_doc( self::engine(), 'postType/post:' . $post_id );
+		$props = $doc['props'];
+
+		unregister_taxonomy( 'genre' );
+		unregister_taxonomy( 'internal_tax' );
+
+		// Canonical numeric order (term bindings are sets; the client
+		// compares order-insensitively). Name order would be
+		// array( $tag_a, $tag_b ) — 'alpha' before 'bravo' — but bravo
+		// was created first and holds the lower id.
+		$this->assertSame( array( $tag_b, $tag_a ), $props['tags'] );
+		// Custom taxonomies key by rest_base…
+		$this->assertSame( array( $genre ), $props['genres'] );
+		// …and non-REST taxonomies never enter the document (absent from
+		// the client record, so seeding them would push spurious edits).
+		$this->assertArrayNotHasKey( 'internal_tax', $props );
+	}
+
+	public function test_genesis_blanks_the_auto_draft_placeholder_and_omits_invalid_registers() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'  => 'Auto Draft',
+				'post_status' => 'auto-draft',
+			)
+		);
+
+		$doc   = self::snapshot_doc( self::engine(), 'postType/post:' . $post_id );
+		$props = $doc['props'];
+
+		// The stored placeholder title never reaches collaborators.
+		$this->assertSame( '', $props['title'] );
+		// An auto-draft status is invalid in the editor and never syncs.
+		$this->assertArrayNotHasKey( 'status', $props );
+		// An empty slug means the auto-generated default.
+		$this->assertArrayNotHasKey( 'slug', $props );
+		// A zeroed date_gmt is a floating date the REST record serves null.
+		$this->assertArrayNotHasKey( 'date', $props );
+	}
+
+	public function test_genesis_omits_property_registers_the_post_type_does_not_support() {
+		$page_id = self::factory()->post->create(
+			array(
+				'post_type'   => 'page',
+				'post_title'  => 'A page',
+				'post_status' => 'publish',
+			)
+		);
+
+		$doc   = self::snapshot_doc( self::engine(), 'postType/page:' . $page_id );
+		$props = $doc['props'];
+
+		// Absent from the page REST schema (pages support none of these);
+		// seeding them would push a spurious edit into every joining
+		// client's editor.
+		$this->assertArrayNotHasKey( 'format', $props );
+		$this->assertArrayNotHasKey( 'sticky', $props );
+		$this->assertArrayNotHasKey( 'excerpt', $props );
+		// Pages support title, and template is universal.
+		$this->assertSame( 'A page', $props['title'] );
+		$this->assertSame( '', $props['template'] );
+	}
+
 	public function test_first_snapshot_wins_over_a_duplicate_from_a_concurrent_initializer() {
 		$post_id = self::factory()->post->create(
 			array( 'post_content' => "<!-- wp:paragraph -->\n<p>Real</p>\n<!-- /wp:paragraph -->" )

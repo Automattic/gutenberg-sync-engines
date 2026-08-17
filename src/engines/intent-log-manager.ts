@@ -9,6 +9,7 @@ import type { Awareness } from 'y-protocols/awareness';
 /**
  * WordPress dependencies
  */
+import apiFetch from '@wordpress/api-fetch';
 import { parse as parseBlockDelimiters } from '@wordpress/block-serialization-default-parser';
 // eslint-disable-next-line import/no-unresolved -- Provided by the editor runtime.
 import { getBlockType } from '@wordpress/blocks';
@@ -36,6 +37,7 @@ import { fieldToHtml } from './intent-log/rich-text.js';
 import { getProviderCreators } from '../framework';
 import type { EngineDocument } from './intent-log/engine-types';
 import type {
+	CollectionHandlers,
 	ObjectData,
 	ObjectID,
 	ObjectType,
@@ -81,10 +83,12 @@ import type {
  * has certainly rendered it.
  *
  * Scope (documented in ARCHITECTURE.md):
- * - Blocks sync through the capture bridge; whitelisted entity properties
- *   (SYNCED_PROPERTIES — currently the title) sync as per-name registers
- *   via set_property intents. Other entity properties (status, …) flow
- *   through WordPress saves as usual.
+ * - Blocks sync through the capture bridge; entity properties sync as
+ *   per-name registers via set_property intents — the framework's scalar
+ *   synced-property set (SYNCED_PROPERTIES), the post type's attached
+ *   taxonomies (term-ID-array registers by rest_base), and registered
+ *   post meta (per-key registers under `meta.<key>` names, minus the
+ *   persisted-CRDT denylist).
  * - Undo rides core's default WPUndoManager (`undoManager` stays
  *   undefined; core-data falls back automatically). Escalated intents are
  *   surfaced via console warning; the review-lane UI is Phase 2d.
@@ -195,10 +199,29 @@ interface EntityState {
 	docTombstones: Set< string >;
 	/**
 	 * Last property values pushed to (or captured from) the editor, for
-	 * property echo suppression. Seeded from the loaded record so the
-	 * genesis snapshot's properties are not re-pushed as edits.
+	 * property echo suppression (meta registers included, under their
+	 * `meta.<key>` names). Seeded from the loaded record so the genesis
+	 * snapshot's properties are not re-pushed as edits.
 	 */
-	lastPushedProps: Record< string, string >;
+	lastPushedProps: Record< string, unknown >;
+	/**
+	 * The property names this entity syncs: the static scalar whitelist
+	 * plus the post type's attached taxonomies (by rest_base), resolved
+	 * once at load.
+	 */
+	syncedProperties: string[];
+	/**
+	 * Mirror of the edited record's meta object. Every meta edit flows
+	 * through update() — as the FULL merged object from editor edits
+	 * (mergedEdits) or a PARTIAL subkey set from the post-save feed — so
+	 * merging each arrival keeps this current. Meta pushes merge changed
+	 * registers over it (the raw editRecord dispatch replaces `meta`
+	 * wholesale, so a partial push would wipe sibling keys), and its key
+	 * set is the orphaned-register guard: a `meta.<key>` register with no
+	 * counterpart key here is unregistered for this post and pushing it
+	 * would mark the post permanently dirty.
+	 */
+	knownMeta: Record< string, unknown >;
 	/**
 	 * Rich-text attribute names per block type (from the entity syncConfig,
 	 * backed by the block registry). Names both the fields the bridge
@@ -209,26 +232,107 @@ interface EntityState {
 }
 
 /**
- * Entity properties synced as per-name registers (set_property intents).
- * Must be raw strings in both the edited record and the engine document.
+ * A loaded collection room (post lists, taxonomy term lists): the
+ * notification-and-refetch lane. Collection documents carry no records —
+ * only per-client save registers (COLLECTION_SAVE_PREFIX names) — and a
+ * peer's register write means "a record of this type was saved; refetch
+ * the REST query". Mirrors the framework's EngineCollection contract
+ * (markSaved → onPeerSave) without syncing record content, which is what
+ * lets a newly created category reach every collaborator's term list.
  */
-const SYNCED_PROPERTIES = [ 'title' ];
+interface CollectionState {
+	session: IntentLogSession;
+	providers: ProviderCreatorResult[];
+	unloaded: boolean;
+	/** Presence surface (optional; taxonomy configs may not define one). */
+	awareness?: Awareness;
+	/** This client's save register name (its writes never refetch). */
+	selfRegister: string;
+	/** Monotonic value for the save register (one bump per save). */
+	saveSeq: number;
+	/** A save announced before the room bootstrap, replayed on init. */
+	pendingSave: boolean;
+	/** Peer-register snapshot, null until the bootstrap baseline is set. */
+	lastSignature: string | null;
+}
 
 /**
- * Reads a synced property from a record or edits object as a raw string.
- * REST records carry title as `{ raw, rendered }`; editor edits carry it as
- * a plain string.
+ * Register-name prefix for collection save signals. Each client writes
+ * ONLY its own register (suffixed with its actor identity), so concurrent
+ * saves by different clients touch different names and can never escalate
+ * a property conflict — an escalated (parked) save signal would silently
+ * cost a peer its refetch.
+ */
+const COLLECTION_SAVE_PREFIX = 'savedAt:';
+
+/**
+ * Entity properties synced as per-name registers (set_property intents).
+ * The scalar subset of the framework's synced-property contract (see
+ * `syncedProperties` in core-data's entities.js) — blocks/content sync
+ * through the capture bridge, and `meta` is a later phase. Each entity
+ * extends this static set with its post type's attached taxonomies (by
+ * rest_base, mirroring the framework's dynamic entries — term-ID arrays
+ * as whole-array registers). Values are raw JSON scalars (string, number,
+ * boolean, or null) or term-ID arrays in both the edited record and the
+ * engine document.
+ */
+const SYNCED_PROPERTIES = [
+	'title',
+	'excerpt',
+	'slug',
+	'status',
+	'comment_status',
+	'ping_status',
+	'format',
+	'sticky',
+	'author',
+	'featured_media',
+	'date',
+	'template',
+];
+
+/**
+ * A raw value a synced property register may hold: a JSON scalar, or a
+ * term-ID array (taxonomy properties sync as whole-array registers).
+ */
+type SyncedPropertyValue = string | number | boolean | null | number[];
+
+/**
+ * Whether a value is a term-ID array (every element a number).
+ *
+ * @param value Candidate value.
+ * @return True for arrays of numbers (including empty).
+ */
+function isTermIdArray( value: unknown ): value is number[] {
+	return (
+		Array.isArray( value ) &&
+		value.every( ( item ) => 'number' === typeof item )
+	);
+}
+
+/**
+ * Reads a synced property from a record or edits object as a raw value.
+ * REST records carry title/excerpt as `{ raw, rendered }`; editor edits
+ * carry them as plain strings. Other properties are plain scalars in both
+ * shapes (`date` may be null: a "floating" publish-immediately date), and
+ * taxonomy properties are term-ID arrays.
  *
  * @param source Record or edits object.
  * @param name   Property name.
- * @return The raw string value, or undefined.
+ * @return The raw value, or undefined when absent/unsyncable.
  */
 function rawPropertyValue(
 	source: Record< string, unknown >,
 	name: string
-): string | undefined {
+): SyncedPropertyValue | undefined {
 	const value = source[ name ];
-	if ( 'string' === typeof value ) {
+	if (
+		null === value ||
+		'string' === typeof value ||
+		'number' === typeof value ||
+		'boolean' === typeof value ||
+		isTermIdArray( value )
+	) {
 		return value;
 	}
 	if (
@@ -237,6 +341,155 @@ function rawPropertyValue(
 		'string' === typeof ( value as { raw?: unknown } ).raw
 	) {
 		return ( value as { raw: string } ).raw;
+	}
+	return undefined;
+}
+
+/**
+ * Whether an engine-document register value is one the property lane may
+ * push into the editor. Guards against malformed remote payloads
+ * (set_property values are unvalidated `isAny` on the wire).
+ *
+ * @param value Register value from the engine document.
+ * @return True for string/number/boolean/null and term-ID arrays.
+ */
+function isSyncablePropertyValue(
+	value: unknown
+): value is SyncedPropertyValue {
+	return (
+		null === value ||
+		'string' === typeof value ||
+		'number' === typeof value ||
+		'boolean' === typeof value ||
+		isTermIdArray( value )
+	);
+}
+
+/**
+ * Canonical form of a property value: term-ID arrays sort numerically,
+ * everything else passes through. Taxonomy bindings are SETS — the editor
+ * appends IDs in click order while the REST record serializes name order,
+ * and without one canonical order the post-save mutation feed re-captures
+ * the same set as a "change", whose register write then collides with any
+ * in-flight toggle as a spurious property-conflict escalation.
+ *
+ * @param value Property value.
+ * @return The canonical value (a sorted copy for term-ID arrays).
+ */
+function canonicalPropertyValue( value: unknown ): unknown {
+	if ( isTermIdArray( value ) ) {
+		return [ ...value ].sort( ( a, b ) => a - b );
+	}
+	return value;
+}
+
+/**
+ * Value equality for property registers: strict for scalars, and
+ * order-INSENSITIVE elementwise comparison for term-ID arrays (see
+ * canonicalPropertyValue — same set must never read as a change, even
+ * against unsorted values written by older clients). Array registers
+ * arrive as fresh instances on every read, so reference equality would
+ * author an echo intent per render.
+ *
+ * @param a One value (may be undefined: absent).
+ * @param b Other value.
+ * @return True when the register values are the same.
+ */
+function samePropertyValue( a: unknown, b: unknown ): boolean {
+	if ( a === b ) {
+		return true;
+	}
+	if ( ! Array.isArray( a ) || ! Array.isArray( b ) ) {
+		return false;
+	}
+	if ( a.length !== b.length ) {
+		return false;
+	}
+	const aSorted = canonicalPropertyValue( a );
+	const bSorted = canonicalPropertyValue( b );
+	return (
+		Array.isArray( aSorted ) &&
+		Array.isArray( bSorted ) &&
+		aSorted.every( ( item, index ) => item === bSorted[ index ] )
+	);
+}
+
+/**
+ * Register-name prefix for post-meta properties: each registered meta key
+ * syncs as its own register (`meta.<key>`), giving concurrent edits to
+ * DIFFERENT keys independence and same-key conflicts the per-register
+ * escalation grain.
+ */
+const META_PROPERTY_PREFIX = 'meta.';
+
+/**
+ * Meta keys that never sync, mirroring the framework sync config's
+ * `disallowedPostMetaKeys`: the persisted CRDT snapshot is transport
+ * state, not content.
+ */
+const DISALLOWED_META_KEYS = new Set( [ '_crdt_document' ] );
+
+/**
+ * Deep equality over JSON values, for meta registers (whose values may be
+ * arbitrary registered-schema JSON). One deliberate looseness: an empty
+ * array and an empty plain object compare EQUAL, because PHP's JSON
+ * encoding cannot distinguish an empty assoc array from an empty list —
+ * a genesis seeded from PHP would otherwise ping-pong an empty
+ * object-typed meta value forever.
+ *
+ * @param a One value.
+ * @param b Other value.
+ * @return True when the values are structurally equal.
+ */
+function jsonDeepEqual( a: unknown, b: unknown ): boolean {
+	if ( a === b ) {
+		return true;
+	}
+	const aIsArray = Array.isArray( a );
+	const bIsArray = Array.isArray( b );
+	if ( aIsArray && bIsArray ) {
+		return (
+			( a as unknown[] ).length === ( b as unknown[] ).length &&
+			( a as unknown[] ).every( ( item, index ) =>
+				jsonDeepEqual( item, ( b as unknown[] )[ index ] )
+			)
+		);
+	}
+	const aIsObject = ! aIsArray && a && 'object' === typeof a;
+	const bIsObject = ! bIsArray && b && 'object' === typeof b;
+	if ( aIsObject && bIsObject ) {
+		const aEntries = Object.entries( a as Record< string, unknown > );
+		const bRecord = b as Record< string, unknown >;
+		return (
+			aEntries.length === Object.keys( bRecord ).length &&
+			aEntries.every(
+				( [ key, value ] ) =>
+					key in bRecord && jsonDeepEqual( value, bRecord[ key ] )
+			)
+		);
+	}
+	// The PHP JSON boundary: empty assoc array === empty list.
+	const isEmptyContainer = ( value: unknown ) =>
+		( Array.isArray( value ) && 0 === value.length ) ||
+		( !! value &&
+			'object' === typeof value &&
+			! Array.isArray( value ) &&
+			0 === Object.keys( value as object ).length );
+	return isEmptyContainer( a ) && isEmptyContainer( b );
+}
+
+/**
+ * A record or edits object's `meta` as a plain object, or undefined.
+ *
+ * @param source Record or edits object.
+ * @return The meta object, or undefined.
+ */
+function metaObject(
+	source: Record< string, unknown >
+): Record< string, unknown > | undefined {
+	const value = source.meta;
+	if ( value && 'object' === typeof value && ! Array.isArray( value ) ) {
+		return value as Record< string, unknown >;
 	}
 	return undefined;
 }
@@ -614,6 +867,7 @@ function chooseObservedBaseline(
  */
 export function createIntentLogManager( debug = false ): SyncManager {
 	const entityStates = new Map< string, EntityState >();
+	const collectionStates = new Map< ObjectType, CollectionState >();
 	const userId =
 		Number(
 			( window as { _wpCollaborationUserId?: unknown } )
@@ -629,6 +883,44 @@ export function createIntentLogManager( debug = false ): SyncManager {
 
 	const entityKey = ( objectType: ObjectType, objectId: ObjectID | null ) =>
 		`${ objectType }_${ objectId }`;
+
+	/**
+	 * The post type's attached taxonomies as synced-property names (their
+	 * rest_base), mirroring how the framework's entities.js builds its
+	 * dynamic syncedProperties entries. Cached per post type for the
+	 * manager's lifetime; failure degrades to the static scalar set (terms
+	 * then ride saves, as before).
+	 */
+	const taxonomyPropertiesByPostType = new Map<
+		string,
+		Promise< string[] >
+	>();
+	const taxonomyProperties = ( postType: string ): Promise< string[] > => {
+		let promise = taxonomyPropertiesByPostType.get( postType );
+		if ( ! promise ) {
+			promise = ( async () => {
+				try {
+					const [ types, taxonomies ] = await Promise.all( [
+						apiFetch< {
+							[ name: string ]: { taxonomies?: string[] };
+						} >( { path: '/wp/v2/types?context=view' } ),
+						apiFetch< {
+							[ name: string ]: { rest_base?: string };
+						} >( { path: '/wp/v2/taxonomies?context=view' } ),
+					] );
+					return ( types?.[ postType ]?.taxonomies ?? [] )
+						.map(
+							( taxonomy ) => taxonomies?.[ taxonomy ]?.rest_base
+						)
+						.filter( ( base ): base is string => Boolean( base ) );
+				} catch {
+					return [];
+				}
+			} )();
+			taxonomyPropertiesByPostType.set( postType, promise );
+		}
+		return promise;
+	};
 
 	async function loadEntity(
 		syncConfig: SyncConfig,
@@ -646,6 +938,22 @@ export function createIntentLogManager( debug = false ): SyncManager {
 		}
 		const providerCreators = getProviderCreators();
 		if ( 0 === providerCreators.length ) {
+			return;
+		}
+
+		/*
+		 * This entity's synced properties: the static scalar whitelist plus
+		 * the post type's attached taxonomies (objectType is
+		 * `postType/<slug>`). Resolved before any state exists; re-check
+		 * for a racing load after the await.
+		 */
+		const syncedProperties = [
+			...SYNCED_PROPERTIES,
+			...( await taxonomyProperties(
+				objectType.split( '/' )[ 1 ] ?? ''
+			) ),
+		];
+		if ( entityStates.has( key ) ) {
 			return;
 		}
 
@@ -671,17 +979,47 @@ export function createIntentLogManager( debug = false ): SyncManager {
 		 * a genesis snapshot whose properties match what the editor already
 		 * shows must not be re-pushed as an edit. A ROOM value that differs
 		 * (another client changed the title before we joined) still pushes.
+		 *
+		 * The "Auto Draft" placeholder is normalized to the empty string the
+		 * server genesis seeds (a fresh auto-draft stores the placeholder
+		 * title while the editor shows an empty field), so opening a new
+		 * post does not push a spurious title edit.
 		 */
-		const initialProps: Record< string, string > = {};
-		for ( const name of SYNCED_PROPERTIES ) {
-			const value = rawPropertyValue(
+		const initialProps: Record< string, unknown > = {};
+		for ( const name of syncedProperties ) {
+			let value = rawPropertyValue(
 				record as Record< string, unknown >,
 				name
 			);
-			if ( undefined !== value ) {
-				initialProps[ name ] = value;
+			if ( undefined === value ) {
+				continue;
 			}
+			if (
+				'title' === name &&
+				'Auto Draft' === value &&
+				'auto-draft' === ( record as Record< string, unknown > ).status
+			) {
+				value = '';
+			}
+			initialProps[ name ] = canonicalPropertyValue( value );
 		}
+		// Meta registers seed the same way, under their prefixed names.
+		const recordMeta =
+			metaObject( record as Record< string, unknown > ) ?? {};
+		for ( const [ metaKey, metaValue ] of Object.entries( recordMeta ) ) {
+			if (
+				DISALLOWED_META_KEYS.has( metaKey ) ||
+				undefined === metaValue
+			) {
+				continue;
+			}
+			initialProps[ META_PROPERTY_PREFIX + metaKey ] = metaValue;
+		}
+
+		const recordContent = rawPropertyValue(
+			record as Record< string, unknown >,
+			'content'
+		);
 
 		const state: EntityState = {
 			session,
@@ -695,10 +1033,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			// Record seeding (source 1 of the editorIds contract): the ids
 			// persisted in the content this editor loaded and rendered.
 			editorIds: collectPersistedSyncIds(
-				rawPropertyValue(
-					record as Record< string, unknown >,
-					'content'
-				)
+				'string' === typeof recordContent ? recordContent : undefined
 			),
 			genesisSeeded: false,
 			prevDocIds: new Set(),
@@ -708,6 +1043,8 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			syncTimer: null,
 			syncForce: false,
 			lastPushedProps: initialProps,
+			syncedProperties,
+			knownMeta: { ...recordMeta },
 			fieldsResolver:
 				syncConfig.richTextFields ?? ( () => [ 'content' ] ),
 			rawContent:
@@ -723,23 +1060,74 @@ export function createIntentLogManager( debug = false ): SyncManager {
 
 		/**
 		 * Pushes engine property values the editor has not seen yet.
+		 *
+		 * `date` is deliberately pushed like any other scalar — WITHOUT the
+		 * framework sync config's floating-date guard. That guard protects
+		 * a "publish immediately" editor from the genesis-seeded concrete
+		 * date, a case this engine prevents at the source: genesis never
+		 * seeds a floating date, and a seeded concrete date always equals
+		 * the joining record's value (echo-suppressed). Registers therefore
+		 * only ever carry DELIBERATE date changes — a sidebar edit or the
+		 * post-save mutation feed — and guarding those made propagation
+		 * depend on the peer's stale `modified` value and save history
+		 * (dates synced or not seemingly at random).
 		 */
 		const pushPropertyChanges = () => {
 			const doc = session.getDocument();
 			if ( ! doc ) {
 				return;
 			}
-			const edits: Record< string, string > = {};
-			for ( const name of SYNCED_PROPERTIES ) {
-				const value = doc.props?.[ name ];
-				if ( 'string' !== typeof value ) {
+			const edits: Record< string, unknown > = {};
+			for ( const name of state.syncedProperties ) {
+				const value = canonicalPropertyValue( doc.props?.[ name ] );
+				if (
+					undefined === value ||
+					! isSyncablePropertyValue( value )
+				) {
 					continue;
 				}
-				if ( state.lastPushedProps[ name ] === value ) {
+				if (
+					samePropertyValue( state.lastPushedProps[ name ], value )
+				) {
+					continue;
+				}
+				// An invalid status never reaches the editor.
+				if ( 'status' === name && 'auto-draft' === value ) {
 					continue;
 				}
 				state.lastPushedProps[ name ] = value;
 				edits[ name ] = value;
+			}
+			/*
+			 * Meta registers: changed `meta.<key>` values merge over the
+			 * known meta and dispatch as ONE whole meta object (the raw
+			 * editRecord dispatch replaces `meta`, so a partial object
+			 * would wipe sibling keys' local edits).
+			 */
+			const metaEdits: Record< string, unknown > = {};
+			for ( const [ name, value ] of Object.entries( doc.props ?? {} ) ) {
+				if ( ! name.startsWith( META_PROPERTY_PREFIX ) ) {
+					continue;
+				}
+				const metaKey = name.slice( META_PROPERTY_PREFIX.length );
+				if ( DISALLOWED_META_KEYS.has( metaKey ) ) {
+					continue;
+				}
+				if ( jsonDeepEqual( state.lastPushedProps[ name ], value ) ) {
+					continue;
+				}
+				// Orphaned-register guard: a key with no counterpart in
+				// this post's meta is not registered here; pushing it
+				// would mark the post permanently dirty.
+				if ( ! ( metaKey in state.knownMeta ) ) {
+					continue;
+				}
+				state.lastPushedProps[ name ] = value;
+				metaEdits[ metaKey ] = value;
+			}
+			if ( Object.keys( metaEdits ).length > 0 ) {
+				state.knownMeta = { ...state.knownMeta, ...metaEdits };
+				edits.meta = state.knownMeta;
 			}
 			if ( Object.keys( edits ).length > 0 ) {
 				handlers.editRecord( edits, { undoIgnore: true } );
@@ -1064,15 +1452,158 @@ export function createIntentLogManager( debug = false ): SyncManager {
 		void record;
 	}
 
+	/**
+	 * Loads a collection room (the notification-and-refetch lane): the
+	 * room's document holds only per-client save registers, and a change
+	 * to a PEER's register triggers a REST refetch of the collection
+	 * query. The server needs nothing new — collection rooms already
+	 * initialize with an empty document, and save registers are ordinary
+	 * set_property intents through the existing log machinery
+	 * (compaction included).
+	 * @param syncConfig
+	 * @param objectType
+	 * @param handlers
+	 */
+	async function loadCollection(
+		syncConfig: SyncConfig,
+		objectType: ObjectType,
+		handlers: CollectionHandlers
+	): Promise< void > {
+		if ( collectionStates.has( objectType ) ) {
+			return;
+		}
+		if ( false === syncConfig.shouldSync?.( objectType, null ) ) {
+			return;
+		}
+		const providerCreators = getProviderCreators();
+		if ( 0 === providerCreators.length ) {
+			return;
+		}
+
+		const clientId = Math.floor( Math.random() * ( 2 ** 31 - 1 ) ) + 1;
+		const awareness = syncConfig.createAwareness?.(
+			createAwarenessDoc( clientId ) as never
+		);
+		const session = createIntentLogSession( {
+			userId,
+			clientId,
+			awareness,
+		} );
+		const state: CollectionState = {
+			session,
+			providers: [],
+			unloaded: false,
+			awareness,
+			selfRegister: `${ COLLECTION_SAVE_PREFIX }u${ userId }c${ clientId }`,
+			saveSeq: 0,
+			pendingSave: false,
+			lastSignature: null,
+		};
+		collectionStates.set( objectType, state );
+
+		/**
+		 * The peer save registers as a comparable signature. The client's
+		 * own register is excluded: its own saves must not refetch.
+		 */
+		const peerSignature = () => {
+			const doc = session.getDocument();
+			const entries = Object.entries( doc?.props ?? {} )
+				.filter(
+					( [ name ] ) =>
+						name.startsWith( COLLECTION_SAVE_PREFIX ) &&
+						name !== state.selfRegister
+				)
+				.sort( ( [ a ], [ b ] ) => ( a < b ? -1 : 1 ) );
+			return JSON.stringify( entries );
+		};
+
+		session.onChange( () => {
+			if ( state.unloaded || ! session.isInitialized() ) {
+				return;
+			}
+			if ( state.pendingSave ) {
+				state.pendingSave = false;
+				announceCollectionSave( objectType );
+			}
+			const signature = peerSignature();
+			if ( null === state.lastSignature ) {
+				/*
+				 * Bootstrap baseline: the resolver fetched the collection
+				 * via REST immediately before loading the room, so the
+				 * registers in the bootstrap document are already
+				 * reflected — refetching would be redundant.
+				 */
+				state.lastSignature = signature;
+				return;
+			}
+			if ( signature === state.lastSignature ) {
+				return;
+			}
+			state.lastSignature = signature;
+			void handlers.refetchRecords().catch( () => {} );
+		} );
+
+		log( 'connecting collection', { objectType } );
+		state.providers = await Promise.all(
+			providerCreators.map( async ( create: ProviderCreator ) => {
+				const provider = await create( {
+					objectType,
+					objectId: null,
+					session,
+				} );
+				provider.on( 'status', handlers.onStatusChange );
+				return provider;
+			} )
+		);
+
+		if ( state.unloaded ) {
+			state.providers.forEach( ( provider ) => provider.destroy() );
+		}
+	}
+
+	/**
+	 * Announces a saved record of this object type to its collection room
+	 * (when one is loaded) by bumping this client's save register. Peers
+	 * observe the register change and refetch their collection query —
+	 * how a newly created term reaches every collaborator's checklist.
+	 *
+	 * @param objectType Object type whose record was saved.
+	 */
+	function announceCollectionSave( objectType: ObjectType ): void {
+		const state = collectionStates.get( objectType );
+		if ( ! state || state.unloaded ) {
+			return;
+		}
+		if ( ! state.session.isInitialized() ) {
+			state.pendingSave = true; // Replayed on bootstrap.
+			return;
+		}
+		const doc = state.session.getDocument();
+		state.saveSeq++;
+		state.session.author( 'set_property', {
+			name: state.selfRegister,
+			value: state.saveSeq,
+			observedVersion: doc?.propVersions?.[ state.selfRegister ] ?? 0,
+		} );
+	}
+
 	return {
 		load: loadEntity,
 
-		loadCollection: async () => {
-			// Collection rooms (post lists, taxonomies) are not part of the
-			// intent-log v1 scope; entities cover the editing surface.
-		},
+		loadCollection,
 
-		update( objectType, objectId, changes, origin ) {
+		update( objectType, objectId, changes, origin, options = {} ) {
+			/*
+			 * A record SAVE announces to the object type's collection room
+			 * regardless of whether an entity is loaded: term saves arrive
+			 * here with no entity state (nobody edits a term record in the
+			 * editor), and the collection contract is save-notification,
+			 * not content sync.
+			 */
+			if ( options.isSave ) {
+				announceCollectionSave( objectType );
+			}
+
 			const state = entityStates.get( entityKey( objectType, objectId ) );
 			if ( ! state || state.unloaded ) {
 				return;
@@ -1088,15 +1619,40 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			 * push or of the document state and are suppressed.
 			 */
 			const doc = state.session.getDocument()!;
-			for ( const name of SYNCED_PROPERTIES ) {
+			for ( const name of state.syncedProperties ) {
 				if ( ! ( name in changes ) ) {
 					continue;
 				}
-				const value = rawPropertyValue(
+				let value = rawPropertyValue(
 					changes as Record< string, unknown >,
 					name
-				);
-				if ( undefined === value || doc.props?.[ name ] === value ) {
+				) as SyncedPropertyValue | undefined;
+				if ( undefined === value ) {
+					continue;
+				}
+				// Term-ID arrays author in canonical (numeric) order.
+				value = canonicalPropertyValue( value ) as SyncedPropertyValue;
+				/*
+				 * Per-property capture guards, mirroring the framework's
+				 * applyPostChangesToCRDTDoc: the "Auto Draft" placeholder
+				 * never overwrites an empty shared title, an invalid
+				 * auto-draft status never syncs, and an empty slug (the
+				 * auto-generated default) never syncs.
+				 */
+				if (
+					'title' === name &&
+					'Auto Draft' === value &&
+					! doc.props?.title
+				) {
+					value = '';
+				}
+				if ( 'status' === name && 'auto-draft' === value ) {
+					continue;
+				}
+				if ( 'slug' === name && ! value ) {
+					continue;
+				}
+				if ( samePropertyValue( doc.props?.[ name ], value ) ) {
 					continue;
 				}
 				state.lastPushedProps[ name ] = value;
@@ -1109,6 +1665,46 @@ export function createIntentLogManager( debug = false ): SyncManager {
 					} );
 				} finally {
 					state.capturing = false;
+				}
+			}
+
+			/*
+			 * Meta capture: per-key registers under `meta.<key>` names. The
+			 * edits object carries meta as the FULL merged object (editor
+			 * edits, via mergedEdits) or a PARTIAL subkey set (the
+			 * post-save server-mutation feed) — merging into knownMeta and
+			 * per-key echo suppression handle both shapes.
+			 */
+			const metaChanges = metaObject(
+				changes as Record< string, unknown >
+			);
+			if ( metaChanges ) {
+				state.knownMeta = { ...state.knownMeta, ...metaChanges };
+				for ( const [ metaKey, metaValue ] of Object.entries(
+					metaChanges
+				) ) {
+					if (
+						DISALLOWED_META_KEYS.has( metaKey ) ||
+						undefined === metaValue ||
+						'function' === typeof metaValue
+					) {
+						continue;
+					}
+					const name = META_PROPERTY_PREFIX + metaKey;
+					if ( jsonDeepEqual( doc.props?.[ name ], metaValue ) ) {
+						continue;
+					}
+					state.lastPushedProps[ name ] = metaValue;
+					state.capturing = true;
+					try {
+						state.session.author( 'set_property', {
+							name,
+							value: metaValue,
+							observedVersion: doc.propVersions?.[ name ] ?? 0,
+						} );
+					} finally {
+						state.capturing = false;
+					}
 				}
 			}
 
@@ -1411,6 +2007,21 @@ export function createIntentLogManager( debug = false ): SyncManager {
 		undoManager: undefined,
 
 		unload( objectType, objectId ) {
+			// A null objectId addresses the object type's collection room.
+			if ( null === objectId ) {
+				const collection = collectionStates.get( objectType );
+				if ( ! collection ) {
+					return;
+				}
+				collection.unloaded = true;
+				collection.providers.forEach( ( provider ) =>
+					provider.destroy()
+				);
+				collection.awareness?.destroy();
+				collection.session.destroy();
+				collectionStates.delete( objectType );
+				return;
+			}
 			const key = entityKey( objectType, objectId );
 			const state = entityStates.get( key );
 			if ( ! state ) {
@@ -1437,6 +2048,15 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				state.session.destroy();
 			}
 			entityStates.clear();
+			for ( const [ , collection ] of collectionStates ) {
+				collection.unloaded = true;
+				collection.providers.forEach( ( provider ) =>
+					provider.destroy()
+				);
+				collection.awareness?.destroy();
+				collection.session.destroy();
+			}
+			collectionStates.clear();
 		},
 
 		// Transport-agnostic retry: ask every live provider to retry after a
@@ -1444,6 +2064,11 @@ export function createIntentLogManager( debug = false ): SyncManager {
 		retry() {
 			for ( const [ , state ] of entityStates ) {
 				state.providers.forEach( ( provider ) => provider.retry?.() );
+			}
+			for ( const [ , collection ] of collectionStates ) {
+				collection.providers.forEach(
+					( provider ) => provider.retry?.()
+				);
 			}
 		},
 	};

@@ -28,6 +28,27 @@ jest.mock( '@wordpress/blocks', () => ( {
 			: undefined,
 } ) );
 
+// Taxonomy discovery (the manager mirrors entities.js: post-type
+// taxonomies by rest_base). The built-in post type carries the two
+// standard taxonomies.
+jest.mock( '@wordpress/api-fetch', () => ( {
+	__esModule: true,
+	default: jest.fn( ( { path }: { path: string } ) => {
+		if ( path.startsWith( '/wp/v2/types' ) ) {
+			return Promise.resolve( {
+				post: { taxonomies: [ 'category', 'post_tag' ] },
+			} );
+		}
+		if ( path.startsWith( '/wp/v2/taxonomies' ) ) {
+			return Promise.resolve( {
+				category: { rest_base: 'categories' },
+				post_tag: { rest_base: 'tags' },
+			} );
+		}
+		return Promise.resolve( {} );
+	} ),
+} ) );
+
 /**
  * Internal dependencies
  */
@@ -1324,6 +1345,508 @@ describe( 'intent-log manager', () => {
 			sentAfter.filter( ( t ) => 'set_property' === t )
 		).toHaveLength( 1 );
 		expect( handlers.edits ).toHaveLength( editsBefore );
+	} );
+
+	it( 'properties: non-string scalars (sticky, featured_media, author) round-trip with their types', async () => {
+		const { manager, handlers, transport } = await loadManagedEntity( {
+			sticky: false,
+			featured_media: 0,
+			author: 1,
+		} );
+		// Genesis matching the loaded record pushes nothing (typed echo
+		// suppression).
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [], { sticky: false, featured_media: 0, author: 1 } )
+		);
+		expect( handlers.edits ).toHaveLength( 0 );
+
+		// Local edits author typed set_property intents.
+		manager.update(
+			'postType/post',
+			'1',
+			{ sticky: true, featured_media: 42 },
+			'e'
+		);
+		const sent = transport.captured.sent.map( ( update ) =>
+			JSON.parse( update.data )
+		);
+		const byName = Object.fromEntries(
+			sent
+				.filter( ( intent ) => 'set_property' === intent.type )
+				.map( ( intent ) => [
+					intent.payload.name,
+					intent.payload.value,
+				] )
+		);
+		expect( byName ).toEqual( { sticky: true, featured_media: 42 } );
+
+		// A remote value pushes with its type preserved.
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				intentId: 'remote-author-1',
+				actorId: 'u9c9',
+				baseSeq: 3,
+				txnId: null,
+				type: 'set_property',
+				payload: { name: 'author', value: 7, observedVersion: 1 },
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.INTENT,
+		} );
+		expect( handlers.edits.at( -1 ) ).toEqual( { author: 7 } );
+	} );
+
+	it( 'properties: an auto-draft status neither captures nor pushes; a real status syncs', async () => {
+		const { manager, handlers, transport } = await loadManagedEntity( {
+			status: 'draft',
+		} );
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [], { status: 'draft' } )
+		);
+
+		// Capture guard: the invalid status never becomes an intent.
+		manager.update( 'postType/post', '1', { status: 'auto-draft' }, 'e' );
+		expect( transport.captured.sent ).toHaveLength( 0 );
+
+		// A genuine workflow change authors an intent…
+		manager.update( 'postType/post', '1', { status: 'pending' }, 'e' );
+		const sent = transport.captured.sent.map( ( update ) =>
+			JSON.parse( update.data )
+		);
+		expect( sent.at( -1 ).payload ).toMatchObject( {
+			name: 'status',
+			value: 'pending',
+		} );
+
+		// …and a remote auto-draft register value never reaches the editor.
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				intentId: 'remote-status-1',
+				actorId: 'u9c9',
+				baseSeq: 3,
+				txnId: null,
+				type: 'set_property',
+				payload: {
+					name: 'status',
+					value: 'auto-draft',
+					observedVersion: 2,
+				},
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.INTENT,
+		} );
+		expect(
+			handlers.edits.filter(
+				( edit ) => 'status' in ( edit as Record< string, unknown > )
+			)
+		).toHaveLength( 0 );
+	} );
+
+	it( 'properties: an empty slug (auto-generated default) is not captured; a real slug is', async () => {
+		const { manager, transport } = await loadManagedEntity( {
+			slug: '',
+		} );
+		transport.captured.session!.receiveUpdate( snapshotRow( [] ) );
+
+		manager.update( 'postType/post', '1', { slug: '' }, 'e' );
+		expect( transport.captured.sent ).toHaveLength( 0 );
+
+		manager.update( 'postType/post', '1', { slug: 'hello-world' }, 'e' );
+		const sent = transport.captured.sent.map( ( update ) =>
+			JSON.parse( update.data )
+		);
+		expect( sent.at( -1 ).payload ).toMatchObject( {
+			name: 'slug',
+			value: 'hello-world',
+		} );
+	} );
+
+	it( 'properties: the "Auto Draft" placeholder title is inert against a blanked genesis', async () => {
+		// A fresh auto-draft: the record carries the stored placeholder,
+		// the server genesis seeds the blanked title. Neither joining nor
+		// the editor reporting the placeholder may author or push an edit.
+		const { manager, handlers, transport } = await loadManagedEntity( {
+			title: { raw: 'Auto Draft' },
+			status: 'auto-draft',
+		} );
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [], { title: '' } )
+		);
+		expect(
+			handlers.edits.filter(
+				( edit ) => 'title' in ( edit as Record< string, unknown > )
+			)
+		).toHaveLength( 0 );
+
+		manager.update( 'postType/post', '1', { title: 'Auto Draft' }, 'e' );
+		expect( transport.captured.sent ).toHaveLength( 0 );
+	} );
+
+	it( 'properties: a remote date lands immediately, floating local date or not', async () => {
+		// A register only ever carries a DELIBERATE date change (sidebar
+		// edit or post-save mutation feed) — genesis parity keeps floating
+		// dates out of the room — so the peer applies it unconditionally.
+		// The old floating-date receive guard made propagation depend on
+		// the peer's stale `modified` value and save history.
+		const { handlers, transport } = await loadManagedEntity( {
+			date: '2026-08-01T10:00:00',
+		} );
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [], { date: '2026-08-01T10:00:00' } )
+		);
+		// Genesis matching the record is not a change.
+		expect( handlers.edits ).toHaveLength( 0 );
+
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				intentId: 'remote-date-1',
+				actorId: 'u9c9',
+				baseSeq: 1,
+				txnId: null,
+				type: 'set_property',
+				payload: {
+					name: 'date',
+					value: '2026-09-01T09:00:00',
+					observedVersion: 1,
+				},
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.INTENT,
+		} );
+		expect( handlers.edits.at( -1 ) ).toEqual( {
+			date: '2026-09-01T09:00:00',
+		} );
+	} );
+
+	it( 'taxonomies: term-ID arrays round-trip as whole-array registers with value-based echo suppression', async () => {
+		const { manager, handlers, transport } = await loadManagedEntity( {
+			categories: [ 1 ],
+			tags: [ 4, 7 ],
+		} );
+		// Genesis carrying equal (but fresh) arrays pushes nothing.
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [], { categories: [ 1 ], tags: [ 4, 7 ] } )
+		);
+		expect( handlers.edits ).toHaveLength( 0 );
+
+		// A local term change authors one whole-array set_property…
+		manager.update( 'postType/post', '1', { tags: [ 4, 7, 9 ] }, 'e' );
+		const sent = transport.captured.sent.map( ( update ) =>
+			JSON.parse( update.data )
+		);
+		expect( sent.at( -1 ).payload ).toMatchObject( {
+			name: 'tags',
+			value: [ 4, 7, 9 ],
+		} );
+
+		// …and the editor echoing the same terms (a NEW array instance)
+		// authors nothing further.
+		manager.update( 'postType/post', '1', { tags: [ 4, 7, 9 ] }, 'e' );
+		expect(
+			transport.captured.sent.map(
+				( update ) => JSON.parse( update.data ).type
+			)
+		).toHaveLength( 1 );
+
+		// A remote term change pushes the whole array into the editor.
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				intentId: 'remote-cats-1',
+				actorId: 'u9c9',
+				baseSeq: 2,
+				txnId: null,
+				type: 'set_property',
+				payload: {
+					name: 'categories',
+					value: [ 5, 6 ],
+					observedVersion: 1,
+				},
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.INTENT,
+		} );
+		expect( handlers.edits.at( -1 ) ).toEqual( { categories: [ 5, 6 ] } );
+	} );
+
+	it( 'taxonomies: term order never reads as a change, and captures author canonical order', async () => {
+		// The editor appends term IDs in click order while REST serializes
+		// name order; the same SET in a different order must neither push
+		// nor author (it used to escalate spurious property conflicts via
+		// the post-save mutation feed).
+		const { manager, handlers, transport } = await loadManagedEntity( {
+			tags: [ 4, 7 ],
+		} );
+		// A register holding the same set in another order (e.g. written
+		// by an older client) is not a change.
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [], { tags: [ 7, 4 ] } )
+		);
+		expect( handlers.edits ).toHaveLength( 0 );
+
+		// The save feed reporting the same set reordered authors nothing.
+		manager.update( 'postType/post', '1', { tags: [ 7, 4 ] }, 'e' );
+		expect( transport.captured.sent ).toHaveLength( 0 );
+
+		// A genuine change authors in canonical (numeric) order regardless
+		// of the editor's click order.
+		manager.update( 'postType/post', '1', { tags: [ 9, 7, 4 ] }, 'e' );
+		const sent = transport.captured.sent.map( ( update ) =>
+			JSON.parse( update.data )
+		);
+		expect( sent.at( -1 ).payload ).toMatchObject( {
+			name: 'tags',
+			value: [ 4, 7, 9 ],
+		} );
+	} );
+
+	it( 'taxonomies: a non-numeric array is not capturable', async () => {
+		const { manager, transport } = await loadManagedEntity( {
+			tags: [],
+		} );
+		transport.captured.session!.receiveUpdate( snapshotRow( [] ) );
+
+		manager.update(
+			'postType/post',
+			'1',
+			{ tags: [ 'not-a-term-id' ] },
+			'e'
+		);
+		expect( transport.captured.sent ).toHaveLength( 0 );
+	} );
+
+	it( 'meta: registers round-trip per key, merge over sibling keys, and suppress deep echoes', async () => {
+		const { manager, handlers, transport } = await loadManagedEntity( {
+			meta: { footnotes: '', color: 'blue', obj: { x: 1 } },
+		} );
+		// Genesis matching the record's meta (fresh instances, nested
+		// object included) pushes nothing.
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [], {
+				'meta.footnotes': '',
+				'meta.color': 'blue',
+				'meta.obj': { x: 1 },
+			} )
+		);
+		expect( handlers.edits ).toHaveLength( 0 );
+
+		// A local meta edit arrives as the FULL merged object; only the
+		// changed key authors an intent.
+		manager.update(
+			'postType/post',
+			'1',
+			{ meta: { footnotes: '[1]', color: 'blue', obj: { x: 1 } } },
+			'e'
+		);
+		const sent = transport.captured.sent.map( ( update ) =>
+			JSON.parse( update.data )
+		);
+		expect( sent ).toHaveLength( 1 );
+		expect( sent[ 0 ].payload ).toMatchObject( {
+			name: 'meta.footnotes',
+			value: '[1]',
+		} );
+
+		// A remote register change pushes ONE whole meta object, merged
+		// over the locally-known values of the sibling keys.
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				intentId: 'remote-meta-1',
+				actorId: 'u9c9',
+				baseSeq: 2,
+				txnId: null,
+				type: 'set_property',
+				payload: {
+					name: 'meta.color',
+					value: 'red',
+					observedVersion: 1,
+				},
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.INTENT,
+		} );
+		expect( handlers.edits.at( -1 ) ).toEqual( {
+			meta: { footnotes: '[1]', color: 'red', obj: { x: 1 } },
+		} );
+
+		// The editor's echo of the pushed state is inert.
+		const editsBefore = handlers.edits.length;
+		manager.update(
+			'postType/post',
+			'1',
+			{ meta: { footnotes: '[1]', color: 'red', obj: { x: 1 } } },
+			'e'
+		);
+		expect( transport.captured.sent ).toHaveLength( 1 );
+		expect( handlers.edits ).toHaveLength( editsBefore );
+	} );
+
+	it( 'meta: the persisted-CRDT key never captures, and an orphaned register never pushes', async () => {
+		const { manager, handlers, transport } = await loadManagedEntity( {
+			meta: { known: 'a' },
+		} );
+		// The room carries a register for a key this post does not have
+		// registered (absent from its record meta): pushing it would mark
+		// the post permanently dirty.
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [], {
+				'meta.known': 'a',
+				'meta.unknown_key': 'x',
+			} )
+		);
+		expect( handlers.edits ).toHaveLength( 0 );
+
+		// The persisted-CRDT snapshot key is transport state, not content.
+		manager.update(
+			'postType/post',
+			'1',
+			{ meta: { known: 'a', _crdt_document: 'blob' } },
+			'e'
+		);
+		expect( transport.captured.sent ).toHaveLength( 0 );
+	} );
+
+	it( 'meta: a partial save-feed meta object merges instead of replacing the known meta', async () => {
+		const { manager, handlers, transport } = await loadManagedEntity( {
+			meta: { a: '1', b: '2' },
+		} );
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [], { 'meta.a': '1', 'meta.b': '2' } )
+		);
+
+		// The post-save server-mutation feed sends only mutated subkeys.
+		manager.update( 'postType/post', '1', { meta: { a: '9' } }, 'e' );
+		const sent = transport.captured.sent.map( ( update ) =>
+			JSON.parse( update.data )
+		);
+		expect( sent ).toHaveLength( 1 );
+		expect( sent[ 0 ].payload ).toMatchObject( {
+			name: 'meta.a',
+			value: '9',
+		} );
+
+		// A remote change to the OTHER key pushes a merge that kept both
+		// the partial arrival and the untouched sibling.
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				intentId: 'remote-meta-b',
+				actorId: 'u9c9',
+				baseSeq: 2,
+				txnId: null,
+				type: 'set_property',
+				payload: {
+					name: 'meta.b',
+					value: '3',
+					observedVersion: 1,
+				},
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.INTENT,
+		} );
+		expect( handlers.edits.at( -1 ) ).toEqual( {
+			meta: { a: '9', b: '3' },
+		} );
+	} );
+
+	it( 'properties: a malformed (non-scalar) remote register value is never pushed', async () => {
+		const { handlers, transport } = await loadManagedEntity( {
+			title: { raw: 'Original' },
+		} );
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [], { title: { nested: 'object' } } )
+		);
+		expect(
+			handlers.edits.filter(
+				( edit ) => 'title' in ( edit as Record< string, unknown > )
+			)
+		).toHaveLength( 0 );
+	} );
+
+	async function loadManagedCollection() {
+		const transport = makeFakeTransport();
+		window._wpCollaborationEnabled = '1';
+		addFilter( FILTER, HOOK, () => [ transport.creator ] );
+
+		const manager = createIntentLogManager();
+		const refetchRecords = jest.fn( async () => {} );
+		await manager.loadCollection( {} as never, 'taxonomy/category', {
+			onStatusChange: jest.fn() as never,
+			refetchRecords: refetchRecords as never,
+		} );
+		return { manager, refetchRecords, transport };
+	}
+
+	it( 'collections: a peer save signal triggers a refetch; own saves announce without refetching', async () => {
+		const { manager, refetchRecords, transport } =
+			await loadManagedCollection();
+
+		// Bootstrap (empty collection genesis) sets the baseline silently.
+		transport.captured.session!.receiveUpdate( snapshotRow( [] ) );
+		expect( refetchRecords ).not.toHaveBeenCalled();
+
+		// A peer's save register write means "a term changed; refetch".
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				intentId: 'peer-save-1',
+				actorId: 'u9c9',
+				baseSeq: 0,
+				txnId: null,
+				type: 'set_property',
+				payload: {
+					name: 'savedAt:u9c9',
+					value: 1,
+					observedVersion: 0,
+				},
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.INTENT,
+		} );
+		expect( refetchRecords ).toHaveBeenCalledTimes( 1 );
+
+		// A record save on this object type announces via THIS client's
+		// register (one wire intent) and does not refetch locally.
+		manager.update( 'taxonomy/category', '77', {}, 'o', {
+			isSave: true,
+		} );
+		const sent = transport.captured.sent.map( ( update ) =>
+			JSON.parse( update.data )
+		);
+		expect( sent ).toHaveLength( 1 );
+		expect( sent[ 0 ].type ).toBe( 'set_property' );
+		expect( sent[ 0 ].payload.name ).toMatch( /^savedAt:/ );
+		expect( sent[ 0 ].payload.name ).not.toBe( 'savedAt:u9c9' );
+		expect( refetchRecords ).toHaveBeenCalledTimes( 1 );
+
+		// A further peer bump refetches again.
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				intentId: 'peer-save-2',
+				actorId: 'u9c9',
+				baseSeq: 2,
+				txnId: null,
+				type: 'set_property',
+				payload: {
+					name: 'savedAt:u9c9',
+					value: 2,
+					observedVersion: 1,
+				},
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.INTENT,
+		} );
+		expect( refetchRecords ).toHaveBeenCalledTimes( 2 );
+	} );
+
+	it( 'collections: a save announced before the bootstrap replays once the room initializes', async () => {
+		const { manager, refetchRecords, transport } =
+			await loadManagedCollection();
+
+		// The term was created while the collection room was still
+		// connecting: nothing can be sent yet…
+		manager.update( 'taxonomy/category', '78', {}, 'o', {
+			isSave: true,
+		} );
+		expect( transport.captured.sent ).toHaveLength( 0 );
+
+		// …but the signal replays on bootstrap so peers still refetch.
+		transport.captured.session!.receiveUpdate( snapshotRow( [] ) );
+		const sent = transport.captured.sent.map( ( update ) =>
+			JSON.parse( update.data )
+		);
+		expect( sent ).toHaveLength( 1 );
+		expect( sent[ 0 ].payload.name ).toMatch( /^savedAt:/ );
+		expect( refetchRecords ).not.toHaveBeenCalled();
 	} );
 
 	it( 'surfaces proposals through onEscalation with local/remote attribution', async () => {
