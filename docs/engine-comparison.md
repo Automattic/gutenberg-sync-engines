@@ -88,60 +88,66 @@ Reference numbers from one dev machine (wp-env, Docker MariaDB, Aug 2026;
 `mixed-newsroom`, 150 rounds, 4 clients, 8 paragraphs — regenerate
 locally, and never compare across machines without the harnesses'
 `environment` stanzas): intent-log service time ~0.7 ms mean per edit
-including the lock pair; de-rtc ~2.2 ms mean including the same lock pair
-(the content three-way merge — roughly 3× intent-log); yjs-server ~31 ms
-p50 / ~35 ms mean (roughly 50× intent-log — pure y-php CPU: the canonical
+including the lock pair; de-rtc ~2.0 ms mean including the same lock pair
+(the content three-way merge — roughly 3× intent-log); yjs-server ~36 ms
+p50 / ~41 ms mean (roughly 55× intent-log — pure y-php CPU: the canonical
 document is decoded, merged, and re-encoded in PHP on every ingest). For
 scale, the retired append-only relay sat at the timer floor (single-digit
 µs — read it as "negligible"). Where de-rtc pays is bytes, not cycles:
 whole documents travel in every proposal (~2.9 KB p50 requests vs
 intent-log's ~220 B at this size) and every accepted proposal stores a
-full content row (~817 KB stored vs intent-log's ~108 KB / yjs-server's
+full content row (~466 KB stored vs intent-log's ~117 KB / yjs-server's
 ~61 KB over the same session) — both scale with document size. All three
 engines' payload/storage bytes are REAL (each benchmark profile speaks its
 engine's actual wire format), all three converge with **zero lost work**
 on every scenario, and the escalation policies differ visibly: the same
-contended workload settles as 114 review escalations under intent-log
-(per-register grain), 18 under de-rtc (whole-proposal grain; identical
-concurrent writes merge as agreement), and 0 under yjs-server (silent
-CRDT last-writer-wins).
+contended workload settles as 150 review escalations under intent-log
+(per-register grain), 120 under de-rtc (whole-proposal, block-level
+grain), and 0 under yjs-server (silent CRDT last-writer-wins).
 
 The session-shaped scenarios add the time dimension single workloads
 miss. Under `structural-churn` (concurrent block inserts/removals plus
 typing) the conflict policies separate hardest: intent-log and yjs-server
-merge everything cleanly while de-rtc escalates ~50% of proposals —
+merge everything cleanly while de-rtc escalates ~49% of proposals —
 whole-document proposals against a structurally-shifting base are what
 its three-way merge refuses to auto-resolve; nothing is lost on any
 engine. `remove-contention` isolates the edit-vs-remove conflict class
 (one client types into an inserted block another client concurrently
 removes; 60 rounds, 4 clients, seed 42): intent-log escalates the
-trailing edit (~8% of edits settle `target-deleted`; the keystrokes park
-for review, and when the text lands first both apply and the token
+trailing edit (~12% of edits escalate, the trailing keystrokes parking
+as `target-deleted`; when the text lands first both apply and the token
 vanishes with the removed block), yjs-server escalates nothing (CRDT
 deletion dissolves the edit with the deleted block; deterministic, never
 surfaced), and de-rtc escalates ~22% (its whole-proposal grain sends the
 entire trailing proposal to review, roughly one escalation per contended
-pair plus collateral from the shifting base). Zero lost work on all
-three, verified by a token oracle scoped to each target block's final
-state. Under a ten-minute three-user `editorial-session` (joins, typing
-bursts, per-second polling, autosaves), intent-log holds ~0.6 ms flat,
-de-rtc holds ~2.9 ms but its room tail (and therefore the next joiner's
+pair plus collateral from the shifting base). `field-sync` (entity
+properties, taxonomy term sets, post meta alongside typing) separates
+the same policies at field grain: intent-log parks each later concurrent
+register writer (~22% of edits, `property-conflict`), de-rtc parks a
+conflicting property as its own review row while the carrying proposal
+still applies (~2% whole-proposal escalations), and yjs-server resolves
+every register silently by CRDT last-writer-wins. Zero lost work on all
+of these, verified by the engines' respective oracles. Under a
+ten-minute three-user `editorial-session` (joins, typing
+bursts, per-second polling, autosaves), intent-log holds ~0.7 ms flat,
+de-rtc holds ~3.1 ms but its room tail (and therefore the next joiner's
 download) reaches ~1.2 MB, and **yjs-server's ingest degrades with the
-growing document** — p50 ~65 ms but p90 ~203 ms by session end. Run
+growing document** — p50 ~100 ms and p90 ~260 ms by session end. Run
 `editorial-session rounds=3600` for the full hour before concluding
 about long sessions.
 
 Two costs live off the edit path and are easy to miss. The **later-joiner
 read** (a cold read at cursor 0 — what a fresh visitor downloads to enter
-the room after the session above): ~105 KB under intent-log, ~60 KB under
-yjs-server, **~813 KB under de-rtc** (the retained tail is full-content
+the room after the session above): ~113 KB under intent-log, ~60 KB under
+yjs-server, **~452 KB under de-rtc** (the retained tail is full-content
 rows). The **save path** (`materialize()` on a cold engine, as a real save
-request runs it): ~2.7 ms under intent-log, near-zero under de-rtc (the
-canonical IS post content), and **~164 ms under yjs-server** — the whole
-canonical document is decoded from scratch; the ~35 ms ingest figure never
+request runs it): ~2.2 ms under intent-log, near-zero under de-rtc (the
+canonical IS post content), and **~187 ms under yjs-server** — the whole
+canonical document is decoded from scratch; the ~41 ms ingest figure never
 shows this because the engine instance keeps the decoded doc cached within
-a request. Ingest peak memory is ~0.7–0.8 MB per request for all three at
-this document size.
+a request. Ingest peak memory per request is ~0.9 MB under intent-log,
+~1.0 MB under yjs-server, and ~1.6 MB under de-rtc at this document
+size.
 
 ## Transports are a separate axis
 
@@ -163,10 +169,10 @@ noise under intent-log), with one exception noted below.
 
 - **de-rtc storage/wire bytes scale with document size.** The benchmark
   profile (whole-content proposals + a disposition/version-lineage oracle)
-  measures it directly: ~8× intent-log's stored bytes over the same
+  measures it directly: ~4× intent-log's stored bytes over the same
   session at a small document, growing linearly — and the same tail is
-  what a later joiner downloads (~813 KB to enter the benchmark room vs
-  ~60–105 KB under the other engines). Run `long-form` at YOUR document
+  what a later joiner downloads (~452 KB to enter the benchmark room vs
+  ~60–113 KB under the other engines). Run `long-form` at YOUR document
   sizes before concluding. Deep-lag behavior is also distinct:
   a client that reads rarely escalates more (cumulative stale-base
   proposals conflict more often), and once its base ages out of the
@@ -179,10 +185,10 @@ noise under intent-log), with one exception noted below.
   silent-register-LWW class, at coarser grain). Different-block
   concurrency merges losslessly via the server's three-way merge — but
   under concurrent STRUCTURE changes the whole-proposal grain bites
-  hard: the benchmark's `structural-churn` scenario measures ~50% of
+  hard: the benchmark's `structural-churn` scenario measures ~49% of
   proposals escalating (vs 0 for intent-log and yjs-server on the same
   workload), and `remove-contention` (edit-vs-remove on one block)
-  measures ~22% (vs ~8% for intent-log, which escalates only the
+  measures ~22% (vs ~12% for intent-log, which escalates only the
   trailing edit, and 0 for yjs-server, which silently dissolves it).
   Nothing is lost, and every escalation now parks durably and
   presents in the review panel — but a workload that escalates half its
@@ -228,9 +234,9 @@ noise under intent-log), with one exception noted below.
   +10.5 ms p50 respectively at 4 writers).
 - **yjs-server ingest cost is real and scales with document size.** Every
   ingest decodes, merges, and re-encodes the canonical document in pure
-  PHP (~30 ms at benchmark sizes vs intent-log's ~0.6 ms) — and the SAVE
+  PHP (~36 ms at benchmark sizes vs intent-log's ~0.7 ms) — and the SAVE
   path is worse: a save request starts with no per-request cache and
-  decodes the whole canonical doc cold (~164 ms measured after a
+  decodes the whole canonical doc cold (~218 ms measured after a
   600-edit session; `materialize_us` in the benchmark). Before
   production use this needs either an incremental canonical-maintenance
   strategy, y-php optimization, or acceptance of the latency at target
