@@ -114,8 +114,15 @@ if ( ! class_exists( 'WP_Sync_Bench_Opaque_Relay_Profile' ) ) {
 		public function author( int $client, array $edit, int $round_index ): array { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable -- $client and $round_index are part of the profile contract.
 			// Every edit lands in the client CRDT, so the eventual compaction
 			// snapshot grows with the document. Structural edits carry their
-			// block marker instead of typed text.
-			$body                   = (string) ( $edit['text'] ?? $edit['marker'] ?? $edit['op'] ?? '' );
+			// block marker, field-sync edits their register value (term-ID
+			// arrays JSON-encoded), instead of typed text.
+			$body = $edit['text'] ?? $edit['marker'] ?? $edit['value'] ?? $edit['op'] ?? '';
+			if ( is_array( $body ) ) {
+				$body = (string) wp_json_encode( $body );
+			} else {
+				$body = (string) $body;
+			}
+
 			$this->relay_doc_bytes += strlen( $body );
 			return array(
 				array(

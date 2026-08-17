@@ -126,6 +126,12 @@ if ( ! function_exists( 'wp_sync_bench_calibrate' ) ) {
 // first lock acquisition all land in rep 0).
 $wp_sync_bench_workload = WP_Sync_Bench_Workload::build( $scenario, $seed, $rounds, $clients, $paragraphs, $fill );
 
+// The set_meta op's keys must be registered BEFORE genesis is primed:
+// synced meta is registered meta, and registration is what puts the
+// `meta.<key>` registers (and the CRDT's nested meta map) in every
+// engine's genesis seed.
+WP_Sync_Bench_Workload::register_bench_meta();
+
 $wp_sync_bench_series       = array(
 	'service_us'     => array(),
 	'read_us'        => array(),

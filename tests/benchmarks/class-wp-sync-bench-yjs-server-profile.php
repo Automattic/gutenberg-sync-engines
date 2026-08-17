@@ -3,10 +3,14 @@
  * The yjs-server authoring profile: real y-php clients + the CRDT oracle.
  *
  * Each simulated client holds a y-php document. Edits happen in that
- * document (text inserts into the paragraph's content Y.Text; align set on
- * the attributes Y.Map — exactly what the editor's session codec sends),
- * and the submitted update is the genuine incremental V2 encoding of the
- * edit, so payload and storage bytes are REAL for this engine. Read
+ * document (text inserts into the paragraph's content Y.Text at the
+ * edit's head/tail position; align set on
+ * the attributes Y.Map; entity-property and taxonomy term-set registers as
+ * plain values on the document map; meta registers nested per key under
+ * the document's `meta` Y.Map — exactly what the editor's session codec
+ * sends), and the
+ * submitted update is the genuine incremental V2 encoding of the edit, so
+ * payload and storage bytes are REAL for this engine. Read
  * responses are applied back into the client document (untimed client
  * work, like authoring).
  *
@@ -108,6 +112,17 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 		private $expected_markers = array();
 
 		/**
+		 * Oracle input: property name => every value the session wrote to
+		 * that register. Register conflicts resolve by CRDT rules (NOT
+		 * server order), so the oracle cannot name ONE expected winner; it
+		 * asserts the converged value is a value somebody actually wrote
+		 * (and client convergence covers the rest).
+		 *
+		 * @var array<string, array>
+		 */
+		private $written_props = array();
+
+		/**
 		 * Constructor (the factory contract).
 		 *
 		 * @param int   $post_id  Seeded post (room target, unused here).
@@ -181,6 +196,31 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 
 			if ( 'attr' === $op ) {
 				$this->find_block( $yblocks, 'srv-' . (int) $edit['paragraph'] )->get( 'attributes' )->set( 'align', $edit['align'] );
+			} elseif ( 'set_property' === $op || 'set_terms' === $op ) {
+				// A scalar entity-property or taxonomy term-set register: a
+				// plain value on the document map, exactly what the
+				// core-data CRDT codec's updateMapValue writes for
+				// non-rich-text properties (terms are whole term-ID-array
+				// values on the rest_base key; title/excerpt are Y.Text and
+				// are a different op class).
+				$name = (string) $edit['name'];
+				$doc->getMap( 'document' )->set( $name, $edit['value'] );
+				$this->written_props[ $name ][] = $edit['value'];
+			} elseif ( 'set_meta' === $op ) {
+				// A registered-meta register: the codec nests meta per key
+				// under the document's `meta` Y.Map (updateMapValue into
+				// metaMap). The map itself is genesis-seeded — the harness
+				// registers the palette's keys before genesis, so clients
+				// never race to create it; the guard mirrors the codec's
+				// lazy-create path all the same.
+				$name  = (string) $edit['name'];
+				$ymeta = $doc->getMap( 'document' )->get( 'meta' );
+				if ( ! ( $ymeta instanceof \Yjs\Types\YMap ) ) {
+					$ymeta = new \Yjs\Types\YMap();
+					$doc->getMap( 'document' )->set( 'meta', $ymeta );
+				}
+				$ymeta->set( substr( $name, strlen( 'meta.' ) ), $edit['value'] );
+				$this->written_props[ $name ][] = $edit['value'];
 			} elseif ( 'insert_block' === $op ) {
 				// A client-born paragraph, mirroring the codec's shape (the
 				// server materializes it with the per-type default wrapper).
@@ -212,7 +252,17 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 					$target_id = 'srv-' . (int) $edit['paragraph'];
 				}
 
-				$this->find_block( $yblocks, $target_id )->get( 'attributes' )->get( 'content' )->insert( 0, $edit['text'] );
+				// The abstract position maps to an index in THIS client's
+				// own Y.Text: head is 0, tail its current end. A concurrent
+				// peer edit is invisible until the next read, so tail names
+				// the end of the text as this client observed it — CRDT
+				// ordering places the insert relative to those neighbors.
+				$ytext = $this->find_block( $yblocks, $target_id )->get( 'attributes' )->get( 'content' );
+				$index = 0;
+				if ( 'tail' === ( $edit['position'] ?? 'head' ) ) {
+					$index = (int) $ytext->length;
+				}
+				$ytext->insert( $index, $edit['text'] );
 			}
 
 			// The recovery lane: after a `resync-required` void the real
@@ -412,7 +462,8 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 				(int) $this->workload['paragraphs'],
 				$this->expected_texts,
 				$this->ydocs,
-				$this->expected_markers
+				$this->expected_markers,
+				$this->written_props
 			);
 		}
 
@@ -468,9 +519,11 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 		 *                                 for genesis-targeted edits.
 		 * @param array  $ydocs            Caught-up client documents.
 		 * @param array  $expected_markers Inserted marker => 'alive' | 'absent'.
+		 * @param array  $written_props    Property name => every value written to
+		 *                                 that entity-property register.
 		 * @return array Failures (empty when converged).
 		 */
-		public static function verify_crdt_convergence( string $content, int $paragraph_count, array $expected_texts, array $ydocs, array $expected_markers = array() ): array {
+		public static function verify_crdt_convergence( string $content, int $paragraph_count, array $expected_texts, array $ydocs, array $expected_markers = array(), array $written_props = array() ): array {
 			if ( '' === $content ) {
 				return array(
 					array(
@@ -596,6 +649,31 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 						$failures[] = array(
 							'check'  => 'attr-register',
 							'detail' => sprintf( "paragraph %d align is '%s', converged CRDT value is '%s'", $i, (string) $actual, (string) $expected ),
+						);
+					}
+				}
+
+				// Entity-property registers never materialize into post
+				// content, and their conflicts resolve by CRDT rules (NOT
+				// server order) — so the assertable expectation is that each
+				// written register converged to a value somebody actually
+				// wrote (the client-convergence check above already
+				// guarantees every client agrees on it). Term-set registers
+				// are compared as written: values are generated sorted, the
+				// register holds them whole, and normalize_for_compare()
+				// leaves list order alone. Meta registers live nested under
+				// the document's `meta` map (`meta.<key>` names).
+				foreach ( $written_props as $name => $values ) {
+					if ( 0 === strpos( $name, 'meta.' ) ) {
+						$meta_json = is_array( $doc_json['meta'] ?? null ) ? $doc_json['meta'] : array();
+						$converged = $meta_json[ substr( $name, strlen( 'meta.' ) ) ] ?? null;
+					} else {
+						$converged = $doc_json[ $name ] ?? null;
+					}
+					if ( ! in_array( $converged, $values, true ) ) {
+						$failures[] = array(
+							'check'  => 'prop-register',
+							'detail' => sprintf( "property '%s' converged to '%s', a value no client wrote", $name, (string) wp_json_encode( $converged ) ),
 						);
 					}
 				}

@@ -23,6 +23,18 @@ require_once dirname( __DIR__ ) . '/benchmarks/class-wp-sync-bench-runner.php';
 class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 
 	/**
+	 * The set_meta op's keys must be registered before any room genesis is
+	 * primed (synced meta is registered meta): registration puts the
+	 * `meta.<key>` registers, and the CRDT's nested meta map, in every
+	 * engine's genesis seed. Every engine-driving scenario can carry field
+	 * ops (editorial-session included), so register for every test.
+	 */
+	public function set_up() {
+		parent::set_up();
+		WP_Sync_Bench_Workload::register_bench_meta();
+	}
+
+	/**
 	 * Runs a workload for one scenario against the intent-log engine.
 	 *
 	 * @param string $scenario Scenario slug.
@@ -209,6 +221,31 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 		$this->assertSame( $d['rounds'], $e['rounds'] );
 	}
 
+	public function test_text_edits_carry_seeded_positions() {
+		$workload  = WP_Sync_Bench_Workload::build( 'parallel-paragraphs', 7, 30, 3, 4 );
+		$positions = array();
+		foreach ( $workload['rounds'] as $edits ) {
+			foreach ( $edits as $edit ) {
+				if ( 'text' === $edit['op'] ) {
+					// Every text edit carries an abstract position the
+					// profiles map to engine coordinates (intent-log: an
+					// offset from the client's observed field length;
+					// yjs: an index in the client's own Y.Text; de-rtc: a
+					// splice before the closing tag).
+					$this->assertContains( $edit['position'], array( 'head', 'tail' ) );
+					$positions[ $edit['position'] ] = true;
+				} else {
+					$this->assertArrayNotHasKey( 'position', $edit );
+				}
+			}
+		}
+
+		// The seeded draw exercises both positions (90 text edits here), so
+		// typing is no longer all prepends.
+		$this->assertArrayHasKey( 'head', $positions );
+		$this->assertArrayHasKey( 'tail', $positions );
+	}
+
 	public function test_ingest_concurrency_histogram() {
 		$workload  = WP_Sync_Bench_Workload::build( 'parallel-paragraphs', 7, 10, 3, 4 );
 		$histogram = WP_Sync_Bench_Workload::ingest_concurrency_histogram( $workload['rounds'] );
@@ -356,6 +393,94 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 			}
 		}
 		$this->assertGreaterThan( 0, $cross_client );
+	}
+
+	public function test_field_sync_generates_property_writes_with_discipline() {
+		$workload = WP_Sync_Bench_Workload::build( 'field-sync', 7, 30, 3, 4 );
+
+		$writes    = array(
+			'set_property' => 0,
+			'set_terms'    => 0,
+			'set_meta'     => 0,
+		);
+		$contended = 0;
+		foreach ( $workload['rounds'] as $edits ) {
+			$names  = array();
+			$values = array();
+			foreach ( $edits as $edit ) {
+				if ( ! in_array( $edit['op'], WP_Sync_Bench_Workload::FIELD_OPS, true ) ) {
+					continue;
+				}
+				++$writes[ $edit['op'] ];
+				// Names come from the op's register palette; values are
+				// DISTINCT within a round (the policy-isolation discipline:
+				// identical concurrent writes read as agreement to a
+				// three-way merge but escalate under a version check).
+				if ( 'set_property' === $edit['op'] ) {
+					$this->assertContains( $edit['name'], WP_Sync_Bench_Workload::PROPERTY_PALETTE );
+					$this->assertIsString( $edit['value'] );
+				} elseif ( 'set_terms' === $edit['op'] ) {
+					// A taxonomy register: rest_base name, numerically
+					// sorted whole term-ID set.
+					$this->assertContains( $edit['name'], WP_Sync_Bench_Workload::TAXONOMY_PALETTE );
+					$this->assertIsArray( $edit['value'] );
+					$sorted = $edit['value'];
+					sort( $sorted, SORT_NUMERIC );
+					$this->assertSame( $sorted, $edit['value'] );
+					foreach ( $edit['value'] as $term_id ) {
+						$this->assertIsInt( $term_id );
+					}
+				} else {
+					// A meta register: `meta.<key>` name from the palette.
+					$this->assertContains( $edit['name'], WP_Sync_Bench_Workload::META_PALETTE );
+					$this->assertStringStartsWith( 'meta.', $edit['name'] );
+					$this->assertIsString( $edit['value'] );
+				}
+				$this->assertNotContains( $edit['value'], $values );
+				$values[]               = $edit['value'];
+				$names[ $edit['name'] ] = ( $names[ $edit['name'] ] ?? 0 ) + 1;
+			}
+			if ( array() !== $names && max( $names ) > 1 ) {
+				++$contended;
+			}
+		}
+		// The scenario exercises the whole register surface: scalar
+		// properties, taxonomy term sets, and post meta all appear.
+		$this->assertGreaterThan( 0, $writes['set_property'] );
+		$this->assertGreaterThan( 0, $writes['set_terms'] );
+		$this->assertGreaterThan( 0, $writes['set_meta'] );
+		// ~25% of rounds put every client on the SAME register.
+		$this->assertGreaterThan( 0, $contended );
+	}
+
+	public function test_field_sync_converges_on_every_engine() {
+		$workload = WP_Sync_Bench_Workload::build( 'field-sync', 7, 30, 3, 4 );
+		$reports  = array();
+		foreach ( array( 'WP_Intent_Log_Engine', 'WP_Yjs_Server_Engine', 'WP_De_RTC_Engine' ) as $engine_class ) {
+			$post_id = self::factory()->post->create(
+				array( 'post_content' => $workload['post_content'] )
+			);
+			$storage = new WP_Sync_Bench_Memory_Storage();
+			$engine  = new $engine_class( $storage );
+
+			$report = WP_Sync_Bench_Runner::run( $engine, $storage, $post_id, $workload );
+
+			$this->assertSame( 0, $report['quality']['lost_work'], $engine_class . ' lost work under field sync' );
+			$this->assertSame( array(), $report['quality']['convergence_failures'], $engine_class . ' failed convergence under field sync' );
+			$this->assertTrue( $report['quality']['converged'], $engine_class . ' did not converge under field sync' );
+			$reports[ $engine_class ] = $report;
+			wp_delete_post( $post_id, true );
+		}
+
+		// The register-contention policies: intent-log escalates the later
+		// writers of a same-register race (property-conflict); the CRDT
+		// resolves silently (escalated is always 0). De-rtc parks property
+		// conflicts as their own rows at PROPERTY grain while the proposal
+		// reports applied, so field conflicts do not move its escalated
+		// count — asserted implicitly by the profile's parked-row model
+		// check inside the convergence assertions above.
+		$this->assertGreaterThan( 0, $reports['WP_Intent_Log_Engine']['quality']['dispositions']['escalated'] );
+		$this->assertSame( 0, $reports['WP_Yjs_Server_Engine']['quality']['dispositions']['escalated'] );
 	}
 
 	public function test_remove_contention_converges_on_every_engine() {
@@ -533,12 +658,43 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 		$this->assertTrue( $report['quality']['converged'] );
 	}
 
-	public function test_de_rtc_laggy_clients_retry_stale_bases_and_lose_nothing() {
-		// The laggy client reads every 10th round while three peers land
-		// ~3 versions per round: its base ages out of the engine's bounded
-		// version-snapshot window (20), so stale-base voids occur and the
-		// profile's retry-at-fresh-base lane must re-propose them.
+	public function test_de_rtc_laggy_clients_converge_and_lose_nothing() {
+		// The laggy client reads every 10th round while peers land ~3
+		// versions per round. Its base still stays mostly fresh: like the
+		// shipping codec (whose polling transport returns rows and
+		// dispositions in the same response), every APPLIED proposal
+		// advances the base at settle, so steady-state lag alone no longer
+		// ages a base out of the version-snapshot window — deep transforms
+		// and escalations happen, lost work must not.
 		$report = $this->run_de_rtc( 'laggy-newsroom', 30, 4 );
+
+		$this->assertSame( 0, $report['quality']['lost_work'] );
+		$this->assertSame( array(), $report['quality']['convergence_failures'] );
+		$this->assertTrue( $report['quality']['converged'] );
+	}
+
+	public function test_de_rtc_stale_base_voids_retry_after_deep_read_gap() {
+		// The reconnect shape: a contended register writer with a DEEP read
+		// gap. With ONE paragraph, every round restyles the same register
+		// with per-client distinct values, so the gapped client's proposals
+		// conflict every single round (escalations never advance its base;
+		// the applied-settle fast-forward/adopt lane never fires) while the
+		// winning peers advance the canonical — its base ages out of the
+		// engine's bounded version-snapshot window (20) structurally, not
+		// by seed luck: stale-base voids occur and the profile's
+		// retry-at-fresh-base lane must re-propose them after the gap ends.
+		// (More paragraphs would rotate the contended target and the gapped
+		// client would eventually land a clean apply, re-anchoring its base
+		// the way the shipping codec's row-driven advance does.)
+		$workload                  = WP_Sync_Bench_Workload::build( 'contended-paragraph', 7, 30, 3, 1 );
+		$workload['read_every'][2] = 25;
+		$post_id                   = self::factory()->post->create(
+			array( 'post_content' => $workload['post_content'] )
+		);
+		$storage                   = new WP_Sync_Bench_Memory_Storage();
+		$engine                    = new WP_De_RTC_Engine( $storage );
+
+		$report = WP_Sync_Bench_Runner::run( $engine, $storage, $post_id, $workload );
 
 		$this->assertGreaterThan( 0, $report['quality']['dispositions']['voided'], 'expected stale-base voids to exercise the retry lane' );
 		$this->assertGreaterThan( 0, $report['storage']['followups'], 'expected retry follow-up proposals' );

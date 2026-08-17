@@ -42,13 +42,22 @@ constructed as `new $class( int $post_id, array $workload )`).
 This plugin ships three dedicated profiles. The **intent-log profile**
 speaks typed intents authored from each client's observed base and scores
 quality with the disposition-based oracle. Its client model is
-read-driven: each simulated client advances its observed head and
-register versions by decoding the rows the engine actually delivered
+read-driven: each simulated client advances its observed head, register
+versions, and per-field text lengths
+by decoding the rows the engine actually delivered
 (intent rows advance the head one seq each; snapshot rows reset it to
 their seq), exactly as the production client derives its baseSeq, and in
 the single-process runner every read asserts the decoded state matches
 the shared disposition model — so a read path that dropped or mangled a
 row fails the run as a convergence failure instead of drifting silently.
+Tail-positioned typing authors its insert offsets in EDITOR-TREE
+coordinates: the read-observed field length PLUS the length of the
+client's own applied-but-unread edits, because the engine's transform
+shifts offsets only over priors from OTHER actors (the author's canvas
+already contains its own pending edits — authoring from the delivered
+length alone lands a deep-lagged client's tail insert mid-token, which
+is exactly how the laggy-newsroom convergence gate caught the modeling
+gap).
 It also models the client's floor-reset recovery: a compaction checkpoint
 raises the retention floor mid-round and stale-voids the intents authored
 below it, which the production client answers by re-deriving the work
@@ -64,7 +73,9 @@ payload and storage bytes are therefore REAL for this engine, and quality
 is scored with a CRDT oracle (see below). The **de-rtc profile** speaks
 whole-content proposals: each simulated client keeps a local working copy
 and its base version (base = last version applied to the doc, the client
-adapter's rule), adopts the server's canonical content rows on read, and —
+adapter's rule; an APPLIED proposal advances it at settle time, mirroring
+the accepted row the polling transport returns in the same response as
+the dispositions), adopts the server's canonical content rows on read, and —
 because retry is part of that protocol — re-proposes edits the engine
 voided at an aged-out base as a coalesced follow-up proposal against the
 base it just observed (one retry per edit); payload and storage bytes are
@@ -175,6 +186,40 @@ is NOT lost work — it is the protocol asking the client to retry against
 a fresher base, which the profile models (the retry's settlement is what
 counts).
 
+**Entity-field registers** (the `set_property`, `set_terms`, and
+`set_meta` ops) never materialize
+into post content, so their oracles use the engine's other observables.
+Intent-log: concurrent writes to the same property escalate the later
+writer (`property-conflict`, the attr-conflict analog); the profile
+asserts every client's wire-decoded property state — what a production
+editor would display — equals the last applied write in server order.
+Yjs-server: register conflicts resolve by CRDT rules (deterministic, NOT
+server order), so the oracle asserts all-client convergence plus that
+each register converged to a value somebody actually wrote. De-rtc: a
+conflicting property parks as its OWN `proposal-parked` row
+(`property-conflict`) while the proposal it rode in still reports
+`applied` — the engine's escalation grain for fields is a property, not
+the proposal, so field conflicts do NOT appear in the `escalated`
+disposition count; the profile mirrors the engine's per-property
+three-way rule and asserts the canonical property map on every broadcast
+row, the caught-up clients' adopted maps, and the parked rows all match
+that model exactly. The de-rtc client re-carries its FULL property map on
+every proposal (production behavior), so field sync also adds real bytes
+to every de-rtc request.
+
+All three field ops are the same register lane; only the naming and
+transport shape differ. `set_terms` writes a taxonomy's whole term-ID set
+to the register named by its rest_base (`categories`, `tags`), as a
+numerically-sorted array — the engines compare term sets
+order-insensitively, exactly like the shipping clients and the genesis
+seed normalize them. `set_meta` writes a registered-meta register:
+intent-log and de-rtc carry it as a flat `meta.<key>` register, while the
+CRDT codec nests it per key under the document's `meta` Y.Map. The
+harness registers the meta palette's keys before genesis
+(`WP_Sync_Bench_Workload::register_bench_meta()`) because synced meta IS
+registered meta — that is what puts the `meta.<key>` registers (and the
+CRDT's nested meta map) in every engine's genesis seed.
+
 For an engine that merges on the client (the retired `yjs-relay` did, and
 the opaque-relay fallback profile models one), quality is reported as
 **not server-observable**: there is no PHP CRDT in the loop to score
@@ -203,15 +248,31 @@ review* (an outcome, not a demerit).
 | `laggy-newsroom`      | Mixed newsroom, but the last client reads only every 10th round: stale bases, deep transforms, heavy catch-up reads. |
 | `structural-churn`    | Concurrent block INSERTS and REMOVALS alongside typing — the block-structure stress the pure-typing scenarios never exercise. |
 | `remove-contention`   | One client types into an inserted block while ANOTHER client concurrently removes it (the edit-vs-remove conflict class, where the three merge policies differ most sharply). |
+| `field-sync`          | Entity-field register writes (scalar properties, taxonomy term sets, post meta) alongside typing: clean parallel field sync, plus ~25% of rounds where every client writes the SAME register — the register-contention analog of `contended-paragraph`, on the field traffic PR #22 added. |
 | `editorial-session`   | A wall-clock session, one round per second: staggered joins/leaves, typing bursts with think-time pauses, every present client polling every round, an autosave every 60 rounds. `rounds=3600 clients=3` is a one-hour three-user session. |
 
-The workload speaks four operations: `text` (a keystroke batch into a
+The workload speaks seven operations: `text` (a keystroke batch into a
 genesis paragraph, or, in `remove-contention`, into an inserted block
-addressed by `block_id`), `attr` (an align restyle), `insert_block` (a new
-paragraph), and `remove_block` (of a block the same client inserted
-earlier; `remove-contention`: any client's earlier insert). Register
-contention is modelled on align because concurrent *text* inserts merge
-cleanly (the text interleaves — correct, not a conflict). Structural
+addressed by `block_id`; each carries a seeded abstract position — `head`
+or `tail` — that the profiles map to engine coordinates from the client's
+own observed state, so typing is not all offset-0 prepends: intent-log
+authors the intent's offset from the client's editor-tree field length
+(read-observed plus its own pending edits), the
+yjs profile inserts at the corresponding index in the client's own
+Y.Text, and de-rtc splices before the closing tag; the token-counting
+oracles are position-independent, and under correct transforms a token
+can never split mid-token — a split would surface as a missing-token
+convergence failure), `attr` (an align restyle), `set_property` (an
+entity-property register write — slug, template, …, the field-sync
+traffic PR #22 added; title/excerpt are deliberately excluded because the
+CRDT codec models them as merging Y.Text, not registers), `set_terms` (a
+taxonomy's whole term-ID set, on the rest_base-named register), `set_meta`
+(a registered-meta `meta.<key>` register), `insert_block`
+(a new paragraph), and `remove_block` (of a block the same client
+inserted earlier; `remove-contention`: any client's earlier insert).
+Register contention is modelled on align and on entity fields because
+concurrent *text* inserts merge cleanly (the text interleaves — correct,
+not a conflict). Structural
 discipline keeps the oracles decidable: attr edits target genesis
 paragraphs only (identified by delimiter-terminated markers
 `Paragraph N;`, never removed), inserted blocks carry unique markers, and
@@ -238,12 +299,13 @@ subtree built; it activates the plugins itself):
 
 ```bash
 npm run bench                        # every engine x the decision matrix
-                                     # (steady concurrency, structural churn,
-                                     #  remove contention, a 10-minute
-                                     #  wall-clock session), with comparison
-                                     #  tables and hosting cost cards; FAILS
-                                     #  on any lost work or convergence
-                                     #  failure
+                                     # (steady concurrency, deep-lag
+                                     #  settlement, structural churn, remove
+                                     #  contention, field-sync registers, a
+                                     #  10-minute wall-clock session), with
+                                     #  comparison tables and hosting cost
+                                     #  cards; FAILS on any lost work or
+                                     #  convergence failure
 npm run bench -- engines=de-rtc scenarios=editorial-session
 npm run bench -- certify=10          # invariant sweep: 10 seeds x engines x
                                      # adversarial scenarios — certifies "no
@@ -363,34 +425,43 @@ wp-env Docker, PHP 8.3 / MariaDB — quote your own `environment` +
 
 | Metric              | intent-log       | yjs-relay (retired)    | yjs-server             | de-rtc                 |
 | ------------------- | ---------------- | ---------------------- | ---------------------- | ---------------------- |
-| service ms (mean)   | ~0.7 (incl. ~0.03 lock pair) | ~0.0005 (timer floor) | ~35 (canonical-doc load/merge/save per ingest) | ~2.2 (content three-way merge, incl. lock pair) |
-| service ms (p99)    | ~1.4             | ~0.008                 | ~97                    | ~3.6                   |
-| idle poll ms (mean) | ~0.0003          | ~0.0002                | ~0.0003                | ~0.0002                |
-| storage rows        | 296 (server checkpoints + trims) | 30 (11 scripted client compactions) | 102 (server checkpoints + trims; no client help) | 185 (server checkpoints + trims) |
-| storage bytes       | ~108 KB (JSON intents + checkpoints) | (synthetic) | ~61 KB (binary diffs + snapshots) | ~817 KB (every accepted proposal stores a FULL content row) |
-| trims (checkpoints) | 3                | —                      | 6                      | 4                      |
-| join (cold read)    | ~0.24 ms, ~105 KB payload | —             | ~0.09 ms, ~60 KB payload | ~0.94 ms, **~813 KB payload** (the retained full-content tail) |
-| materialize (cold save path) | ~2.7 ms | n/a (no document)     | **~164 ms** (decode the whole canonical doc; the in-session ingest keeps it cached, a fresh save request does not) | ~0.0004 ms (the canonical IS post content) |
-| ingest peak memory  | ~0.7 MB          | —                      | ~0.8 MB                | ~0.7 MB                |
-| quality             | 480 applied, 114 to review, **0 lost**, content-verified converged | not observable | 600 applied, **0 lost**, all-client CRDT convergence verified | 582 applied, 18 to review, **0 lost**, lineage-verified converged |
+| service ms (mean)   | ~0.7 (incl. ~0.1 lock pair) | ~0.0005 (timer floor) | ~41 (canonical-doc load/merge/save per ingest) | ~2.0 (content three-way merge, incl. lock pair) |
+| service ms (p99)    | ~2.0             | ~0.008                 | ~96                    | ~3.7                   |
+| idle poll ms (mean) | ~0.0003          | ~0.0002                | ~0.0003                | ~0.0003                |
+| storage rows        | 302 (server checkpoints + trims) | 30 (11 scripted client compactions) | 102 (server checkpoints + trims; no client help) | 204 (server checkpoints + trims) |
+| storage bytes       | ~117 KB (JSON intents + checkpoints) | (synthetic) | ~61 KB (binary diffs + snapshots) | ~466 KB (every accepted proposal stores a FULL content row) |
+| trims (checkpoints) | 3                | —                      | 6                      | 5                      |
+| join (cold read)    | ~0.24 ms, ~113 KB payload | —             | ~0.08 ms, ~60 KB payload | ~0.52 ms, **~452 KB payload** (the retained full-content tail) |
+| materialize (cold save path) | ~2.2 ms | n/a (no document)     | **~187 ms** (decode the whole canonical doc; the in-session ingest keeps it cached, a fresh save request does not) | ~0.0004 ms (the canonical IS post content) |
+| ingest peak memory  | ~0.9 MB          | —                      | ~1.0 MB                | ~1.6 MB                |
+| quality             | 450 applied, 150 to review, **0 lost**, content-verified converged | not observable | 600 applied, **0 lost**, all-client CRDT convergence verified | 480 applied, 120 to review, **0 lost**, lineage-verified converged |
 
 Document-size scaling (`long-form`, one editor in a ~5 KB document, 100
-rounds): intent-log mean service ~0.42 ms; de-rtc ~2.7 ms with ~5.7 KB
+rounds): intent-log mean service ~0.42 ms; de-rtc ~2.7 ms with ~5.9 KB
 request payloads (the whole document travels in every proposal — both its
 merge time and its wire/storage bytes scale with document size);
-yjs-server ~26 ms (the canonical-doc rebuild dominates regardless of edit
-size). The `laggy-newsroom` scenario (one client reading every 10th round)
-settles differently per engine and loses nothing on any of them:
-intent-log absorbs stale bases with deeper transforms (more benign voids,
-heavier catch-up reads); de-rtc escalates more (~23% — cumulative
-stale-base proposals conflict more often) and exercises its retry lane
-once the laggy client's base ages out of the engine's 20-version snapshot
-window (visible as `unknown-base-version` voids + `followups`).
+yjs-server ~36 ms (the canonical-doc rebuild dominates regardless of edit
+size). The `laggy-newsroom` scenario (one client reading every 10th round;
+part of the `npm run bench` matrix, at mixed-newsroom size) settles
+differently per engine and loses nothing on any of them: intent-log
+absorbs stale bases with deeper transforms (~24% escalated, 38 benign
+voids, 13 floor-reset re-authoring follow-ups, heavier catch-up reads —
+and its deep-stale tail inserts are what force the profile's editor-tree
+offset coordinates; see the profile description above); de-rtc escalates
+slightly more than in mixed-newsroom (~24% vs 20% — cumulative
+stale-base proposals conflict more often), while its base stays mostly
+fresh even between rare reads — every applied proposal advances it at
+settle, like the shipping codec whose transport returns the accepted row
+with the ack — so its retry lane (`unknown-base-version` voids +
+`followups`) fires on the RECONNECT shape instead: a deep read gap under
+sustained register contention, where escalations never advance the base
+until it ages out of the engine's 20-version snapshot window (see the
+deep-read-gap PHPUnit test for the deterministic construction).
 
 Structural churn (concurrent inserts/removals + typing, 60 rounds, 4
 clients) is where conflict POLICIES separate hardest: intent-log and
 yjs-server merge all 240 edits cleanly (transform and CRDT both handle
-structure), while de-rtc escalates ~50% of proposals (whole-document
+structure), while de-rtc escalates ~49% of proposals (whole-document
 proposals against a structurally-shifting base are exactly what its
 three-way merge refuses to auto-resolve) — still zero lost work, all
 engines convergence-verified through the marker oracle.
@@ -398,9 +469,9 @@ engines convergence-verified through the marker oracle.
 Remove contention (one client types into an inserted block another
 client concurrently removes; 60 rounds, 4 clients) separates the
 policies on the edit-vs-remove class specifically: **intent-log
-escalates the trailing edit** (~8% of edits settle `target-deleted`:
-the keystrokes park for review; when the text lands first, both apply
-and the token legitimately vanishes with the removed block),
+escalates the trailing edit** (~12% of edits escalate, the trailing
+keystrokes parking as `target-deleted`; when the text lands first, both
+apply and the token legitimately vanishes with the removed block),
 **yjs-server escalates nothing** (CRDT deletion semantics dissolve the
 edit with the deleted block; deterministic, but the conflict is never
 surfaced), and **de-rtc escalates the whole trailing proposal** (~22%;
@@ -411,18 +482,36 @@ intent-log's floor-reset retry lane fires visibly (`followups` > 0):
 checkpoints stale-void in-flight seed inserts, and the profile re-authors
 them like the production client would.
 
+Field sync (entity-property, taxonomy-term, and post-meta register
+writes alongside typing; 60 rounds, 4 clients) separates the
+register-conflict policies at FIELD grain: **intent-log escalates each
+later concurrent writer per register** (54 of 240 edits, ~22%, parking
+as `property-conflict`), **de-rtc parks a conflicting property as its
+own review row while the proposal it rode in still applies** (only 4
+whole-proposal escalations, ~2% — field conflicts deliberately do not
+appear in its `escalated` count; see the register-oracle notes above),
+and **yjs-server resolves every register by silent CRDT last-writer-wins**
+(0 escalations). Register traffic is also the cheapest ingest for every
+engine (~0.5 / ~5.5 / ~0.8 ms mean for intent-log / yjs-server / de-rtc
+— no text transform, no content merge). All three: zero lost work, every
+register's final wire state verified against the engine's own account.
+
 A ten-minute `editorial-session` (600 rounds, 3 clients, joins/bursts/
-saves; ~818 requests) shows the session-lifetime behavior single scenarios
-miss: intent-log holds a flat ~0.6 ms mean throughout; **yjs-server
-degrades as the document grows** (p50 ~65 ms but p90 ~203 ms / max ~436 ms
+saves; ~850 requests) shows the session-lifetime behavior single scenarios
+miss: intent-log holds a flat ~0.7 ms mean throughout; **yjs-server
+degrades as the document grows** (p50 ~100 ms, p90 ~260 ms, p99 ~300 ms
 by session end — every ingest rebuilds the ever-larger canonical doc, and
-in-session cold saves run ~160 ms); de-rtc stays ~2.9 ms mean but its room
+in-session cold saves run ~218 ms); de-rtc stays ~3.1 ms mean but its room
 tail reaches **~1.2 MB** — which is also the payload the NEXT visitor
 downloads to join. Escalations in the realistic mix: 0 (yjs-server,
-silent), 0 (intent-log — bursty non-overlapping typing rarely collides),
-~6.5% (de-rtc, whole-proposal grain), with de-rtc's retry lane firing for
-late joiners whose genesis base aged out. All three: **0 lost**,
-converged.
+silent), ~0.1% (intent-log — bursty non-overlapping typing rarely
+collides; 1 of 851 edits), ~6% (de-rtc, whole-proposal grain), with
+de-rtc's retry lane firing for late joiners whose genesis base aged out.
+All three: **0 lost**, converged. The hosting cost cards from the same
+run: intent-log 1.4 CPU-s / 2.2 MB wire per user-hour with 62 KB to
+join; de-rtc 5.8 CPU-s / 33.9 MB per user-hour with 1.2 MB to join;
+yjs-server 219 CPU-s per user-hour (~6% of a core per present user) with
+87 KB to join.
 
 The comparison the decision turns on:
 
@@ -443,19 +532,20 @@ The comparison the decision turns on:
   while keeping CRDT merge semantics and needing NO ingest lock — but at
   the price of loading, merging, and re-encoding the canonical y-php
   document on every ingest: tens of ms per request at this document size
-  in pure PHP, roughly 50× intent-log's transform. Its idle polls and
+  in pure PHP, roughly 55× intent-log's transform. Its idle polls and
   reads stay as cheap as the relay's (pure row reads — the canonical doc
   is never touched on the read path). That ingest cost scales with
   document size, so `long-form` runs matter before drawing conclusions.
-- **de-rtc** sits between them on CPU (~3× intent-log per ingest, ~16×
+- **de-rtc** sits between them on CPU (~3× intent-log per ingest, ~20×
   cheaper than yjs-server at this size) and buys the same escalate-honest
   conflict policy as intent-log — but it pays in BYTES, not cycles: whole
   documents travel in every proposal and every accepted proposal stores a
-  full content row (~8× intent-log's row bytes here, and both scale
+  full content row (~4× intent-log's row bytes here, and both scale
   linearly with document size). Its escalation rate on the same contended
-  workload is lower than intent-log's (block-level three-way merges treat
-  identical concurrent writes as agreement; intent-log's versioned
-  registers escalate every later writer), and a client that reads rarely
+  workload is lower than intent-log's (~56% vs ~74% under
+  `contended-paragraph`: its block-level three-way grain escalates a
+  conflicting proposal once where intent-log's versioned registers
+  escalate every later writer), and a client that reads rarely
   escalates more and eventually needs the retry lane — the deep-lag
   behaviors are where the engines differ most, so run `laggy-newsroom`
   before concluding.
@@ -500,10 +590,18 @@ The comparison the decision turns on:
   Escalated proposals are reverted from the simulated client's local copy
   (production keeps the author's copy on screen pending a human decision;
   the harness reverts so later proposals stay clean and the oracle can
-  assert the conflict stayed OUT of the canonical), and a retried
-  proposal's applied disposition advances the client's base directly —
-  sound here because the runner is synchronous, so a retry authored
-  against a just-observed head is always a fast-forward; production's
-  adapter reaches the same state from its own broadcast row. Each edit is
+  assert the conflict stayed OUT of the canonical), and EVERY applied
+  proposal advances the client's base at settle time — a fast-forward
+  apply advances the version only, a server-merged apply adopts the
+  canonical. That is sound because the runner is synchronous (the
+  canonical at settle IS the just-applied version), and it is what
+  production does: the polling transport returns the accepted row in the
+  same response as the dispositions, so the shipping codec's base advance
+  is row-driven and immediate. Without it, a client that reads rarely
+  would re-propose already-applied content against a pre-apply base, and
+  the engine genuinely duplicates the re-proposed text when the merge
+  regions have drifted apart (head-only workloads masked this — the
+  cumulative proposals always escalated; mixed head/tail insert positions
+  surfaced it). Each edit is
   retried once; a second stale-base void parks it (never silently drops
   it), and score() flags any edit left unsettled.

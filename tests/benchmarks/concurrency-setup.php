@@ -34,6 +34,11 @@ $paragraphs  = max( 1, (int) ( $wp_sync_bench_opts['paragraphs'] ?? 4 ) );
 
 $wp_sync_bench_workload = WP_Sync_Bench_Workload::build( 'solo-typing', 1, 1, 1, $paragraphs );
 
+// Genesis is primed below, so the set_meta op's keys must be registered
+// here (synced meta is registered meta; registration puts the
+// `meta.<key>` registers and the CRDT's nested meta map in the seed).
+WP_Sync_Bench_Workload::register_bench_meta();
+
 $post_id = wp_insert_post(
 	array(
 		'post_type'    => 'post',

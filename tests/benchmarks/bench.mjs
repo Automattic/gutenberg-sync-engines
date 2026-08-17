@@ -6,12 +6,16 @@
  *   npm run bench -- engines=de-rtc scenarios=editorial-session
  *   npm run bench -- certify=10          # invariant sweep across 10 seeds
  *
- * The matrix runs each engine over four complementary scenarios
- * (mixed-newsroom for steady concurrent editing, structural-churn for
- * block-structure conflict policy, remove-contention for the
- * edit-vs-remove conflict class, editorial-session for wall-clock
- * session behavior + the hosting cost card), writes every JSON report to
- * bench-results/, and renders the per-scenario comparison tables. The run
+ * The matrix runs each engine over six complementary scenarios
+ * (mixed-newsroom for steady concurrent editing, laggy-newsroom for
+ * deep-lag settlement — stale-base tail offsets and the floor-reset
+ * retry lane only bite at depth — structural-churn for block-structure
+ * conflict policy, remove-contention for the edit-vs-remove conflict
+ * class, field-sync for entity-field register traffic — scalar
+ * properties, taxonomy term sets, post meta — and its contention policy,
+ * editorial-session for wall-clock session behavior + the hosting cost
+ * card), writes every JSON report to bench-results/, and renders the
+ * per-scenario comparison tables. The run
  * FAILS (nonzero exit) if any engine loses work or fails convergence —
  * the invariants are gates, not observations.
  *
@@ -44,11 +48,23 @@ const ENGINES = ( args.engines ?? 'intent-log,yjs-server,de-rtc' )
 	.split( ',' )
 	.filter( Boolean );
 
-// The decision matrix: steady concurrency, structural conflict policy,
-// edit-vs-remove conflict policy, and a wall-clock session (which also
-// emits the hosting cost card).
+// The decision matrix: steady concurrency, deep-lag settlement,
+// structural conflict policy, edit-vs-remove conflict policy, field-sync
+// register traffic, and a wall-clock session (which also emits the
+// hosting cost card).
 const MATRIX = {
 	'mixed-newsroom': {
+		rounds: 150,
+		clients: 4,
+		paragraphs: 8,
+		reps: 3,
+		warmup: 1,
+	},
+	// Deep-lag settlement: the laggy client's stale-base tail offsets and
+	// the floor-reset retry lane only bite at depth (the first pre-fix
+	// convergence failure appeared past round 85), so this runs at full
+	// mixed-newsroom size, not the short-scenario size.
+	'laggy-newsroom': {
 		rounds: 150,
 		clients: 4,
 		paragraphs: 8,
@@ -63,6 +79,13 @@ const MATRIX = {
 		warmup: 1,
 	},
 	'remove-contention': {
+		rounds: 60,
+		clients: 4,
+		paragraphs: 4,
+		reps: 3,
+		warmup: 1,
+	},
+	'field-sync': {
 		rounds: 60,
 		clients: 4,
 		paragraphs: 4,
@@ -368,6 +391,7 @@ if ( args.concurrency ) {
 		'mixed-newsroom',
 		'structural-churn',
 		'remove-contention',
+		'field-sync',
 	];
 	const config = {
 		rounds: 40,

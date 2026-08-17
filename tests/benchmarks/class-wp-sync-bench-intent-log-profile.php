@@ -3,10 +3,16 @@
  * Intent-log authoring profile: typed intents + the disposition oracle.
  *
  * Speaks to the engine in typed intents (insert_text into a paragraph's
- * content field; set_attr on its align register), authored from the state
- * each simulated client OBSERVED at its own last read. Observation is
+ * content field, its offset mapped from the edit's abstract head/tail
+ * position; set_attr on its align register; set_property on the
+ * document's entity-property registers — scalar properties, taxonomy
+ * term sets by rest_base, and `meta.<key>` meta registers all ride it),
+ * authored from the state each
+ * simulated client OBSERVED at its own last read. Observation is
  * READ-DRIVEN: observe() decodes the rows the engine actually delivered
- * and advances the client's observed head and register versions from the
+ * and advances the client's observed head, register versions, and
+ * per-field text lengths (what tail-positioned typing authors its
+ * offsets from) from the
  * wire, exactly as a production client derives its baseSeq from received
  * rows, so a laggy client genuinely authors from a stale base and a
  * same-register collision escalates the later writer. The profile also
@@ -134,6 +140,26 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 		private $attr_version = array();
 
 		/**
+		 * Per-name entity-property register version (advances on each
+		 * applied set_property write) — the attr_version analog for the
+		 * document-level registers.
+		 *
+		 * @var array<string, int>
+		 */
+		private $prop_version = array();
+
+		/**
+		 * Disposition model of each field's text length, in the engine's
+		 * UTF-16 code-unit coordinates, by syncId: genesis lengths plus
+		 * every applied insert_text/insert_block/remove_block in server
+		 * order. Used only to cross-check the wire-decoded lengths; clients
+		 * author their tail offsets from what they READ.
+		 *
+		 * @var array<string, int>
+		 */
+		private $text_len = array();
+
+		/**
 		 * Head each client observed at its own last read.
 		 *
 		 * @var int[]
@@ -146,6 +172,47 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 		 * @var array<int, int[]>
 		 */
 		private $observed_versions = array();
+
+		/**
+		 * Property register versions each client observed at its own last
+		 * read ( client => name => version ).
+		 *
+		 * @var array<int, array<string, int>>
+		 */
+		private $observed_prop_versions = array();
+
+		/**
+		 * Property register VALUES each client decoded from delivered rows
+		 * ( client => name => value ) — what a production client would
+		 * display for each synced field.
+		 *
+		 * @var array<int, array<string, mixed>>
+		 */
+		private $observed_props = array();
+
+		/**
+		 * Field text lengths each client observed at its own last read
+		 * ( client => syncId => UTF-16 code-unit length ) — the delivered
+		 * half of the coordinate a tail-positioned insert authors its
+		 * offset from.
+		 *
+		 * @var array<int, array<string, int>>
+		 */
+		private $observed_text_len = array();
+
+		/**
+		 * Text length each client's own APPLIED edits added on top of its
+		 * last read ( client => syncId => UTF-16 code units ). A production
+		 * client authors offsets from its editor tree, which contains its
+		 * own pending edits, and the engine's transform skips priors from
+		 * the intent's own actor for exactly that reason. Tail offsets are
+		 * therefore authored from observed PLUS own-pending length; every
+		 * read fully catches up in this runner, so the pending set drains
+		 * to empty at each read.
+		 *
+		 * @var array<int, array<string, int>>
+		 */
+		private $own_pending_text_len = array();
 
 		/**
 		 * Genesis syncId => paragraph index (the inverse of $paragraph_ids),
@@ -218,6 +285,15 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 		private $expected_align = array();
 
 		/**
+		 * Oracle input: property name => last APPLIED set_property write in
+		 * server order (ingest is serialized, so processing order IS server
+		 * order — the expected_align rule on document-level registers).
+		 *
+		 * @var array<string, mixed>
+		 */
+		private $expected_props = array();
+
+		/**
 		 * Oracle input: inserted-block marker => 'alive' | 'absent', from
 		 * insert/remove dispositions.
 		 *
@@ -264,10 +340,45 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 				$this->paragraph_ids[]                  = $sync_id;
 				$this->sync_id_to_paragraph[ $sync_id ] = $i;
 			}
-			$this->attr_version      = array_fill( 0, max( 1, (int) $this->workload['paragraphs'] ), 0 );
-			$this->observed_head     = array_fill( 0, $this->client_count, 0 );
-			$this->observed_versions = array_fill( 0, $this->client_count, $this->attr_version );
+			$this->attr_version           = array_fill( 0, max( 1, (int) $this->workload['paragraphs'] ), 0 );
+			$this->text_len               = $this->genesis_field_lengths();
+			$this->observed_head          = array_fill( 0, $this->client_count, 0 );
+			$this->observed_versions      = array_fill( 0, $this->client_count, $this->attr_version );
+			$this->observed_prop_versions = array_fill( 0, $this->client_count, array() );
+			$this->observed_props         = array_fill( 0, $this->client_count, array() );
+			$this->observed_text_len      = array_fill( 0, $this->client_count, $this->text_len );
 			return array_fill( 0, $this->client_count, 0 );
+		}
+
+		/**
+		 * The genesis text length of each paragraph's content field, keyed
+		 * by genesis syncId, in the engine's UTF-16 code-unit coordinates.
+		 *
+		 * A production client authors its first offsets from the editor's
+		 * genesis tree, which it holds before any read; the profile mirrors
+		 * that by deriving the lengths from the workload document with the
+		 * same wrapper-strip rule the engine's genesis uses ('<p>Hi</p>' →
+		 * 'Hi' — the content field stores the inner HTML of the block's
+		 * wrapper element).
+		 *
+		 * @return array<string, int> syncId => UTF-16 code-unit length.
+		 */
+		private function genesis_field_lengths(): array {
+			$lengths   = array();
+			$paragraph = 0;
+			foreach ( parse_blocks( (string) $this->workload['post_content'] ) as $block ) {
+				if ( 'core/paragraph' !== ( $block['blockName'] ?? null ) ) {
+					continue;
+				}
+				$text = trim( (string) $block['innerHTML'] );
+				if ( preg_match( '/^<([a-zA-Z][a-zA-Z0-9-]*)(\s[^>]*)?>(.*)<\/\1>$/s', $text, $matches ) ) {
+					$text = $matches[3];
+				}
+				$lengths[ $this->paragraph_ids[ $paragraph ] ] = WP_Intent_Log_Document::text_length( $text );
+				++$paragraph;
+			}
+
+			return $lengths;
 		}
 
 		/**
@@ -313,6 +424,23 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 						'observedVersion' => $this->observed_versions[ $client ][ $paragraph ],
 					),
 				);
+			} elseif ( in_array( $op, WP_Sync_Bench_Workload::FIELD_OPS, true ) ) {
+				// The document-level register write the production manager
+				// authors for a synced entity field, versioned from the
+				// state this client observed (a lost register race
+				// escalates `property-conflict`, the attr-conflict analog).
+				// Terms and meta ride the SAME set_property intent — the
+				// production manager names taxonomy registers by rest_base
+				// (whole term-ID-array values) and meta registers
+				// `meta.<key>`; only the workload op differs.
+				$payload = array(
+					'type'    => 'set_property',
+					'payload' => array(
+						'name'            => (string) $edit['name'],
+						'value'           => $edit['value'],
+						'observedVersion' => $this->observed_prop_versions[ $client ][ $edit['name'] ] ?? 0,
+					),
+				);
 			} elseif ( 'insert_block' === $op ) {
 				// The codec model for a client-born paragraph: plain text
 				// (the block's identity marker) with the wrapper element on
@@ -352,12 +480,26 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 					$sync_id = $this->paragraph_ids[ (int) $edit['paragraph'] ];
 				}
 
+				// The abstract position maps to a concrete offset in the
+				// client's EDITOR-TREE coordinates: head is offset 0, tail
+				// the length of the target field as the client's canvas
+				// shows it. That canvas is the state the intent's baseSeq
+				// names PLUS the client's own applied-but-unread edits,
+				// because the server's transform shifts offsets only over
+				// priors from OTHER actors (the author's tree already
+				// contains its own).
+				$offset = 0;
+				if ( 'tail' === ( $edit['position'] ?? 'head' ) ) {
+					$offset = (int) ( $this->observed_text_len[ $client ][ $sync_id ] ?? 0 )
+						+ (int) ( $this->own_pending_text_len[ $client ][ $sync_id ] ?? 0 );
+				}
+
 				$payload = array(
 					'type'    => 'insert_text',
 					'payload' => array(
 						'syncId' => $sync_id,
 						'field'  => 'content',
-						'offset' => 0,
+						'offset' => $offset,
 						'text'   => $edit['text'],
 					),
 				);
@@ -406,6 +548,37 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 					// Ingest is serialized, so processing order IS server
 					// order: last applied write wins.
 					$this->expected_align[ (int) $edit['paragraph'] ] = $edit['align'];
+				} elseif ( in_array( $op, WP_Sync_Bench_Workload::FIELD_OPS, true ) ) {
+					$name                        = (string) $edit['name'];
+					$this->prop_version[ $name ] = ( $this->prop_version[ $name ] ?? 0 ) + 1;
+					// Same server-order rule as align registers.
+					$this->expected_props[ $name ] = $edit['value'];
+				} elseif ( 'text' === $op ) {
+					// An applied insert grows the field by its full text
+					// (the engine clamps offsets, never truncates payloads).
+					if ( isset( $edit['block_id'] ) ) {
+						$sync_id = 'ins-' . $edit['block_id'];
+					} else {
+						$sync_id = $this->paragraph_ids[ (int) $edit['paragraph'] ];
+					}
+
+					$this->text_len[ $sync_id ] = ( $this->text_len[ $sync_id ] ?? 0 )
+						+ WP_Intent_Log_Document::text_length( (string) $edit['text'] );
+
+					// The author's editor tree now carries this text on top
+					// of its last-read state; later tail offsets from this
+					// client must include it (see own_pending_text_len).
+					$this->own_pending_text_len[ $client ][ $sync_id ] = ( $this->own_pending_text_len[ $client ][ $sync_id ] ?? 0 )
+						+ WP_Intent_Log_Document::text_length( (string) $edit['text'] );
+				} elseif ( 'insert_block' === $op ) {
+					$this->text_len[ 'ins-' . $edit['block_id'] ] = WP_Intent_Log_Document::text_length( (string) $edit['marker'] );
+
+					// The whole field is pending until this client's next
+					// read delivers the insert back to it.
+					$this->own_pending_text_len[ $client ][ 'ins-' . $edit['block_id'] ] = WP_Intent_Log_Document::text_length( (string) $edit['marker'] );
+				} elseif ( 'remove_block' === $op ) {
+					unset( $this->text_len[ 'ins-' . $edit['block_id'] ] );
+					unset( $this->own_pending_text_len[ $client ][ 'ins-' . $edit['block_id'] ] );
 				}
 			} elseif ( 'voided' === $status && in_array( $disposition['reason'] ?? '', self::LOGGED_VOID_REASONS, true ) ) {
 				// Apply-time voids append their intent row before the void
@@ -446,7 +619,8 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 
 		/**
 		 * A read is what the client observes: decode the delivered rows and
-		 * advance the client's observed head and register versions from the
+		 * advance the client's observed head, register versions, and
+		 * per-field text lengths from the
 		 * WIRE, exactly as a production client derives its baseSeq from
 		 * received rows. Intent rows are the log, one seq step each
 		 * (apply-time-voided ones included); snapshot rows (genesis, or a
@@ -464,9 +638,12 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 		 * @param array $response get_updates_since() response.
 		 */
 		public function observe( int $client, array $response ): void {
-			$head     = (int) $this->observed_head[ $client ];
-			$versions = $this->observed_versions[ $client ];
-			$rows     = (array) ( $response['updates'] ?? array() );
+			$head          = (int) $this->observed_head[ $client ];
+			$versions      = $this->observed_versions[ $client ];
+			$prop_versions = $this->observed_prop_versions[ $client ];
+			$props         = $this->observed_props[ $client ];
+			$lengths       = $this->observed_text_len[ $client ];
+			$rows          = (array) ( $response['updates'] ?? array() );
 
 			// An apply-time-voided intent sits in the log WITHOUT bumping any
 			// register version (replicas replay it as a void), and its voided
@@ -498,9 +675,14 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 				if ( WP_Intent_Log_Engine::UPDATE_TYPE_SNAPSHOT === $type ) {
 					// Genesis (seq 0) or a compaction checkpoint: the client
 					// re-bootstraps at the snapshot's seq, with the register
-					// versions its document carries.
-					$head     = (int) ( $decoded['seq'] ?? 0 );
-					$versions = $this->versions_from_doc( is_array( $decoded['doc'] ?? null ) ? $decoded['doc'] : array() );
+					// versions, property state, and field text its document
+					// carries.
+					$head          = (int) ( $decoded['seq'] ?? 0 );
+					$doc           = is_array( $decoded['doc'] ?? null ) ? $decoded['doc'] : array();
+					$versions      = $this->versions_from_doc( $doc );
+					$prop_versions = is_array( $doc['propVersions'] ?? null ) ? $doc['propVersions'] : array();
+					$props         = is_array( $doc['props'] ?? null ) ? $doc['props'] : array();
+					$lengths       = self::lengths_from_doc( $doc );
 					continue;
 				}
 
@@ -509,19 +691,44 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 				}
 
 				++$head;
-				if (
-					'set_attr' === ( $decoded['type'] ?? '' ) &&
-					! isset( $voided_ids[ $decoded['intentId'] ?? '' ] )
-				) {
+				if ( isset( $voided_ids[ $decoded['intentId'] ?? '' ] ) ) {
+					continue; // An apply-time void advances no register.
+				}
+				if ( 'set_attr' === ( $decoded['type'] ?? '' ) ) {
 					$paragraph = $this->sync_id_to_paragraph[ $decoded['payload']['syncId'] ?? '' ] ?? null;
 					if ( null !== $paragraph ) {
 						++$versions[ $paragraph ];
 					}
+				} elseif ( 'set_property' === ( $decoded['type'] ?? '' ) ) {
+					$name                   = (string) ( $decoded['payload']['name'] ?? '' );
+					$prop_versions[ $name ] = ( $prop_versions[ $name ] ?? 0 ) + 1;
+					$props[ $name ]         = $decoded['payload']['value'] ?? null;
+				} elseif ( 'insert_text' === ( $decoded['type'] ?? '' ) ) {
+					// An applied insert grows the field by its full text;
+					// the transform only moves offsets, never the payload.
+					$sync_id             = (string) ( $decoded['payload']['syncId'] ?? '' );
+					$lengths[ $sync_id ] = ( $lengths[ $sync_id ] ?? 0 )
+						+ WP_Intent_Log_Document::text_length( (string) ( $decoded['payload']['text'] ?? '' ) );
+				} elseif ( 'insert_block' === ( $decoded['type'] ?? '' ) ) {
+					$block = $decoded['payload']['block'] ?? null;
+					if ( is_array( $block ) && is_string( $block['syncId'] ?? null ) ) {
+						$lengths[ $block['syncId'] ] = WP_Intent_Log_Document::text_length( (string) ( $block['text'] ?? '' ) );
+					}
+				} elseif ( 'remove_block' === ( $decoded['type'] ?? '' ) ) {
+					unset( $lengths[ (string) ( $decoded['payload']['syncId'] ?? '' ) ] );
 				}
 			}
 
-			$this->observed_head[ $client ]     = $head;
-			$this->observed_versions[ $client ] = $versions;
+			$this->observed_head[ $client ]          = $head;
+			$this->observed_versions[ $client ]      = $versions;
+			$this->observed_prop_versions[ $client ] = $prop_versions;
+			$this->observed_props[ $client ]         = $props;
+			$this->observed_text_len[ $client ]      = $lengths;
+
+			// Every read fully catches up, so the client's own applied
+			// edits are now part of the delivered lengths: the pending
+			// editor-tree surplus drains to zero.
+			$this->own_pending_text_len[ $client ] = array();
 
 			if ( ! $this->assert_model ) {
 				return;
@@ -545,6 +752,57 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 					)
 				);
 			}
+
+			// Property registers: key order is insertion order (names appear
+			// as they are first written), so compare order-insensitively.
+			$wire_props  = $prop_versions;
+			$model_props = $this->prop_version;
+			ksort( $wire_props );
+			ksort( $model_props );
+			if ( $wire_props !== $model_props ) {
+				$this->record_consistency_failure(
+					'model-wire-prop-versions',
+					sprintf(
+						'client %d decoded property versions {%s} from delivered rows, but dispositions account for {%s}',
+						$client,
+						(string) wp_json_encode( $wire_props ),
+						(string) wp_json_encode( $model_props )
+					)
+				);
+			}
+
+			// Field text lengths: key order is insertion order (inserted
+			// blocks appear as they land), so compare order-insensitively.
+			$wire_lengths  = $lengths;
+			$model_lengths = $this->text_len;
+			ksort( $wire_lengths );
+			ksort( $model_lengths );
+			if ( $wire_lengths !== $model_lengths ) {
+				$this->record_consistency_failure(
+					'model-wire-text-lengths',
+					sprintf(
+						'client %d decoded field text lengths {%s} from delivered rows, but dispositions account for {%s}',
+						$client,
+						(string) wp_json_encode( $wire_lengths ),
+						(string) wp_json_encode( $model_lengths )
+					)
+				);
+			}
+
+			foreach ( $this->expected_props as $name => $value ) {
+				if ( ( $props[ $name ] ?? null ) !== $value ) {
+					$this->record_consistency_failure(
+						'model-wire-prop-value',
+						sprintf(
+							"client %d decoded property '%s' as '%s', last applied write in server order was '%s'",
+							$client,
+							$name,
+							(string) wp_json_encode( $props[ $name ] ?? null ),
+							(string) wp_json_encode( $value )
+						)
+					);
+				}
+			}
 		}
 
 		/**
@@ -565,6 +823,25 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 			}
 
 			return $versions;
+		}
+
+		/**
+		 * Reads every block's content-field text length (UTF-16 code units)
+		 * out of a snapshot document, keyed by syncId. The workload never
+		 * nests blocks, so the root list is the whole document.
+		 *
+		 * @param array $doc Snapshot document.
+		 * @return array<string, int> syncId => text length.
+		 */
+		private static function lengths_from_doc( array $doc ): array {
+			$lengths = array();
+			foreach ( (array) ( $doc['root'] ?? array() ) as $block ) {
+				if ( is_string( $block['syncId'] ?? null ) ) {
+					$lengths[ $block['syncId'] ] = WP_Intent_Log_Document::text_length( (string) ( $block['fields']['content']['text'] ?? '' ) );
+				}
+			}
+
+			return $lengths;
 		}
 
 		/**
@@ -667,6 +944,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 		public function score( WP_Sync_Engine $engine, string $room ): ?array {
 			return array_merge(
 				$this->consistency_failures,
+				$this->verify_property_registers(),
 				self::verify_convergence(
 					(string) $engine->materialize( $room ),
 					(int) $this->workload['paragraphs'],
@@ -675,6 +953,38 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 					$this->expected_markers
 				)
 			);
+		}
+
+		/**
+		 * Checks every caught-up client's decoded property registers against
+		 * the engine's own account (last applied set_property per name in
+		 * server order). Entity properties never materialize into post
+		 * content, so the observable artifact is the delivered wire state —
+		 * what a production client's editor would display for each synced
+		 * field after full catch-up.
+		 *
+		 * @return array Failures (empty when converged).
+		 */
+		private function verify_property_registers(): array {
+			$failures = array();
+			foreach ( $this->expected_props as $name => $value ) {
+				foreach ( $this->observed_props as $client => $props ) {
+					if ( ( $props[ $name ] ?? null ) !== $value ) {
+						$failures[] = array(
+							'check'  => 'prop-register',
+							'detail' => sprintf(
+								"client %d holds property '%s' as '%s' after full catch-up, last applied write was '%s'",
+								(int) $client,
+								$name,
+								(string) wp_json_encode( $props[ $name ] ?? null ),
+								(string) wp_json_encode( $value )
+							),
+						);
+					}
+				}
+			}
+
+			return $failures;
 		}
 
 		/**
