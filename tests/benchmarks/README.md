@@ -175,6 +175,26 @@ is NOT lost work — it is the protocol asking the client to retry against
 a fresher base, which the profile models (the retry's settlement is what
 counts).
 
+**Entity-property registers** (the `set_property` op) never materialize
+into post content, so their oracles use the engine's other observables.
+Intent-log: concurrent writes to the same property escalate the later
+writer (`property-conflict`, the attr-conflict analog); the profile
+asserts every client's wire-decoded property state — what a production
+editor would display — equals the last applied write in server order.
+Yjs-server: register conflicts resolve by CRDT rules (deterministic, NOT
+server order), so the oracle asserts all-client convergence plus that
+each register converged to a value somebody actually wrote. De-rtc: a
+conflicting property parks as its OWN `proposal-parked` row
+(`property-conflict`) while the proposal it rode in still reports
+`applied` — the engine's escalation grain for fields is a property, not
+the proposal, so field conflicts do NOT appear in the `escalated`
+disposition count; the profile mirrors the engine's per-property
+three-way rule and asserts the canonical property map on every broadcast
+row, the caught-up clients' adopted maps, and the parked rows all match
+that model exactly. The de-rtc client re-carries its FULL property map on
+every proposal (production behavior), so field sync also adds real bytes
+to every de-rtc request.
+
 For an engine that merges on the client (the retired `yjs-relay` did, and
 the opaque-relay fallback profile models one), quality is reported as
 **not server-observable**: there is no PHP CRDT in the loop to score
@@ -203,15 +223,20 @@ review* (an outcome, not a demerit).
 | `laggy-newsroom`      | Mixed newsroom, but the last client reads only every 10th round: stale bases, deep transforms, heavy catch-up reads. |
 | `structural-churn`    | Concurrent block INSERTS and REMOVALS alongside typing — the block-structure stress the pure-typing scenarios never exercise. |
 | `remove-contention`   | One client types into an inserted block while ANOTHER client concurrently removes it (the edit-vs-remove conflict class, where the three merge policies differ most sharply). |
+| `field-sync`          | Entity-property register writes (slug, template, …) alongside typing: clean parallel field sync, plus ~25% of rounds where every client writes the SAME register — the register-contention analog of `contended-paragraph`, on the field traffic PR #22 added. |
 | `editorial-session`   | A wall-clock session, one round per second: staggered joins/leaves, typing bursts with think-time pauses, every present client polling every round, an autosave every 60 rounds. `rounds=3600 clients=3` is a one-hour three-user session. |
 
-The workload speaks four operations: `text` (a keystroke batch into a
+The workload speaks five operations: `text` (a keystroke batch into a
 genesis paragraph, or, in `remove-contention`, into an inserted block
-addressed by `block_id`), `attr` (an align restyle), `insert_block` (a new
-paragraph), and `remove_block` (of a block the same client inserted
-earlier; `remove-contention`: any client's earlier insert). Register
-contention is modelled on align because concurrent *text* inserts merge
-cleanly (the text interleaves — correct, not a conflict). Structural
+addressed by `block_id`), `attr` (an align restyle), `set_property` (an
+entity-property register write — slug, template, …, the field-sync
+traffic PR #22 added; title/excerpt are deliberately excluded because the
+CRDT codec models them as merging Y.Text, not registers), `insert_block`
+(a new paragraph), and `remove_block` (of a block the same client
+inserted earlier; `remove-contention`: any client's earlier insert).
+Register contention is modelled on align and on entity properties because
+concurrent *text* inserts merge cleanly (the text interleaves — correct,
+not a conflict). Structural
 discipline keeps the oracles decidable: attr edits target genesis
 paragraphs only (identified by delimiter-terminated markers
 `Paragraph N;`, never removed), inserted blocks carry unique markers, and
@@ -239,11 +264,11 @@ subtree built; it activates the plugins itself):
 ```bash
 npm run bench                        # every engine x the decision matrix
                                      # (steady concurrency, structural churn,
-                                     #  remove contention, a 10-minute
-                                     #  wall-clock session), with comparison
-                                     #  tables and hosting cost cards; FAILS
-                                     #  on any lost work or convergence
-                                     #  failure
+                                     #  remove contention, field-sync
+                                     #  registers, a 10-minute wall-clock
+                                     #  session), with comparison tables and
+                                     #  hosting cost cards; FAILS on any lost
+                                     #  work or convergence failure
 npm run bench -- engines=de-rtc scenarios=editorial-session
 npm run bench -- certify=10          # invariant sweep: 10 seeds x engines x
                                      # adversarial scenarios — certifies "no

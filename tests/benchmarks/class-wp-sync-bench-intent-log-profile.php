@@ -3,8 +3,9 @@
  * Intent-log authoring profile: typed intents + the disposition oracle.
  *
  * Speaks to the engine in typed intents (insert_text into a paragraph's
- * content field; set_attr on its align register), authored from the state
- * each simulated client OBSERVED at its own last read. Observation is
+ * content field; set_attr on its align register; set_property on the
+ * document's entity-property registers), authored from the state each
+ * simulated client OBSERVED at its own last read. Observation is
  * READ-DRIVEN: observe() decodes the rows the engine actually delivered
  * and advances the client's observed head and register versions from the
  * wire, exactly as a production client derives its baseSeq from received
@@ -134,6 +135,15 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 		private $attr_version = array();
 
 		/**
+		 * Per-name entity-property register version (advances on each
+		 * applied set_property write) — the attr_version analog for the
+		 * document-level registers.
+		 *
+		 * @var array<string, int>
+		 */
+		private $prop_version = array();
+
+		/**
 		 * Head each client observed at its own last read.
 		 *
 		 * @var int[]
@@ -146,6 +156,23 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 		 * @var array<int, int[]>
 		 */
 		private $observed_versions = array();
+
+		/**
+		 * Property register versions each client observed at its own last
+		 * read ( client => name => version ).
+		 *
+		 * @var array<int, array<string, int>>
+		 */
+		private $observed_prop_versions = array();
+
+		/**
+		 * Property register VALUES each client decoded from delivered rows
+		 * ( client => name => value ) — what a production client would
+		 * display for each synced field.
+		 *
+		 * @var array<int, array<string, mixed>>
+		 */
+		private $observed_props = array();
 
 		/**
 		 * Genesis syncId => paragraph index (the inverse of $paragraph_ids),
@@ -218,6 +245,15 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 		private $expected_align = array();
 
 		/**
+		 * Oracle input: property name => last APPLIED set_property write in
+		 * server order (ingest is serialized, so processing order IS server
+		 * order — the expected_align rule on document-level registers).
+		 *
+		 * @var array<string, mixed>
+		 */
+		private $expected_props = array();
+
+		/**
 		 * Oracle input: inserted-block marker => 'alive' | 'absent', from
 		 * insert/remove dispositions.
 		 *
@@ -264,9 +300,11 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 				$this->paragraph_ids[]                  = $sync_id;
 				$this->sync_id_to_paragraph[ $sync_id ] = $i;
 			}
-			$this->attr_version      = array_fill( 0, max( 1, (int) $this->workload['paragraphs'] ), 0 );
-			$this->observed_head     = array_fill( 0, $this->client_count, 0 );
-			$this->observed_versions = array_fill( 0, $this->client_count, $this->attr_version );
+			$this->attr_version           = array_fill( 0, max( 1, (int) $this->workload['paragraphs'] ), 0 );
+			$this->observed_head          = array_fill( 0, $this->client_count, 0 );
+			$this->observed_versions      = array_fill( 0, $this->client_count, $this->attr_version );
+			$this->observed_prop_versions = array_fill( 0, $this->client_count, array() );
+			$this->observed_props         = array_fill( 0, $this->client_count, array() );
 			return array_fill( 0, $this->client_count, 0 );
 		}
 
@@ -311,6 +349,19 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 						'key'             => 'align',
 						'value'           => $edit['align'],
 						'observedVersion' => $this->observed_versions[ $client ][ $paragraph ],
+					),
+				);
+			} elseif ( 'set_property' === $op ) {
+				// The document-level register write the production manager
+				// authors for a synced entity field, versioned from the
+				// state this client observed (a lost register race
+				// escalates `property-conflict`, the attr-conflict analog).
+				$payload = array(
+					'type'    => 'set_property',
+					'payload' => array(
+						'name'            => (string) $edit['name'],
+						'value'           => $edit['value'],
+						'observedVersion' => $this->observed_prop_versions[ $client ][ $edit['name'] ] ?? 0,
 					),
 				);
 			} elseif ( 'insert_block' === $op ) {
@@ -406,6 +457,11 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 					// Ingest is serialized, so processing order IS server
 					// order: last applied write wins.
 					$this->expected_align[ (int) $edit['paragraph'] ] = $edit['align'];
+				} elseif ( 'set_property' === $op ) {
+					$name                        = (string) $edit['name'];
+					$this->prop_version[ $name ] = ( $this->prop_version[ $name ] ?? 0 ) + 1;
+					// Same server-order rule as align registers.
+					$this->expected_props[ $name ] = $edit['value'];
 				}
 			} elseif ( 'voided' === $status && in_array( $disposition['reason'] ?? '', self::LOGGED_VOID_REASONS, true ) ) {
 				// Apply-time voids append their intent row before the void
@@ -464,9 +520,11 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 		 * @param array $response get_updates_since() response.
 		 */
 		public function observe( int $client, array $response ): void {
-			$head     = (int) $this->observed_head[ $client ];
-			$versions = $this->observed_versions[ $client ];
-			$rows     = (array) ( $response['updates'] ?? array() );
+			$head          = (int) $this->observed_head[ $client ];
+			$versions      = $this->observed_versions[ $client ];
+			$prop_versions = $this->observed_prop_versions[ $client ];
+			$props         = $this->observed_props[ $client ];
+			$rows          = (array) ( $response['updates'] ?? array() );
 
 			// An apply-time-voided intent sits in the log WITHOUT bumping any
 			// register version (replicas replay it as a void), and its voided
@@ -498,9 +556,12 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 				if ( WP_Intent_Log_Engine::UPDATE_TYPE_SNAPSHOT === $type ) {
 					// Genesis (seq 0) or a compaction checkpoint: the client
 					// re-bootstraps at the snapshot's seq, with the register
-					// versions its document carries.
-					$head     = (int) ( $decoded['seq'] ?? 0 );
-					$versions = $this->versions_from_doc( is_array( $decoded['doc'] ?? null ) ? $decoded['doc'] : array() );
+					// versions and property state its document carries.
+					$head          = (int) ( $decoded['seq'] ?? 0 );
+					$doc           = is_array( $decoded['doc'] ?? null ) ? $decoded['doc'] : array();
+					$versions      = $this->versions_from_doc( $doc );
+					$prop_versions = is_array( $doc['propVersions'] ?? null ) ? $doc['propVersions'] : array();
+					$props         = is_array( $doc['props'] ?? null ) ? $doc['props'] : array();
 					continue;
 				}
 
@@ -509,19 +570,25 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 				}
 
 				++$head;
-				if (
-					'set_attr' === ( $decoded['type'] ?? '' ) &&
-					! isset( $voided_ids[ $decoded['intentId'] ?? '' ] )
-				) {
+				if ( isset( $voided_ids[ $decoded['intentId'] ?? '' ] ) ) {
+					continue; // An apply-time void advances no register.
+				}
+				if ( 'set_attr' === ( $decoded['type'] ?? '' ) ) {
 					$paragraph = $this->sync_id_to_paragraph[ $decoded['payload']['syncId'] ?? '' ] ?? null;
 					if ( null !== $paragraph ) {
 						++$versions[ $paragraph ];
 					}
+				} elseif ( 'set_property' === ( $decoded['type'] ?? '' ) ) {
+					$name                   = (string) ( $decoded['payload']['name'] ?? '' );
+					$prop_versions[ $name ] = ( $prop_versions[ $name ] ?? 0 ) + 1;
+					$props[ $name ]         = $decoded['payload']['value'] ?? null;
 				}
 			}
 
-			$this->observed_head[ $client ]     = $head;
-			$this->observed_versions[ $client ] = $versions;
+			$this->observed_head[ $client ]          = $head;
+			$this->observed_versions[ $client ]      = $versions;
+			$this->observed_prop_versions[ $client ] = $prop_versions;
+			$this->observed_props[ $client ]         = $props;
 
 			if ( ! $this->assert_model ) {
 				return;
@@ -544,6 +611,39 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 						implode( ',', $this->attr_version )
 					)
 				);
+			}
+
+			// Property registers: key order is insertion order (names appear
+			// as they are first written), so compare order-insensitively.
+			$wire_props  = $prop_versions;
+			$model_props = $this->prop_version;
+			ksort( $wire_props );
+			ksort( $model_props );
+			if ( $wire_props !== $model_props ) {
+				$this->record_consistency_failure(
+					'model-wire-prop-versions',
+					sprintf(
+						'client %d decoded property versions {%s} from delivered rows, but dispositions account for {%s}',
+						$client,
+						(string) wp_json_encode( $wire_props ),
+						(string) wp_json_encode( $model_props )
+					)
+				);
+			}
+
+			foreach ( $this->expected_props as $name => $value ) {
+				if ( ( $props[ $name ] ?? null ) !== $value ) {
+					$this->record_consistency_failure(
+						'model-wire-prop-value',
+						sprintf(
+							"client %d decoded property '%s' as '%s', last applied write in server order was '%s'",
+							$client,
+							$name,
+							(string) wp_json_encode( $props[ $name ] ?? null ),
+							(string) wp_json_encode( $value )
+						)
+					);
+				}
 			}
 		}
 
@@ -667,6 +767,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 		public function score( WP_Sync_Engine $engine, string $room ): ?array {
 			return array_merge(
 				$this->consistency_failures,
+				$this->verify_property_registers(),
 				self::verify_convergence(
 					(string) $engine->materialize( $room ),
 					(int) $this->workload['paragraphs'],
@@ -675,6 +776,38 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 					$this->expected_markers
 				)
 			);
+		}
+
+		/**
+		 * Checks every caught-up client's decoded property registers against
+		 * the engine's own account (last applied set_property per name in
+		 * server order). Entity properties never materialize into post
+		 * content, so the observable artifact is the delivered wire state —
+		 * what a production client's editor would display for each synced
+		 * field after full catch-up.
+		 *
+		 * @return array Failures (empty when converged).
+		 */
+		private function verify_property_registers(): array {
+			$failures = array();
+			foreach ( $this->expected_props as $name => $value ) {
+				foreach ( $this->observed_props as $client => $props ) {
+					if ( ( $props[ $name ] ?? null ) !== $value ) {
+						$failures[] = array(
+							'check'  => 'prop-register',
+							'detail' => sprintf(
+								"client %d holds property '%s' as '%s' after full catch-up, last applied write was '%s'",
+								(int) $client,
+								$name,
+								(string) wp_json_encode( $props[ $name ] ?? null ),
+								(string) wp_json_encode( $value )
+							),
+						);
+					}
+				}
+			}
+
+			return $failures;
 		}
 
 		/**

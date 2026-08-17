@@ -358,6 +358,67 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 		$this->assertGreaterThan( 0, $cross_client );
 	}
 
+	public function test_field_sync_generates_property_writes_with_discipline() {
+		$workload = WP_Sync_Bench_Workload::build( 'field-sync', 7, 30, 3, 4 );
+
+		$writes    = 0;
+		$contended = 0;
+		foreach ( $workload['rounds'] as $edits ) {
+			$names  = array();
+			$values = array();
+			foreach ( $edits as $edit ) {
+				if ( 'set_property' !== $edit['op'] ) {
+					continue;
+				}
+				++$writes;
+				// Names come from the shared register palette; values are
+				// DISTINCT within a round (the policy-isolation discipline:
+				// identical concurrent writes read as agreement to a
+				// three-way merge but escalate under a version check).
+				$this->assertContains( $edit['name'], WP_Sync_Bench_Workload::PROPERTY_PALETTE );
+				$this->assertNotContains( $edit['value'], $values );
+				$values[]               = $edit['value'];
+				$names[ $edit['name'] ] = ( $names[ $edit['name'] ] ?? 0 ) + 1;
+			}
+			if ( array() !== $names && max( $names ) > 1 ) {
+				++$contended;
+			}
+		}
+		$this->assertGreaterThan( 0, $writes );
+		// ~25% of rounds put every client on the SAME register.
+		$this->assertGreaterThan( 0, $contended );
+	}
+
+	public function test_field_sync_converges_on_every_engine() {
+		$workload = WP_Sync_Bench_Workload::build( 'field-sync', 7, 30, 3, 4 );
+		$reports  = array();
+		foreach ( array( 'WP_Intent_Log_Engine', 'WP_Yjs_Server_Engine', 'WP_De_RTC_Engine' ) as $engine_class ) {
+			$post_id = self::factory()->post->create(
+				array( 'post_content' => $workload['post_content'] )
+			);
+			$storage = new WP_Sync_Bench_Memory_Storage();
+			$engine  = new $engine_class( $storage );
+
+			$report = WP_Sync_Bench_Runner::run( $engine, $storage, $post_id, $workload );
+
+			$this->assertSame( 0, $report['quality']['lost_work'], $engine_class . ' lost work under field sync' );
+			$this->assertSame( array(), $report['quality']['convergence_failures'], $engine_class . ' failed convergence under field sync' );
+			$this->assertTrue( $report['quality']['converged'], $engine_class . ' did not converge under field sync' );
+			$reports[ $engine_class ] = $report;
+			wp_delete_post( $post_id, true );
+		}
+
+		// The register-contention policies: intent-log escalates the later
+		// writers of a same-register race (property-conflict); the CRDT
+		// resolves silently (escalated is always 0). De-rtc parks property
+		// conflicts as their own rows at PROPERTY grain while the proposal
+		// reports applied, so field conflicts do not move its escalated
+		// count — asserted implicitly by the profile's parked-row model
+		// check inside the convergence assertions above.
+		$this->assertGreaterThan( 0, $reports['WP_Intent_Log_Engine']['quality']['dispositions']['escalated'] );
+		$this->assertSame( 0, $reports['WP_Yjs_Server_Engine']['quality']['dispositions']['escalated'] );
+	}
+
 	public function test_remove_contention_converges_on_every_engine() {
 		$workload = WP_Sync_Bench_Workload::build( 'remove-contention', 7, 30, 3, 4 );
 		foreach ( array( 'WP_Intent_Log_Engine', 'WP_Yjs_Server_Engine', 'WP_De_RTC_Engine' ) as $engine_class ) {

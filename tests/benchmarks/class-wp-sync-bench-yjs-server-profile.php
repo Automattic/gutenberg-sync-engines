@@ -4,9 +4,10 @@
  *
  * Each simulated client holds a y-php document. Edits happen in that
  * document (text inserts into the paragraph's content Y.Text; align set on
- * the attributes Y.Map — exactly what the editor's session codec sends),
- * and the submitted update is the genuine incremental V2 encoding of the
- * edit, so payload and storage bytes are REAL for this engine. Read
+ * the attributes Y.Map; entity-property registers as plain values on the
+ * document map — exactly what the editor's session codec sends), and the
+ * submitted update is the genuine incremental V2 encoding of the edit, so
+ * payload and storage bytes are REAL for this engine. Read
  * responses are applied back into the client document (untimed client
  * work, like authoring).
  *
@@ -108,6 +109,17 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 		private $expected_markers = array();
 
 		/**
+		 * Oracle input: property name => every value the session wrote to
+		 * that register. Register conflicts resolve by CRDT rules (NOT
+		 * server order), so the oracle cannot name ONE expected winner; it
+		 * asserts the converged value is a value somebody actually wrote
+		 * (and client convergence covers the rest).
+		 *
+		 * @var array<string, array>
+		 */
+		private $written_props = array();
+
+		/**
 		 * Constructor (the factory contract).
 		 *
 		 * @param int   $post_id  Seeded post (room target, unused here).
@@ -181,6 +193,14 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 
 			if ( 'attr' === $op ) {
 				$this->find_block( $yblocks, 'srv-' . (int) $edit['paragraph'] )->get( 'attributes' )->set( 'align', $edit['align'] );
+			} elseif ( 'set_property' === $op ) {
+				// A scalar entity-property register: a plain value on the
+				// document map, exactly what the core-data CRDT codec's
+				// updateMapValue writes for non-rich-text properties
+				// (title/excerpt are Y.Text and are a different op class).
+				$name = (string) $edit['name'];
+				$doc->getMap( 'document' )->set( $name, $edit['value'] );
+				$this->written_props[ $name ][] = $edit['value'];
 			} elseif ( 'insert_block' === $op ) {
 				// A client-born paragraph, mirroring the codec's shape (the
 				// server materializes it with the per-type default wrapper).
@@ -412,7 +432,8 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 				(int) $this->workload['paragraphs'],
 				$this->expected_texts,
 				$this->ydocs,
-				$this->expected_markers
+				$this->expected_markers,
+				$this->written_props
 			);
 		}
 
@@ -468,9 +489,11 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 		 *                                 for genesis-targeted edits.
 		 * @param array  $ydocs            Caught-up client documents.
 		 * @param array  $expected_markers Inserted marker => 'alive' | 'absent'.
+		 * @param array  $written_props    Property name => every value written to
+		 *                                 that entity-property register.
 		 * @return array Failures (empty when converged).
 		 */
-		public static function verify_crdt_convergence( string $content, int $paragraph_count, array $expected_texts, array $ydocs, array $expected_markers = array() ): array {
+		public static function verify_crdt_convergence( string $content, int $paragraph_count, array $expected_texts, array $ydocs, array $expected_markers = array(), array $written_props = array() ): array {
 			if ( '' === $content ) {
 				return array(
 					array(
@@ -596,6 +619,22 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 						$failures[] = array(
 							'check'  => 'attr-register',
 							'detail' => sprintf( "paragraph %d align is '%s', converged CRDT value is '%s'", $i, (string) $actual, (string) $expected ),
+						);
+					}
+				}
+
+				// Entity-property registers never materialize into post
+				// content, and their conflicts resolve by CRDT rules (NOT
+				// server order) — so the assertable expectation is that each
+				// written register converged to a value somebody actually
+				// wrote (the client-convergence check above already
+				// guarantees every client agrees on it).
+				foreach ( $written_props as $name => $values ) {
+					$converged = $doc_json[ $name ] ?? null;
+					if ( ! in_array( $converged, $values, true ) ) {
+						$failures[] = array(
+							'check'  => 'prop-register',
+							'detail' => sprintf( "property '%s' converged to '%s', a value no client wrote", $name, (string) wp_json_encode( $converged ) ),
 						);
 					}
 				}

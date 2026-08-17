@@ -10,12 +10,18 @@
  * race); typing DIFFERENT paragraphs merges clean. Scenarios pick that mix,
  * so the quality metric has a controllable escalation rate to report.
  *
- * Four operations:
+ * Five operations:
  *
  * - `text` — insert a unique token at offset 0 of a paragraph's content
  *   field (a keystroke batch). Targets a genesis paragraph by index, or,
  *   in `remove-contention`, an inserted block by `block_id`.
  * - `attr` — set a genesis paragraph's align register (a restyle).
+ * - `set_property` — set an entity-property register (slug, template, …)
+ *   on the document itself, the field-sync traffic PR #22 added. Names
+ *   come from PROPERTY_PALETTE: scalar registers that every engine's
+ *   session codec carries as a plain last-writer register (title/excerpt
+ *   are deliberately absent — the CRDT codec models them as merging
+ *   Y.Text, a different op class).
  * - `insert_block` — insert a NEW paragraph (its body is a unique marker)
  *   after a genesis paragraph.
  * - `remove_block` — remove a block the SAME client inserted earlier
@@ -56,6 +62,20 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 	 */
 	class WP_Sync_Bench_Workload {
 		/**
+		 * Entity-property register names the field-sync ops write.
+		 *
+		 * Scalar registers from the shared genesis property seed
+		 * (WP_Sync_Post_Genesis_Props) that EVERY engine's session codec
+		 * transmits as a plain last-writer register: intent-log and de-rtc
+		 * as per-name registers, the CRDT codec via a plain Y.Map value.
+		 * `title`/`excerpt` are deliberately excluded — the CRDT codec
+		 * models them as merging Y.Text, so they are not registers there.
+		 *
+		 * @var string[]
+		 */
+		const PROPERTY_PALETTE = array( 'slug', 'template', 'comment_status', 'ping_status', 'format' );
+
+		/**
 		 * The available scenarios and their descriptions.
 		 *
 		 * @return array<string, string> Slug => description.
@@ -69,6 +89,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 				'mixed-newsroom'      => 'Mostly parallel editing with occasional collisions.',
 				'laggy-newsroom'      => 'Mixed newsroom where the last client reads only every 10th round (stale bases, deep transforms, catch-up reads).',
 				'structural-churn'    => 'Concurrent block inserts/removals alongside typing (block-structure stress).',
+				'field-sync'          => 'Entity-property register writes alongside typing: clean parallel field sync plus rounds where every client writes the SAME register (the register-contention analog of contended-paragraph).',
 				'remove-contention'   => 'One client edits an inserted block another client concurrently removes (edit-vs-remove conflict class; degenerates to sequential same-client edit-then-remove at clients=1).',
 				'editorial-session'   => 'A wall-clock editing session: one round per second, staggered joins/leaves, typing bursts with think-time pauses, every present client polling every round, periodic saves. rounds=3600 clients=3 is a one-hour three-user session.',
 			);
@@ -218,6 +239,40 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 								$edits[] = self::insert_edit( $c, $r, count( $edits ), $rand( $paragraphs ), $own_blocks );
 							} else {
 								$edits[] = self::remove_edit( $c, $rand( count( $own_blocks[ $c ] ) ), $own_blocks );
+							}
+						}
+						break;
+
+					case 'field-sync':
+						// Entity-property register traffic. ~25% of rounds
+						// every client writes the SAME register concurrently
+						// from the same observed base (contention: intent-log
+						// escalates the later writers, de-rtc parks
+						// property-conflict rows, the CRDT resolves by its
+						// own rules); the rest is clean parallel field sync —
+						// each client on its own register — mixed with
+						// typing so field and content traffic coexist.
+						$field_collision = $rand( 100 ) < 25;
+						$field_target    = self::PROPERTY_PALETTE[ $rand( count( self::PROPERTY_PALETTE ) ) ];
+						for ( $c = 0; $c < $clients; $c++ ) {
+							if ( $field_collision ) {
+								$edits[] = array(
+									'client' => $c,
+									'op'     => 'set_property',
+									'name'   => $field_target,
+								);
+							} elseif ( $rand( 100 ) < 50 ) {
+								$edits[] = array(
+									'client' => $c,
+									'op'     => 'set_property',
+									'name'   => self::PROPERTY_PALETTE[ $c % count( self::PROPERTY_PALETTE ) ],
+								);
+							} else {
+								$edits[] = array(
+									'client'    => $c,
+									'paragraph' => $rand( $paragraphs ),
+									'op'        => 'text',
+								);
 							}
 						}
 						break;
@@ -416,20 +471,27 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 					}
 					--$burst[ $c ];
 
-					// Typing: mostly text, ~8% restyle, ~4% insert a block,
-					// ~2% remove an own earlier insert.
+					// Typing: mostly text, ~8% restyle, ~2% an entity-property
+					// tweak (slug, template, …), ~4% insert a block, ~2%
+					// remove an own earlier insert.
 					$draw = $rand( 100 );
-					if ( $draw < 86 || ( $draw >= 98 && array() === $own_blocks[ $c ] ) ) {
+					if ( $draw < 84 || ( $draw >= 98 && array() === $own_blocks[ $c ] ) ) {
 						$edits[] = array(
 							'client'    => $c,
 							'paragraph' => $rand( $paragraphs ),
 							'op'        => 'text',
 						);
-					} elseif ( $draw < 94 ) {
+					} elseif ( $draw < 92 ) {
 						$edits[] = array(
 							'client'    => $c,
 							'paragraph' => $rand( $paragraphs ),
 							'op'        => 'attr',
+						);
+					} elseif ( $draw < 94 ) {
+						$edits[] = array(
+							'client' => $c,
+							'op'     => 'set_property',
+							'name'   => self::PROPERTY_PALETTE[ $rand( count( self::PROPERTY_PALETTE ) ) ],
 						);
 					} elseif ( $draw < 98 ) {
 						$edits[] = self::insert_edit( $c, $r, count( $edits ), $rand( $paragraphs ), $own_blocks );
@@ -499,7 +561,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 		}
 
 		/**
-		 * Stamps text/attr edits with their unique token and align value.
+		 * Stamps text/attr/property edits with their unique token or value.
 		 *
 		 * @param array $edits Round edits (by reference).
 		 * @param int   $round Round index.
@@ -514,6 +576,15 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 					$edit['text'] = ' r' . $round . 'c' . $edit['client'] . '.' . $index . ';';
 				} elseif ( 'attr' === $edit['op'] ) {
 					$edit['align'] = self::align_value( $round, (int) $edit['client'] );
+				} elseif ( 'set_property' === $edit['op'] ) {
+					// DISTINCT per client within any round and changing every
+					// round, for the same policy-isolation reason as
+					// align_value(): identical concurrent register writes
+					// read as agreement to a three-way merge but escalate
+					// under a version check, so value collisions would turn
+					// measured policy differences into artifacts. Registers
+					// are compared whole, so no delimiter is needed.
+					$edit['value'] = 'f' . $round . 'c' . $edit['client'];
 				}
 			}
 			unset( $edit );

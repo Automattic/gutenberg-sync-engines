@@ -7,9 +7,18 @@
  * version whose canonical content that copy incorporates (base = last
  * version APPLIED to the doc — the client adapter's rule). An edit is
  * applied to the local copy and submitted as one proposal
- * `{proposalId, baseVersion, proposedContent, clientUpdate: null}` —
- * `clientUpdate: null` is what the shipping client sends; the server's
- * engine-unaware-writer lane derives operations. Reads deliver
+ * `{proposalId, baseVersion, proposedContent, proposedProperties,
+ * clientUpdate: null}` — `clientUpdate: null` is what the shipping client
+ * sends; the server's engine-unaware-writer lane derives operations, and
+ * `proposedProperties` re-carries the client's FULL entity-property map on
+ * every proposal (the shipping client's rule; the server merges each
+ * property three-way against the same base version, so unchanged entries
+ * are no-ops). A conflicting property parks as its own `proposal-parked`
+ * row while the proposal itself still reports `applied` — the engine's
+ * escalation grain for fields is a property, not the proposal — so the
+ * profile mirrors the engine's per-property three-way rule to know how
+ * each register write settled, and score() asserts both the canonical
+ * property map and the parked rows match that model exactly. Reads deliver
  * server-authored canonical `content` rows, which the client adopts
  * wholesale (safe here because every edit settles synchronously: applied
  * work is already IN the canonical row, and parked work was reverted from
@@ -93,6 +102,59 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 		 * @var string[]
 		 */
 		private $base_version = array();
+
+		/**
+		 * Per-client entity-property map: the canonical map the client last
+		 * adopted, plus its own applied local changes (parked changes are
+		 * reverted, so between reads the map always equals the canonical at
+		 * the client's base except for names it is actively writing).
+		 *
+		 * @var array<int, array<string, mixed>>
+		 */
+		private $client_props = array();
+
+		/**
+		 * Model of the CANONICAL property map, advanced in server order by
+		 * replaying the engine's per-property three-way rule at settle time.
+		 * This is the oracle's expected final property state.
+		 *
+		 * @var array<string, mixed>
+		 */
+		private $canonical_props = array();
+
+		/**
+		 * Model snapshots of the canonical property map per applied version
+		 * ( version => map ), for checking each broadcast content row's
+		 * `properties` against the model.
+		 *
+		 * @var array<string, array<string, mixed>>
+		 */
+		private $model_props_by_version = array();
+
+		/**
+		 * Property writes the model says the engine parked
+		 * ( parked id "proposalId:name" => array( name, value ) ).
+		 *
+		 * @var array<string, array>
+		 */
+		private $expected_parked_props = array();
+
+		/**
+		 * Property-conflict `proposal-parked` rows actually delivered on the
+		 * wire ( parked id => array( name, value ) ).
+		 *
+		 * @var array<string, array>
+		 */
+		private $observed_parked_props = array();
+
+		/**
+		 * Whether the model sees EVERY ingest and can be asserted against
+		 * the wire (false in the multi-process concurrency probe, where each
+		 * process only observes its own proposals).
+		 *
+		 * @var bool
+		 */
+		private $assert_model = true;
 
 		/**
 		 * In-flight bookkeeping: client => proposalId => edit records.
@@ -184,6 +246,10 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 		public function __construct( int $post_id, array $workload ) { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable -- $post_id is part of the factory contract.
 			$this->workload     = $workload;
 			$this->client_count = max( 1, (int) $workload['clients'] );
+			// The concurrency worker marks its workload multi_process: this
+			// profile's canonical-property model only sees the local
+			// process's ingests there, so wire asserts would false-alarm.
+			$this->assert_model = empty( $workload['multi_process'] );
 		}
 
 		/**
@@ -216,9 +282,18 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 				}
 				$this->content[ $client ]      = is_array( $latest ) ? (string) $latest['content'] : '';
 				$this->base_version[ $client ] = is_array( $latest ) ? (string) $latest['version'] : 'v1';
+				$this->client_props[ $client ] = is_array( $latest ) && is_array( $latest['properties'] ?? null ) ? $latest['properties'] : array();
 				$this->pending[ $client ]      = array();
 				$this->retry_queue[ $client ]  = array();
 				$cursors[ $client ]            = (int) $response['end_cursor'];
+
+				// The canonical-property model starts at the genesis seed
+				// (identical for every client — the same row).
+				if ( 0 === $client && is_array( $latest ) ) {
+					$this->canonical_props = $this->client_props[ $client ];
+
+					$this->model_props_by_version[ (string) $latest['version'] ] = $this->canonical_props;
+				}
 			}
 			return $cursors;
 		}
@@ -243,8 +318,8 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 		 * @return array Updates payload.
 		 */
 		public function author( int $client, array $edit, int $round_index ): array {
-			$record                   = $this->build_edit_record( $edit );
-			$this->content[ $client ] = $this->apply_record( $this->content[ $client ], $record );
+			$record = $this->build_edit_record( $edit );
+			$this->apply_edit( $client, $record );
 
 			$proposal_id = 'b' . $round_index . '-' . ( $this->proposal_seq++ );
 
@@ -290,7 +365,27 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 			$latest = null;
 			foreach ( (array) ( $response['updates'] ?? array() ) as $row ) {
 				$decoded = json_decode( (string) $row['data'], true );
-				if ( ! is_array( $decoded ) || ! is_string( $decoded['version'] ?? null ) || ! is_string( $decoded['content'] ?? null ) ) {
+				if ( ! is_array( $decoded ) ) {
+					continue;
+				}
+
+				// A property conflict parks as its own row (the proposal
+				// itself reports applied); collect them so score() can match
+				// the wire against the model's predicted parks. Rows are
+				// broadcast to every client — keyed by parked id, so
+				// re-observations are idempotent.
+				if ( WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED === ( $row['type'] ?? '' ) && is_array( $decoded['property'] ?? null ) ) {
+					$parked_id = (string) ( $decoded['proposalId'] ?? '' );
+					if ( '' !== $parked_id ) {
+						$this->observed_parked_props[ $parked_id ] = array(
+							'name'  => (string) ( $decoded['property']['name'] ?? '' ),
+							'value' => $decoded['property']['value'] ?? null,
+						);
+					}
+					continue;
+				}
+
+				if ( ! is_string( $decoded['version'] ?? null ) || ! is_string( $decoded['content'] ?? null ) ) {
 					continue;
 				}
 				if ( 'content' === ( $row['type'] ?? '' ) && is_string( $decoded['baseVersion'] ?? null ) ) {
@@ -303,19 +398,44 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 					}
 					$this->row_lineage[ $version ] = $decoded['baseVersion'];
 				}
+
+				// Each broadcast row's property map must match the model's
+				// canonical map at that version (the property analog of the
+				// lineage check). Only assertable when the model saw every
+				// ingest (not in the multi-process probe).
+				if (
+					$this->assert_model &&
+					is_array( $decoded['properties'] ?? null ) &&
+					isset( $this->model_props_by_version[ $decoded['version'] ] ) &&
+					self::props_json( $decoded['properties'] ) !== self::props_json( $this->model_props_by_version[ $decoded['version'] ] )
+				) {
+					$this->observe_failures[] = array(
+						'check'  => 'prop-lineage',
+						'detail' => sprintf( "content row '%s' carries a property map that does not match the per-property three-way model", $decoded['version'] ),
+					);
+				}
+
 				$latest = $decoded;
 
 				$seq = (int) ltrim( $decoded['version'], 'v' );
 				if ( null === $this->latest_row || $seq > $this->latest_row['seq'] ) {
 					$this->latest_row = array(
-						'seq'     => $seq,
-						'content' => $decoded['content'],
+						'seq'        => $seq,
+						'content'    => $decoded['content'],
+						'properties' => is_array( $decoded['properties'] ?? null ) ? $decoded['properties'] : array(),
 					);
 				}
 			}
 			if ( is_array( $latest ) ) {
 				$this->content[ $client ]      = (string) $latest['content'];
 				$this->base_version[ $client ] = (string) $latest['version'];
+				if ( is_array( $latest['properties'] ?? null ) ) {
+					// Adopt the canonical property map wholesale, like the
+					// content: every one of this client's property writes has
+					// settled by the time it reads (applied work is in the
+					// map; parked work was reverted at settle).
+					$this->client_props[ $client ] = $latest['properties'];
+				}
 			}
 		}
 
@@ -337,10 +457,11 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 
 			$records = array();
 			foreach ( $this->retry_queue[ $client ] as $record ) {
-				// apply_record() re-derives the attr baseline (prev_align /
-				// changed) against the fresh base the retry authors from.
-				$this->content[ $client ] = $this->apply_record( $this->content[ $client ], $record );
-				$records[]                = $record;
+				// apply_edit() re-derives each record's baseline (prev_align
+				// / changed / prev_value) against the fresh base the retry
+				// authors from.
+				$this->apply_edit( $client, $record );
+				$records[] = $record;
 			}
 			$this->retry_queue[ $client ] = array();
 
@@ -563,7 +684,55 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 				}
 			}
 
+			// Entity-property registers: the newest broadcast map and every
+			// client's adopted copy must match the per-property three-way
+			// model, and the wire's property-conflict parked rows must match
+			// the parks the model predicted — the register analog of the
+			// align + lineage checks. (Per-version row maps were already
+			// checked against the model in observe().)
+			$canonical_json = self::props_json( $this->canonical_props );
+			if ( null !== $this->latest_row && self::props_json( $this->latest_row['properties'] ?? array() ) !== $canonical_json ) {
+				$failures[] = array(
+					'check'  => 'prop-register',
+					'detail' => 'the newest broadcast property map does not match the per-property three-way model',
+				);
+			}
+			foreach ( $this->client_props as $client => $client_props ) {
+				if ( self::props_json( $client_props ) !== $canonical_json ) {
+					$failures[] = array(
+						'check'  => 'client-convergence',
+						'detail' => sprintf( 'client %d property map differs from the canonical after full catch-up', $client ),
+					);
+				}
+			}
+			$expected_parked = array_keys( $this->expected_parked_props );
+			$observed_parked = array_keys( $this->observed_parked_props );
+			sort( $expected_parked );
+			sort( $observed_parked );
+			if ( $expected_parked !== $observed_parked ) {
+				$failures[] = array(
+					'check'  => 'prop-escalation',
+					'detail' => sprintf(
+						'property-conflict parked rows do not match the model (model predicted %d, wire delivered %d)',
+						count( $expected_parked ),
+						count( $observed_parked )
+					),
+				);
+			}
+
 			return $failures;
+		}
+
+		/**
+		 * Canonical JSON form of a property map for order-insensitive
+		 * comparison (names appear in maps in first-write order).
+		 *
+		 * @param array $props Property map.
+		 * @return string Key-sorted JSON encoding.
+		 */
+		private static function props_json( array $props ): string {
+			ksort( $props );
+			return (string) wp_json_encode( $props );
 		}
 
 		/**
@@ -604,6 +773,8 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 						// insert never landed applies as a version-only
 						// advance, and the marker is absent either way.
 						$this->expected_markers[ $record['marker'] ] = 'absent';
+					} elseif ( 'set_property' === $record['op'] ) {
+						$this->settle_property_write( $client, $proposal_id, $record );
 					} elseif ( $record['changed'] ) {
 						// Three-way merges only move a register the proposal
 						// actually changed against its own base; a no-op
@@ -611,14 +782,22 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 						$this->expected_align[ $record['paragraph'] ] = $record['align'];
 					}
 				}
+
+				// Snapshot the model's canonical property map at this
+				// version: every applied proposal broadcasts a content row
+				// carrying the map, and observe() checks each row against
+				// the snapshot for its version.
+				if ( '' !== $version ) {
+					$this->model_props_by_version[ $version ] = $this->canonical_props;
+				}
 				return;
 			}
 
 			if ( 'voided' === $status && 'unknown-base-version' === $reason ) {
 				foreach ( $records as $record ) {
-					// Revert from the local copy now; the retry re-applies
+					// Revert from the local state now; the retry re-applies
 					// against the base the next read hands this client.
-					$this->content[ $client ] = $this->revert_record( $this->content[ $client ], $record );
+					$this->revert_edit( $client, $record );
 					if ( empty( $record['retried'] ) ) {
 						$record['retried']              = true;
 						$this->retry_queue[ $client ][] = $record;
@@ -639,14 +818,58 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 		}
 
 		/**
-		 * Parks an edit: reverts it from the client's local copy and records
+		 * Settles one applied proposal's property write through the engine's
+		 * per-property three-way rule, in server order (the runner is
+		 * synchronous, so settle order IS server order).
+		 *
+		 * The engine's rule against the proposal's base version: a property
+		 * changed only by the client applies (canonical equals base, or
+		 * already equals the proposed value); a property changed BOTH by the
+		 * client and concurrently in canonical parks as its own
+		 * `proposal-parked` row (`property-conflict`) while the proposal
+		 * still reports applied — canonical keeps the concurrent winner. The
+		 * base value is the one captured from the client's adopted map when
+		 * the write was authored (the client adopts canonical wholesale, so
+		 * its map at authoring time IS the canonical at its base version).
+		 *
+		 * @param int    $client      Client index.
+		 * @param string $proposal_id Proposal id the write rode in.
+		 * @param array  $record      Property edit record.
+		 */
+		private function settle_property_write( int $client, string $proposal_id, array $record ): void {
+			$name            = (string) $record['name'];
+			$base_value      = $record['had_prev'] ? $record['prev_value'] : null;
+			$canonical_value = array_key_exists( $name, $this->canonical_props ) ? $this->canonical_props[ $name ] : null;
+
+			if (
+				self::property_values_equal( $canonical_value, $base_value ) ||
+				self::property_values_equal( $record['value'], $canonical_value )
+			) {
+				$this->canonical_props[ $name ] = $record['value'];
+				return;
+			}
+
+			// Both sides changed it to different values: the engine parks
+			// this register under "proposalId:name" for a human decision.
+			// Canonical keeps the concurrent winner; the harness reverts the
+			// client's local value (production keeps it on screen pending
+			// the review — the same simplification as escalated content).
+			$this->expected_parked_props[ $proposal_id . ':' . $name ] = array(
+				'name'  => $name,
+				'value' => $record['value'],
+			);
+			$this->revert_edit( $client, $record );
+		}
+
+		/**
+		 * Parks an edit: reverts it from the client's local state and records
 		 * the expectation that it stayed out of the canonical.
 		 *
 		 * @param int   $client Client index.
 		 * @param array $record Edit record.
 		 */
 		private function park( int $client, array $record ): void {
-			$this->content[ $client ] = $this->revert_record( $this->content[ $client ], $record );
+			$this->revert_edit( $client, $record );
 			$this->park_settled( $record );
 		}
 
@@ -665,7 +888,9 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 			}
 			// A parked attr write or block removal leaves the document where
 			// it was: no expectation to move (the block's fate stays with its
-			// insert's settlement).
+			// insert's settlement). A property write parked WITH its whole
+			// proposal never reached the property merge, so the canonical
+			// model is equally untouched — the revert is the settlement.
 		}
 
 		/**
@@ -705,6 +930,16 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 					'retried'       => false,
 				);
 			}
+			if ( 'set_property' === $op ) {
+				return array(
+					'op'         => 'set_property',
+					'name'       => (string) $edit['name'],
+					'value'      => $edit['value'],
+					'prev_value' => null,  // Captured by apply_edit().
+					'had_prev'   => false, // Captured by apply_edit().
+					'retried'    => false,
+				);
+			}
 			// A text edit addresses its target by identity marker: a genesis
 			// paragraph's, or (remove-contention's contended case) the
 			// inserted block's own marker.
@@ -723,6 +958,73 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 				'inserted_target' => $inserted_target,
 				'retried'         => false,
 			);
+		}
+
+		/**
+		 * Applies an edit record to the client's local state: content
+		 * records to the working copy, property records to the client's
+		 * property map (capturing the base value for the three-way model
+		 * and a possible revert — the client adopts canonical wholesale, so
+		 * its map at authoring time IS the canonical at its base version).
+		 *
+		 * @param int   $client Client index.
+		 * @param array $record Edit record (modified: captured baselines).
+		 */
+		private function apply_edit( int $client, array &$record ): void {
+			if ( 'set_property' === $record['op'] ) {
+				$record['had_prev']   = array_key_exists( $record['name'], $this->client_props[ $client ] );
+				$record['prev_value'] = $record['had_prev'] ? $this->client_props[ $client ][ $record['name'] ] : null;
+
+				$this->client_props[ $client ][ $record['name'] ] = $record['value'];
+				return;
+			}
+
+			$this->content[ $client ] = $this->apply_record( $this->content[ $client ], $record );
+		}
+
+		/**
+		 * Reverts an edit record from the client's local state (the inverse
+		 * of apply_edit()).
+		 *
+		 * @param int   $client Client index.
+		 * @param array $record Edit record.
+		 */
+		private function revert_edit( int $client, array $record ): void {
+			if ( 'set_property' === $record['op'] ) {
+				if ( $record['had_prev'] ) {
+					$this->client_props[ $client ][ $record['name'] ] = $record['prev_value'];
+				} else {
+					unset( $this->client_props[ $client ][ $record['name'] ] );
+				}
+				return;
+			}
+
+			$this->content[ $client ] = $this->revert_record( $this->content[ $client ], $record );
+		}
+
+		/**
+		 * Mirrors the engine's property equality rule: numeric term-ID-style
+		 * arrays compare as sets (order-insensitive), everything else by
+		 * JSON encoding.
+		 *
+		 * @param mixed $a First value.
+		 * @param mixed $b Second value.
+		 * @return bool Whether the engine treats the values as equal.
+		 */
+		private static function property_values_equal( $a, $b ): bool {
+			if ( is_array( $a ) && is_array( $b ) && wp_is_numeric_array( $a ) && wp_is_numeric_array( $b ) ) {
+				$a_ints = array_filter( $a, 'is_numeric' );
+				$b_ints = array_filter( $b, 'is_numeric' );
+				if ( count( $a_ints ) === count( $a ) && count( $b_ints ) === count( $b ) ) {
+					$a_sorted = array_map( 'intval', array_values( $a ) );
+					$b_sorted = array_map( 'intval', array_values( $b ) );
+					sort( $a_sorted, SORT_NUMERIC );
+					sort( $b_sorted, SORT_NUMERIC );
+					return $a_sorted === $b_sorted;
+				}
+			}
+
+			return wp_json_encode( $a ) === wp_json_encode( $b );
 		}
 
 		/**
@@ -948,10 +1250,15 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 					'type' => WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL,
 					'data' => wp_json_encode(
 						array(
-							'proposalId'      => $proposal_id,
-							'baseVersion'     => $this->base_version[ $client ],
-							'proposedContent' => $this->content[ $client ],
-							'clientUpdate'    => null,
+							'proposalId'         => $proposal_id,
+							'baseVersion'        => $this->base_version[ $client ],
+							'proposedContent'    => $this->content[ $client ],
+							// The shipping client re-carries its FULL property
+							// map on every proposal; the server's three-way
+							// rule no-ops every entry the client did not
+							// change against its base.
+							'proposedProperties' => $this->client_props[ $client ],
+							'clientUpdate'       => null,
 						)
 					),
 				),
