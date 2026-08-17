@@ -41,7 +41,21 @@ constructed as `new $class( int $post_id, array $workload )`).
 
 This plugin ships three dedicated profiles. The **intent-log profile**
 speaks typed intents authored from each client's observed base and scores
-quality with the disposition-based oracle. The **yjs-server profile**
+quality with the disposition-based oracle. Its client model is
+read-driven: each simulated client advances its observed head and
+register versions by decoding the rows the engine actually delivered
+(intent rows advance the head one seq each; snapshot rows reset it to
+their seq), exactly as the production client derives its baseSeq, and in
+the single-process runner every read asserts the decoded state matches
+the shared disposition model — so a read path that dropped or mangled a
+row fails the run as a convergence failure instead of drifting silently.
+It also models the client's floor-reset recovery: a compaction checkpoint
+raises the retention floor mid-round and stale-voids the intents authored
+below it, which the production client answers by re-deriving the work
+from its editor tree. The profile re-authors each such edit once as a
+follow-up ingest after the client's next read, skipping edits whose
+target block no longer exists in the observed state (a real client
+cannot retype into a block that left its canvas). The **yjs-server profile**
 speaks **real Yjs**: each simulated client holds a y-php document, authors
 genuine incremental V2 updates (text inserts into the paragraph's content
 Y.Text; align set on the attributes Y.Map — exactly what the editor's
@@ -107,7 +121,8 @@ instead.
   synthetic full-state snapshot whenever a read answers `should_compact` —
   so relay growth reflects a session with live clients, not an abandoned
   room. `storage.followups` counts protocol follow-up ingests generally
-  (the relay's compaction snapshots; de-rtc's stale-base retry proposals);
+  (the relay's compaction snapshots; de-rtc's stale-base retry proposals;
+  intent-log's floor-reset re-authoring after a compaction checkpoint);
   their requests and dispositions are included in cost and quality.
   `storage.trims` counts history-trim events — every engine's checkpoint
   path trims once per checkpoint (as does an accepted relay compaction),
@@ -187,19 +202,28 @@ review* (an outcome, not a demerit).
 | `mixed-newsroom`      | Mostly parallel, ~25% of rounds collide on one block.       |
 | `laggy-newsroom`      | Mixed newsroom, but the last client reads only every 10th round: stale bases, deep transforms, heavy catch-up reads. |
 | `structural-churn`    | Concurrent block INSERTS and REMOVALS alongside typing — the block-structure stress the pure-typing scenarios never exercise. |
+| `remove-contention`   | One client types into an inserted block while ANOTHER client concurrently removes it (the edit-vs-remove conflict class, where the three merge policies differ most sharply). |
 | `editorial-session`   | A wall-clock session, one round per second: staggered joins/leaves, typing bursts with think-time pauses, every present client polling every round, an autosave every 60 rounds. `rounds=3600 clients=3` is a one-hour three-user session. |
 
 The workload speaks four operations: `text` (a keystroke batch into a
-genesis paragraph), `attr` (an align restyle), `insert_block` (a new
+genesis paragraph, or, in `remove-contention`, into an inserted block
+addressed by `block_id`), `attr` (an align restyle), `insert_block` (a new
 paragraph), and `remove_block` (of a block the same client inserted
-earlier). Register contention is modelled on align because concurrent
-*text* inserts merge cleanly (the text interleaves — correct, not a
-conflict). Structural discipline keeps the oracles decidable: text/attr
-edits target genesis paragraphs only (identified by delimiter-terminated
-markers `Paragraph N;`, never removed), inserted blocks carry unique
-markers and are never edited, and removals only target the remover's own
-earlier inserts — so every marker's presence in the final document follows
-purely from the engine's dispositions. Same seed ⇒ same workload.
+earlier; `remove-contention`: any client's earlier insert). Register
+contention is modelled on align because concurrent *text* inserts merge
+cleanly (the text interleaves — correct, not a conflict). Structural
+discipline keeps the oracles decidable: attr edits target genesis
+paragraphs only (identified by delimiter-terminated markers
+`Paragraph N;`, never removed), inserted blocks carry unique markers, and
+each block is removed at most once. In most scenarios text edits also stay
+on genesis paragraphs and removals target only the remover's own earlier
+inserts, so every marker's presence in the final document follows purely
+from the engine's dispositions. `remove-contention` deliberately relaxes
+both rules to produce concurrent edit-into-a-removed-block conflicts and
+stays decidable through a scoping rule the profiles share: a text token is
+expected in the materialized content iff its edit applied AND its target
+block's final state is alive, both facts the dispositions already
+determine. Same seed ⇒ same workload.
 
 Clients author from the state observed at their own last read, so a laggy
 client's `baseSeq` genuinely lags the server head. After the rounds, every
@@ -215,10 +239,11 @@ subtree built; it activates the plugins itself):
 ```bash
 npm run bench                        # every engine x the decision matrix
                                      # (steady concurrency, structural churn,
-                                     #  a 10-minute wall-clock session), with
-                                     #  comparison tables and hosting cost
-                                     #  cards; FAILS on any lost work or
-                                     #  convergence failure
+                                     #  remove contention, a 10-minute
+                                     #  wall-clock session), with comparison
+                                     #  tables and hosting cost cards; FAILS
+                                     #  on any lost work or convergence
+                                     #  failure
 npm run bench -- engines=de-rtc scenarios=editorial-session
 npm run bench -- certify=10          # invariant sweep: 10 seeds x engines x
                                      # adversarial scenarios — certifies "no
@@ -369,6 +394,22 @@ structure), while de-rtc escalates ~50% of proposals (whole-document
 proposals against a structurally-shifting base are exactly what its
 three-way merge refuses to auto-resolve) — still zero lost work, all
 engines convergence-verified through the marker oracle.
+
+Remove contention (one client types into an inserted block another
+client concurrently removes; 60 rounds, 4 clients) separates the
+policies on the edit-vs-remove class specifically: **intent-log
+escalates the trailing edit** (~8% of edits settle `target-deleted`:
+the keystrokes park for review; when the text lands first, both apply
+and the token legitimately vanishes with the removed block),
+**yjs-server escalates nothing** (CRDT deletion semantics dissolve the
+edit with the deleted block; deterministic, but the conflict is never
+surfaced), and **de-rtc escalates the whole trailing proposal** (~22%;
+its proposal grain sends the entire document state to review, not just
+the contested edit). All three: zero lost work, convergence-verified
+under the target-scoped token oracle. This scenario is also where
+intent-log's floor-reset retry lane fires visibly (`followups` > 0):
+checkpoints stale-void in-flight seed inserts, and the profile re-authors
+them like the production client would.
 
 A ten-minute `editorial-session` (600 rounds, 3 clients, joins/bursts/
 saves; ~818 requests) shows the session-lifetime behavior single scenarios

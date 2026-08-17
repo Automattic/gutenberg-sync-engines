@@ -55,10 +55,14 @@ $wp_sync_bench_fresh_engine = static function () use ( $engine_slug ) {
 };
 
 $wp_sync_bench_workload = array(
-	'scenario'     => 'concurrency-probe',
-	'post_content' => (string) get_post_field( 'post_content', $post_id ),
-	'paragraphs'   => $paragraphs,
-	'clients'      => $workers,
+	'scenario'      => 'concurrency-probe',
+	'post_content'  => (string) get_post_field( 'post_content', $post_id ),
+	'paragraphs'    => $paragraphs,
+	'clients'       => $workers,
+	// Each parallel process only sees its OWN dispositions, so a profile
+	// must not assert its disposition model against the wire here; the
+	// read-driven observed state is the only truth in this mode.
+	'multi_process' => true,
 );
 $profile                = WP_Sync_Bench_Profiles::for_engine( $engine_slug, $post_id, $wp_sync_bench_workload );
 
@@ -90,6 +94,13 @@ for ( $i = 0; $i < $requests; $i++ ) {
 
 	$updates = $profile->author( $worker, $edit, $i );
 
+	// Same guard as the single-process runner: the per-edit bookkeeping
+	// rests on one update per authored edit.
+	if ( 1 !== count( $updates ) ) {
+		fwrite( STDERR, sprintf( "Benchmark aborted (concurrency-worker authoring): profile \"%s\" authored %d update(s) for one edit; the worker submits exactly one update per edit.\n", $profile->name(), count( $updates ) ) );
+		exit( 1 );
+	}
+
 	$engine       = $wp_sync_bench_fresh_engine();
 	$start        = hrtime( true );
 	$result       = $engine->handle_updates( $room, $worker, $cursor, $updates, array() );
@@ -100,6 +111,12 @@ for ( $i = 0; $i < $requests; $i++ ) {
 		$errors[ $code ] = ( $errors[ $code ] ?? 0 ) + 1;
 		continue;
 	}
+
+	// Same guard as the single-process runner: a disposition list that does
+	// not match the submitted updates one-to-one would corrupt the per-edit
+	// bookkeeping, so abort loudly instead of reporting numbers.
+	WP_Sync_Bench_Runner::assert_disposition_cardinality( $result, $updates, 'concurrency-worker ingest' );
+
 	foreach ( (array) ( $result['dispositions'] ?? array() ) as $disposition ) {
 		$status = $disposition['status'] ?? 'unknown';
 		if ( isset( $dispositions[ $status ] ) ) {
