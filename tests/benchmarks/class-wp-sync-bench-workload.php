@@ -27,9 +27,11 @@
  * purely from the engine's dispositions.
  *
  * The generator is engine-agnostic and deterministic: same seed, same
- * rounds. The runner binds each edit to real engine coordinates (syncIds,
- * Y.Map handles, base versions) at submit time through the authoring
- * profiles.
+ * rounds. Each round's edit list is shuffled at build time with the seeded
+ * draw (see shuffle_edits()), so which contending writer reaches the
+ * server first varies by seed instead of always being client 0. The runner
+ * binds each edit to real engine coordinates (syncIds, Y.Map handles, base
+ * versions) at submit time through the authoring profiles.
  *
  * Rounds are plain edit lists by default (every ACTIVE client reads per
  * its `read_every` cadence). A scenario may instead emit
@@ -224,6 +226,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 				}
 
 				self::finalize_edits( $edits, $r );
+				self::shuffle_edits( $edits, $rand );
 				$round_list[] = $edits;
 			}
 
@@ -346,6 +349,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 				}
 
 				self::finalize_edits( $edits, $r );
+				self::shuffle_edits( $edits, $rand );
 				$round_list[] = array(
 					'edits'   => $edits,
 					'readers' => $readers,
@@ -419,10 +423,67 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 					// (';' terminates).
 					$edit['text'] = ' r' . $round . 'c' . $edit['client'] . '.' . $index . ';';
 				} elseif ( 'attr' === $edit['op'] ) {
-					$edit['align'] = 0 === ( ( $round + $edit['client'] ) % 2 ) ? 'wide' : 'full';
+					$edit['align'] = self::align_value( $round, (int) $edit['client'] );
 				}
 			}
 			unset( $edit );
+		}
+
+		/**
+		 * The align value a client writes in a round: DISTINCT per client
+		 * within any round, rotating per round so consecutive writes to the
+		 * same register keep changing it.
+		 *
+		 * Distinctness is what isolates POLICY in the cross-engine
+		 * escalation comparison: identical concurrent register writes read
+		 * as agreement to de-rtc's three-way merge but escalate under
+		 * intent-log's version check regardless of value, so any accidental
+		 * value agreement between contending writers turns part of the
+		 * measured difference into an artifact of the value scheme. Clients
+		 * beyond the palette get a numbered variant, which keeps the values
+		 * distinct at any client count.
+		 *
+		 * @param int $round  Round index.
+		 * @param int $client Client index.
+		 * @return string Align value.
+		 */
+		private static function align_value( int $round, int $client ): string {
+			$palette = array( 'left', 'center', 'right', 'wide', 'full' );
+			$size    = count( $palette );
+			$value   = $palette[ ( $round + $client ) % $size ];
+
+			if ( $client >= $size ) {
+				$value .= '-' . intdiv( $client, $size );
+			}
+
+			return $value;
+		}
+
+		/**
+		 * Seeded Fisher-Yates shuffle of a round's edit list.
+		 *
+		 * Scenarios emit each round's edits in client order 0..N-1, and the
+		 * runner submits them in list order. Unshuffled, client 0 would win
+		 * every same-round register race, making the escalation rate
+		 * arithmetic ((N-1)/N under contended-paragraph) instead of a
+		 * measurement, and hiding any order-dependent engine bugs. Shuffling
+		 * HERE, at build time, keeps the workload array the single
+		 * deterministic source of truth: same seed, same submission order,
+		 * identical counted metrics across repetitions.
+		 *
+		 * @param array    $edits Round edits (by reference).
+		 * @param callable $rand  Deterministic draw.
+		 */
+		private static function shuffle_edits( array &$edits, callable $rand ): void {
+			for ( $i = count( $edits ) - 1; $i > 0; $i-- ) {
+				$j = $rand( $i + 1 );
+
+				if ( $j !== $i ) {
+					$swap        = $edits[ $i ];
+					$edits[ $i ] = $edits[ $j ];
+					$edits[ $j ] = $swap;
+				}
+			}
 		}
 	}
 }
