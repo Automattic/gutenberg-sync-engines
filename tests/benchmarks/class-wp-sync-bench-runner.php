@@ -57,6 +57,10 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 		 * @param WP_Sync_Bench_Authoring_Profile|null $profile  Authoring profile; resolved
 		 *                                                       from the engine slug when null.
 		 * @return array Report.
+		 * @throws RuntimeException When a profile or engine breaks the
+		 *                          one-update, one-disposition-per-edit
+		 *                          contract the quality bookkeeping rests on
+		 *                          (see assert_disposition_cardinality()).
 		 */
 		public static function run( WP_Sync_Engine $engine, WP_Sync_Bench_Memory_Storage $storage, int $post_id, array $workload, ?WP_Sync_Bench_Authoring_Profile $profile = null ): array {
 			$room = 'postType/post:' . $post_id;
@@ -139,6 +143,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 					$ingest_peak = max( (int) $ingest_peak, memory_get_peak_usage() - $mem_before );
 				}
 				if ( ! is_wp_error( $result ) ) {
+					self::assert_disposition_cardinality( $result, $followup, 'follow-up ingest' );
 					++$followups;
 					$count_dispositions( $result );
 				}
@@ -182,7 +187,22 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 
 					// Authoring is client work — untimed; only the server
 					// call below is measured.
-					$updates     = $profile->author( $client, $edit, $round_index );
+					$updates = $profile->author( $client, $edit, $round_index );
+
+					// The quality ledger (requests == edits, and the
+					// positional record_disposition() mapping below) rests on
+					// one update per authored edit; a profile that breaks
+					// that shape must abort before producing numbers.
+					if ( 1 !== count( $updates ) ) {
+						throw new RuntimeException(
+							sprintf(
+								'Benchmark aborted (ingest authoring): profile "%s" authored %d update(s) for one workload edit. The runner submits exactly one update per edit and maps its disposition back to that edit; any other shape would corrupt the per-edit bookkeeping, so no numbers are reported.',
+								$profile->name(),
+								count( $updates )
+							)
+						);
+					}
+
 					$request_b[] = strlen( (string) wp_json_encode( $updates ) );
 
 					$mem_before = 0;
@@ -208,11 +228,13 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 						continue;
 					}
 
+					self::assert_disposition_cardinality( $result, $updates, 'ingest' );
 					$count_dispositions( $result );
 					foreach ( (array) ( $result['dispositions'] ?? array() ) as $disposition ) {
-						// Each request carries exactly one update, so this
-						// disposition settles the edit just submitted; the
-						// profile tracks its oracle expectations from it.
+						// Each request carries exactly one update (the
+						// cardinality assert above enforces the match), so
+						// this disposition settles the edit just submitted;
+						// the profile tracks its oracle expectations from it.
 						$profile->record_disposition( $client, $edit, $disposition );
 					}
 				}
@@ -387,6 +409,50 @@ if ( ! class_exists( 'WP_Sync_Bench_Runner' ) ) {
 					'lost_detail'          => array_slice( $lost_work, 0, 5 ),
 				),
 			);
+		}
+
+		/**
+		 * Fails the run when an ingest result's disposition count does not
+		 * match the submitted updates.
+		 *
+		 * The runner and each profile's record_disposition() bookkeeping map
+		 * dispositions to submitted edits one-to-one. The three shipped
+		 * profiles submit one update per request and the shipped engines
+		 * answer one disposition per update, but the harness invites
+		 * third-party engines via the wp_sync_bench_authoring_profiles
+		 * filter, and an engine that answered an extra ack/echo disposition
+		 * (or coalesced several) would silently corrupt the quality oracle.
+		 * In the harness's report-honestly spirit, abort loudly instead of
+		 * producing numbers. A null (or absent) dispositions entry is the
+		 * engine SPI's "this engine produces no dispositions" answer: the
+		 * mapping loops skip it entirely, so there is nothing to corrupt and
+		 * nothing to assert.
+		 *
+		 * Public so concurrency-worker.php can apply the same guard.
+		 *
+		 * @param array  $result  Non-error handle_updates() result.
+		 * @param array  $updates The updates payload that was submitted.
+		 * @param string $where   Ingest-path label for the failure message.
+		 * @throws RuntimeException On a disposition/update count mismatch.
+		 */
+		public static function assert_disposition_cardinality( array $result, array $updates, string $where ): void {
+			if ( ! isset( $result['dispositions'] ) ) {
+				return;
+			}
+
+			$got      = count( (array) $result['dispositions'] );
+			$expected = count( $updates );
+
+			if ( $got !== $expected ) {
+				throw new RuntimeException(
+					sprintf(
+						'Benchmark aborted (%s): the engine answered %d disposition(s) for %d submitted update(s). The harness maps dispositions to edits one-to-one, so a mismatch would corrupt the quality bookkeeping; no numbers are reported.',
+						$where,
+						$got,
+						$expected
+					)
+				);
+			}
 		}
 
 		/**
