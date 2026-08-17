@@ -531,11 +531,36 @@ they exist so a failure is observable without re-instrumenting:
     (`frame-conflict`, engine rule 5) instead of merging them: their offsets
     sit in a frame both an earlier own edit and a remote edit wrote. They go
     to the review lane — parked, never lost — and normal merging resumes as
-    soon as the editor observes the remote change.
+    soon as the editor observes the remote change. (The related
+    one-keystroke DIVERGENCE this used to cause is FIXED: a settle that
+    bypasses `clientReceive` — proposal rows, voided markers, disposition
+    acks — now replans the optimistic document, so a mispredicted escalated
+    keystroke can no longer linger on the author's canvas forever; found by
+    the fuzzer's concurrency profile, regression-tested in
+    `tests/js/engines/intent-log-manager.test.ts`.)
   - Capture-driven pushes wait for the typing burst to fall quiet
     (`CAPTURE_SYNC_DELAY`, 1.2 s), so identity write-backs and merged views
     reach the canvas that late. This is forced by core-data (see the gotcha
     on pushes from inside `update()`), not by choice.
+  - Undo arms only after a unit SETTLES (capture delay + ack round trip,
+    ~1–2 s over polling): undo pressed inside that window is a silent
+    no-op. Measured parity gap (fuzzer undo profile, 2026-08-17): undo
+    0–900 ms after typing was armed 34/34 times on yjs-server/de-rtc,
+    1/12 on intent-log. Inverses derive from ACCEPTED rows by design, so
+    closing this means canceling pending outbox intents, not deriving
+    from originals.
+  - An undo whose inverse intents are still unacked when that tab reloads
+    loses them with the outbox: the undone edit (already accepted
+    server-side) resurrects for everyone. The general unacked-edit-loss
+    window, but undo makes it visible (the user watched the text vanish).
+  - OPEN (pre-existing, found 2026-08-17): after a mid-session reload of
+    one participant on an EMPTY-genesis room, that participant's next
+    block insert can stay local forever — the room log never receives the
+    intent (the sending stalls; the room holds only the genesis snapshot).
+    Replay: `npm run fuzz -- --combos=intent-log/http-polling
+    --seed-list=6 --steps=14 --profile=concurrency` (schedule-dependent:
+    the failing schedule needs the reload milestone to land at step 0 on
+    the empty template).
 
 ## Deep history
 

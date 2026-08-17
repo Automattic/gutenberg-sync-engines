@@ -545,7 +545,23 @@ export function createIntentLogSession(
 					) {
 						return;
 					}
-					settlePending( proposal.intent.intentId );
+					/*
+					 * An escalated intent leaves the outbox here WITHOUT
+					 * passing through clientReceive, so the optimistic
+					 * document must be replanned explicitly: the last
+					 * replan ran while this intent was still pending, and
+					 * its predicted-applied effect would otherwise sit on
+					 * the canvas until the next accepted row — which may
+					 * never come. (The fuzzer's one-keystroke divergence:
+					 * concurrent same-paragraph typing left the loser's
+					 * first escalated keystroke on their canvas forever.)
+					 */
+					if (
+						settlePending( proposal.intent.intentId ) &&
+						replica
+					) {
+						replanClient( replica );
+					}
 					proposals.push( proposal );
 					proposalListeners.forEach( ( listener ) =>
 						listener( proposal )
@@ -564,8 +580,14 @@ export function createIntentLogSession(
 				}
 				case INTENT_LOG_UPDATE_TYPES.VOIDED: {
 					// Another client's voided marker (ours settle through
-					// the ack); relevant only on ack loss.
-					settlePending( decoded.intentId );
+					// the ack); relevant only on ack loss. Same replan
+					// contract as the proposal path: a settle that
+					// bypasses clientReceive must not leave a stale
+					// optimistic effect behind.
+					if ( settlePending( decoded.intentId ) && replica ) {
+						replanClient( replica );
+						notifyChange();
+					}
 					return;
 				}
 				default:
@@ -576,6 +598,7 @@ export function createIntentLogSession(
 		},
 
 		receiveDispositions: ( dispositions: EngineDisposition[] ) => {
+			let settled = false;
 			for ( const disposition of dispositions ) {
 				/*
 				 * Best-effort: the row-processing that precedes this ack
@@ -588,10 +611,19 @@ export function createIntentLogSession(
 				const predicted = replica
 					? predictedDisposition( replica, disposition.intentId )
 					: null;
-				settlePending( disposition.intentId );
+				settled = settlePending( disposition.intentId ) || settled;
 				dispositionListeners.forEach( ( listener ) =>
 					listener( { ...disposition, predicted } )
 				);
+			}
+			/*
+			 * Any intent settled HERE (escalated/voided without a proposal
+			 * row, or an ack that outran its accepted row) left the outbox
+			 * without a clientReceive replan — recompute the optimistic
+			 * document so a mispredicted effect cannot linger on the canvas.
+			 */
+			if ( settled && replica ) {
+				replanClient( replica );
 			}
 			notifyChange();
 		},
