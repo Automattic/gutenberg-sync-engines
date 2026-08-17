@@ -1350,22 +1350,27 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 			$props['template'] = (string) get_page_template_slug( $post->ID );
 
 			/*
-			 * Attached taxonomies, keyed by rest_base like the REST record:
-			 * whole term-ID arrays as registers, in get_the_terms() order so
-			 * a joining client's echo suppression sees exactly its record's
-			 * value. Mirrors the REST posts controller (show_in_rest
-			 * taxonomies only; rest_base falls back to the taxonomy name).
+			 * Attached taxonomies, keyed by rest_base like the REST record
+			 * (show_in_rest taxonomies only; rest_base falls back to the
+			 * taxonomy name): whole term-ID arrays as registers, in
+			 * CANONICAL numeric order. Term bindings are sets — the editor
+			 * appends IDs in click order while REST serializes name order —
+			 * so both the client and genesis normalize to one order and
+			 * compare order-insensitively; without that, the same set read
+			 * as a change and escalated spurious property conflicts.
 			 */
 			$taxonomies = get_object_taxonomies( $post->post_type, 'objects' );
 			foreach ( $taxonomies as $taxonomy ) {
 				if ( empty( $taxonomy->show_in_rest ) ) {
 					continue;
 				}
-				$base           = ! empty( $taxonomy->rest_base ) ? $taxonomy->rest_base : $taxonomy->name;
-				$terms          = get_the_terms( $post->ID, $taxonomy->name );
-				$props[ $base ] = is_array( $terms )
+				$base     = ! empty( $taxonomy->rest_base ) ? $taxonomy->rest_base : $taxonomy->name;
+				$terms    = get_the_terms( $post->ID, $taxonomy->name );
+				$term_ids = is_array( $terms )
 					? array_map( 'intval', array_values( wp_list_pluck( $terms, 'term_id' ) ) )
 					: array();
+				sort( $term_ids, SORT_NUMERIC );
+				$props[ $base ] = $term_ids;
 			}
 
 			/*

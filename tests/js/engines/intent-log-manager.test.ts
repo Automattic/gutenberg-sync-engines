@@ -1480,21 +1480,21 @@ describe( 'intent-log manager', () => {
 		expect( transport.captured.sent ).toHaveLength( 0 );
 	} );
 
-	it( 'properties: a remote date never overwrites a floating local date, and lands once the date is real', async () => {
+	it( 'properties: a remote date lands immediately, floating local date or not', async () => {
+		// A register only ever carries a DELIBERATE date change (sidebar
+		// edit or post-save mutation feed) — genesis parity keeps floating
+		// dates out of the room — so the peer applies it unconditionally.
+		// The old floating-date receive guard made propagation depend on
+		// the peer's stale `modified` value and save history.
 		const { handlers, transport } = await loadManagedEntity( {
 			date: '2026-08-01T10:00:00',
 		} );
-		// Floating: the edited record's date equals its modified time.
-		let editedRecord: Record< string, unknown > = {
-			date: '2026-08-01T10:00:00',
-			modified: '2026-08-01T10:00:00',
-		};
-		handlers.getEditedRecord = ( async () =>
-			editedRecord ) as RecordHandlers[ 'getEditedRecord' ];
-
 		transport.captured.session!.receiveUpdate(
 			snapshotRow( [], { date: '2026-08-01T10:00:00' } )
 		);
+		// Genesis matching the record is not a change.
+		expect( handlers.edits ).toHaveLength( 0 );
+
 		transport.captured.session!.receiveUpdate( {
 			data: JSON.stringify( {
 				intentId: 'remote-date-1',
@@ -1510,38 +1510,8 @@ describe( 'intent-log manager', () => {
 			} ),
 			type: INTENT_LOG_UPDATE_TYPES.INTENT,
 		} );
-		await Promise.resolve();
-		await Promise.resolve();
-		expect(
-			handlers.edits.filter(
-				( edit ) => 'date' in ( edit as Record< string, unknown > )
-			)
-		).toHaveLength( 0 );
-
-		// A scheduled (non-floating) local date accepts the remote value.
-		editedRecord = {
-			date: '2026-08-01T10:00:00',
-			modified: '2026-08-05T12:00:00',
-		};
-		transport.captured.session!.receiveUpdate( {
-			data: JSON.stringify( {
-				intentId: 'remote-date-2',
-				actorId: 'u9c9',
-				baseSeq: 2,
-				txnId: null,
-				type: 'set_property',
-				payload: {
-					name: 'date',
-					value: '2026-10-01T09:00:00',
-					observedVersion: 2,
-				},
-			} ),
-			type: INTENT_LOG_UPDATE_TYPES.INTENT,
-		} );
-		await Promise.resolve();
-		await Promise.resolve();
 		expect( handlers.edits.at( -1 ) ).toEqual( {
-			date: '2026-10-01T09:00:00',
+			date: '2026-09-01T09:00:00',
 		} );
 	} );
 
@@ -1592,6 +1562,37 @@ describe( 'intent-log manager', () => {
 			type: INTENT_LOG_UPDATE_TYPES.INTENT,
 		} );
 		expect( handlers.edits.at( -1 ) ).toEqual( { categories: [ 5, 6 ] } );
+	} );
+
+	it( 'taxonomies: term order never reads as a change, and captures author canonical order', async () => {
+		// The editor appends term IDs in click order while REST serializes
+		// name order; the same SET in a different order must neither push
+		// nor author (it used to escalate spurious property conflicts via
+		// the post-save mutation feed).
+		const { manager, handlers, transport } = await loadManagedEntity( {
+			tags: [ 4, 7 ],
+		} );
+		// A register holding the same set in another order (e.g. written
+		// by an older client) is not a change.
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [], { tags: [ 7, 4 ] } )
+		);
+		expect( handlers.edits ).toHaveLength( 0 );
+
+		// The save feed reporting the same set reordered authors nothing.
+		manager.update( 'postType/post', '1', { tags: [ 7, 4 ] }, 'e' );
+		expect( transport.captured.sent ).toHaveLength( 0 );
+
+		// A genuine change authors in canonical (numeric) order regardless
+		// of the editor's click order.
+		manager.update( 'postType/post', '1', { tags: [ 9, 7, 4 ] }, 'e' );
+		const sent = transport.captured.sent.map( ( update ) =>
+			JSON.parse( update.data )
+		);
+		expect( sent.at( -1 ).payload ).toMatchObject( {
+			name: 'tags',
+			value: [ 4, 7, 9 ],
+		} );
 	} );
 
 	it( 'taxonomies: a non-numeric array is not capturable', async () => {

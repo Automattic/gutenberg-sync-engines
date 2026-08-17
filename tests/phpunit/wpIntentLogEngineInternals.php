@@ -231,9 +231,11 @@ class Tests_Collaboration_WpIntentLogEngineInternals extends WP_UnitTestCase {
 		unregister_taxonomy( 'genre' );
 		unregister_taxonomy( 'internal_tax' );
 
-		// Byte-parity with the REST record: get_the_terms() order (by
-		// name), plucked term ids.
-		$this->assertSame( array( $tag_a, $tag_b ), $props['tags'] );
+		// Canonical numeric order (term bindings are sets; the client
+		// compares order-insensitively). Name order would be
+		// array( $tag_a, $tag_b ) — 'alpha' before 'bravo' — but bravo
+		// was created first and holds the lower id.
+		$this->assertSame( array( $tag_b, $tag_a ), $props['tags'] );
 		// Custom taxonomies key by rest_base…
 		$this->assertSame( array( $genre ), $props['genres'] );
 		// …and non-REST taxonomies never enter the document (absent from

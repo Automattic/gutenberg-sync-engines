@@ -331,10 +331,30 @@ function isSyncablePropertyValue(
 }
 
 /**
- * Value equality for property registers: strict for scalars, elementwise
- * (order-sensitive, matching the framework's deep comparison) for term-ID
- * arrays. Array registers arrive as fresh instances on every read, so
- * reference equality would author an echo intent per render.
+ * Canonical form of a property value: term-ID arrays sort numerically,
+ * everything else passes through. Taxonomy bindings are SETS — the editor
+ * appends IDs in click order while the REST record serializes name order,
+ * and without one canonical order the post-save mutation feed re-captures
+ * the same set as a "change", whose register write then collides with any
+ * in-flight toggle as a spurious property-conflict escalation.
+ *
+ * @param value Property value.
+ * @return The canonical value (a sorted copy for term-ID arrays).
+ */
+function canonicalPropertyValue( value: unknown ): unknown {
+	if ( isTermIdArray( value ) ) {
+		return [ ...value ].sort( ( a, b ) => a - b );
+	}
+	return value;
+}
+
+/**
+ * Value equality for property registers: strict for scalars, and
+ * order-INSENSITIVE elementwise comparison for term-ID arrays (see
+ * canonicalPropertyValue — same set must never read as a change, even
+ * against unsorted values written by older clients). Array registers
+ * arrive as fresh instances on every read, so reference equality would
+ * author an echo intent per render.
  *
  * @param a One value (may be undefined: absent).
  * @param b Other value.
@@ -344,11 +364,18 @@ function samePropertyValue( a: unknown, b: unknown ): boolean {
 	if ( a === b ) {
 		return true;
 	}
+	if ( ! Array.isArray( a ) || ! Array.isArray( b ) ) {
+		return false;
+	}
+	if ( a.length !== b.length ) {
+		return false;
+	}
+	const aSorted = canonicalPropertyValue( a );
+	const bSorted = canonicalPropertyValue( b );
 	return (
-		Array.isArray( a ) &&
-		Array.isArray( b ) &&
-		a.length === b.length &&
-		a.every( ( item, index ) => item === b[ index ] )
+		Array.isArray( aSorted ) &&
+		Array.isArray( bSorted ) &&
+		aSorted.every( ( item, index ) => item === bSorted[ index ] )
 	);
 }
 
@@ -938,7 +965,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			) {
 				value = '';
 			}
-			initialProps[ name ] = value;
+			initialProps[ name ] = canonicalPropertyValue( value );
 		}
 		// Meta registers seed the same way, under their prefixed names.
 		const recordMeta =
@@ -996,47 +1023,18 @@ export function createIntentLogManager( debug = false ): SyncManager {
 		entityStates.set( key, state );
 
 		/**
-		 * Pushes a remote date change once the edited record confirms the
-		 * local date is not "floating" (publish immediately). A floating
-		 * date is never overwritten — same policy as the framework's
-		 * getPostChangesFromCRDTDoc. The record read is async, so the date
-		 * lane runs after the synchronous property push; echo state is only
-		 * recorded when the edit actually dispatches, so a skipped push is
-		 * re-evaluated on the next change event.
-		 *
-		 * @param value Register value observed at schedule time.
-		 */
-		const pushDateChange = async ( value: SyncedPropertyValue ) => {
-			let editedRecord: Record< string, unknown > | undefined;
-			try {
-				editedRecord = ( await handlers.getEditedRecord() ) as Record<
-					string,
-					unknown
-				>;
-			} catch {
-				return;
-			}
-			const doc = session.getDocument();
-			if (
-				state.unloaded ||
-				! doc ||
-				doc.props?.date !== value ||
-				state.lastPushedProps.date === value
-			) {
-				return;
-			}
-			const currentDate = editedRecord?.date ?? null;
-			const isFloating =
-				null === currentDate || editedRecord?.modified === currentDate;
-			if ( isFloating ) {
-				return;
-			}
-			state.lastPushedProps.date = value;
-			handlers.editRecord( { date: value }, { undoIgnore: true } );
-		};
-
-		/**
 		 * Pushes engine property values the editor has not seen yet.
+		 *
+		 * `date` is deliberately pushed like any other scalar — WITHOUT the
+		 * framework sync config's floating-date guard. That guard protects
+		 * a "publish immediately" editor from the genesis-seeded concrete
+		 * date, a case this engine prevents at the source: genesis never
+		 * seeds a floating date, and a seeded concrete date always equals
+		 * the joining record's value (echo-suppressed). Registers therefore
+		 * only ever carry DELIBERATE date changes — a sidebar edit or the
+		 * post-save mutation feed — and guarding those made propagation
+		 * depend on the peer's stale `modified` value and save history
+		 * (dates synced or not seemingly at random).
 		 */
 		const pushPropertyChanges = () => {
 			const doc = session.getDocument();
@@ -1045,7 +1043,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			}
 			const edits: Record< string, unknown > = {};
 			for ( const name of state.syncedProperties ) {
-				const value = doc.props?.[ name ];
+				const value = canonicalPropertyValue( doc.props?.[ name ] );
 				if (
 					undefined === value ||
 					! isSyncablePropertyValue( value )
@@ -1059,11 +1057,6 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				}
 				// An invalid status never reaches the editor.
 				if ( 'status' === name && 'auto-draft' === value ) {
-					continue;
-				}
-				// The date lane is async (needs the edited record).
-				if ( 'date' === name ) {
-					void pushDateChange( value );
 					continue;
 				}
 				state.lastPushedProps[ name ] = value;
@@ -1454,10 +1447,12 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				let value = rawPropertyValue(
 					changes as Record< string, unknown >,
 					name
-				);
+				) as SyncedPropertyValue | undefined;
 				if ( undefined === value ) {
 					continue;
 				}
+				// Term-ID arrays author in canonical (numeric) order.
+				value = canonicalPropertyValue( value ) as SyncedPropertyValue;
 				/*
 				 * Per-property capture guards, mirroring the framework's
 				 * applyPostChangesToCRDTDoc: the "Auto Draft" placeholder
