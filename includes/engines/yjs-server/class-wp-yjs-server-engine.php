@@ -56,12 +56,18 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 	 * the snapshot row plus the update tail, and uploads its own full state
 	 * as an ordinary update when it has local content the server lacks.
 	 *
-	 * KNOWN GAPS (relative to intent-log, tracked in
-	 * docs/engine-comparison.md): no per-update kses/capability lane yet
-	 * (a CRDT update is not attributable to a reviewable "intent" without
-	 * further design), and no proposal/review lane — genuine conflicts
-	 * resolve by CRDT rules (last-writer-wins on map registers) rather than
-	 * escalating.
+	 * The kses/capability lane runs at ingest and SANITIZES rather than
+	 * parks (see sanitize_unfiltered_html): blocks an unfiltered author's
+	 * batch touched whose serialization wp_kses_post would rewrite are
+	 * replaced with their sanitized form and the compensating delta
+	 * broadcasts to every client — filter-on-save semantics at per-update
+	 * grain, coarser than intent-log's parked-approval lane by design.
+	 *
+	 * KNOWN GAP (relative to intent-log, tracked in
+	 * docs/engine-comparison.md): no proposal/review lane — genuine
+	 * conflicts resolve by CRDT rules (last-writer-wins on map registers)
+	 * rather than escalating; surfacing them would first require conflict
+	 * DETECTION, which CRDT merge does not provide.
 	 *
 	 * Materialization mirrors the intent-log engine's Phase 2a
 	 * simplification: a block's rich-text content maps opaquely onto the
@@ -417,6 +423,23 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				return array( 'dispositions' => $dispositions );
 			}
 
+			/*
+			 * The kses/capability lane, AFTER the batch integrated: content
+			 * from an author without unfiltered_html is FILTERED, not
+			 * refused — rejecting an already-integrated CRDT update would
+			 * permanently diverge the author's replica (its later updates
+			 * depend on the rejected items). Blocks this batch touched
+			 * whose serialization kses would rewrite are sanitized in the
+			 * canonical document, and the compensating delta broadcasts as
+			 * a server-authored row every client (the author included)
+			 * converges on — mirroring WordPress's own filter-on-save
+			 * semantics at the per-update grain.
+			 */
+			$kses_diffs = array();
+			if ( ! current_user_can( 'unfiltered_html' ) ) {
+				$kses_diffs = $this->sanitize_unfiltered_html( $room, $doc, $before_bytes );
+			}
+
 			foreach ( $diffs as $diff ) {
 				if ( ! $this->add_row( $room, $client_id, self::UPDATE_TYPE_UPDATE, $diff ) ) {
 					return new WP_Error(
@@ -426,6 +449,20 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 					);
 				}
 			}
+			foreach ( $kses_diffs as $kses_diff ) {
+				// Server attribution: the read path filters a client's OWN
+				// rows, and the sanitizing author must receive this one.
+				if ( ! $this->add_row( $room, self::GENESIS_CLIENT_ID, self::UPDATE_TYPE_UPDATE, $kses_diff ) ) {
+					return new WP_Error(
+						'rest_sync_storage_error',
+						__( 'Failed to store sync update.', 'gutenberg' ),
+						array( 'status' => 500 )
+					);
+				}
+			}
+			if ( array() !== $kses_diffs ) {
+				$after_bytes = \Yjs\encodeStateAsUpdateV2( $doc )->toBinaryString();
+			}
 
 			// $after_bytes IS the canonical encoding at the new head; reuse
 			// it rather than encoding the document a third time.
@@ -433,8 +470,99 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 			$this->save_canonical( $room, $doc, $load_cursor, base64_encode( $after_bytes ) );
 			$this->maybe_checkpoint( $room, $client_id, $doc );
 
-			$this->stash_ingest_debug( $room, $context, $dispositions, count( $diffs ), $replayed, strlen( $after_bytes ) );
+			$this->stash_ingest_debug( $room, $context, $dispositions, count( $diffs ), $replayed, strlen( $after_bytes ), count( $kses_diffs ) );
 			return array( 'dispositions' => $dispositions );
+		}
+
+		/**
+		 * Sanitizes protected markup an unfiltered author's batch introduced.
+		 *
+		 * Judged at the top-level-block grain against the batch baseline:
+		 * a block whose serialization is byte-identical to a pre-batch
+		 * block was not touched here and is never judged (privileged
+		 * content survives untouched); a touched block whose serialization
+		 * `wp_kses_post` would rewrite is REPLACED in the canonical
+		 * document with its sanitized form (rebuilt through the genesis
+		 * block builder, wrappers recorded). Returns the compensating
+		 * deltas to broadcast; empty when nothing was sanitized.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param string         $room         Room identifier.
+		 * @param \Yjs\Utils\Doc $doc          Canonical document (mutated).
+		 * @param string         $before_bytes Batch-start encoding.
+		 * @return string[] Base64 compensation deltas (zero or one).
+		 */
+		private function sanitize_unfiltered_html( string $room, \Yjs\Utils\Doc $doc, string $before_bytes ): array {
+			$wrappers = $this->room_wrappers( $room );
+			$after    = self::materialize_blocks( $doc, $wrappers );
+
+			$dirty = array();
+			foreach ( $after as $index => $serialized ) {
+				if ( wp_kses_post( $serialized ) !== $serialized ) {
+					$dirty[ $index ] = $serialized;
+				}
+			}
+			if ( array() === $dirty ) {
+				return array();
+			}
+
+			// Only blocks THIS batch touched are judged: byte-identical
+			// pre-batch blocks pass through (a privileged author's raw
+			// HTML is not destroyed by an unprivileged peer's unrelated
+			// edit).
+			$before_doc = self::rebuild_doc( $before_bytes, array() );
+			$before_set = array_fill_keys( self::materialize_blocks( $before_doc, $wrappers ), true );
+			foreach ( $dirty as $index => $serialized ) {
+				if ( isset( $before_set[ $serialized ] ) ) {
+					unset( $dirty[ $index ] );
+				}
+			}
+			if ( array() === $dirty ) {
+				return array();
+			}
+
+			$record  = $doc->getMap( 'document' );
+			$yblocks = $record->get( 'blocks' );
+			if ( ! ( $yblocks instanceof \Yjs\Types\YArray ) ) {
+				return array();
+			}
+
+			// phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- clientID is the y-php Doc property, mirroring JS Yjs naming.
+			$doc->clientID = self::GENESIS_CLIENT_ID;
+			$state_vector  = \Yjs\encodeStateVector( $doc );
+
+			// Replace from the highest index down so earlier indices stay
+			// valid while later entries are swapped.
+			krsort( $dirty );
+			$sanitized_count = 0;
+			foreach ( $dirty as $index => $serialized ) {
+				$sanitized = wp_kses_post( $serialized );
+				$parsed    = array_values(
+					array_filter(
+						parse_blocks( $sanitized ),
+						static function ( $block ) {
+							return ! empty( $block['blockName'] ) || '' !== trim( (string) implode( '', $block['innerContent'] ?? array() ) );
+						}
+					)
+				);
+				$id_base   = 'kses-' . substr( md5( $room . '|' . $index . '|' . $serialized ), 0, 8 );
+				$specs     = self::blocks_to_yblocks( $parsed, $id_base, $wrappers );
+				$yblocks->delete( $index, 1 );
+				if ( array() !== $specs ) {
+					$yblocks->insert( $index, $specs );
+				}
+				++$sanitized_count;
+			}
+
+			if ( method_exists( $this->storage, 'set_room_meta' ) ) {
+				$this->storage->set_room_meta( $room, self::META_WRAPPERS, $wrappers );
+			}
+
+			// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+			do_action( 'qm/debug', "wp-sync: yjs-server sanitized {$sanitized_count} block(s) from an author without unfiltered_html in {$room}" );
+
+			return array( \Yjs\encodeStateAsUpdateV2( $doc, $state_vector )->toBase64() );
 		}
 
 		/**
@@ -521,14 +649,15 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		 *
 		 * @since 0.2.0
 		 *
-		 * @param string $room          Room identifier.
-		 * @param array  $context       Transport context.
-		 * @param array  $dispositions  Final per-update dispositions.
-		 * @param int    $appended_rows Rows appended to the log.
-		 * @param bool   $replayed      Whether ingest repaired from the log.
-		 * @param int    $doc_bytes     Canonical document size in bytes.
+		 * @param string $room           Room identifier.
+		 * @param array  $context        Transport context.
+		 * @param array  $dispositions   Final per-update dispositions.
+		 * @param int    $appended_rows  Rows appended to the log.
+		 * @param bool   $replayed       Whether ingest repaired from the log.
+		 * @param int    $doc_bytes      Canonical document size in bytes.
+		 * @param int    $kses_sanitized Blocks the kses lane sanitized.
 		 */
-		private function stash_ingest_debug( string $room, array $context, array $dispositions, int $appended_rows, bool $replayed, int $doc_bytes ): void {
+		private function stash_ingest_debug( string $room, array $context, array $dispositions, int $appended_rows, bool $replayed, int $doc_bytes, int $kses_sanitized = 0 ): void {
 			if ( empty( $context['debug'] ) ) {
 				return;
 			}
@@ -538,10 +667,11 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				$counts[ $key ] = ( $counts[ $key ] ?? 0 ) + 1;
 			}
 			$this->debug_stash[ $room ] = array(
-				'doc_bytes'     => $doc_bytes,
-				'appended_rows' => $appended_rows,
-				'replayed'      => $replayed,
-				'ingest'        => $counts,
+				'doc_bytes'      => $doc_bytes,
+				'appended_rows'  => $appended_rows,
+				'replayed'       => $replayed,
+				'ingest'         => $counts,
+				'kses_sanitized' => $kses_sanitized,
 			);
 		}
 
@@ -559,16 +689,46 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				return null;
 			}
 
-			$record = $state['doc']->getMap( 'document' );
+			$wrappers = $this->room_wrappers( $room );
+
+			return implode( "\n\n", self::materialize_blocks( $state['doc'], $wrappers ) );
+		}
+
+		/**
+		 * The room's out-of-band wrapper map (see blocks_to_yblocks).
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param string $room Room identifier.
+		 * @return array clientId => wrapper map.
+		 */
+		private function room_wrappers( string $room ): array {
+			if ( ! method_exists( $this->storage, 'get_room_meta' ) ) {
+				return array();
+			}
+			$stored = $this->storage->get_room_meta( $room, self::META_WRAPPERS );
+			return is_array( $stored ) ? $stored : array();
+		}
+
+		/**
+		 * Serializes a document's top-level blocks, one string per block.
+		 *
+		 * The per-index shape (rather than one joined string) is what the
+		 * kses lane diffs: an unchanged block serializes byte-identically
+		 * before and after a batch, so only blocks the batch touched are
+		 * ever judged.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param \Yjs\Utils\Doc $doc      Canonical document.
+		 * @param array          $wrappers Wrapper map for materialization.
+		 * @return string[] Serialized top-level blocks in order.
+		 */
+		private static function materialize_blocks( \Yjs\Utils\Doc $doc, array $wrappers ): array {
+			$record = $doc->getMap( 'document' );
 			$blocks = $record->get( 'blocks' );
 			if ( ! ( $blocks instanceof \Yjs\Types\YArray ) ) {
-				return '';
-			}
-
-			$wrappers = array();
-			if ( method_exists( $this->storage, 'get_room_meta' ) ) {
-				$stored   = $this->storage->get_room_meta( $room, self::META_WRAPPERS );
-				$wrappers = is_array( $stored ) ? $stored : array();
+				return array();
 			}
 
 			$serialized = array();
@@ -580,7 +740,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				$serialized[] = serialize_block( self::to_serializable_block( $block, $wrappers ) );
 			}
 
-			return implode( "\n\n", $serialized );
+			return $serialized;
 		}
 
 		/**
