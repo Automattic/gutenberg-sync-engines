@@ -120,6 +120,11 @@ const BURST_RATE = ( () => {
 	const raw = Number.parseFloat( process.env.RTC_FUZZ_BURST_RATE || '0.2' );
 	return Number.isFinite( raw ) ? Math.min( Math.max( raw, 0 ), 1 ) : 0.2;
 } )();
+// Action-weighting profile: 'undo' emphasizes undo/redo (including undo
+// pressed inside the unsettled window), 'concurrency' emphasizes
+// same-block concurrent edits and typing. Changing the profile changes
+// what a seed replays as — replay with the same profile.
+const PROFILE = process.env.RTC_FUZZ_PROFILE || 'default';
 
 const THIRD_USER = {
 	username: 'fuzz-collaborator-3',
@@ -254,6 +259,20 @@ const BLOCK_INSERTING_ACTIONS = new Set( [
 	'insert-into-group',
 	'deep-nest-group',
 	'concurrent-append',
+	// The peer's insert survives the other user's undo (undo pops the
+	// undoer's OWN unit), so the document is non-empty afterwards.
+	'concurrent-edit-and-undo',
+] );
+
+/**
+ * Actions that can remove blocks via history: an undo can revert an
+ * insert, so a zero-block document afterwards is legitimate.
+ */
+const HISTORY_ACTIONS = new Set( [
+	'undo',
+	'redo',
+	'type-then-undo-quick',
+	'edit-then-undo-settled',
 ] );
 
 interface FlatBlock {
@@ -357,6 +376,113 @@ async function updateBlockContent(
 		},
 		{ clientId, content }
 	);
+}
+
+/**
+ * Dispatch editor undo/redo — the same store action the toolbar button and
+ * the keyboard shortcut dispatch, which core-data routes to the active
+ * engine's collaborative undo manager (SyncManager.undoManager).
+ *
+ * @param page Acting page.
+ * @param kind 'undo' or 'redo'.
+ */
+async function dispatchHistory(
+	page: Page,
+	kind: 'undo' | 'redo'
+): Promise< void > {
+	await page.evaluate( ( action ) => {
+		( window as any ).wp.data.dispatch( 'core/editor' )[ action ]();
+	}, kind );
+}
+
+/**
+ * The collaborative undo stack state as the editor sees it.
+ *
+ * @param page Page to read.
+ */
+async function getHistoryState(
+	page: Page
+): Promise< { hasUndo: boolean; hasRedo: boolean } > {
+	return page.evaluate( () => {
+		const coreSelect = ( window as any ).wp.data.select( 'core' );
+		return {
+			hasUndo: Boolean( coreSelect.hasUndo() ),
+			hasRedo: Boolean( coreSelect.hasRedo() ),
+		};
+	} );
+}
+
+/**
+ * Append a marker to the Nth paragraph (flattened order) via the store.
+ * Resolved per page: clientIds are editor-local, but converged trees list
+ * paragraphs in the same order, so the index names "the same" block on
+ * every page.
+ *
+ * @param page Acting page.
+ * @param nth  Flattened paragraph index (clamped to the last paragraph).
+ * @param mark Marker to append.
+ */
+async function appendToNthParagraph(
+	page: Page,
+	nth: number,
+	mark: string
+): Promise< boolean > {
+	return page.evaluate(
+		( args ) => {
+			const { dispatch, select } = ( window as any ).wp.data;
+			const flat: any[] = [];
+			const walk = ( blocks: any[] ) => {
+				for ( const block of blocks ) {
+					if ( 'core/paragraph' === block.name ) {
+						flat.push( block );
+					}
+					walk( block.innerBlocks ?? [] );
+				}
+			};
+			walk( select( 'core/block-editor' ).getBlocks() );
+			if ( ! flat.length ) {
+				return false;
+			}
+			const target = flat[ Math.min( args.nth, flat.length - 1 ) ];
+			dispatch( 'core/block-editor' ).updateBlockAttributes(
+				target.clientId,
+				{
+					content: `${ String( target.attributes?.content ?? '' ) } ${
+						args.mark
+					}`,
+				}
+			);
+			return true;
+		},
+		{ mark, nth }
+	);
+}
+
+/**
+ * Click into the Nth paragraph and type at its end — real keystrokes, so
+ * the engine's capture path (not the store-update path) is exercised.
+ *
+ * @param editor Editor handle for the acting page.
+ * @param page   Acting page.
+ * @param nth    Paragraph index (clamped).
+ * @param text   Text to type.
+ */
+async function typeIntoNthParagraph(
+	editor: Editor,
+	page: Page,
+	nth: number,
+	text: string
+): Promise< boolean > {
+	const paragraphs = editor.canvas.locator( '[data-type="core/paragraph"]' );
+	const count = await paragraphs.count();
+	if ( ! count ) {
+		return false;
+	}
+	const target = paragraphs.nth( Math.min( nth, count - 1 ) );
+	await target.click();
+	await page.keyboard.press( 'End' );
+	await page.keyboard.type( text );
+	return true;
 }
 
 /**
@@ -495,7 +621,7 @@ const ACTIONS: Array< {
 				'edit'
 			) }`;
 			await updateBlockContent( page, target.clientId, text );
-			return { clientId: target.clientId };
+			return { clientId: target.clientId, text };
 		},
 	},
 	{
@@ -778,13 +904,15 @@ const ACTIONS: Array< {
 				return { skipped: 'single participant' };
 			}
 			const secondIndex = pages.length > 2 && rng() < 0.5 ? 2 : 1;
+			const texts = [
+				marker( seed, step, 0, 'conc' ),
+				marker( seed, step, secondIndex, 'conc' ),
+			];
 			await Promise.all( [
 				insertBlockAt(
 					pages[ 0 ],
 					{
-						attributes: {
-							content: marker( seed, step, 0, 'conc' ),
-						},
+						attributes: { content: texts[ 0 ] },
 						name: 'core/paragraph',
 					},
 					-1
@@ -792,23 +920,209 @@ const ACTIONS: Array< {
 				insertBlockAt(
 					pages[ secondIndex ],
 					{
-						attributes: {
-							content: marker( seed, step, secondIndex, 'conc' ),
-						},
+						attributes: { content: texts[ 1 ] },
 						name: 'core/paragraph',
 					},
 					-1
 				),
 			] );
-			return { secondIndex };
+			return { secondIndex, texts };
+		},
+	},
+	{
+		label: 'undo',
+		run: async ( { page } ) => {
+			const before = await getHistoryState( page );
+			await dispatchHistory( page, 'undo' );
+			return { before };
+		},
+	},
+	{
+		label: 'redo',
+		run: async ( { page } ) => {
+			const before = await getHistoryState( page );
+			await dispatchHistory( page, 'redo' );
+			return { before };
+		},
+	},
+	{
+		label: 'type-then-undo-quick',
+		run: async ( { page, editor, seed, step, userIndex, rng } ) => {
+			// Undo INSIDE the unsettled window: intent-log units only become
+			// undoable after the capture delay + ack round trip, so an undo
+			// this early races unit settling — exactly where "undo did
+			// something unexpected" reports live.
+			const text = ` ${ marker( seed, step, userIndex, 'tuq' ) }`;
+			const typed = await typeIntoNthParagraph(
+				editor,
+				page,
+				Number.MAX_SAFE_INTEGER,
+				text
+			);
+			if ( ! typed ) {
+				return { skipped: 'no paragraph to type into' };
+			}
+			const delayMs = Math.floor( rng() * 900 );
+			await page.waitForTimeout( delayMs );
+			const before = await getHistoryState( page );
+			await dispatchHistory( page, 'undo' );
+			return { before, delayMs, text };
+		},
+	},
+	{
+		label: 'edit-then-undo-settled',
+		run: async ( { page, seed, step, userIndex, rng } ) => {
+			// The deterministic undo exercise: edit, wait for the unit to
+			// become undoable (settled), then undo it.
+			const paragraphs = ( await getFlatBlocks( page ) ).filter(
+				( block ) => block.name === 'core/paragraph'
+			);
+			if ( ! paragraphs.length ) {
+				return { skipped: 'no paragraphs' };
+			}
+			const nth = pickIndex( rng, paragraphs.length );
+			const text = marker( seed, step, userIndex, 'eus' );
+			await appendToNthParagraph( page, nth, text );
+			const settled = await page
+				.waitForFunction(
+					() => ( window as any ).wp.data.select( 'core' ).hasUndo(),
+					undefined,
+					{ timeout: 15000 }
+				)
+				.then( () => true )
+				.catch( () => false );
+			await dispatchHistory( page, 'undo' );
+			return { nth, settled, text };
+		},
+	},
+	{
+		label: 'concurrent-same-block-edit',
+		run: async ( { pages, seed, step, rng } ) => {
+			if ( pages.length < 2 ) {
+				return { skipped: 'single participant' };
+			}
+			const paragraphs = ( await getFlatBlocks( pages[ 0 ] ) ).filter(
+				( block ) => block.name === 'core/paragraph'
+			);
+			if ( ! paragraphs.length ) {
+				return { skipped: 'no paragraphs' };
+			}
+			const nth = pickIndex( rng, paragraphs.length );
+			const secondIndex = pages.length > 2 && rng() < 0.5 ? 2 : 1;
+			const texts = [
+				marker( seed, step, 0, 'csb' ),
+				marker( seed, step, secondIndex, 'csb' ),
+			];
+			await Promise.all( [
+				appendToNthParagraph( pages[ 0 ], nth, texts[ 0 ] ),
+				appendToNthParagraph( pages[ secondIndex ], nth, texts[ 1 ] ),
+			] );
+			return { nth, secondIndex, texts };
+		},
+	},
+	{
+		label: 'concurrent-type-same-paragraph',
+		run: async ( { editors, pages, seed, step, rng } ) => {
+			if ( pages.length < 2 ) {
+				return { skipped: 'single participant' };
+			}
+			// Both users place their caret at the end of the SAME paragraph
+			// and type simultaneously — the tightest same-frame timing the
+			// browser can produce, and the documented intent-log
+			// frame-conflict escalation zone.
+			const paragraphs = ( await getFlatBlocks( pages[ 0 ] ) ).filter(
+				( block ) => block.name === 'core/paragraph'
+			);
+			if ( ! paragraphs.length ) {
+				return { skipped: 'no paragraphs' };
+			}
+			const nth = pickIndex( rng, paragraphs.length );
+			const secondIndex = pages.length > 2 && rng() < 0.5 ? 2 : 1;
+			const texts = [
+				marker( seed, step, 0, 'ctp' ),
+				marker( seed, step, secondIndex, 'ctp' ),
+			];
+			await Promise.all( [
+				typeIntoNthParagraph(
+					editors[ 0 ],
+					pages[ 0 ],
+					nth,
+					` ${ texts[ 0 ] }`
+				),
+				typeIntoNthParagraph(
+					editors[ secondIndex ],
+					pages[ secondIndex ],
+					nth,
+					` ${ texts[ 1 ] }`
+				),
+			] );
+			return { nth, secondIndex, texts };
+		},
+	},
+	{
+		label: 'concurrent-edit-and-undo',
+		run: async ( { pages, seed, step, rng } ) => {
+			if ( pages.length < 2 ) {
+				return { skipped: 'single participant' };
+			}
+			// One user undoes while a peer lands a concurrent edit: the
+			// inverse must transform over the peer's rows.
+			const secondIndex = pages.length > 2 && rng() < 0.5 ? 2 : 1;
+			const before = await getHistoryState( pages[ 0 ] );
+			const text = marker( seed, step, secondIndex, 'cua' );
+			await Promise.all( [
+				dispatchHistory( pages[ 0 ], 'undo' ),
+				insertBlockAt(
+					pages[ secondIndex ],
+					{
+						attributes: { content: text },
+						name: 'core/paragraph',
+					},
+					-1
+				),
+			] );
+			return { before, secondIndex, text };
 		},
 	},
 ];
 
 const TITLE_ACTION_LABELS = new Set( [ 'edit-title', 'ui-type-title' ] );
-const ACTIVE_ACTIONS = SYNC_TITLE
-	? ACTIONS
-	: ACTIONS.filter( ( action ) => ! TITLE_ACTION_LABELS.has( action.label ) );
+
+/*
+ * Profile weighting: an action listed N times is picked N× as often. The
+ * default profile keeps the uniform grammar; targeted campaigns tilt the
+ * distribution toward the behavior under test without losing the rest of
+ * the grammar (background edits are what make undo/concurrency hard).
+ */
+const PROFILE_WEIGHTS: Record< string, Record< string, number > > = {
+	concurrency: {
+		'concurrent-append': 3,
+		'concurrent-edit-and-undo': 2,
+		'concurrent-same-block-edit': 4,
+		'concurrent-type-same-paragraph': 4,
+		'edit-paragraph': 2,
+		'ui-type-paragraph': 2,
+	},
+	undo: {
+		'concurrent-edit-and-undo': 3,
+		'edit-paragraph': 2,
+		'edit-then-undo-settled': 4,
+		redo: 3,
+		'type-then-undo-quick': 4,
+		'ui-type-paragraph': 2,
+		undo: 3,
+	},
+};
+
+const ACTIVE_ACTIONS = (
+	SYNC_TITLE
+		? ACTIONS
+		: ACTIONS.filter(
+				( action ) => ! TITLE_ACTION_LABELS.has( action.label )
+		  )
+).flatMap( ( action ) =>
+	Array( PROFILE_WEIGHTS[ PROFILE ]?.[ action.label ] ?? 1 ).fill( action )
+);
 
 /**
  * Reserve a distinct milestone step (save, reload, late join) so two
@@ -840,6 +1154,24 @@ interface ComparableState {
 	content: string;
 	title: string;
 }
+
+/**
+ * Every marker this run has authored is UNIQUE (seed/step/user/label), so a
+ * marker appearing more than once in converged content is content
+ * DUPLICATION — a bug class convergence checking cannot see (all pages
+ * agree on the duplicated text): bad undo inverse derivation, a re-pushed
+ * block, or a capture echo. The negative lookahead keeps a base marker
+ * from matching its own suffixed variants (`-inner`, `-1`…).
+ *
+ * @param haystack Serialized content + title.
+ * @param mark     Marker to count.
+ */
+function countMarkerOccurrences( haystack: string, mark: string ): number {
+	const matches = haystack.match( new RegExp( `${ mark }(?![-\\w])`, 'g' ) );
+	return matches ? matches.length : 0;
+}
+
+const MARKER_PATTERN = /f\d+s\d+u\d+-[a-z]+/g;
 
 /**
  * The persistence-relevant view of a page's editor: the SERIALIZED block
@@ -1000,8 +1332,36 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 
 			const rng = createRng( seed );
 			const trace: TraceEntry[] = [];
+			// Every marker authored this run, harvested from trace details.
+			// Markers are unique per authoring op, so >1 occurrence in
+			// converged content is duplication (see countMarkerOccurrences).
+			const seenMarkers = new Set< string >();
 			const record = ( entry: TraceEntry ) => {
 				trace.push( entry );
+				if ( entry.detail ) {
+					for ( const match of JSON.stringify( entry.detail ).match(
+						MARKER_PATTERN
+					) ?? [] ) {
+						seenMarkers.add( match );
+					}
+				}
+			};
+			const assertNoDuplicatedMarkers = (
+				state: ComparableState,
+				label: string
+			) => {
+				const haystack = `${ state.content }\n${ state.title }`;
+				const duplicated: Record< string, number > = {};
+				for ( const mark of seenMarkers ) {
+					const count = countMarkerOccurrences( haystack, mark );
+					if ( count > 1 ) {
+						duplicated[ mark ] = count;
+					}
+				}
+				expect(
+					duplicated,
+					`markers duplicated in converged content after ${ label }`
+				).toEqual( {} );
 			};
 			const consoleLog: Array< {
 				page: number;
@@ -1110,16 +1470,23 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 				 */
 				const soloPhase = seed % 3 === 2;
 				if ( soloPhase ) {
-					record( { label: 'solo-phase', step: -1, userIndex: 0 } );
+					const soloTexts = [
+						marker( seed, 9000, 0, 'pre' ),
+						marker( seed, 9001, 0, 'pre' ),
+					];
+					record( {
+						detail: { texts: soloTexts },
+						label: 'solo-phase',
+						step: -1,
+						userIndex: 0,
+					} );
 					await collaborationUtils.openPost( post.id );
 					const soloPage = collaborationUtils.allPages[ 0 ];
-					for ( let i = 0; i < 2; i++ ) {
+					for ( const soloText of soloTexts ) {
 						await insertBlockAt(
 							soloPage,
 							{
-								attributes: {
-									content: marker( seed, 90 + i, 0, 'pre' ),
-								},
+								attributes: { content: soloText },
 								name: 'core/paragraph',
 							},
 							-1
@@ -1211,6 +1578,12 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 				// zero blocks as content LOSS while this is false.
 				let documentMayBeEmpty = getInitialContent( seed ) === '';
 
+				// Unique per action invocation, used as the marker step so a
+				// burst repeating (step, actor, action) still mints distinct
+				// markers. Starts above any loop step; solo-phase markers use
+				// 9000+.
+				let nextOpId = 100;
+
 				const runSingleAction = async ( step: number ) => {
 					const pages = activePages();
 					const actorIndex = pickIndex( rng, pages.length );
@@ -1247,6 +1620,7 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 					}
 
 					const action = pick( rng, ACTIVE_ACTIONS );
+					const opId = nextOpId++;
 					const detail =
 						await test.step( `seed ${ seed } step ${ step } ${ action.label } user ${ actorIndex }`, async () =>
 							( await action.run( {
@@ -1258,17 +1632,25 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 								pages,
 								rng,
 								seed,
-								step,
+								// Markers mint from the unique opId; the trace
+								// keeps the loop step.
+								step: opId,
 								userIndex: actorIndex,
 							} ) ) ?? {} );
 					record( {
-						detail: detail as Record< string, unknown >,
+						detail: {
+							...( detail as Record< string, unknown > ),
+							opId,
+						},
 						label: action.label,
 						step,
 						userIndex: actorIndex,
 					} );
 					if ( ! ( detail as { skipped?: string } ).skipped ) {
-						if ( action.label === 'delete-block' ) {
+						if (
+							action.label === 'delete-block' ||
+							HISTORY_ACTIONS.has( action.label )
+						) {
 							documentMayBeEmpty = true;
 						} else if (
 							BLOCK_INSERTING_ACTIONS.has( action.label )
@@ -1281,6 +1663,14 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 				for ( let step = 0; step < STEP_COUNT; step++ ) {
 					if ( step === lateJoinStep ) {
 						record( {
+							detail: {
+								text: marker(
+									seed,
+									step,
+									participants.length,
+									'late'
+								),
+							},
 							label: 'late-join',
 							step,
 							userIndex: participants.length,
@@ -1340,7 +1730,12 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 					}
 
 					if ( step === rejoinStep && departed ) {
-						record( { label: 'rejoin', step, userIndex: 1 } );
+						record( {
+							detail: { text: marker( seed, step, 1, 'rejoin' ) },
+							label: 'rejoin',
+							step,
+							userIndex: 1,
+						} );
 						const rejoined = await collaborationUtils.joinUser(
 							post.id,
 							SECOND_USER
@@ -1406,6 +1801,7 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 					if ( ! documentMayBeEmpty ) {
 						expect( state.blockCount ).toBeGreaterThan( 0 );
 					}
+					assertNoDuplicatedMarkers( state, `step ${ step }` );
 					await assertNoInvalidBlocks(
 						participants[ 0 ].page,
 						`step ${ step }`
@@ -1463,6 +1859,7 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 					activePages(),
 					CONVERGENCE_TIMEOUT_MS
 				);
+				assertNoDuplicatedMarkers( finalState, 'final save' );
 				if ( ! DISABLE_RELOAD && participants.length > 1 ) {
 					await reloadPage(
 						collaborationUtils,
@@ -1475,6 +1872,7 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 					expect( JSON.stringify( settled ) ).toBe(
 						JSON.stringify( finalState )
 					);
+					assertNoDuplicatedMarkers( settled, 'final reload' );
 					await assertNoInvalidBlocks(
 						participants[ 1 ].page,
 						'final reload'
@@ -1501,6 +1899,7 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 						{
 							consoleLog,
 							engine: ENGINE,
+							profile: PROFILE,
 							seed,
 							stepCount: STEP_COUNT,
 							trace,

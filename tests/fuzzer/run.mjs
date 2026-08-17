@@ -69,11 +69,7 @@ const ENGINE_CAPABILITIES = {
 	// "Content only (no title sync yet); title edits stay local."
 	'de-rtc': { syncsTitle: false },
 };
-const DEFAULT_TRANSPORTS = [
-	'http-polling',
-	'http-long-polling',
-	'websocket',
-];
+const DEFAULT_TRANSPORTS = [ 'http-polling', 'http-long-polling', 'websocket' ];
 
 function parseArgs( argv ) {
 	const args = {
@@ -86,6 +82,7 @@ function parseArgs( argv ) {
 		noLifecycle: false,
 		noReload: false,
 		out: path.join( FUZZER_ROOT, 'artifacts' ),
+		profile: null,
 		recheck: true,
 		shrink: false,
 		seedList: null,
@@ -97,7 +94,10 @@ function parseArgs( argv ) {
 	};
 	for ( const raw of argv ) {
 		const [ key, value ] = raw.includes( '=' )
-			? [ raw.slice( 0, raw.indexOf( '=' ) ), raw.slice( raw.indexOf( '=' ) + 1 ) ]
+			? [
+					raw.slice( 0, raw.indexOf( '=' ) ),
+					raw.slice( raw.indexOf( '=' ) + 1 ),
+			  ]
 			: [ raw, '' ];
 		switch ( key ) {
 			case '--engines':
@@ -159,6 +159,9 @@ function parseArgs( argv ) {
 			case '--burst-rate':
 				args.burstRate = value;
 				break;
+			case '--profile':
+				args.profile = value;
+				break;
 			case '--no-reload':
 				args.noReload = true;
 				break;
@@ -196,6 +199,7 @@ function printUsage() {
 			'  --trace=MODE         Playwright trace mode for the sweep (default: off; rechecks always retain-on-failure)',
 			'  --no-recheck         Skip the failing-seed recheck pass',
 			'  --shrink             Bisect each reproducible failure to a minimal --steps (one exemplar per signature; a shrunk run is seeded fresh, so only the failure signature is guaranteed to match)',
+			'  --profile=NAME       Action-weighting profile: undo | concurrency (default: uniform grammar; replay with the same profile)',
 			'  --no-faults          Disable sync fault injection',
 			'  --no-reload          Disable mid-run and final reload milestones',
 			'  --headed             Headed browsers',
@@ -283,7 +287,8 @@ function runWpCli( wpArgs, options = {} ) {
  * naming (legacy md5 dir, then descriptive dir, then a compose-file scan).
  */
 function wpEnvWorkDirectory() {
-	const home = process.env.WP_ENV_HOME || path.join( os.homedir(), '.wp-env' );
+	const home =
+		process.env.WP_ENV_HOME || path.join( os.homedir(), '.wp-env' );
 	const configFilePath = path.join( REPO_ROOT, TESTS_CONFIG );
 	const hash = createHash( 'md5' ).update( configFilePath ).digest( 'hex' );
 
@@ -574,13 +579,13 @@ async function readReport( reportPath ) {
 /**
  * Run the fuzz spec once for a combo + seed set.
  *
- * @param {Object} options               Invocation options.
- * @param {Object} options.combo         { engine, transport }.
- * @param {string} options.baseUrl       Tests site URL.
- * @param {string} options.comboDir      Artifact directory for this combo.
- * @param {Array}  options.seeds         Seeds to run (strings or numbers).
- * @param {Object} options.args          Parsed CLI args.
- * @param {string} options.phase         'sweep', 'recheck', or a shrink probe label.
+ * @param {Object}  options               Invocation options.
+ * @param {Object}  options.combo         { engine, transport }.
+ * @param {string}  options.baseUrl       Tests site URL.
+ * @param {string}  options.comboDir      Artifact directory for this combo.
+ * @param {Array}   options.seeds         Seeds to run (strings or numbers).
+ * @param {Object}  options.args          Parsed CLI args.
+ * @param {string}  options.phase         'sweep', 'recheck', or a shrink probe label.
  * @param {?number} options.stepsOverride Steps for this invocation (default: args.steps).
  */
 async function runPlaywright( {
@@ -604,9 +609,7 @@ async function runPlaywright( {
 		RTC_FUZZ_SEEDS: seeds.join( ',' ),
 		RTC_FUZZ_STEPS: String( stepsOverride ?? args.steps ),
 		RTC_FUZZ_TRACE:
-			phase === 'recheck'
-				? 'retain-on-failure'
-				: args.trace || 'off',
+			phase === 'recheck' ? 'retain-on-failure' : args.trace || 'off',
 		RTC_FUZZ_TRANSPORT: combo.transport,
 		RTC_FUZZ_USERS: String( args.users ),
 		WP_BASE_URL: baseUrl,
@@ -628,6 +631,9 @@ async function runPlaywright( {
 	}
 	if ( args.noReload ) {
 		env.RTC_FUZZ_DISABLE_RELOAD = '1';
+	}
+	if ( args.profile ) {
+		env.RTC_FUZZ_PROFILE = args.profile;
 	}
 
 	const playwrightArgs = [
@@ -943,8 +949,12 @@ async function main() {
 		'# RTC fuzz run summary',
 		'',
 		`- Run: \`${ path.basename( runDir ) }\``,
-		`- Seeds: ${ seeds.join( ', ' ) } (${ args.steps } steps, ${ args.users } users)`,
-		`- Faults: ${ args.noFaults ? 'disabled' : 'enabled (HTTP transports)' }`,
+		`- Seeds: ${ seeds.join( ', ' ) } (${ args.steps } steps, ${
+			args.users
+		} users${ args.profile ? `, profile: ${ args.profile }` : '' })`,
+		`- Faults: ${
+			args.noFaults ? 'disabled' : 'enabled (HTTP transports)'
+		}`,
 		'',
 		'| Combo | Passed | Flaky | Reproducible |',
 		'| --- | --- | --- | --- |',
@@ -971,16 +981,18 @@ async function main() {
 		summaryLines.push( '', '## Reproducible failure signatures', '' );
 		for ( const [ signature, entry ] of signatureMap ) {
 			const shrunkSteps = shrinkMap.get(
-				`${
-					entry.example.combo
-				}|${ signature }`
+				`${ entry.example.combo }|${ signature }`
 			);
 			summaryLines.push(
 				`- \`${ signature }\``,
 				`  - combos: ${ [ ...entry.combos ].join( ', ' ) }`,
 				`  - seeds: ${ entry.seeds.join( ', ' ) }`,
-				`  - replay: \`npm run fuzz -- --combos=${ entry.example.combo } --seed-list=${ entry.example.seed } --steps=${
+				`  - replay: \`npm run fuzz -- --combos=${
+					entry.example.combo
+				} --seed-list=${ entry.example.seed } --steps=${
 					shrunkSteps ?? args.steps
+				}${
+					args.profile ? ` --profile=${ args.profile }` : ''
 				} --trace=retain-on-failure\`${
 					shrunkSteps ? ` (shrunk from ${ args.steps } steps)` : ''
 				}`
@@ -988,7 +1000,10 @@ async function main() {
 		}
 	}
 	summaryLines.push( '' );
-	await fs.writeFile( path.join( runDir, 'summary.md' ), summaryLines.join( '\n' ) );
+	await fs.writeFile(
+		path.join( runDir, 'summary.md' ),
+		summaryLines.join( '\n' )
+	);
 
 	process.stdout.write( '\n' + summaryLines.join( '\n' ) + '\n' );
 	log( `Artifacts: ${ path.relative( REPO_ROOT, runDir ) }` );
