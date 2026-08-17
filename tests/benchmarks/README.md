@@ -41,7 +41,14 @@ constructed as `new $class( int $post_id, array $workload )`).
 
 This plugin ships three dedicated profiles. The **intent-log profile**
 speaks typed intents authored from each client's observed base and scores
-quality with the disposition-based oracle. The **yjs-server profile**
+quality with the disposition-based oracle. Its client model is
+read-driven: each simulated client advances its observed head and
+register versions by decoding the rows the engine actually delivered
+(intent rows advance the head one seq each; snapshot rows reset it to
+their seq), exactly as the production client derives its baseSeq, and in
+the single-process runner every read asserts the decoded state matches
+the shared disposition model — so a read path that dropped or mangled a
+row fails the run as a convergence failure instead of drifting silently. The **yjs-server profile**
 speaks **real Yjs**: each simulated client holds a y-php document, authors
 genuine incremental V2 updates (text inserts into the paragraph's content
 Y.Text; align set on the attributes Y.Map — exactly what the editor's

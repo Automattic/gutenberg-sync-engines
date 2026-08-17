@@ -55,10 +55,14 @@ $wp_sync_bench_fresh_engine = static function () use ( $engine_slug ) {
 };
 
 $wp_sync_bench_workload = array(
-	'scenario'     => 'concurrency-probe',
-	'post_content' => (string) get_post_field( 'post_content', $post_id ),
-	'paragraphs'   => $paragraphs,
-	'clients'      => $workers,
+	'scenario'      => 'concurrency-probe',
+	'post_content'  => (string) get_post_field( 'post_content', $post_id ),
+	'paragraphs'    => $paragraphs,
+	'clients'       => $workers,
+	// Each parallel process only sees its OWN dispositions, so a profile
+	// must not assert its disposition model against the wire here; the
+	// read-driven observed state is the only truth in this mode.
+	'multi_process' => true,
 );
 $profile                = WP_Sync_Bench_Profiles::for_engine( $engine_slug, $post_id, $wp_sync_bench_workload );
 

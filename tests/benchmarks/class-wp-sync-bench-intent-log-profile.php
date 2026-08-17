@@ -4,11 +4,16 @@
  *
  * Speaks to the engine in typed intents (insert_text into a paragraph's
  * content field; set_attr on its align register), authored from the state
- * each simulated client OBSERVED at its own last read: the profile tracks
- * the server head (every applied intent advances it) and per-paragraph
- * attribute versions, and stamps each intent with the author's observed
- * baseSeq/observedVersion — so a laggy client genuinely authors from a
- * stale base and a same-register collision escalates the later writer.
+ * each simulated client OBSERVED at its own last read. Observation is
+ * READ-DRIVEN: observe() decodes the rows the engine actually delivered
+ * and advances the client's observed head and register versions from the
+ * wire, exactly as a production client derives its baseSeq from received
+ * rows, so a laggy client genuinely authors from a stale base and a
+ * same-register collision escalates the later writer. The profile also
+ * keeps a disposition-driven model of the server head, and in the
+ * single-process runner asserts model and wire agree at every read: a
+ * dropped or mangled delivered row surfaces as a loud convergence failure
+ * instead of silent drift.
  *
  * Quality is scored with the disposition oracle: the materialized document
  * must match the engine's own account of the session (applied tokens
@@ -37,6 +42,27 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 			'already-removed',
 			'stale-base',
 			'invalid-payload',
+		);
+
+		/** Void reasons stamped at APPLY time, after the planner accepted the
+		 * intent: the engine appends the intent row to the log (the head
+		 * advances) and then voids it with a marker row, so the disposition
+		 * model must count the row like an applied one. Every other void
+		 * (transform voids, stale-base, invalid-payload) appends nothing.
+		 * `already-removed` exists in both variants and is classified as a
+		 * non-logged transform void: while removals target each block at most
+		 * once per actor, the apply-time variant (the SAME actor removing a
+		 * block twice) is unreachable.
+		 *
+		 * @var string[]
+		 */
+		const LOGGED_VOID_REASONS = array(
+			'missing-target',
+			'missing-parent',
+			'duplicate-id',
+			'cycle',
+			'self-merge',
+			'empty-after-clamp',
 		);
 
 		/**
@@ -68,8 +94,9 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 		private $paragraph_ids = array();
 
 		/**
-		 * Server head: the number of APPLIED intents (base_seq is 0 in these
-		 * runs).
+		 * Disposition model of the server head: intent rows appended to the
+		 * log (applied intents plus apply-time voids). Used only to cross-
+		 * check the wire-decoded head; clients author from what they READ.
 		 *
 		 * @var int
 		 */
@@ -96,6 +123,33 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 		 * @var array<int, int[]>
 		 */
 		private $observed_versions = array();
+
+		/**
+		 * Genesis syncId => paragraph index (the inverse of $paragraph_ids),
+		 * for decoding delivered rows.
+		 *
+		 * @var array<string, int>
+		 */
+		private $sync_id_to_paragraph = array();
+
+		/**
+		 * Model-vs-wire consistency failures recorded during reads, merged
+		 * into score()'s result so drift fails the run loudly.
+		 *
+		 * @var array<int, array{check: string, detail: string}>
+		 */
+		private $consistency_failures = array();
+
+		/**
+		 * Whether the disposition model sees EVERY client's dispositions and
+		 * can therefore be asserted against the wire. True in the single-
+		 * process runner; false in the multi-process concurrency probe, where
+		 * each process only observes its own ingests and the wire is the only
+		 * truth.
+		 *
+		 * @var bool
+		 */
+		private $assert_model = true;
 
 		/**
 		 * Monotonic intentId counter.
@@ -136,6 +190,10 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 			$this->post_id      = $post_id;
 			$this->workload     = $workload;
 			$this->client_count = max( 1, (int) $workload['clients'] );
+			// The concurrency worker marks its workload multi_process: its
+			// disposition model only sees the local process's ingests, so
+			// the model-vs-wire assert would false-alarm there.
+			$this->assert_model = empty( $workload['multi_process'] );
 		}
 
 		/**
@@ -157,7 +215,9 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 		 */
 		public function bootstrap( WP_Sync_Engine $engine, string $room ): array {
 			for ( $i = 0; $i < (int) $this->workload['paragraphs']; $i++ ) {
-				$this->paragraph_ids[] = WP_Intent_Log_Planner::genesis_sync_id( $this->post_id, 0, array( $i ) );
+				$sync_id                                = WP_Intent_Log_Planner::genesis_sync_id( $this->post_id, 0, array( $i ) );
+				$this->paragraph_ids[]                  = $sync_id;
+				$this->sync_id_to_paragraph[ $sync_id ] = $i;
 			}
 			$this->attr_version      = array_fill( 0, max( 1, (int) $this->workload['paragraphs'] ), 0 );
 			$this->observed_head     = array_fill( 0, $this->client_count, 0 );
@@ -273,6 +333,10 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 					// order: last applied write wins.
 					$this->expected_align[ (int) $edit['paragraph'] ] = $edit['align'];
 				}
+			} elseif ( 'voided' === $status && in_array( $disposition['reason'] ?? '', self::LOGGED_VOID_REASONS, true ) ) {
+				// Apply-time voids append their intent row before the void
+				// marker (see LOGGED_VOID_REASONS): the head still advances.
+				++$this->head;
 			}
 			if ( 'text' === $op ) {
 				$this->expected_texts[] = array(
@@ -302,15 +366,145 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 		}
 
 		/**
-		 * A read is what the client observes: it now authors against the
-		 * server head (and register versions) as of this point.
+		 * A read is what the client observes: decode the delivered rows and
+		 * advance the client's observed head and register versions from the
+		 * WIRE, exactly as a production client derives its baseSeq from
+		 * received rows. Intent rows are the log, one seq step each
+		 * (apply-time-voided ones included); snapshot rows (genesis, or a
+		 * compaction checkpoint after a floor reset) reset the client to
+		 * their seq and document state; proposal, voided, and resolved rows
+		 * are not log entries.
+		 *
+		 * In the single-process runner every read fully catches up and the
+		 * shared disposition model sees the whole session, so the decoded
+		 * state must equal the model at every read; a mismatch means
+		 * delivery dropped or mangled a row and is recorded as a loud
+		 * convergence failure.
 		 *
 		 * @param int   $client   Reading client index.
 		 * @param array $response get_updates_since() response.
 		 */
-		public function observe( int $client, array $response ): void { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable -- $response is part of the profile contract.
-			$this->observed_head[ $client ]     = $this->head;
-			$this->observed_versions[ $client ] = $this->attr_version;
+		public function observe( int $client, array $response ): void {
+			$head     = (int) $this->observed_head[ $client ];
+			$versions = $this->observed_versions[ $client ];
+			$rows     = (array) ( $response['updates'] ?? array() );
+
+			// An apply-time-voided intent sits in the log WITHOUT bumping any
+			// register version (replicas replay it as a void), and its voided
+			// marker lands in the same locked ingest, hence the same read
+			// window. Collect marker ids first; a marker follows its intent
+			// row in the stream.
+			$voided_ids = array();
+			foreach ( $rows as $row ) {
+				if ( WP_Intent_Log_Engine::UPDATE_TYPE_VOIDED !== ( $row['type'] ?? '' ) ) {
+					continue;
+				}
+				$decoded = json_decode( (string) ( $row['data'] ?? '' ), true );
+				if ( is_array( $decoded ) && is_string( $decoded['intentId'] ?? null ) ) {
+					$voided_ids[ $decoded['intentId'] ] = true;
+				}
+			}
+
+			foreach ( $rows as $row ) {
+				$type    = (string) ( $row['type'] ?? '' );
+				$decoded = json_decode( (string) ( $row['data'] ?? '' ), true );
+				if ( ! is_array( $decoded ) ) {
+					$this->record_consistency_failure(
+						'wire-decode',
+						sprintf( "client %d received an undecodable '%s' row", $client, $type )
+					);
+					continue;
+				}
+
+				if ( WP_Intent_Log_Engine::UPDATE_TYPE_SNAPSHOT === $type ) {
+					// Genesis (seq 0) or a compaction checkpoint: the client
+					// re-bootstraps at the snapshot's seq, with the register
+					// versions its document carries.
+					$head     = (int) ( $decoded['seq'] ?? 0 );
+					$versions = $this->versions_from_doc( is_array( $decoded['doc'] ?? null ) ? $decoded['doc'] : array() );
+					continue;
+				}
+
+				if ( WP_Intent_Log_Engine::UPDATE_TYPE_INTENT !== $type ) {
+					continue;
+				}
+
+				++$head;
+				if (
+					'set_attr' === ( $decoded['type'] ?? '' ) &&
+					! isset( $voided_ids[ $decoded['intentId'] ?? '' ] )
+				) {
+					$paragraph = $this->sync_id_to_paragraph[ $decoded['payload']['syncId'] ?? '' ] ?? null;
+					if ( null !== $paragraph ) {
+						++$versions[ $paragraph ];
+					}
+				}
+			}
+
+			$this->observed_head[ $client ]     = $head;
+			$this->observed_versions[ $client ] = $versions;
+
+			if ( ! $this->assert_model ) {
+				return;
+			}
+
+			if ( $head !== $this->head ) {
+				$this->record_consistency_failure(
+					'model-wire-head',
+					sprintf( 'client %d decoded head %d from delivered rows, but dispositions account for %d', $client, $head, $this->head )
+				);
+			}
+
+			if ( $versions !== $this->attr_version ) {
+				$this->record_consistency_failure(
+					'model-wire-versions',
+					sprintf(
+						'client %d decoded align versions [%s] from delivered rows, but dispositions account for [%s]',
+						$client,
+						implode( ',', $versions ),
+						implode( ',', $this->attr_version )
+					)
+				);
+			}
+		}
+
+		/**
+		 * Reads the per-paragraph align register versions out of a snapshot
+		 * document. Genesis paragraphs live at the root; the workload never
+		 * nests or moves them.
+		 *
+		 * @param array $doc Snapshot document.
+		 * @return int[] Paragraph index => align version.
+		 */
+		private function versions_from_doc( array $doc ): array {
+			$versions = array_fill( 0, max( 1, (int) $this->workload['paragraphs'] ), 0 );
+			foreach ( (array) ( $doc['root'] ?? array() ) as $block ) {
+				$paragraph = $this->sync_id_to_paragraph[ $block['syncId'] ?? '' ] ?? null;
+				if ( null !== $paragraph ) {
+					$versions[ $paragraph ] = (int) ( $block['attrVersions']['align'] ?? 0 );
+				}
+			}
+
+			return $versions;
+		}
+
+		/**
+		 * Records a model-vs-wire consistency failure, capped so a
+		 * persistently broken run reports its first drift sites instead of
+		 * ballooning. score() merges these into the convergence failures, so
+		 * any entry fails the run.
+		 *
+		 * @param string $check  Failure kind.
+		 * @param string $detail Human-readable detail.
+		 */
+		private function record_consistency_failure( string $check, string $detail ): void {
+			if ( count( $this->consistency_failures ) >= 25 ) {
+				return;
+			}
+			$this->consistency_failures[] = array(
+				'check'  => $check,
+				'detail' => $detail,
+			);
 		}
 
 		/**
@@ -336,19 +530,24 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 
 		/**
 		 * Scores the materialized document against the accumulated
-		 * dispositions.
+		 * dispositions, plus any model-vs-wire consistency failures the
+		 * reads recorded (a delivery bug fails the run even when the
+		 * materialized content happens to look right).
 		 *
 		 * @param WP_Sync_Engine $engine Engine under test.
 		 * @param string         $room   Room identifier.
 		 * @return array Failures (empty when converged).
 		 */
 		public function score( WP_Sync_Engine $engine, string $room ): ?array {
-			return self::verify_convergence(
-				(string) $engine->materialize( $room ),
-				(int) $this->workload['paragraphs'],
-				$this->expected_texts,
-				$this->expected_align,
-				$this->expected_markers
+			return array_merge(
+				$this->consistency_failures,
+				self::verify_convergence(
+					(string) $engine->materialize( $room ),
+					(int) $this->workload['paragraphs'],
+					$this->expected_texts,
+					$this->expected_align,
+					$this->expected_markers
+				)
 			);
 		}
 
