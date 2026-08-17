@@ -34,6 +34,10 @@ import {
 } from './intent-log-session';
 import { mintSyncId } from './intent-log/sync-id.js';
 import { fieldToHtml } from './intent-log/rich-text.js';
+import {
+	createIntentLogUndoManager,
+	type IntentLogUndoManager,
+} from './intent-log-undo';
 import { getProviderCreators } from '../framework';
 import type { EngineDocument } from './intent-log/engine-types';
 import type {
@@ -89,9 +93,10 @@ import type {
  *   taxonomies (term-ID-array registers by rest_base), and registered
  *   post meta (per-key registers under `meta.<key>` names, minus the
  *   persisted-CRDT denylist).
- * - Undo rides core's default WPUndoManager (`undoManager` stays
- *   undefined; core-data falls back automatically). Escalated intents are
- *   surfaced via console warning; the review-lane UI is Phase 2d.
+ * - Undo is COLLABORATIVE: inverse intents over the accepted log (see
+ *   intent-log-undo.ts). The manager exposes its own undo manager, so
+ *   core-data routes undo/redo through it; each capture batch and each
+ *   property push forms one undo unit.
  * - No CRDT-doc persistence/snapshots (server materializes instead), so
  *   createPersistedCRDTDoc/getEntitySnapshot return null/undefined and
  *   entityContainsSnapshot returns false (callers fail open).
@@ -868,6 +873,27 @@ function chooseObservedBaseline(
 export function createIntentLogManager( debug = false ): SyncManager {
 	const entityStates = new Map< string, EntityState >();
 	const collectionStates = new Map< ObjectType, CollectionState >();
+	/*
+	 * The collaborative undo manager (inverse intents; see
+	 * intent-log-undo.ts). Created lazily on the first entity load —
+	 * mirroring the framework manager's lifecycle — and exposed via the
+	 * `undoManager` getter, which routes core-data's undo/redo through it.
+	 * Stack changes fan out to every loaded entity's onUndoStackChange
+	 * handler (they all drive the one syncUndoManagerState).
+	 */
+	let undoManager: IntentLogUndoManager | undefined;
+	const ensureUndoManager = (): IntentLogUndoManager => {
+		if ( ! undoManager ) {
+			undoManager = createIntentLogUndoManager( {
+				onStackChange: ( stackState ) => {
+					for ( const [ , state ] of entityStates ) {
+						state.handlers.onUndoStackChange?.( stackState );
+					}
+				},
+			} );
+		}
+		return undoManager;
+	};
 	const userId =
 		Number(
 			( window as { _wpCollaborationUserId?: unknown } )
@@ -974,6 +1000,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			clientId,
 			awareness,
 		} );
+		ensureUndoManager().attachSession( session );
 		/*
 		 * Seed property echo suppression from the record the editor loaded:
 		 * a genesis snapshot whose properties match what the editor already
@@ -1612,6 +1639,12 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				return; // Snapshot not yet received; the editor still owns state.
 			}
 
+			// A deliberate undo-level boundary ends the current capture
+			// chain: the next authored batch starts a fresh undo unit.
+			if ( options.isNewUndoLevel ) {
+				undoManager?.stopCapturing();
+			}
+
 			/*
 			 * Entity property capture: an edits object carries a property
 			 * only when the editor changed it, so presence IS intent (unlike
@@ -1619,6 +1652,9 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			 * push or of the document state and are suppressed.
 			 */
 			const doc = state.session.getDocument()!;
+			// Property writes captured in THIS update call form one undo unit.
+			const propertyEnvelopes: import('./intent-log/engine-types').IntentEnvelope[] =
+				[];
 			for ( const name of state.syncedProperties ) {
 				if ( ! ( name in changes ) ) {
 					continue;
@@ -1658,11 +1694,13 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				state.lastPushedProps[ name ] = value;
 				state.capturing = true;
 				try {
-					state.session.author( 'set_property', {
-						name,
-						value,
-						observedVersion: doc.propVersions?.[ name ] ?? 0,
-					} );
+					propertyEnvelopes.push(
+						state.session.author( 'set_property', {
+							name,
+							value,
+							observedVersion: doc.propVersions?.[ name ] ?? 0,
+						} )
+					);
 				} finally {
 					state.capturing = false;
 				}
@@ -1697,15 +1735,22 @@ export function createIntentLogManager( debug = false ): SyncManager {
 					state.lastPushedProps[ name ] = metaValue;
 					state.capturing = true;
 					try {
-						state.session.author( 'set_property', {
-							name,
-							value: metaValue,
-							observedVersion: doc.propVersions?.[ name ] ?? 0,
-						} );
+						propertyEnvelopes.push(
+							state.session.author( 'set_property', {
+								name,
+								value: metaValue,
+								observedVersion:
+									doc.propVersions?.[ name ] ?? 0,
+							} )
+						);
 					} finally {
 						state.capturing = false;
 					}
 				}
+			}
+
+			if ( propertyEnvelopes.length > 0 ) {
+				undoManager?.noteAuthored( state.session, propertyEnvelopes );
 			}
 
 			const blocks = changes.blocks as BridgeBlock[] | undefined;
@@ -1771,7 +1816,10 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				}
 				state.capturing = true;
 				try {
-					state.session.authorBatch( derived.intents );
+					const envelopes = state.session.authorBatch(
+						derived.intents
+					);
+					undoManager?.noteAuthored( state.session, envelopes );
 				} finally {
 					state.capturing = false;
 				}
@@ -2003,8 +2051,12 @@ export function createIntentLogManager( debug = false ): SyncManager {
 		getEntitySnapshot: () => undefined,
 		entityContainsSnapshot: () => false,
 
-		// Core's default undo manager applies (see module note).
-		undoManager: undefined,
+		// Collaborative undo: inverse intents over the accepted log (see
+		// the module note and intent-log-undo.ts). Lazily created on the
+		// first entity load, hence the getter.
+		get undoManager() {
+			return undoManager;
+		},
 
 		unload( objectType, objectId ) {
 			// A null objectId addresses the object type's collection room.
@@ -2057,6 +2109,8 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				collection.session.destroy();
 			}
 			collectionStates.clear();
+			undoManager?.reset();
+			undoManager = undefined;
 		},
 
 		// Transport-agnostic retry: ask every live provider to retry after a

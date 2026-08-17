@@ -78,4 +78,123 @@ class Tests_Collaboration_WpWebSocketSyncTransport extends WP_UnitTestCase {
 		$server  = new WP_WebSocket_Sync_Server( $sync, '127.0.0.1', 8799 );
 		$this->assertInstanceOf( 'WP_WebSocket_Sync_Server', $server );
 	}
+
+	/**
+	 * Invokes the daemon's private room-request validator.
+	 *
+	 * @param array $room_request Raw room request.
+	 * @return array|WP_Error Validated request or error.
+	 */
+	private function validate( array $room_request ) {
+		$storage = new WP_Sync_Post_Meta_Storage();
+		$sync    = new WP_HTTP_Polling_Sync_Server( $storage );
+		$server  = new WP_WebSocket_Sync_Server( $sync, '127.0.0.1', 8799 );
+		$method  = new ReflectionMethod( WP_WebSocket_Sync_Server::class, 'validate_room_request' );
+		$method->setAccessible( true );
+		return $method->invoke( $server, $room_request );
+	}
+
+	public function test_room_request_validation_forwards_engine_stamps() {
+		$validated = $this->validate(
+			array(
+				'room'            => 'postType/post:1',
+				'client_id'       => 7,
+				'after'           => 0,
+				'updates'         => array(),
+				'engine'          => 'intent-log',
+				'engine_protocol' => 1,
+			)
+		);
+
+		// The stamps power the stale-tab fence and the switched-engine
+		// collection-room healing; the daemon used to strip them, so
+		// neither could ever fire over websocket.
+		$this->assertIsArray( $validated );
+		$this->assertSame( 'intent-log', $validated['engine'] );
+		$this->assertSame( 1, $validated['engine_protocol'] );
+	}
+
+	public function test_room_request_validation_leaves_absent_engine_stamps_absent() {
+		$validated = $this->validate(
+			array(
+				'room'      => 'postType/post:1',
+				'client_id' => 7,
+				'after'     => 0,
+				'updates'   => array(),
+			)
+		);
+
+		// The fence keys on PRESENCE (mirroring the REST schema): an
+		// engine key set to null would read as a stamp of null.
+		$this->assertIsArray( $validated );
+		$this->assertArrayNotHasKey( 'engine', $validated );
+		$this->assertArrayNotHasKey( 'engine_protocol', $validated );
+	}
+
+	public function test_room_request_validation_rejects_malformed_engine_stamps() {
+		$bad_engine = $this->validate(
+			array(
+				'room'      => 'postType/post:1',
+				'client_id' => 7,
+				'after'     => 0,
+				'updates'   => array(),
+				'engine'    => array( 'not-a-string' ),
+			)
+		);
+		$this->assertWPError( $bad_engine );
+
+		$bad_protocol = $this->validate(
+			array(
+				'room'            => 'postType/post:1',
+				'client_id'       => 7,
+				'after'           => 0,
+				'updates'         => array(),
+				'engine'          => 'intent-log',
+				'engine_protocol' => 'one',
+			)
+		);
+		$this->assertWPError( $bad_protocol );
+	}
+
+	public function test_forwarded_mismatched_stamp_fences_through_the_shared_seam() {
+		$editor_id = self::factory()->user->create( array( 'role' => 'editor' ) );
+		wp_set_current_user( $editor_id );
+		$post_id = self::factory()->post->create( array( 'post_author' => $editor_id ) );
+		$room    = 'postType/post:' . $post_id;
+
+		$storage = new WP_Sync_Post_Meta_Storage();
+		$sync    = new WP_HTTP_Polling_Sync_Server( $storage );
+
+		// Establish the room under the resolved (default) engine first.
+		$bootstrap = $sync->process_room_request(
+			array(
+				'room'      => $room,
+				'client_id' => 7,
+				'after'     => 0,
+				'awareness' => null,
+				'updates'   => array(),
+			)
+		);
+		$this->assertIsArray( $bootstrap );
+
+		// A stale tab speaking ANOTHER engine, through the daemon's
+		// validator and into the shared seam: the fence must 409.
+		$validated = $this->validate(
+			array(
+				'room'            => $room,
+				'client_id'       => 8,
+				'after'           => 0,
+				'updates'         => array(),
+				'engine'          => 'yjs-server',
+				'engine_protocol' => 1,
+			)
+		);
+		$this->assertIsArray( $validated );
+		$result = $sync->process_room_request( $validated );
+		$this->assertWPError( $result );
+		$this->assertSame( 'rest_sync_engine_mismatch', $result->get_error_code() );
+
+		self::delete_user( $editor_id );
+		wp_delete_post( $post_id, true );
+	}
 }

@@ -123,7 +123,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 		$engine = $this->engine();
 		$this->assertSame( 'de-rtc', $engine->get_slug() );
 		$this->assertSame( 1, $engine->get_protocol_version() );
-		$this->assertSame( array( 'proposal', 'content', 'snapshot' ), $engine->get_update_types() );
+		$this->assertSame( array( 'proposal', 'content', 'snapshot', 'proposal-parked', 'resolved' ), $engine->get_update_types() );
 	}
 
 	public function test_genesis_snapshot_and_lineage() {
@@ -395,6 +395,570 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 			$stale_latest   = $this->latest_from_response( $stale_response );
 			$this->assertNotNull( $stale_latest );
 			$this->assertStringContainsString( 'Row 12.', $stale_latest['content'] );
+		} finally {
+			remove_filter( 'wp_sync_de_rtc_checkpoint_interval', $interval_filter );
+		}
+	}
+
+	/**
+	 * Builds a resolution update the way the client review ledger does.
+	 *
+	 * @param string $proposal_id Parked proposal id.
+	 * @param string $resolution  restored|dismissed.
+	 * @return array Typed update row.
+	 */
+	private function resolution( string $proposal_id, string $resolution ): array {
+		return array(
+			'data' => wp_json_encode(
+				array(
+					'proposalId' => $proposal_id,
+					'resolution' => $resolution,
+				)
+			),
+			'type' => WP_De_RTC_Engine::UPDATE_TYPE_RESOLVED,
+		);
+	}
+
+	/**
+	 * Decoded rows of a type from a room response.
+	 *
+	 * @param array  $response Room response.
+	 * @param string $type     Update type.
+	 * @return array Decoded row payloads.
+	 */
+	private function rows_of_type( array $response, string $type ): array {
+		$rows = array();
+		foreach ( $response['updates'] as $update ) {
+			if ( $type === $update['type'] ) {
+				$rows[] = json_decode( $update['data'], true );
+			}
+		}
+		return $rows;
+	}
+
+	/**
+	 * Drives the standard two-client conflict so p-b escalates and parks.
+	 *
+	 * @return array Genesis state the proposals were authored against.
+	 */
+	private function escalate_conflict(): array {
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( $this->room(), 1, 0, array() );
+		$genesis  = $this->latest_from_response( $response );
+
+		$a_proposed = str_replace( 'Alpha block original text', 'Alpha block A-REWRITE text', $genesis['content'] );
+		$engine->handle_updates(
+			$this->room(),
+			1,
+			0,
+			array( $this->proposal( 'p-a', $genesis['version'], $genesis['content'], $a_proposed ) ),
+			array()
+		);
+
+		$b_proposed = str_replace( 'Alpha block original text', 'Alpha block B-REWRITE text', $genesis['content'] );
+		$b_result   = $this->engine()->handle_updates(
+			$this->room(),
+			2,
+			0,
+			array( $this->proposal( 'p-b', $genesis['version'], $genesis['content'], $b_proposed ) ),
+			array()
+		);
+		$this->assertSame( 'escalated', $b_result['dispositions'][0]['status'] );
+
+		return $genesis;
+	}
+
+	public function test_escalated_conflict_parks_a_durable_review_row() {
+		$this->escalate_conflict();
+
+		$response = $this->engine()->get_updates_since( $this->room(), 3, 0, array() );
+		$parked   = $this->rows_of_type( $response, WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED );
+
+		$this->assertCount( 1, $parked, 'the escalated proposal must park exactly one row' );
+		$row = $parked[0];
+		$this->assertSame( 'p-b', $row['proposalId'] );
+		$this->assertSame( 'manual-conflict-required', $row['reason'] );
+		$this->assertSame( 2, $row['authorClientId'] );
+		$this->assertSame( self::$editor_id, $row['author'] );
+		$this->assertIsArray( $row['changedBlocks'] );
+		$this->assertCount( 1, $row['changedBlocks'], 'only the conflicting block changed against the base' );
+		$this->assertSame( 0, $row['changedBlocks'][0]['index'] );
+		$this->assertStringContainsString( 'B-REWRITE', $row['changedBlocks'][0]['html'] );
+		$this->assertStringContainsString( 'B-REWRITE', $row['excerpt'] );
+		$this->assertStringNotContainsString( '<', $row['excerpt'], 'the excerpt is plain text' );
+	}
+
+	public function test_kses_sequestration_drops_a_risky_new_block_and_parks_it() {
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( $this->room(), 3, 0, array() );
+		$latest   = $this->latest_from_response( $response );
+
+		wp_set_current_user( self::$author_id );
+		$proposed = $latest['content'] . "\n\n<!-- wp:html -->\n<script>alert(1)</script>\n<!-- /wp:html -->";
+		$result   = $engine->handle_updates(
+			$this->room(),
+			3,
+			0,
+			array( $this->proposal( 'p-risky', $latest['version'], $latest['content'], $proposed, false ) ),
+			array()
+		);
+
+		// Sequestration: the proposal APPLIES (a risky NEW block has no
+		// base counterpart, so it drops from the laundered content)…
+		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
+		$materialized = (string) $this->engine()->materialize( $this->room() );
+		$this->assertStringNotContainsString( '<script>', $materialized );
+		$this->assertStringNotContainsString( 'wp:html', $materialized );
+
+		// …and the risky block parks for a privileged reviewer.
+		$parked = $this->rows_of_type(
+			$this->engine()->get_updates_since( $this->room(), 4, 0, array() ),
+			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+		);
+		$this->assertCount( 1, $parked );
+		$this->assertSame( 'p-risky', $parked[0]['proposalId'] );
+		$this->assertSame( 'requires-unfiltered-html', $parked[0]['reason'] );
+		$this->assertSame( self::$author_id, $parked[0]['author'] );
+		$this->assertCount( 1, $parked[0]['changedBlocks'] );
+		$this->assertStringContainsString( '<script>alert(1)</script>', $parked[0]['changedBlocks'][0]['html'] );
+	}
+
+	public function test_kses_sequestration_lands_safe_edits_and_reverts_only_the_risky_block() {
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( $this->room(), 3, 0, array() );
+		$latest   = $this->latest_from_response( $response );
+
+		wp_set_current_user( self::$author_id );
+		// One proposal, two edits: a SAFE rewrite of the Alpha block and a
+		// risky rewrite of the Beta block.
+		$proposed = str_replace( 'Alpha block original text', 'Alpha block SAFE-EDIT text', $latest['content'] );
+		$proposed = str_replace( 'Beta block original text', 'Beta block <script>bad()</script> text', $proposed );
+		$result   = $engine->handle_updates(
+			$this->room(),
+			3,
+			0,
+			array( $this->proposal( 'p-mixed', $latest['version'], $latest['content'], $proposed, false ) ),
+			array()
+		);
+
+		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
+
+		// The safe edit LANDED; the risky block reverted to its base form.
+		$materialized = (string) $this->engine()->materialize( $this->room() );
+		$this->assertStringContainsString( 'Alpha block SAFE-EDIT text', $materialized );
+		$this->assertStringContainsString( 'Beta block original text', $materialized );
+		$this->assertStringNotContainsString( '<script>', $materialized );
+
+		// Only the risky block parked (index 1 — the Beta paragraph).
+		$parked = $this->rows_of_type(
+			$this->engine()->get_updates_since( $this->room(), 4, 0, array() ),
+			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+		);
+		$this->assertCount( 1, $parked );
+		$this->assertCount( 1, $parked[0]['changedBlocks'] );
+		$this->assertSame( 1, $parked[0]['changedBlocks'][0]['index'] );
+		$this->assertStringContainsString( '<script>bad()</script>', $parked[0]['changedBlocks'][0]['html'] );
+		$this->assertStringNotContainsString( 'SAFE-EDIT', $parked[0]['changedBlocks'][0]['html'] );
+	}
+
+	public function test_kses_sequestration_dedupes_identical_risky_reproposals() {
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( $this->room(), 3, 0, array() );
+		$latest   = $this->latest_from_response( $response );
+
+		wp_set_current_user( self::$author_id );
+		$proposed = str_replace( 'Beta block original text', 'Beta block <script>bad()</script> text', $latest['content'] );
+
+		// The client's next cycles re-carry the same risky content (its
+		// local doc keeps the block until canonical wins locally): each
+		// proposal gets a NEW id, but only the first parks.
+		foreach ( array( 'p-loop-1', 'p-loop-2', 'p-loop-3' ) as $proposal_id ) {
+			$result = $this->engine()->handle_updates(
+				$this->room(),
+				3,
+				0,
+				array( $this->proposal( $proposal_id, $latest['version'], $latest['content'], $proposed, false ) ),
+				array()
+			);
+			$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
+		}
+
+		$parked = $this->rows_of_type(
+			$this->engine()->get_updates_since( $this->room(), 4, 0, array() ),
+			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+		);
+		$this->assertCount( 1, $parked, 'identical risky content must park once, not once per poll cycle' );
+	}
+
+	public function test_kses_falls_back_to_whole_proposal_escalation_on_freeform_boundaries() {
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( $this->room(), 3, 0, array() );
+		$latest   = $this->latest_from_response( $response );
+
+		wp_set_current_user( self::$author_id );
+		// Loose classic HTML outside any block defeats per-block record
+		// extraction; the lane degrades to the whole-proposal escalation.
+		$proposed = $latest['content'] . "\n\n<div>loose classic <script>bad()</script> markup</div>";
+		$result   = $engine->handle_updates(
+			$this->room(),
+			3,
+			0,
+			array( $this->proposal( 'p-classic', $latest['version'], $latest['content'], $proposed, false ) ),
+			array()
+		);
+
+		$this->assertSame( 'escalated', $result['dispositions'][0]['status'] );
+		$this->assertSame( 'requires-unfiltered-html', $result['dispositions'][0]['reason'] );
+		$this->assertStringNotContainsString( '<script>', (string) $this->engine()->materialize( $this->room() ) );
+
+		$parked = $this->rows_of_type(
+			$this->engine()->get_updates_since( $this->room(), 4, 0, array() ),
+			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+		);
+		$this->assertCount( 1, $parked );
+		$this->assertSame( 'p-classic', $parked[0]['proposalId'] );
+	}
+
+	public function test_redelivered_escalation_does_not_double_park() {
+		$genesis = $this->escalate_conflict();
+
+		// The transport redelivers the same escalating proposal.
+		$b_proposed = str_replace( 'Alpha block original text', 'Alpha block B-REWRITE text', $genesis['content'] );
+		$this->engine()->handle_updates(
+			$this->room(),
+			2,
+			0,
+			array( $this->proposal( 'p-b', $genesis['version'], $genesis['content'], $b_proposed ) ),
+			array()
+		);
+
+		$parked = $this->rows_of_type(
+			$this->engine()->get_updates_since( $this->room(), 3, 0, array() ),
+			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+		);
+		$this->assertCount( 1, $parked );
+	}
+
+	public function test_resolution_lifecycle_is_idempotent() {
+		$this->escalate_conflict();
+
+		$result = $this->engine()->handle_updates(
+			$this->room(),
+			2,
+			0,
+			array( $this->resolution( 'p-b', 'dismissed' ) ),
+			array()
+		);
+		$this->assertSame(
+			array(
+				'intentId' => 'p-b',
+				'status'   => 'resolved',
+			),
+			$result['dispositions'][0]
+		);
+
+		$response = $this->engine()->get_updates_since( $this->room(), 3, 0, array() );
+		$resolved = $this->rows_of_type( $response, WP_De_RTC_Engine::UPDATE_TYPE_RESOLVED );
+		$this->assertCount( 1, $resolved );
+		$this->assertSame( 'p-b', $resolved[0]['proposalId'] );
+		$this->assertSame( 'dismissed', $resolved[0]['resolution'] );
+		$this->assertSame( self::$editor_id, $resolved[0]['resolvedBy'] );
+
+		// A redelivered (or concurrent) resolution acks without a new row.
+		$again = $this->engine()->handle_updates(
+			$this->room(),
+			2,
+			0,
+			array( $this->resolution( 'p-b', 'dismissed' ) ),
+			array()
+		);
+		$this->assertSame( 'resolved', $again['dispositions'][0]['status'] );
+		$resolved = $this->rows_of_type(
+			$this->engine()->get_updates_since( $this->room(), 3, 0, array() ),
+			WP_De_RTC_Engine::UPDATE_TYPE_RESOLVED
+		);
+		$this->assertCount( 1, $resolved );
+
+		// An unknown id (trimmed long ago, or never parked) acks too.
+		$unknown = $this->engine()->handle_updates(
+			$this->room(),
+			2,
+			0,
+			array( $this->resolution( 'p-nonexistent', 'restored' ) ),
+			array()
+		);
+		$this->assertSame( 'resolved', $unknown['dispositions'][0]['status'] );
+	}
+
+	public function test_malformed_resolution_is_rejected() {
+		$this->engine()->get_updates_since( $this->room(), 1, 0, array() );
+		$result = $this->engine()->handle_updates(
+			$this->room(),
+			2,
+			0,
+			array(
+				array(
+					'data' => wp_json_encode(
+						array(
+							'proposalId' => 'p-b',
+							'resolution' => 'shredded',
+						)
+					),
+					'type' => WP_De_RTC_Engine::UPDATE_TYPE_RESOLVED,
+				),
+			),
+			array()
+		);
+		$this->assertWPError( $result );
+		$this->assertSame( 'rest_sync_invalid_intent', $result->get_error_code() );
+	}
+
+	/**
+	 * Builds a proposal carrying entity-property registers.
+	 *
+	 * @param string $proposal_id  Correlation id.
+	 * @param string $base_version Base version label.
+	 * @param string $content      Base and proposed content (unchanged).
+	 * @param array  $properties   Proposed property map.
+	 * @return array Typed update row.
+	 */
+	private function property_proposal( string $proposal_id, string $base_version, string $content, array $properties ): array {
+		return array(
+			'data' => wp_json_encode(
+				array(
+					'proposalId'         => $proposal_id,
+					'baseVersion'        => $base_version,
+					'proposedContent'    => $content,
+					'proposedProperties' => $properties,
+					'clientUpdate'       => null,
+				)
+			),
+			'type' => WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL,
+		);
+	}
+
+	/**
+	 * The property map carried by the latest canonical row in a response.
+	 *
+	 * @param array $response Room response.
+	 * @return array|null Latest canonical property map.
+	 */
+	private function latest_properties( array $response ): ?array {
+		$latest = null;
+		foreach ( $response['updates'] as $update ) {
+			$decoded = json_decode( $update['data'], true );
+			if ( is_array( $decoded ) && is_string( $decoded['version'] ?? null ) && is_array( $decoded['properties'] ?? null ) ) {
+				$latest = $decoded['properties'];
+			}
+		}
+		return $latest;
+	}
+
+	public function test_genesis_snapshot_carries_the_shared_property_seed() {
+		$response = $this->engine()->get_updates_since( $this->room(), 1, 0, array() );
+
+		$snapshot = null;
+		foreach ( $response['updates'] as $update ) {
+			if ( WP_De_RTC_Engine::UPDATE_TYPE_SNAPSHOT === $update['type'] ) {
+				$snapshot = json_decode( $update['data'], true );
+				break;
+			}
+		}
+		$this->assertNotNull( $snapshot );
+		$this->assertSame(
+			WP_Sync_Post_Genesis_Props::for_post( get_post( self::$post_id ) ),
+			$snapshot['properties'],
+			'de-rtc genesis must seed the identical property set intent-log seeds'
+		);
+	}
+
+	public function test_property_only_change_applies_and_broadcasts() {
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( $this->room(), 1, 0, array() );
+		$genesis  = $this->latest_from_response( $response );
+		$seed     = $this->latest_properties( $response );
+
+		$proposed          = $seed;
+		$proposed['title'] = 'A synced title';
+		$result            = $engine->handle_updates(
+			$this->room(),
+			1,
+			0,
+			array( $this->property_proposal( 'p-title', $genesis['version'], $genesis['content'], $proposed ) ),
+			array()
+		);
+
+		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
+
+		// The canonical row every peer receives carries the new value; the
+		// content itself is untouched.
+		$after = $this->engine()->get_updates_since( $this->room(), 2, 0, array() );
+		$props = $this->latest_properties( $after );
+		$this->assertSame( 'A synced title', $props['title'] );
+		$this->assertSame( $genesis['content'], $this->engine()->materialize( $this->room() ) );
+	}
+
+	public function test_property_three_way_matrix() {
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( $this->room(), 1, 0, array() );
+		$genesis  = $this->latest_from_response( $response );
+		$seed     = $this->latest_properties( $response );
+
+		// Client A changes title AND excerpt from genesis.
+		$a_props            = $seed;
+		$a_props['title']   = 'Title by A';
+		$a_props['excerpt'] = 'Excerpt by A';
+		$a_result           = $engine->handle_updates(
+			$this->room(),
+			1,
+			0,
+			array( $this->property_proposal( 'p-props-a', $genesis['version'], $genesis['content'], $a_props ) ),
+			array()
+		);
+		$this->assertSame( 'applied', $a_result['dispositions'][0]['status'] );
+
+		/*
+		 * Client B proposes from the SAME (now stale) base: an unchanged
+		 * excerpt (loses silently to A's — B never touched it), an
+		 * AGREEING title (both wrote the same value — agreement applies),
+		 * and a conflicting slug… wait, B also rewrites the title
+		 * DIFFERENTLY in this matrix: that single property parks while the
+		 * rest of the proposal applies.
+		 */
+		$b_props          = $seed;
+		$b_props['title'] = 'Title by B';
+		$b_result         = $this->engine()->handle_updates(
+			$this->room(),
+			2,
+			0,
+			array( $this->property_proposal( 'p-props-b', $genesis['version'], $genesis['content'], $b_props ) ),
+			array()
+		);
+		$this->assertSame( 'applied', $b_result['dispositions'][0]['status'], 'the proposal itself applies; only the conflicting property parks' );
+
+		$after = $this->engine()->get_updates_since( $this->room(), 3, 0, array() );
+		$props = $this->latest_properties( $after );
+		// A's concurrent title wins on the wire; A's excerpt untouched by B.
+		$this->assertSame( 'Title by A', $props['title'] );
+		$this->assertSame( 'Excerpt by A', $props['excerpt'] );
+
+		// B's losing title parked as a property-conflict review row.
+		$parked = $this->rows_of_type( $after, WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED );
+		$this->assertCount( 1, $parked );
+		$this->assertSame( 'p-props-b:title', $parked[0]['proposalId'] );
+		$this->assertSame( 'property-conflict', $parked[0]['reason'] );
+		$this->assertSame( array( 'name' => 'title', 'value' => 'Title by B' ), $parked[0]['property'] );
+	}
+
+	public function test_taxonomy_arrays_compare_order_insensitively() {
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( $this->room(), 1, 0, array() );
+		$genesis  = $this->latest_from_response( $response );
+		$seed     = $this->latest_properties( $response );
+		$this->assertArrayHasKey( 'categories', $seed );
+
+		// The same category SET in a different order is not a change.
+		$proposed               = $seed;
+		$proposed['categories'] = array_reverse( array_merge( $seed['categories'], array() ) );
+		$result                 = $engine->handle_updates(
+			$this->room(),
+			1,
+			0,
+			array( $this->property_proposal( 'p-tax-order', $genesis['version'], $genesis['content'], $proposed ) ),
+			array()
+		);
+		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
+
+		$after = $this->engine()->get_updates_since( $this->room(), 2, 0, array() );
+		$this->assertSame(
+			array(),
+			$this->rows_of_type( $after, WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED ),
+			'a reordered identical set must never park a conflict'
+		);
+	}
+
+	public function test_markup_bearing_property_from_filtered_author_parks() {
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( $this->room(), 1, 0, array() );
+		$genesis  = $this->latest_from_response( $response );
+		$seed     = $this->latest_properties( $response );
+
+		wp_set_current_user( self::$author_id );
+		$proposed          = $seed;
+		$proposed['title'] = 'Sneaky <script>alert(1)</script> title';
+		$result            = $engine->handle_updates(
+			$this->room(),
+			3,
+			0,
+			array( $this->property_proposal( 'p-risky-prop', $genesis['version'], $genesis['content'], $proposed ) ),
+			array()
+		);
+		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
+
+		$after = $this->engine()->get_updates_since( $this->room(), 4, 0, array() );
+		$props = $this->latest_properties( $after );
+		$this->assertStringNotContainsString( '<script>', (string) ( $props['title'] ?? '' ) );
+
+		$parked = $this->rows_of_type( $after, WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED );
+		$this->assertCount( 1, $parked );
+		$this->assertSame( 'requires-unfiltered-html', $parked[0]['reason'] );
+		$this->assertSame( 'title', $parked[0]['property']['name'] );
+	}
+
+	public function test_unresolved_parked_rows_survive_compaction_and_resolved_pairs_age_out() {
+		add_filter( 'wp_sync_de_rtc_checkpoint_interval', $interval_filter = static fn() => 4 );
+		try {
+			$genesis = $this->escalate_conflict();
+
+			// A second parked proposal that WILL be resolved before the trims.
+			$c_proposed = str_replace( 'Alpha block original text', 'Alpha block C-REWRITE text', $genesis['content'] );
+			$this->engine()->handle_updates(
+				$this->room(),
+				4,
+				0,
+				array( $this->proposal( 'p-c', $genesis['version'], $genesis['content'], $c_proposed ) ),
+				array()
+			);
+			$this->engine()->handle_updates(
+				$this->room(),
+				4,
+				0,
+				array( $this->resolution( 'p-c', 'dismissed' ) ),
+				array()
+			);
+
+			// Drive enough accepted proposals for multiple checkpoints/trims.
+			$state   = $this->latest_from_response( $this->engine()->get_updates_since( $this->room(), 1, 0, array() ) );
+			$content = $state['content'];
+			$version = $state['version'];
+			for ( $i = 1; $i <= 16; $i++ ) {
+				$proposed = $content . "\n\n<!-- wp:paragraph -->\n<p>Retention row {$i}.</p>\n<!-- /wp:paragraph -->";
+				$result   = $this->engine()->handle_updates(
+					$this->room(),
+					1,
+					0,
+					array( $this->proposal( 'p-fill-' . $i, $version, $content, $proposed ) ),
+					array()
+				);
+				$this->assertSame( 'applied', $result['dispositions'][0]['status'], "fill proposal {$i} should apply" );
+				$version = $result['dispositions'][0]['version'];
+				$content = $proposed;
+			}
+
+			$storage = new WP_Sync_Post_Meta_Storage();
+			$this->assertIsNumeric(
+				$storage->get_room_meta( $this->room(), WP_De_RTC_Engine::META_FLOOR ),
+				'compaction should have trimmed at least once'
+			);
+
+			// A fresh joiner still receives the UNRESOLVED parked proposal…
+			$response = $this->engine()->get_updates_since( $this->room(), 9, 0, array() );
+			$parked   = $this->rows_of_type( $response, WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED );
+			$open_ids = array_column( $parked, 'proposalId' );
+			$this->assertContains( 'p-b', $open_ids, 'unresolved parked work must survive compaction' );
+
+			// …while the resolved pair aged out with the trim.
+			$this->assertNotContains( 'p-c', $open_ids, 'resolved parked rows age out' );
 		} finally {
 			remove_filter( 'wp_sync_de_rtc_checkpoint_interval', $interval_filter );
 		}

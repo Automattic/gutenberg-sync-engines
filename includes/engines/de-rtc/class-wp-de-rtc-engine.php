@@ -74,6 +74,27 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		const UPDATE_TYPE_SNAPSHOT = 'snapshot';
 
 		/**
+		 * Server-emitted update type: an escalated proposal parked for
+		 * review. Durable — unresolved parked rows survive compaction (the
+		 * intent-log retention rule), so the escalated content exists in
+		 * room storage, not just the escalating client's memory.
+		 *
+		 * @since 0.4.0
+		 * @var string
+		 */
+		const UPDATE_TYPE_PROPOSAL_PARKED = 'proposal-parked';
+
+		/**
+		 * Client-sent update type: closes a parked proposal
+		 * (restored/dismissed). Idempotent by proposalId; the server stamps
+		 * the resolving user and time.
+		 *
+		 * @since 0.4.0
+		 * @var string
+		 */
+		const UPDATE_TYPE_RESOLVED = 'resolved';
+
+		/**
 		 * Attribution client id for server-authored rows. Outside the
 		 * transport's client id range, mirroring the yjs-server genesis id
 		 * convention (which uses 2000000000).
@@ -181,6 +202,8 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				self::UPDATE_TYPE_PROPOSAL,
 				self::UPDATE_TYPE_CONTENT,
 				self::UPDATE_TYPE_SNAPSHOT,
+				self::UPDATE_TYPE_PROPOSAL_PARKED,
+				self::UPDATE_TYPE_RESOLVED,
 			);
 		}
 
@@ -209,10 +232,10 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			}
 
 			foreach ( $updates as $update ) {
-				if ( self::UPDATE_TYPE_PROPOSAL !== $update['type'] ) {
+				if ( ! in_array( $update['type'], array( self::UPDATE_TYPE_PROPOSAL, self::UPDATE_TYPE_RESOLVED ), true ) ) {
 					return new WP_Error(
 						'rest_invalid_update_type',
-						__( 'Clients may only send proposal updates to a de-rtc room.', 'gutenberg' ),
+						__( 'Clients may only send proposal or resolution updates to a de-rtc room.', 'gutenberg' ),
 						array( 'status' => 400 )
 					);
 				}
@@ -251,8 +274,34 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				return $state;
 			}
 
-			$dispositions = array();
+			$resolutions = array();
+			$proposals   = array();
 			foreach ( $updates as $update ) {
+				if ( self::UPDATE_TYPE_RESOLVED === $update['type'] ) {
+					$resolution = json_decode( (string) $update['data'], true );
+					if (
+						! is_array( $resolution ) ||
+						! is_string( $resolution['proposalId'] ?? null ) || '' === $resolution['proposalId'] ||
+						! in_array( $resolution['resolution'] ?? null, array( 'restored', 'dismissed' ), true )
+					) {
+						return new WP_Error(
+							'rest_sync_invalid_intent',
+							__( 'Malformed proposal resolution.', 'gutenberg' ),
+							array( 'status' => 400 )
+						);
+					}
+					$resolutions[] = $resolution;
+					continue;
+				}
+				$proposals[] = $update;
+			}
+
+			// The open/resolved review ledger, derived lazily from retained
+			// rows only when this request escalates or resolves something.
+			$review = null;
+
+			$dispositions = array();
+			foreach ( $proposals as $update ) {
 				$proposal    = json_decode( (string) $update['data'], true );
 				$proposal_id = is_array( $proposal ) && is_string( $proposal['proposalId'] ?? null ) && '' !== $proposal['proposalId']
 					? $proposal['proposalId']
@@ -280,9 +329,49 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					continue;
 				}
 
-				$disposition    = $this->ingest_proposal( $room, $client_id, $state, $proposal );
+				$disposition    = $this->ingest_proposal( $room, $client_id, $state, $proposal, $review );
 				$disposition    = array_merge( array( 'intentId' => $proposal_id ), $disposition );
 				$dispositions[] = $disposition;
+			}
+
+			/*
+			 * Resolutions, after proposals: close open parked proposals.
+			 * Idempotent by proposalId — a redelivered, concurrent, or
+			 * trimmed-and-resolved (unknown) id acks as resolved without a
+			 * new row; only a currently-open proposal appends one.
+			 */
+			foreach ( $resolutions as $resolution ) {
+				$proposal_id = $resolution['proposalId'];
+				if ( null === $review ) {
+					$review = $this->load_review_ledger( $room );
+				}
+				if ( isset( $review['open'][ $proposal_id ] ) && ! isset( $review['resolved'][ $proposal_id ] ) ) {
+					$stored = $this->add_row(
+						$room,
+						$client_id,
+						self::UPDATE_TYPE_RESOLVED,
+						wp_json_encode(
+							array(
+								'proposalId' => $proposal_id,
+								'resolution' => $resolution['resolution'],
+								'resolvedBy' => get_current_user_id(),
+								'time'       => time(),
+							)
+						)
+					);
+					if ( ! $stored ) {
+						return new WP_Error(
+							'rest_sync_storage_error',
+							__( 'Failed to store sync update.', 'gutenberg' ),
+							array( 'status' => 500 )
+						);
+					}
+					$review['resolved'][ $proposal_id ] = true;
+				}
+				$dispositions[] = array(
+					'intentId' => $proposal_id,
+					'status'   => 'resolved',
+				);
 			}
 
 			$counts = array();
@@ -320,9 +409,10 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * @param int    $client_id Client identifier.
 		 * @param array  $state     Room state (by reference via room cache).
 		 * @param array  $proposal  Decoded proposal payload.
+		 * @param array  $review    Review ledger (lazily loaded, by reference).
 		 * @return array Disposition fields (status, reason?, version?).
 		 */
-		private function ingest_proposal( string $room, int $client_id, array &$state, array $proposal ) {
+		private function ingest_proposal( string $room, int $client_id, array &$state, array $proposal, &$review ) {
 			$base_content = $this->resolve_base_content( $state, $proposal['baseVersion'] );
 			if ( null === $base_content ) {
 				return array(
@@ -336,19 +426,30 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			/*
 			 * The capability lane, at ingest: an author without
 			 * unfiltered_html cannot land content that kses would rewrite.
-			 * Upstream DE-RTC sequesters exactly the risky blocks for a
-			 * privileged reviewer; this engine does not have the review lane
-			 * yet, so the whole proposal escalates (the author keeps their
-			 * local copy and the disposition names the reason). Documented as
-			 * a gap in docs/engine-comparison.md.
+			 * Upstream DE-RTC's model, restored here: SEQUESTER exactly the
+			 * risky blocks — revert them to their base form in the proposal,
+			 * merge the safe remainder normally, and park the risky blocks
+			 * for a privileged reviewer (restore re-proposes them under the
+			 * RESTORER's capability, so restore IS the approval). The whole
+			 * proposal escalates only when per-block extraction is
+			 * unavailable (freeform boundaries) or the proposal carries a
+			 * block-native descriptor laundering would invalidate.
 			 */
 			if ( ! current_user_can( 'unfiltered_html' ) ) {
 				$sanitized = wp_kses_post( $proposed_content );
 				if ( $sanitized !== $proposed_content ) {
-					return array(
-						'status' => 'escalated',
-						'reason' => 'requires-unfiltered-html',
-					);
+					$laundered = null;
+					if ( null === ( $proposal['clientUpdate'] ?? null ) ) {
+						$laundered = $this->sequester_unfiltered_blocks( $room, $client_id, $proposal, $base_content, $review );
+					}
+					if ( null === $laundered ) {
+						$this->park_proposal( $room, $client_id, $proposal, 'requires-unfiltered-html', $base_content, $review );
+						return array(
+							'status' => 'escalated',
+							'reason' => 'requires-unfiltered-html',
+						);
+					}
+					$proposed_content = $laundered;
 				}
 			}
 
@@ -362,8 +463,10 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			if ( is_wp_error( $result ) ) {
 				if ( 'de_rtc_rebase_failed' === $result->get_error_code() ) {
 					// A genuine conflict: DE-RTC policy is a human decision,
-					// not a silent merge. The author rebases onto the latest
-					// content row and resubmits (or resolves by hand).
+					// not a silent merge. The proposal parks for review; the
+					// canonical state wins locally once it applies, and a
+					// human restores or dismisses the parked work.
+					$this->park_proposal( $room, $client_id, $proposal, 'manual-conflict-required', $base_content, $review );
 					return array(
 						'status' => 'escalated',
 						'reason' => 'manual-conflict-required',
@@ -384,6 +487,13 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			$next_version = 'v' . $next_seq;
 			$merged       = (string) $result['merged_content'];
 
+			// Entity-property registers ride the proposal beside the
+			// content: a per-property three-way merge against the same base
+			// version. Runs only on the accepted path — an escalated
+			// proposal parks whole, and the client re-carries its full
+			// property map on the next proposal, so nothing is lost.
+			$this->merge_proposed_properties( $room, $client_id, $state, $proposal, $review );
+
 			$state['sync_meta'] = wp_de_rtc_update_automerge_version_snapshots(
 				is_array( $state['sync_meta'] ) ? $state['sync_meta'] : array(),
 				$state['version'],
@@ -401,6 +511,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 						'version'        => $next_version,
 						'baseVersion'    => $state['version'],
 						'content'        => $merged,
+						'properties'     => $state['properties'] ?? array(),
 						'authorClientId' => $client_id,
 						'proposalId'     => $proposal['proposalId'],
 					)
@@ -416,12 +527,212 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			$state['version']     = $next_version;
 			$state['version_seq'] = $next_seq;
 			$state['content']     = $merged;
+			$this->record_properties_snapshot( $state, $next_version );
 			$this->save_canonical( $room, $state );
 
 			return array(
 				'status'  => 'applied',
 				'version' => $next_version,
 			);
+		}
+
+		/**
+		 * Merges a proposal's entity-property registers into canonical.
+		 *
+		 * Per-property three-way rule against the proposal's base version:
+		 * an unchanged property (proposed == base) is a no-op; a property
+		 * only the client changed applies; a property changed BOTH by the
+		 * client and concurrently in canonical is a genuine conflict and
+		 * parks for review (`property-conflict`) — the canonical value
+		 * wins on the wire, the parked row carries the losing value.
+		 * Markup-bearing string values from an author without
+		 * unfiltered_html park as `requires-unfiltered-html` instead of
+		 * applying (the property twin of the content kses gate).
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param string $room      Room identifier.
+		 * @param int    $client_id Proposing client id.
+		 * @param array  $state     Room state (by reference).
+		 * @param array  $proposal  Decoded proposal payload.
+		 * @param array  $review    Review ledger (lazily loaded, by reference).
+		 * @return void
+		 */
+		private function merge_proposed_properties( string $room, int $client_id, array &$state, array $proposal, &$review ): void {
+			$proposed_props = $proposal['proposedProperties'] ?? null;
+			if ( ! is_array( $proposed_props ) ) {
+				return;
+			}
+
+			$base_props      = $this->resolve_base_properties( $state, (string) $proposal['baseVersion'] );
+			$canonical_props = is_array( $state['properties'] ?? null ) ? $state['properties'] : array();
+			$can_unfiltered  = current_user_can( 'unfiltered_html' );
+
+			foreach ( $proposed_props as $name => $proposed_value ) {
+				if ( ! is_string( $name ) || '' === $name ) {
+					continue;
+				}
+				$base_value      = $base_props[ $name ] ?? null;
+				$canonical_value = $canonical_props[ $name ] ?? null;
+
+				if ( self::property_values_equal( $proposed_value, $base_value ) ) {
+					continue; // The client did not change this property.
+				}
+
+				if ( ! $can_unfiltered && is_string( $proposed_value ) && wp_kses_post( $proposed_value ) !== $proposed_value ) {
+					$this->park_property_conflict( $room, $client_id, (string) $proposal['proposalId'], $name, $proposed_value, 'requires-unfiltered-html', $review );
+					continue;
+				}
+
+				if (
+					self::property_values_equal( $canonical_value, $base_value ) ||
+					self::property_values_equal( $proposed_value, $canonical_value )
+				) {
+					$canonical_props[ $name ] = $proposed_value;
+					continue;
+				}
+
+				// Both sides changed it to different values: a human decides.
+				$this->park_property_conflict( $room, $client_id, (string) $proposal['proposalId'], $name, $proposed_value, 'property-conflict', $review );
+			}
+
+			$state['properties'] = $canonical_props;
+		}
+
+		/**
+		 * Parks a conflicting property register for review.
+		 *
+		 * The parked id suffixes the property name onto the proposalId so
+		 * each conflicting property resolves independently.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param string $room        Room identifier.
+		 * @param int    $client_id   Proposing client id.
+		 * @param string $proposal_id Proposal correlation id.
+		 * @param string $name        Property name.
+		 * @param mixed  $value       The losing proposed value.
+		 * @param string $reason      Escalation reason.
+		 * @param array  $review      Review ledger (lazily loaded, by reference).
+		 * @return void
+		 */
+		private function park_property_conflict( string $room, int $client_id, string $proposal_id, string $name, $value, string $reason, &$review ): void {
+			$parked_id = $proposal_id . ':' . $name;
+			if ( null === $review ) {
+				$review = $this->load_review_ledger( $room );
+			}
+			if ( isset( $review['open'][ $parked_id ] ) || isset( $review['resolved'][ $parked_id ] ) ) {
+				return;
+			}
+
+			$excerpt = is_string( $value ) ? $value : (string) wp_json_encode( $value );
+			$excerpt = trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( $excerpt ) ) );
+			if ( function_exists( 'mb_substr' ) ) {
+				$excerpt = mb_substr( $excerpt, 0, 80 );
+			} else {
+				$excerpt = substr( $excerpt, 0, 80 );
+			}
+
+			$stored = $this->add_row(
+				$room,
+				$client_id,
+				self::UPDATE_TYPE_PROPOSAL_PARKED,
+				wp_json_encode(
+					array(
+						'proposalId'     => $parked_id,
+						'reason'         => $reason,
+						'authorClientId' => $client_id,
+						'author'         => get_current_user_id(),
+						'at'             => time(),
+						'property'       => array(
+							'name'  => $name,
+							'value' => $value,
+						),
+						'changedBlocks'  => array(),
+						'excerpt'        => $name . ': ' . $excerpt,
+					)
+				)
+			);
+			if ( $stored ) {
+				$review['open'][ $parked_id ] = true;
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+				do_action( 'qm/debug', "wp-sync: de-rtc parked property conflict '{$name}' ({$reason}) in {$room}" );
+			}
+		}
+
+		/**
+		 * Resolves the property map a proposal was authored against.
+		 *
+		 * Falls back to the canonical map when the base version's property
+		 * snapshot is unknown (legacy rooms written before property sync) —
+		 * the fallback treats concurrent property changes as absent, which
+		 * degrades to last-writer-wins for exactly those rooms.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param array  $state        Room state.
+		 * @param string $base_version Proposal base version label.
+		 * @return array Property map at the base version.
+		 */
+		private function resolve_base_properties( array $state, string $base_version ): array {
+			$by_version = is_array( $state['properties_by_version'] ?? null ) ? $state['properties_by_version'] : array();
+			if ( is_array( $by_version[ $base_version ] ?? null ) ) {
+				return $by_version[ $base_version ];
+			}
+
+			return is_array( $state['properties'] ?? null ) ? $state['properties'] : array();
+		}
+
+		/**
+		 * Records the canonical property map for a version and prunes the
+		 * per-version window to the frozen core's snapshot window (the base
+		 * versions resolve_base_content can still serve).
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param array  $state   Room state (by reference).
+		 * @param string $version Version label.
+		 * @return void
+		 */
+		private function record_properties_snapshot( array &$state, string $version ): void {
+			$by_version             = is_array( $state['properties_by_version'] ?? null ) ? $state['properties_by_version'] : array();
+			$by_version[ $version ] = is_array( $state['properties'] ?? null ) ? $state['properties'] : array();
+
+			$snapshots = $state['sync_meta']['version_snapshots'] ?? null;
+			if ( is_array( $snapshots ) ) {
+				$by_version = array_intersect_key( $by_version, $snapshots + array( $version => true ) );
+			}
+
+			$state['properties_by_version'] = $by_version;
+		}
+
+		/**
+		 * Order-tolerant value equality for property registers.
+		 *
+		 * Term-ID arrays are sets (the editor appends in click order while
+		 * REST serializes name order), so numeric lists compare sorted;
+		 * everything else compares by JSON encoding.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param mixed $a One value.
+		 * @param mixed $b Other value.
+		 * @return bool Whether the values are equal.
+		 */
+		private static function property_values_equal( $a, $b ): bool {
+			if ( is_array( $a ) && is_array( $b ) && wp_is_numeric_array( $a ) && wp_is_numeric_array( $b ) ) {
+				$a_ints = array_filter( $a, 'is_numeric' );
+				$b_ints = array_filter( $b, 'is_numeric' );
+				if ( count( $a_ints ) === count( $a ) && count( $b_ints ) === count( $b ) ) {
+					$a_sorted = array_map( 'intval', array_values( $a ) );
+					$b_sorted = array_map( 'intval', array_values( $b ) );
+					sort( $a_sorted, SORT_NUMERIC );
+					sort( $b_sorted, SORT_NUMERIC );
+					return $a_sorted === $b_sorted;
+				}
+			}
+
+			return wp_json_encode( $a ) === wp_json_encode( $b );
 		}
 
 		/**
@@ -451,6 +762,255 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			}
 
 			return null;
+		}
+
+		/**
+		 * Parks an escalated proposal as a durable review row.
+		 *
+		 * The row carries the CHANGED top-level blocks (proposed blocks whose
+		 * serialized form differs from the base at the same index, plus
+		 * appended blocks) with their indices, so a reviewer's restore can
+		 * overlay them at sensible anchors — and a plain-text excerpt for
+		 * display after offsets go stale. Idempotent by proposalId: a
+		 * redelivered escalation never double-parks.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param string $room         Room identifier.
+		 * @param int    $client_id    Escalating client id.
+		 * @param array  $proposal     Decoded proposal payload.
+		 * @param string $reason       Escalation reason.
+		 * @param string $base_content Content of the proposal's base version.
+		 * @param array  $review       Review ledger (lazily loaded, by reference).
+		 * @return void
+		 */
+		private function park_proposal( string $room, int $client_id, array $proposal, string $reason, string $base_content, &$review ): void {
+			$changed_blocks = $this->changed_blocks( $base_content, (string) $proposal['proposedContent'] );
+			$this->park_changed_blocks( $room, $client_id, (string) $proposal['proposalId'], $reason, (string) $proposal['baseVersion'], $changed_blocks, $review, false );
+		}
+
+		/**
+		 * Parks a set of changed blocks as one durable review row.
+		 *
+		 * Idempotent by parked id (a redelivered escalation never
+		 * double-parks). With $dedupe_by_content, an OPEN row from the same
+		 * author with the same reason and byte-identical changed blocks
+		 * also suppresses the park — the sequestration lane's guard against
+		 * an author re-proposing the same risky content every poll cycle.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param string $room              Room identifier.
+		 * @param int    $client_id         Escalating client id.
+		 * @param string $parked_id         Parked row id.
+		 * @param string $reason            Escalation reason.
+		 * @param string $base_version      Proposal base version label.
+		 * @param array  $changed_blocks    Blocks to park ({index, html}).
+		 * @param array  $review            Review ledger (lazily loaded, by reference).
+		 * @param bool   $dedupe_by_content Whether to suppress same-content re-parks.
+		 * @return void
+		 */
+		private function park_changed_blocks( string $room, int $client_id, string $parked_id, string $reason, string $base_version, array $changed_blocks, &$review, bool $dedupe_by_content ): void {
+			if ( null === $review ) {
+				$review = $this->load_review_ledger( $room );
+			}
+			if ( isset( $review['open'][ $parked_id ] ) || isset( $review['resolved'][ $parked_id ] ) ) {
+				return; // Redelivery: already parked (or already resolved).
+			}
+			if ( $dedupe_by_content ) {
+				foreach ( $review['open'] as $open_row ) {
+					if (
+						is_array( $open_row ) &&
+						( $open_row['reason'] ?? null ) === $reason &&
+						(int) ( $open_row['authorClientId'] ?? -1 ) === $client_id &&
+						wp_json_encode( $open_row['changedBlocks'] ?? null ) === wp_json_encode( $changed_blocks )
+					) {
+						return;
+					}
+				}
+			}
+
+			$changed_text = '';
+			foreach ( $changed_blocks as $block ) {
+				$changed_text .= ' ' . wp_strip_all_tags( $block['html'] );
+			}
+			$excerpt = trim( preg_replace( '/\s+/', ' ', $changed_text ) );
+			if ( function_exists( 'mb_substr' ) ) {
+				$excerpt = mb_substr( $excerpt, 0, 80 );
+			} else {
+				$excerpt = substr( $excerpt, 0, 80 );
+			}
+
+			$payload = array(
+				'proposalId'     => $parked_id,
+				'reason'         => $reason,
+				'authorClientId' => $client_id,
+				'author'         => get_current_user_id(),
+				'at'             => time(),
+				'baseVersion'    => $base_version,
+				'changedBlocks'  => $changed_blocks,
+				'excerpt'        => $excerpt,
+			);
+
+			$stored = $this->add_row(
+				$room,
+				$client_id,
+				self::UPDATE_TYPE_PROPOSAL_PARKED,
+				wp_json_encode( $payload )
+			);
+			if ( $stored ) {
+				$review['open'][ $parked_id ] = $payload;
+			}
+		}
+
+		/**
+		 * Sequesters the kses-risky blocks out of a filtered author's
+		 * proposal: each risky changed block reverts to its base-version
+		 * form (a risky NEW block drops), the reverted blocks park for
+		 * review, and the laundered content merges normally — the safe
+		 * remainder of the edit lands instead of parking with the risky
+		 * part.
+		 *
+		 * Returns null when per-block extraction is unavailable (freeform
+		 * boundaries) or nothing block-attributable was found; the caller
+		 * falls back to whole-proposal escalation.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param string $room         Room identifier.
+		 * @param int    $client_id    Proposing client id.
+		 * @param array  $proposal     Decoded proposal payload.
+		 * @param string $base_content Content of the proposal's base version.
+		 * @param array  $review       Review ledger (lazily loaded, by reference).
+		 * @return string|null Laundered proposed content, or null.
+		 */
+		private function sequester_unfiltered_blocks( string $room, int $client_id, array $proposal, string $base_content, &$review ): ?string {
+			$base_records     = wp_de_rtc_get_top_level_serialized_block_records( $base_content );
+			$proposed_records = wp_de_rtc_get_top_level_serialized_block_records( (string) $proposal['proposedContent'] );
+			if ( is_wp_error( $base_records ) || is_wp_error( $proposed_records ) ) {
+				return null;
+			}
+
+			$base_set  = array_fill_keys( $base_records, true );
+			$laundered = array();
+			$risky     = array();
+			foreach ( $proposed_records as $index => $serialized ) {
+				// A block byte-identical to a base block was not written by
+				// this author here; a changed block that kses round-trips is
+				// safe. Both pass through.
+				if ( isset( $base_set[ $serialized ] ) || wp_kses_post( $serialized ) === $serialized ) {
+					$laundered[] = $serialized;
+					continue;
+				}
+				$risky[] = array(
+					'index' => (int) $index,
+					'html'  => $serialized,
+				);
+				// An EDITED risky block reverts to its base form (same
+				// position, same block type); a risky NEW block has no base
+				// counterpart and drops from the laundered content.
+				$base_at = $base_records[ $index ] ?? null;
+				if ( is_string( $base_at ) && self::block_name_of( $base_at ) === self::block_name_of( $serialized ) ) {
+					$laundered[] = $base_at;
+				}
+			}
+
+			if ( array() === $risky ) {
+				// kses flagged something block extraction cannot attribute.
+				return null;
+			}
+
+			$this->park_changed_blocks( $room, $client_id, (string) $proposal['proposalId'], 'requires-unfiltered-html', (string) $proposal['baseVersion'], $risky, $review, true );
+
+			// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+			do_action( 'qm/debug', 'wp-sync: de-rtc sequestered ' . count( $risky ) . " risky block(s) from a filtered author in {$room}" );
+
+			// The standard serializer convention joins blocks with blank
+			// lines; matching it keeps the laundered canonical byte-stable
+			// against the client's next serialization of the same blocks.
+			return implode( "\n\n", $laundered );
+		}
+
+		/**
+		 * The block name of a serialized top-level block.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param string $serialized Serialized block.
+		 * @return string|null Block name, or null when unparsable.
+		 */
+		private static function block_name_of( string $serialized ): ?string {
+			return preg_match( '/^<!--\s+wp:([a-z0-9\/_-]+)/i', $serialized, $matches ) ? $matches[1] : null;
+		}
+
+		/**
+		 * The changed top-level blocks of a proposal against its base.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param string $base_content     Base version content.
+		 * @param string $proposed_content Proposed content.
+		 * @return array<int, array{index: int, html: string}> Changed blocks.
+		 */
+		private function changed_blocks( string $base_content, string $proposed_content ): array {
+			$base_records     = wp_de_rtc_get_top_level_serialized_block_records( $base_content );
+			$proposed_records = wp_de_rtc_get_top_level_serialized_block_records( $proposed_content );
+			if ( is_wp_error( $base_records ) || is_wp_error( $proposed_records ) ) {
+				// Freeform boundaries defeat per-block extraction; park the
+				// whole proposed content as one restorable unit.
+				return array(
+					array(
+						'index' => 0,
+						'html'  => $proposed_content,
+					),
+				);
+			}
+
+			$changed = array();
+			foreach ( $proposed_records as $index => $serialized ) {
+				if ( ( $base_records[ $index ] ?? null ) === $serialized ) {
+					continue;
+				}
+				$changed[] = array(
+					'index' => (int) $index,
+					'html'  => $serialized,
+				);
+			}
+
+			return $changed;
+		}
+
+		/**
+		 * Derives the open/resolved review ledger from retained rows.
+		 *
+		 * Parked rows are always retained while unresolved (the compaction
+		 * rule re-appends them above the trim floor), so the retained window
+		 * is authoritative for what is open.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param string $room Room identifier.
+		 * @return array{open: array<string, array>, resolved: array<string, bool>} Ledger.
+		 */
+		private function load_review_ledger( string $room ): array {
+			$ledger = array(
+				'open'     => array(),
+				'resolved' => array(),
+			);
+			$rows   = $this->storage->get_updates_after_cursor( $room, 0 );
+			foreach ( $rows as $row ) {
+				$decoded = json_decode( (string) $row['data'], true );
+				if ( ! is_array( $decoded ) || ! is_string( $decoded['proposalId'] ?? null ) ) {
+					continue;
+				}
+				if ( self::UPDATE_TYPE_PROPOSAL_PARKED === $row['type'] ) {
+					$ledger['open'][ $decoded['proposalId'] ] = $decoded;
+				} elseif ( self::UPDATE_TYPE_RESOLVED === $row['type'] ) {
+					$ledger['resolved'][ $decoded['proposalId'] ] = true;
+				}
+			}
+
+			return $ledger;
 		}
 
 		/**
@@ -564,10 +1124,12 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			$meta_cursor = 0;
 			if ( is_array( $meta ) && is_string( $meta['version'] ?? null ) && is_string( $meta['content'] ?? null ) ) {
 				$state       = array(
-					'version'     => $meta['version'],
-					'version_seq' => (int) ( $meta['version_seq'] ?? 0 ),
-					'content'     => $meta['content'],
-					'sync_meta'   => is_array( $meta['sync_meta'] ?? null ) ? $meta['sync_meta'] : array(),
+					'version'               => $meta['version'],
+					'version_seq'           => (int) ( $meta['version_seq'] ?? 0 ),
+					'content'               => $meta['content'],
+					'sync_meta'             => is_array( $meta['sync_meta'] ?? null ) ? $meta['sync_meta'] : array(),
+					'properties'            => is_array( $meta['properties'] ?? null ) ? $meta['properties'] : array(),
+					'properties_by_version' => is_array( $meta['properties_by_version'] ?? null ) ? $meta['properties_by_version'] : array(),
 				);
 				$meta_cursor = (int) ( $meta['cursor'] ?? 0 );
 			}
@@ -580,16 +1142,21 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 
 			if ( null === $state ) {
 				$state = array(
-					'version'     => 'v0',
-					'version_seq' => 0,
-					'content'     => '',
-					'sync_meta'   => array(),
+					'version'               => 'v0',
+					'version_seq'           => 0,
+					'content'               => '',
+					'sync_meta'             => array(),
+					'properties'            => array(),
+					'properties_by_version' => array(),
 				);
 			}
 
 			foreach ( $rows as $row ) {
 				if ( self::UPDATE_TYPE_PROPOSAL === $row['type'] ) {
 					continue; // Not stored by this engine, but be tolerant.
+				}
+				if ( in_array( $row['type'], array( self::UPDATE_TYPE_PROPOSAL_PARKED, self::UPDATE_TYPE_RESOLVED ), true ) ) {
+					continue; // Review-lane rows never carry canonical content.
 				}
 				$decoded = json_decode( (string) $row['data'], true );
 				if ( ! is_array( $decoded ) || ! is_string( $decoded['version'] ?? null ) || ! is_string( $decoded['content'] ?? null ) ) {
@@ -609,6 +1176,10 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				$state['version']     = $decoded['version'];
 				$state['version_seq'] = $row_seq;
 				$state['content']     = $decoded['content'];
+				if ( is_array( $decoded['properties'] ?? null ) ) {
+					$state['properties'] = $decoded['properties'];
+				}
+				$this->record_properties_snapshot( $state, $decoded['version'] );
 			}
 
 			$this->room_states[ $room ] = $state;
@@ -631,13 +1202,20 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * @return array|WP_Error Room state or error.
 		 */
 		private function initialize_room( string $room ) {
-			$content   = '';
-			$sync_meta = array();
-			$parsed    = class_exists( 'WP_Sync_Config' ) ? WP_Sync_Config::parse_room( $room ) : null;
+			$content    = '';
+			$sync_meta  = array();
+			$properties = array();
+			$parsed     = class_exists( 'WP_Sync_Config' ) ? WP_Sync_Config::parse_room( $room ) : null;
 			if ( null !== $parsed && 'postType' === $parsed['entity_kind'] && ! empty( $parsed['object_id'] ) ) {
 				$post = get_post( (int) $parsed['object_id'] );
 				if ( $post instanceof WP_Post ) {
 					$content = (string) $post->post_content;
+					// The shared REST-shaped seed every field-syncing engine
+					// uses (scalars, taxonomies by rest_base, meta.<key>) —
+					// deterministic, so racing initializers stay idempotent.
+					if ( class_exists( 'WP_Sync_Post_Genesis_Props' ) ) {
+						$properties = WP_Sync_Post_Genesis_Props::for_post( $post );
+					}
 				}
 			}
 
@@ -655,10 +1233,12 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 
 			$version = 'v1';
 			$state   = array(
-				'version'     => $version,
-				'version_seq' => 1,
-				'content'     => $content,
-				'sync_meta'   => wp_de_rtc_update_automerge_version_snapshots( $sync_meta, $version, $content ),
+				'version'               => $version,
+				'version_seq'           => 1,
+				'content'               => $content,
+				'sync_meta'             => wp_de_rtc_update_automerge_version_snapshots( $sync_meta, $version, $content ),
+				'properties'            => $properties,
+				'properties_by_version' => array( $version => $properties ),
 			);
 
 			$stored = $this->add_row(
@@ -667,8 +1247,9 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				self::UPDATE_TYPE_SNAPSHOT,
 				wp_json_encode(
 					array(
-						'version' => $version,
-						'content' => $content,
+						'version'    => $version,
+						'content'    => $content,
+						'properties' => $properties,
 					)
 				)
 			);
@@ -713,11 +1294,13 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				$room,
 				self::META_DOC,
 				array(
-					'version'     => $state['version'],
-					'version_seq' => (int) $state['version_seq'],
-					'content'     => $state['content'],
-					'sync_meta'   => $state['sync_meta'],
-					'cursor'      => $cursor,
+					'version'               => $state['version'],
+					'version_seq'           => (int) $state['version_seq'],
+					'content'               => $state['content'],
+					'sync_meta'             => $state['sync_meta'],
+					'properties'            => $state['properties'] ?? array(),
+					'properties_by_version' => $state['properties_by_version'] ?? array(),
+					'cursor'                => $cursor,
 				)
 			);
 		}
@@ -761,15 +1344,72 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				return false;
 			}
 
-			$stored = $this->add_row(
+			/*
+			 * UNRESOLVED parked proposals below the future trim floor survive
+			 * by re-appending them above the previous checkpoint; resolved
+			 * pairs age out with the trim (the intent-log retention rule —
+			 * escalated work parked for review must survive compaction).
+			 * Rows do not expose their cursor, so the previous checkpoint row
+			 * is identified by the checkpointId it was stamped with.
+			 */
+			$prev_checkpoint_id = is_array( $previous ) ? (int) ( $previous['id'] ?? 0 ) : 0;
+			if ( $prev_cursor > 0 ) {
+				$rows           = $this->storage->get_updates_after_cursor( $room, 0 );
+				$resolved_ids   = array();
+				$below          = array();
+				$found_previous = false;
+				foreach ( $rows as $row ) {
+					if ( self::UPDATE_TYPE_RESOLVED !== $row['type'] ) {
+						continue;
+					}
+					$decoded = json_decode( (string) $row['data'], true );
+					if ( is_array( $decoded ) && isset( $decoded['proposalId'] ) ) {
+						$resolved_ids[ $decoded['proposalId'] ] = true;
+					}
+				}
+				foreach ( $rows as $row ) {
+					$decoded = json_decode( (string) $row['data'], true );
+					if ( ! is_array( $decoded ) ) {
+						continue;
+					}
+					if (
+						self::UPDATE_TYPE_SNAPSHOT === $row['type'] &&
+						! empty( $decoded['checkpoint'] ) &&
+						(int) ( $decoded['checkpointId'] ?? -1 ) === $prev_checkpoint_id
+					) {
+						$found_previous = true;
+						break;
+					}
+					if (
+						self::UPDATE_TYPE_PROPOSAL_PARKED === $row['type'] &&
+						is_string( $decoded['proposalId'] ?? null ) &&
+						! isset( $resolved_ids[ $decoded['proposalId'] ] )
+					) {
+						$below[] = array(
+							'client_id' => (int) ( $row['client_id'] ?? 0 ),
+							'decoded'   => $decoded,
+						);
+					}
+				}
+				if ( $found_previous ) {
+					foreach ( $below as $parked ) {
+						$this->add_row( $room, $parked['client_id'], self::UPDATE_TYPE_PROPOSAL_PARKED, wp_json_encode( $parked['decoded'] ) );
+					}
+				}
+			}
+
+			$checkpoint_id = $prev_checkpoint_id + 1;
+			$stored        = $this->add_row(
 				$room,
 				self::SERVER_CLIENT_ID,
 				self::UPDATE_TYPE_SNAPSHOT,
 				wp_json_encode(
 					array(
-						'version'    => $state['version'],
-						'content'    => $state['content'],
-						'checkpoint' => true,
+						'version'      => $state['version'],
+						'content'      => $state['content'],
+						'properties'   => $state['properties'] ?? array(),
+						'checkpoint'   => true,
+						'checkpointId' => $checkpoint_id,
 					)
 				)
 			);
@@ -782,7 +1422,14 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			if ( $cursor <= 0 ) {
 				return true;
 			}
-			$this->storage->set_room_meta( $room, self::META_CHECKPOINT, array( 'cursor' => $cursor ) );
+			$this->storage->set_room_meta(
+				$room,
+				self::META_CHECKPOINT,
+				array(
+					'cursor' => $cursor,
+					'id'     => $checkpoint_id,
+				)
+			);
 			// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 			do_action( 'qm/debug', "wp-sync: de-rtc checkpoint at {$state['version']} for {$room}" );
 

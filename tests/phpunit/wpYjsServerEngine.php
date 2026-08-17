@@ -25,8 +25,16 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 	 */
 	protected static $post_id;
 
+	/**
+	 * Author user ID (lacks unfiltered_html).
+	 *
+	 * @var int
+	 */
+	protected static $author_id;
+
 	public static function wpSetUpBeforeClass( WP_UnitTest_Factory $factory ) {
 		self::$editor_id = $factory->user->create( array( 'role' => 'editor' ) );
+		self::$author_id = $factory->user->create( array( 'role' => 'author' ) );
 		self::$post_id   = $factory->post->create(
 			array(
 				'post_author'  => self::$editor_id,
@@ -38,6 +46,7 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 
 	public static function wpTearDownAfterClass() {
 		self::delete_user( self::$editor_id );
+		self::delete_user( self::$author_id );
 		wp_delete_post( self::$post_id, true );
 	}
 
@@ -841,5 +850,267 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 			\Yjs\applyUpdateV2( $doc, \Yjs\Lib0\Buffer::fromBase64( $decoded['doc'] ) );
 		}
 		$this->assertSame( 1, $doc->getMap( 'document' )->get( 'blocks' )->length );
+	}
+
+	public function test_genesis_seeds_the_full_shared_property_set() {
+		register_post_meta(
+			'post',
+			'yjs_note',
+			array(
+				'show_in_rest' => true,
+				'single'       => true,
+				'type'         => 'string',
+				'default'      => '',
+			)
+		);
+		$post_id = self::factory()->post->create(
+			array(
+				'post_author'  => self::$editor_id,
+				'post_title'   => 'Full seed post',
+				'post_excerpt' => 'Seeded excerpt',
+				'post_status'  => 'publish',
+				'post_content' => "<!-- wp:paragraph -->\n<p>Body</p>\n<!-- /wp:paragraph -->",
+			)
+		);
+		update_post_meta( $post_id, 'yjs_note', 'noted' );
+
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( 'postType/post:' . $post_id, 101, 0, array() );
+		$doc      = $this->client_doc_from_response( $response );
+		$record   = $doc->getMap( 'document' );
+		$expected = WP_Sync_Post_Genesis_Props::for_post( get_post( $post_id ) );
+
+		unregister_post_meta( 'post', 'yjs_note' );
+
+		// Rich-text properties seed as Y.Text in the client schema…
+		$this->assertSame( $expected['title'], $record->get( 'title' )->toString() );
+		$this->assertSame( $expected['excerpt'], $record->get( 'excerpt' )->toString() );
+		// …scalars and taxonomy term-ID arrays as plain values…
+		$this->assertSame( 'publish', $record->get( 'status' ) );
+		$this->assertSame( $expected['date'], $record->get( 'date' ) );
+		$this->assertSame( $expected['author'], $record->get( 'author' ) );
+		$this->assertSame( $expected['categories'], $record->get( 'categories' ) );
+		$this->assertSame( array(), $record->get( 'tags' ) );
+		// …and registered meta nested under ONE meta map, matching the
+		// crdt.ts schema (per-key merge on the client).
+		$this->assertSame( 'noted', $record->get( 'meta' )->get( 'yjs_note' ) );
+
+		wp_delete_post( $post_id, true );
+	}
+
+	public function test_genesis_size_gate_refuses_oversized_posts_and_respects_the_filter() {
+		$big_id = self::factory()->post->create(
+			array(
+				'post_author'  => self::$editor_id,
+				'post_content' => "<!-- wp:paragraph -->\n<p>" . str_repeat( 'x', 2048 ) . "</p>\n<!-- /wp:paragraph -->",
+			)
+		);
+		$room   = 'postType/post:' . $big_id;
+
+		add_filter( 'wp_sync_yjs_server_max_genesis_bytes', $gate_filter = static fn() => 1024 );
+		try {
+			// A read never bootstraps the room: no snapshot row is built or
+			// stored, so RTC simply never activates for the oversized post.
+			$response = $this->engine()->get_updates_since( $room, 101, 0, array() );
+			$this->assertSame( array(), $response['updates'] );
+
+			// A write states the refusal explicitly through the transport.
+			$result = $this->engine()->handle_updates(
+				$room,
+				101,
+				0,
+				array(
+					array(
+						'type' => 'update',
+						'data' => 'AAA=',
+					),
+				),
+				array()
+			);
+			$this->assertWPError( $result );
+			$this->assertSame( 'rest_sync_document_too_large', $result->get_error_code() );
+		} finally {
+			remove_filter( 'wp_sync_yjs_server_max_genesis_bytes', $gate_filter );
+		}
+
+		// With the default gate the same post initializes normally.
+		$response = $this->engine()->get_updates_since( $room, 101, 0, array() );
+		$this->assertNotEmpty( $response['updates'] );
+		$this->assertSame( WP_Yjs_Server_Engine::UPDATE_TYPE_SNAPSHOT, $response['updates'][0]['type'] );
+
+		wp_delete_post( $big_id, true );
+	}
+
+	public function test_kses_lane_sanitizes_a_filtered_authors_markup_and_every_client_converges() {
+		$engine     = $this->engine();
+		$response_a = $engine->get_updates_since( $this->room(), 101, 0, array() );
+		$doc_a      = $this->client_doc_from_response( $response_a );
+		$cursor_a   = (int) $response_a['end_cursor'];
+
+		wp_set_current_user( self::$author_id );
+		$update = $this->encode_edit(
+			$doc_a,
+			function ( $doc ) {
+				$this->first_block_content( $doc )->insert( 11, ' <script>alert(1)</script>' );
+			}
+		);
+		$result = $this->engine()->handle_updates(
+			$this->room(),
+			101,
+			$cursor_a,
+			array(
+				array(
+					'type' => 'update',
+					'data' => $update,
+				),
+			),
+			array()
+		);
+		// Filter-on-save semantics: the update APPLIES; the markup goes.
+		$this->assertSame( array( array( 'status' => 'applied' ) ), $result['dispositions'] );
+
+		$materialized = $this->engine()->materialize( $this->room() );
+		$this->assertStringNotContainsString( '<script>', $materialized );
+		$this->assertStringContainsString( 'alert(1)', $materialized, 'kses strips tags, not their text content' );
+
+		// A fresh peer converges on the sanitized content.
+		$doc_b = $this->client_doc_from_response(
+			$this->engine()->get_updates_since( $this->room(), 202, 0, array() )
+		);
+		$this->assertStringNotContainsString(
+			'<script>',
+			$this->first_block_content( $doc_b )->toString()
+		);
+
+		// The AUTHOR converges too: the compensating row is server-authored,
+		// so their own-row read filter does not hide it.
+		$catch_up = $this->engine()->get_updates_since( $this->room(), 101, $cursor_a, array() );
+		$this->assertNotEmpty( $catch_up['updates'], 'the author must receive the compensation row' );
+		$this->apply_response( $doc_a, $catch_up );
+		$this->assertStringNotContainsString(
+			'<script>',
+			$this->first_block_content( $doc_a )->toString()
+		);
+
+		// The author's replica is NOT diverged: their next edit still applies.
+		$next   = $this->encode_edit(
+			$doc_a,
+			function ( $doc ) {
+				$this->first_block_content( $doc )->insert( 0, 'Onward: ' );
+			}
+		);
+		$result = $this->engine()->handle_updates(
+			$this->room(),
+			101,
+			(int) $catch_up['end_cursor'],
+			array(
+				array(
+					'type' => 'update',
+					'data' => $next,
+				),
+			),
+			array()
+		);
+		$this->assertSame( array( array( 'status' => 'applied' ) ), $result['dispositions'] );
+		$this->assertStringContainsString( 'Onward: ', (string) $this->engine()->materialize( $this->room() ) );
+	}
+
+	public function test_kses_lane_leaves_untouched_privileged_blocks_alone() {
+		$two_block_id = self::factory()->post->create(
+			array(
+				'post_author'  => self::$editor_id,
+				'post_status'  => 'publish',
+				'post_content' => "<!-- wp:paragraph -->\n<p>First</p>\n<!-- /wp:paragraph -->\n\n<!-- wp:paragraph -->\n<p>Second</p>\n<!-- /wp:paragraph -->",
+			)
+		);
+		$room         = 'postType/post:' . $two_block_id;
+
+		// A privileged EDITOR lands protected markup in the FIRST block.
+		$engine     = $this->engine();
+		$response_e = $engine->get_updates_since( $room, 101, 0, array() );
+		$doc_e      = $this->client_doc_from_response( $response_e );
+		$editor_up  = $this->encode_edit(
+			$doc_e,
+			function ( $doc ) {
+				$doc->getMap( 'document' )->get( 'blocks' )->get( 0 )
+					->get( 'attributes' )->get( 'content' )
+					->insert( 5, ' <script>privileged()</script>' );
+			}
+		);
+		$result = $this->engine()->handle_updates(
+			$room,
+			101,
+			(int) $response_e['end_cursor'],
+			array(
+				array(
+					'type' => 'update',
+					'data' => $editor_up,
+				),
+			),
+			array()
+		);
+		$this->assertSame( array( array( 'status' => 'applied' ) ), $result['dispositions'] );
+		$this->assertStringContainsString( '<script>privileged()</script>', (string) $this->engine()->materialize( $room ) );
+
+		// A FILTERED author edits only the SECOND block: the privileged
+		// first block is untouched by the batch and never judged.
+		wp_set_current_user( self::$author_id );
+		$response_a = $this->engine()->get_updates_since( $room, 202, 0, array() );
+		$doc_a      = $this->client_doc_from_response( $response_a );
+		$author_up  = $this->encode_edit(
+			$doc_a,
+			function ( $doc ) {
+				$doc->getMap( 'document' )->get( 'blocks' )->get( 1 )
+					->get( 'attributes' )->get( 'content' )
+					->insert( 6, ' plus author text' );
+			}
+		);
+		$result = $this->engine()->handle_updates(
+			$room,
+			202,
+			(int) $response_a['end_cursor'],
+			array(
+				array(
+					'type' => 'update',
+					'data' => $author_up,
+				),
+			),
+			array()
+		);
+		$this->assertSame( array( array( 'status' => 'applied' ) ), $result['dispositions'] );
+
+		$materialized = (string) $this->engine()->materialize( $room );
+		$this->assertStringContainsString( '<script>privileged()</script>', $materialized, 'a privileged block untouched by the batch survives' );
+		$this->assertStringContainsString( 'plus author text', $materialized );
+
+		wp_delete_post( $two_block_id, true );
+	}
+
+	public function test_privileged_author_markup_is_never_sanitized() {
+		$engine     = $this->engine();
+		$response_a = $engine->get_updates_since( $this->room(), 101, 0, array() );
+		$doc_a      = $this->client_doc_from_response( $response_a );
+
+		// The editor keeps unfiltered_html on single site.
+		$update = $this->encode_edit(
+			$doc_a,
+			function ( $doc ) {
+				$this->first_block_content( $doc )->insert( 11, ' <script>ok()</script>' );
+			}
+		);
+		$result = $this->engine()->handle_updates(
+			$this->room(),
+			101,
+			(int) $response_a['end_cursor'],
+			array(
+				array(
+					'type' => 'update',
+					'data' => $update,
+				),
+			),
+			array()
+		);
+		$this->assertSame( array( array( 'status' => 'applied' ) ), $result['dispositions'] );
+		$this->assertStringContainsString( '<script>ok()</script>', (string) $this->engine()->materialize( $this->room() ) );
 	}
 }

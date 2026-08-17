@@ -15,6 +15,7 @@ import type {
 } from '@wordpress/sync';
 import { applyServerAwarenessStates } from '../awareness-sync';
 import { DE_RTC_REMOTE_ORIGIN, type DeRtcDocBridge } from './doc-bridge';
+import type { DeRtcParkedProposal, DeRtcReviewState } from './review';
 
 /**
  * Slug of the de-rtc engine. Must match WP_De_RTC_Engine::SLUG on the PHP
@@ -47,6 +48,18 @@ export const DE_RTC_CONTENT_TYPE = 'content';
 export const DE_RTC_SNAPSHOT_TYPE = 'snapshot';
 
 /**
+ * Server-emitted row type: an escalated proposal parked for review.
+ * Matches WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED. Receive-only.
+ */
+export const DE_RTC_PROPOSAL_PARKED_TYPE = 'proposal-parked';
+
+/**
+ * Row type closing a parked proposal (client-sent; the server relays its
+ * stamped copy). Matches WP_De_RTC_Engine::UPDATE_TYPE_RESOLVED.
+ */
+export const DE_RTC_RESOLVED_TYPE = 'resolved';
+
+/**
  * Options for creating a de-rtc session codec.
  */
 export interface DeRtcSessionOptions {
@@ -59,6 +72,14 @@ export interface DeRtcSessionOptions {
 
 	/** The shared doc bridge for the entity. */
 	bridge: DeRtcDocBridge;
+
+	/**
+	 * The entity's review ledger. Parked/resolved rows feed it, and it
+	 * emits resolution rows through this session's local-update lane.
+	 * Optional: collection codecs and tests without a review surface
+	 * simply drop review rows.
+	 */
+	review?: DeRtcReviewState;
 }
 
 /**
@@ -90,7 +111,7 @@ export interface DeRtcSessionOptions {
 export function createDeRtcSessionCodec(
 	options: DeRtcSessionOptions
 ): EngineSessionCodec {
-	const { bridge } = options;
+	const { bridge, review } = options;
 	const doc = bridge.doc;
 	const awareness = options.awareness ?? new Awareness( doc );
 
@@ -101,16 +122,27 @@ export function createDeRtcSessionCodec(
 	let inFlightProposalId: string | null = null;
 	let proposalCounter = 0;
 	let lastProposedContent: string | null = null;
-	let pendingCanonical: { version: string; content: string } | null = null;
+	let lastProposedProperties: Record< string, unknown > = {};
+	let pendingCanonical: {
+		version: string;
+		content: string;
+		properties?: Record< string, unknown >;
+	} | null = null;
 
 	function buildProposal(): EngineUpdate {
 		proposalCounter += 1;
 		lastProposedContent = bridge.buildContent();
+		lastProposedProperties = bridge.buildProperties();
 		inFlightProposalId = `p-${ doc.clientID }-${ proposalCounter }`;
 		const payload = {
 			proposalId: inFlightProposalId,
 			baseVersion: bridge.lastVersion() ?? '',
 			proposedContent: lastProposedContent,
+			// The FULL property map every time (save-centric, like the
+			// content): the server three-way-diffs it against the base, so
+			// unchanged properties are no-ops and an abandoned escalation
+			// self-heals on the next proposal.
+			proposedProperties: lastProposedProperties,
 			// The block-native update descriptor is server-derivable; the
 			// engine's "engine-unaware writer" lane authors it on our
 			// behalf. Porting the client-side descriptor builder (and its
@@ -135,12 +167,16 @@ export function createDeRtcSessionCodec(
 		localUpdateListener( update, update.data.length );
 	}
 
-	function applyOrDeferCanonical( version: string, content: string ): void {
+	function applyOrDeferCanonical(
+		version: string,
+		content: string,
+		properties?: Record< string, unknown >
+	): void {
 		if ( dirty || inFlight ) {
-			pendingCanonical = { version, content };
+			pendingCanonical = { version, content, properties };
 			return;
 		}
-		bridge.applyCanonical( version, content );
+		bridge.applyCanonical( version, content, properties );
 	}
 
 	function onDocUpdate( _update: Uint8Array, origin: unknown ): void {
@@ -158,6 +194,30 @@ export function createDeRtcSessionCodec(
 		} catch {
 			return; // A malformed row cannot be applied; the next one resyncs.
 		}
+
+		// Review-lane rows carry no canonical content; they feed the ledger.
+		if ( DE_RTC_PROPOSAL_PARKED_TYPE === update.type ) {
+			if (
+				'string' === typeof decoded?.proposalId &&
+				'' !== decoded.proposalId &&
+				'string' === typeof decoded?.reason
+			) {
+				review?.noteParked( {
+					...decoded,
+					changedBlocks: Array.isArray( decoded.changedBlocks )
+						? decoded.changedBlocks
+						: [],
+				} as DeRtcParkedProposal );
+			}
+			return;
+		}
+		if ( DE_RTC_RESOLVED_TYPE === update.type ) {
+			if ( 'string' === typeof decoded?.proposalId ) {
+				review?.noteResolved( decoded.proposalId );
+			}
+			return;
+		}
+
 		if (
 			'string' !== typeof decoded?.version ||
 			'string' !== typeof decoded?.content
@@ -165,9 +225,18 @@ export function createDeRtcSessionCodec(
 			return;
 		}
 
+		const rowProperties =
+			decoded.properties && 'object' === typeof decoded.properties
+				? ( decoded.properties as Record< string, unknown > )
+				: undefined;
+
 		switch ( update.type ) {
 			case DE_RTC_SNAPSHOT_TYPE:
-				applyOrDeferCanonical( decoded.version, decoded.content );
+				applyOrDeferCanonical(
+					decoded.version,
+					decoded.content,
+					rowProperties
+				);
 				return;
 
 			case DE_RTC_CONTENT_TYPE:
@@ -190,7 +259,15 @@ export function createDeRtcSessionCodec(
 						// application would clobber). Advance the version
 						// only, so the next coalesced chunk proposes against
 						// it instead of colliding with our own accepted edit.
+						// Properties the server merged from peers (values we
+						// did not touch since proposing) still incorporate.
 						pendingCanonical = null;
+						if ( rowProperties ) {
+							bridge.incorporateProperties(
+								rowProperties,
+								lastProposedProperties
+							);
+						}
 						bridge.advanceVersion( decoded.version );
 						settleQueued();
 						return;
@@ -208,11 +285,21 @@ export function createDeRtcSessionCodec(
 						// proposing (the next proposal reconciles them), and
 						// rebase onto the new version.
 						pendingCanonical = null;
+						if ( rowProperties ) {
+							bridge.incorporateProperties(
+								rowProperties,
+								lastProposedProperties
+							);
+						}
 						settleQueued();
 						return;
 					}
 				}
-				applyOrDeferCanonical( decoded.version, decoded.content );
+				applyOrDeferCanonical(
+					decoded.version,
+					decoded.content,
+					rowProperties
+				);
 				if ( ! inFlight ) {
 					settleQueued();
 				}
@@ -229,9 +316,9 @@ export function createDeRtcSessionCodec(
 			return;
 		}
 		if ( ! inFlight && pendingCanonical ) {
-			const { version, content } = pendingCanonical;
+			const { version, content, properties } = pendingCanonical;
 			pendingCanonical = null;
-			bridge.applyCanonical( version, content );
+			bridge.applyCanonical( version, content, properties );
 		}
 	}
 
@@ -258,6 +345,7 @@ export function createDeRtcSessionCodec(
 				doc.off( 'update', onDocUpdate );
 				isDocListenerAttached = false;
 			}
+			review?.setEmitter( null );
 			localUpdateListener = null;
 		},
 		// The server's snapshot row bootstraps a fresh client; nothing to
@@ -271,6 +359,11 @@ export function createDeRtcSessionCodec(
 				doc.on( 'update', onDocUpdate );
 				isDocListenerAttached = true;
 			}
+			// Resolutions ride the same outbound lane as proposals.
+			review?.setEmitter(
+				( update ) =>
+					localUpdateListener?.( update, update.data.length )
+			);
 			bridge.onBootstrap( () => maybePropose() );
 		},
 		receiveUpdate: ( update ) => processRow( update ),

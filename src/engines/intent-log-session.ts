@@ -8,6 +8,7 @@ import {
 	predictedDisposition,
 	replanClient,
 } from './intent-log/client.js';
+import { serverDocAt } from './intent-log/rebase.js';
 import { createIntent } from './intent-log/intents.js';
 import type {
 	EngineDocument,
@@ -161,7 +162,7 @@ export interface IntentLogSession extends EngineSessionCodec {
 	 */
 	authorBatch: (
 		intents: Array< { type: string; payload: Record< string, unknown > } >,
-		options?: { txnId?: string; baseSeq?: number }
+		options?: { txnId?: string; baseSeq?: number; observe?: boolean }
 	) => IntentEnvelope[];
 
 	/**
@@ -175,6 +176,36 @@ export interface IntentLogSession extends EngineSessionCodec {
 	 * the one-sided transform skips same-actor priors anyway.
 	 */
 	setObservedSeq: ( seq: number ) => void;
+
+	/**
+	 * Pins the replica's log retention at (or below) a seq the undo stack
+	 * may still derive inverses from, independent of the observed seq.
+	 * `null` releases the pin. The effective retention floor is the MINIMUM
+	 * of the observed seq and this pin.
+	 */
+	setUndoRetainSeq: ( seq: number | null ) => void;
+
+	/**
+	 * The document at an absolute log position within the retained window —
+	 * the "state before/after row N" an inverse-intent derivation reads.
+	 * Read-only. Null pre-snapshot or below the retained floor.
+	 */
+	getDocumentAt: ( seq: number ) => EngineDocument | null;
+
+	/** The lowest absolute seq the replica's log copy is sliceable from. */
+	getRetainedFloor: () => number;
+
+	/**
+	 * Subscribes to accepted rows being absorbed into the replica's log
+	 * copy, with each row's absolute landing seq — the material an
+	 * inverse-intent undo stack settles its units from. Fires for EVERY
+	 * accepted row (own and peers').
+	 */
+	onAcceptedRows: (
+		listener: (
+			rows: Array< { seq: number; entry: IntentEnvelope } >
+		) => void
+	) => void;
 
 	/** The engine log position captures are currently authored against. */
 	getObservedSeq: () => number;
@@ -313,6 +344,16 @@ export function createIntentLogSession(
 	>();
 	const resetListeners = new Set< () => void >();
 	const discardListeners = new Set< ( updates: EngineUpdate[] ) => void >();
+	const acceptedRowListeners = new Set<
+		( rows: Array< { seq: number; entry: IntentEnvelope } > ) => void
+	>();
+	/*
+	 * The undo stack's retention pin (see setUndoRetainSeq). Kept separate
+	 * from observedSeq so the two consumers — the capture lane's observed
+	 * frame and the undo stack's oldest invertible row — cannot starve each
+	 * other's retention.
+	 */
+	let undoRetainSeq: number | null = null;
 
 	const notifyChange = () => {
 		changeListeners.forEach( ( listener ) => listener() );
@@ -343,6 +384,20 @@ export function createIntentLogSession(
 	};
 
 	/**
+	 * Recomputes the replica's retention floor: the log must stay sliceable
+	 * from BOTH the observed frame (the next capture authors at it) and the
+	 * undo pin (inverse derivation reads documents at retained seqs).
+	 */
+	const applyRetention = (): void => {
+		if ( replica ) {
+			replica.retainFrom =
+				null === undoRetainSeq
+					? observedSeq
+					: Math.min( observedSeq, undoRetainSeq );
+		}
+	};
+
+	/**
 	 * Records the observed seq and keeps the replica's log sliceable from
 	 * there (the next capture authors at it, and the planner needs the
 	 * slice (observedSeq, head] to rebase).
@@ -352,9 +407,7 @@ export function createIntentLogSession(
 	 */
 	const applyObservedSeq = ( seq: number ): number => {
 		observedSeq = resolveObservedSeq( seq );
-		if ( replica ) {
-			replica.retainFrom = observedSeq;
-		}
+		applyRetention();
 		return observedSeq;
 	};
 
@@ -470,8 +523,12 @@ export function createIntentLogSession(
 					 * and its authoritative form never coexist.
 					 */
 					settlePending( intent.intentId );
+					const landingSeq = replica.cursor;
 					clientReceive( replica, [ intent ], replica.cursor );
 					appliedIntentIds.add( intent.intentId );
+					acceptedRowListeners.forEach( ( listener ) =>
+						listener( [ { seq: landingSeq, entry: intent } ] )
+					);
 					notifyChange();
 					return;
 				}
@@ -582,6 +639,7 @@ export function createIntentLogSession(
 			resetListeners.clear();
 			discardListeners.clear();
 			proposalsChangeListeners.clear();
+			acceptedRowListeners.clear();
 		},
 
 		onUpdatesDiscarded: ( updates ) => {
@@ -613,9 +671,23 @@ export function createIntentLogSession(
 					'Cannot author intents before the room snapshot arrives.'
 				);
 			}
-			const baseSeq = applyObservedSeq(
-				batchOptions.baseSeq ?? observedSeq
-			);
+			/*
+			 * `observe: false` authors at an explicit frame WITHOUT moving
+			 * the observed seq — the undo lane's contract: an inverse batch
+			 * is authored at the frame right after the unit it inverts,
+			 * while the editor's own observed frame stays wherever the
+			 * capture lane left it.
+			 */
+			const baseSeq =
+				false === batchOptions.observe
+					? Math.min(
+							Math.max(
+								batchOptions.baseSeq ?? replica.cursor,
+								replica.firstSeq
+							),
+							replica.cursor
+					  )
+					: applyObservedSeq( batchOptions.baseSeq ?? observedSeq );
 			const authored = intents.map( ( entry ) => {
 				const intent = createIntent( entry.type, entry.payload, {
 					actorId,
@@ -648,6 +720,30 @@ export function createIntentLogSession(
 		},
 
 		getObservedSeq: () => observedSeq,
+
+		setUndoRetainSeq: ( seq ) => {
+			undoRetainSeq = seq;
+			applyRetention();
+		},
+
+		getDocumentAt: ( seq ) => {
+			if ( ! replica || seq < replica.firstSeq || seq > replica.cursor ) {
+				return null;
+			}
+			// serverDocAt reads only { firstSeq, log, docCache }, a shape the
+			// client replica shares with the server by design (client.js
+			// docblock); the declared parameter type is just narrower.
+			return serverDocAt(
+				replica as never,
+				seq
+			) as EngineDocument | null;
+		},
+
+		getRetainedFloor: () => replica?.firstSeq ?? 0,
+
+		onAcceptedRows: ( listener ) => {
+			acceptedRowListeners.add( listener );
+		},
 
 		getDocument: () => replica?.doc ?? null,
 		getBaseDocument: () => replica?.baseDoc ?? null,

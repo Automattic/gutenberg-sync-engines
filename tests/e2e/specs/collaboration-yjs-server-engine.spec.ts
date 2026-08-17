@@ -338,10 +338,21 @@ test.describe( 'Collaboration - yjs-server engine', () => {
 		// snapshot arrives as a remote change, and the dispatch that swapped
 		// in the document's blocks used to register a dirtying `content` edit
 		// even though nothing changed, activating the Save button and the
-		// autosave timer on a post nobody touched.
+		// autosave timer on a post nobody touched. The fixture carries the
+		// FULL seeded field surface (excerpt, tags, a real status/date) —
+		// genesis now seeds every synced property, and a seeded value that
+		// failed to byte-match the joiner's REST record would re-arm exactly
+		// this bug as a spurious field edit.
+		const tag = await requestUtils.rest( {
+			method: 'POST',
+			path: '/wp/v2/tags',
+			data: { name: `yjs-dirty-open-${ Date.now() }` },
+		} );
 		const post = await requestUtils.createPost( {
 			title: 'Yjs Server Dirty On Open Test',
 			status: 'draft',
+			excerpt: 'A seeded excerpt',
+			tags: [ tag.id ],
 			content:
 				'<!-- wp:paragraph -->\n<p>Untouched content</p>\n<!-- /wp:paragraph -->',
 			date_gmt: new Date().toISOString(),

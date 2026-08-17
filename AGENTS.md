@@ -480,33 +480,43 @@ they exist so a failure is observable without re-instrumenting:
 - `composer lint` currently reports ~275 errors + ~29 warnings in the plugin's
   own `includes/` and `tests/` PHP — pre-existing standards debt, not yet
   addressed. `composer format` auto-fixes a handful.
-- Intent-log has **no collaborative undo** yet (leaves the manager undefined; WP
-  global undo applies). The designed fix is inverse-intent undo. yjs-server
-  provides undo via the shared `src/engines/yjs/undo.ts`.
+- All three engines have **collaborative undo**: intent-log via inverse
+  intents over the accepted log (`src/engines/intent-log-undo.ts` — arms
+  after the unit's settle round trip, ~a poll cycle after a burst quiets),
+  the yjs engines via the shared `src/engines/yjs/undo.ts`.
+- **Conflict review is cross-engine**: intent-log through its bespoke
+  manager; de-rtc parks escalations as durable `proposal-parked` rows and
+  presents them through the framework review panel via
+  `src/engines/review-manager-decorator.ts` (the plumbing any
+  createSyncManager-composed engine can reuse); yjs-server has NO review
+  lane by design (CRDT merge detects no conflicts to park).
+- **Shared genesis property seed**: all three engines seed
+  `WP_Sync_Post_Genesis_Props::for_post()` (REST-shaped scalars,
+  taxonomies by rest_base, `meta.<key>`), so joiners see identical field
+  state under any engine and never open dirty.
 - **yjs-server known gaps** (docs/engine-comparison.md has the full list):
   ingest cost is real y-php CPU (~30 ms/edit at benchmark sizes — the
-  canonical doc is decoded/merged/re-encoded per request), no kses/capability
-  lane yet, no review lane (register conflicts LWW silently), no
-  document-size gate for later joiners (the retired relay's client-side
-  genesis tripped the framework size guard for every visitor; with server
-  genesis only the oversized author's own tab is fenced), and
-  materialization carries the same Phase-2a wrapper simplification as
-  intent-log. Genesis blocks must set `isValid: true` or the editor renders
-  them as invalid-content recovery blocks (has bitten).
-- **de-rtc known gaps** (docs/engine-comparison.md has the full list): no
-  title sync (proposals carry content only); no review lane yet — server
-  escalations (`manual-conflict-required`, `requires-unfiltered-html`)
-  surface as dispositions but no UI presents them, and the client abandons
-  an escalated proposal once canonical applies; truly concurrent SAME-block
-  edits resolve block-level last-writer-wins client-side (yjs-server's
-  silent-register-LWW class, coarser grain); the client sends
-  `clientUpdate: null` and relies on the server's engine-unaware-writer
-  lane to derive block-native operations (the client-side descriptor
-  builder + cross-language fingerprint vectors are unported); no benchmark
-  authoring profile yet (`tests/benchmarks` cannot drive de-rtc); ingest
-  serializes per room under the intent-log-style GET_LOCK, and every
-  accepted proposal broadcasts FULL content rows (storage bounded by
-  checkpoints, but row bytes scale with document size).
+  canonical doc is decoded/merged/re-encoded per request), no review lane
+  (register conflicts LWW silently), kses is sanitize-and-compensate (no
+  human review of stripped markup), the genesis size gate
+  (`wp_sync_yjs_server_max_genesis_bytes`, default 1 MB) is genesis-only
+  (post-genesis room growth unpoliced), and materialization carries the
+  same Phase-2a wrapper simplification as intent-log. Genesis blocks must
+  set `isValid: true` or the editor renders them as invalid-content
+  recovery blocks (has bitten).
+- **de-rtc known gaps** (docs/engine-comparison.md has the full list):
+  truly concurrent SAME-block edits resolve block-level last-writer-wins
+  client-side (yjs-server's silent-register-LWW class, coarser grain);
+  the client sends `clientUpdate: null` and relies on the server's
+  engine-unaware-writer lane to derive block-native operations (the
+  client-side descriptor builder + cross-language fingerprint vectors are
+  unported); kses SEQUESTERS per block (risky blocks revert to base and
+  park for review while the safe remainder lands; whole-proposal
+  escalation remains the fallback for freeform boundaries and
+  descriptor-carrying proposals); ingest serializes per room under the
+  intent-log-style GET_LOCK, and every accepted proposal broadcasts FULL
+  content rows (storage bounded by checkpoints, but row bytes scale with
+  document size).
 - **Intent-log observed-baseline residuals** (the echo race is FIXED — capture
   now diffs the editor tree against the document state that tree reflects and
   authors at its seq; see the "THE OBSERVED BASELINE" note in

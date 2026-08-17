@@ -1614,4 +1614,92 @@ test.describe( 'Collaboration - intent-log engine', () => {
 			).toBeVisible( { timeout: 15000 } );
 		}
 	} );
+
+	test( 'collaborative undo reverts only this user’s edit and redo restores it, on both canvases', async ( {
+		collaborationUtils,
+		requestUtils,
+		editor,
+	} ) => {
+		// Settle windows (capture delay + poll + ack) stack up; give the
+		// happy path room on CI.
+		test.setTimeout( 120_000 );
+
+		const post = await requestUtils.createPost( {
+			title: 'Intent Log Undo Test',
+			status: 'draft',
+			content:
+				'<!-- wp:paragraph -->\n<p>First paragraph</p>\n<!-- /wp:paragraph -->\n\n<!-- wp:paragraph -->\n<p>Second paragraph</p>\n<!-- /wp:paragraph -->',
+			date_gmt: new Date().toISOString(),
+		} );
+
+		await collaborationUtils.openCollaborativeSession( post.id );
+		const { editor2, page2 } = collaborationUtils;
+		const page1 = editor.page;
+
+		// User A edits the FIRST paragraph, user B the SECOND.
+		await editor.canvas
+			.locator( '[data-type="core/paragraph"]' )
+			.first()
+			.click();
+		await page1.keyboard.press( 'End' );
+		await page1.keyboard.type( ' by admin', { delay: 50 } );
+
+		await editor2.canvas
+			.locator( '[data-type="core/paragraph"]' )
+			.nth( 1 )
+			.click();
+		await page2.keyboard.press( 'End' );
+		await page2.keyboard.type( ' by user two', { delay: 50 } );
+
+		// Both edits settle and converge on both canvases.
+		for ( const which of [ editor, editor2 ] ) {
+			await expect( async () => {
+				const blocks = await which.getBlocks();
+				expect( blocks[ 0 ].attributes.content ).toBe(
+					'First paragraph by admin'
+				);
+				expect( blocks[ 1 ].attributes.content ).toBe(
+					'Second paragraph by user two'
+				);
+			} ).toPass( { timeout: 20000 } );
+		}
+
+		/*
+		 * Collaborative undo needs the unit SETTLED (accepted rows + acks
+		 * absorbed) before the stack arms — give the wire a beat past
+		 * convergence, then undo. Only A's OWN edit reverts; B's edit is
+		 * untouchable by A's undo, and the inverse propagates to B like any
+		 * ordinary intent.
+		 */
+		await page1.waitForTimeout( 3000 );
+		await page1.keyboard.press( 'ControlOrMeta+z' );
+
+		for ( const which of [ editor, editor2 ] ) {
+			await expect( async () => {
+				const blocks = await which.getBlocks();
+				expect( blocks[ 0 ].attributes.content ).toBe(
+					'First paragraph'
+				);
+				expect( blocks[ 1 ].attributes.content ).toBe(
+					'Second paragraph by user two'
+				);
+			} ).toPass( { timeout: 20000 } );
+		}
+
+		// Redo restores the undone edit, again for both.
+		await page1.waitForTimeout( 3000 );
+		await page1.keyboard.press( 'ControlOrMeta+Shift+z' );
+
+		for ( const which of [ editor, editor2 ] ) {
+			await expect( async () => {
+				const blocks = await which.getBlocks();
+				expect( blocks[ 0 ].attributes.content ).toBe(
+					'First paragraph by admin'
+				);
+				expect( blocks[ 1 ].attributes.content ).toBe(
+					'Second paragraph by user two'
+				);
+			} ).toPass( { timeout: 20000 } );
+		}
+	} );
 } );
