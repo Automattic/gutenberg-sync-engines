@@ -642,6 +642,36 @@ async function runPlaywright( { combo, baseUrl, comboDir, seeds, args, phase } )
 
 async function main() {
 	const args = parseArgs( process.argv.slice( 2 ) );
+
+	// Fail fast on missing build prerequisites. An unbuilt subtree still
+	// activates as a plugin, but gutenberg.php refuses to load the
+	// collaboration framework — every seed then burns its full timeout
+	// waiting for an editor that will never boot, with no diagnosis.
+	const prerequisites = [
+		{
+			relativePath: 'gutenberg/build',
+			what: 'vendored Gutenberg subtree is not built',
+			fix: 'cd gutenberg && npm install --ignore-scripts && npm run build',
+		},
+		{
+			relativePath: 'build/sync-engines.js',
+			what: "plugin's client bundle is not built",
+			fix: 'npm run build',
+		},
+	];
+	for ( const prerequisite of prerequisites ) {
+		try {
+			await fs.access(
+				path.join( REPO_ROOT, prerequisite.relativePath )
+			);
+		} catch {
+			throw new Error(
+				`The ${ prerequisite.what } (missing ${ prerequisite.relativePath }). ` +
+					`Run: ${ prerequisite.fix }`
+			);
+		}
+	}
+
 	const combos =
 		args.combos ??
 		args.engines.flatMap( ( engine ) =>
