@@ -15,6 +15,7 @@ import type {
 } from '@wordpress/sync';
 import { applyServerAwarenessStates } from '../awareness-sync';
 import { DE_RTC_REMOTE_ORIGIN, type DeRtcDocBridge } from './doc-bridge';
+import type { DeRtcParkedProposal, DeRtcReviewState } from './review';
 
 /**
  * Slug of the de-rtc engine. Must match WP_De_RTC_Engine::SLUG on the PHP
@@ -47,6 +48,18 @@ export const DE_RTC_CONTENT_TYPE = 'content';
 export const DE_RTC_SNAPSHOT_TYPE = 'snapshot';
 
 /**
+ * Server-emitted row type: an escalated proposal parked for review.
+ * Matches WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED. Receive-only.
+ */
+export const DE_RTC_PROPOSAL_PARKED_TYPE = 'proposal-parked';
+
+/**
+ * Row type closing a parked proposal (client-sent; the server relays its
+ * stamped copy). Matches WP_De_RTC_Engine::UPDATE_TYPE_RESOLVED.
+ */
+export const DE_RTC_RESOLVED_TYPE = 'resolved';
+
+/**
  * Options for creating a de-rtc session codec.
  */
 export interface DeRtcSessionOptions {
@@ -59,6 +72,14 @@ export interface DeRtcSessionOptions {
 
 	/** The shared doc bridge for the entity. */
 	bridge: DeRtcDocBridge;
+
+	/**
+	 * The entity's review ledger. Parked/resolved rows feed it, and it
+	 * emits resolution rows through this session's local-update lane.
+	 * Optional: collection codecs and tests without a review surface
+	 * simply drop review rows.
+	 */
+	review?: DeRtcReviewState;
 }
 
 /**
@@ -90,7 +111,7 @@ export interface DeRtcSessionOptions {
 export function createDeRtcSessionCodec(
 	options: DeRtcSessionOptions
 ): EngineSessionCodec {
-	const { bridge } = options;
+	const { bridge, review } = options;
 	const doc = bridge.doc;
 	const awareness = options.awareness ?? new Awareness( doc );
 
@@ -158,6 +179,30 @@ export function createDeRtcSessionCodec(
 		} catch {
 			return; // A malformed row cannot be applied; the next one resyncs.
 		}
+
+		// Review-lane rows carry no canonical content; they feed the ledger.
+		if ( DE_RTC_PROPOSAL_PARKED_TYPE === update.type ) {
+			if (
+				'string' === typeof decoded?.proposalId &&
+				'' !== decoded.proposalId &&
+				'string' === typeof decoded?.reason
+			) {
+				review?.noteParked( {
+					...decoded,
+					changedBlocks: Array.isArray( decoded.changedBlocks )
+						? decoded.changedBlocks
+						: [],
+				} as DeRtcParkedProposal );
+			}
+			return;
+		}
+		if ( DE_RTC_RESOLVED_TYPE === update.type ) {
+			if ( 'string' === typeof decoded?.proposalId ) {
+				review?.noteResolved( decoded.proposalId );
+			}
+			return;
+		}
+
 		if (
 			'string' !== typeof decoded?.version ||
 			'string' !== typeof decoded?.content
@@ -258,6 +303,7 @@ export function createDeRtcSessionCodec(
 				doc.off( 'update', onDocUpdate );
 				isDocListenerAttached = false;
 			}
+			review?.setEmitter( null );
 			localUpdateListener = null;
 		},
 		// The server's snapshot row bootstraps a fresh client; nothing to
@@ -271,6 +317,11 @@ export function createDeRtcSessionCodec(
 				doc.on( 'update', onDocUpdate );
 				isDocListenerAttached = true;
 			}
+			// Resolutions ride the same outbound lane as proposals.
+			review?.setEmitter(
+				( update ) =>
+					localUpdateListener?.( update, update.data.length )
+			);
 			bridge.onBootstrap( () => maybePropose() );
 		},
 		receiveUpdate: ( update ) => processRow( update ),

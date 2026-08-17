@@ -61,11 +61,7 @@ function makeReviewSource( initialItems: SyncReviewItem[] = [] ) {
 	const source: EngineReviewSource = {
 		getOpenItems: jest.fn( () => items ),
 		subscribe: jest.fn(
-			(
-				objectType: string,
-				objectId: unknown,
-				listener: () => void
-			) => {
+			( objectType: string, objectId: unknown, listener: () => void ) => {
 				const key = keyOf( objectType, objectId );
 				if ( ! listeners.has( key ) ) {
 					listeners.set( key, new Set() );

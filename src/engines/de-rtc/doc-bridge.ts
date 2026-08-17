@@ -27,6 +27,16 @@ import { CRDT_RECORD_MAP_KEY } from '../yjs/constants';
 export const DE_RTC_REMOTE_ORIGIN = 'de-rtc-remote';
 
 /**
+ * Origin tag for Yjs transactions that restore a parked proposal's blocks
+ * into the doc. Dual-natured by design: the entity's observers report it
+ * to the EDITOR like a remote change (the restored blocks must reach the
+ * canvas), while the session codec treats it as a LOCAL edit (the doc is
+ * dirty and the restored state must re-propose under the restorer's
+ * capability).
+ */
+export const DE_RTC_RESTORE_ORIGIN = 'de-rtc-restore';
+
+/**
  * The shared per-entity state the engine entity and its session codec
  * both close over: the local Y.Doc that bridges the editor, and the
  * canonical version/content tracking the proposal wire needs.
@@ -114,7 +124,9 @@ export interface DeRtcDocBridge {
  * @param content Serialized block content.
  * @return Editor blocks.
  */
-function parseCanonicalBlocks( content: string ): ReturnType< typeof parse > {
+export function parseCanonicalBlocks(
+	content: string
+): ReturnType< typeof parse > {
 	if ( ! content ) {
 		return [];
 	}

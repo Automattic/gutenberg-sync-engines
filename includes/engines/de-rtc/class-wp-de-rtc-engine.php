@@ -74,6 +74,27 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		const UPDATE_TYPE_SNAPSHOT = 'snapshot';
 
 		/**
+		 * Server-emitted update type: an escalated proposal parked for
+		 * review. Durable — unresolved parked rows survive compaction (the
+		 * intent-log retention rule), so the escalated content exists in
+		 * room storage, not just the escalating client's memory.
+		 *
+		 * @since 0.4.0
+		 * @var string
+		 */
+		const UPDATE_TYPE_PROPOSAL_PARKED = 'proposal-parked';
+
+		/**
+		 * Client-sent update type: closes a parked proposal
+		 * (restored/dismissed). Idempotent by proposalId; the server stamps
+		 * the resolving user and time.
+		 *
+		 * @since 0.4.0
+		 * @var string
+		 */
+		const UPDATE_TYPE_RESOLVED = 'resolved';
+
+		/**
 		 * Attribution client id for server-authored rows. Outside the
 		 * transport's client id range, mirroring the yjs-server genesis id
 		 * convention (which uses 2000000000).
@@ -181,6 +202,8 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				self::UPDATE_TYPE_PROPOSAL,
 				self::UPDATE_TYPE_CONTENT,
 				self::UPDATE_TYPE_SNAPSHOT,
+				self::UPDATE_TYPE_PROPOSAL_PARKED,
+				self::UPDATE_TYPE_RESOLVED,
 			);
 		}
 
@@ -209,10 +232,10 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			}
 
 			foreach ( $updates as $update ) {
-				if ( self::UPDATE_TYPE_PROPOSAL !== $update['type'] ) {
+				if ( ! in_array( $update['type'], array( self::UPDATE_TYPE_PROPOSAL, self::UPDATE_TYPE_RESOLVED ), true ) ) {
 					return new WP_Error(
 						'rest_invalid_update_type',
-						__( 'Clients may only send proposal updates to a de-rtc room.', 'gutenberg' ),
+						__( 'Clients may only send proposal or resolution updates to a de-rtc room.', 'gutenberg' ),
 						array( 'status' => 400 )
 					);
 				}
@@ -251,8 +274,34 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				return $state;
 			}
 
-			$dispositions = array();
+			$resolutions = array();
+			$proposals   = array();
 			foreach ( $updates as $update ) {
+				if ( self::UPDATE_TYPE_RESOLVED === $update['type'] ) {
+					$resolution = json_decode( (string) $update['data'], true );
+					if (
+						! is_array( $resolution ) ||
+						! is_string( $resolution['proposalId'] ?? null ) || '' === $resolution['proposalId'] ||
+						! in_array( $resolution['resolution'] ?? null, array( 'restored', 'dismissed' ), true )
+					) {
+						return new WP_Error(
+							'rest_sync_invalid_intent',
+							__( 'Malformed proposal resolution.', 'gutenberg' ),
+							array( 'status' => 400 )
+						);
+					}
+					$resolutions[] = $resolution;
+					continue;
+				}
+				$proposals[] = $update;
+			}
+
+			// The open/resolved review ledger, derived lazily from retained
+			// rows only when this request escalates or resolves something.
+			$review = null;
+
+			$dispositions = array();
+			foreach ( $proposals as $update ) {
 				$proposal    = json_decode( (string) $update['data'], true );
 				$proposal_id = is_array( $proposal ) && is_string( $proposal['proposalId'] ?? null ) && '' !== $proposal['proposalId']
 					? $proposal['proposalId']
@@ -280,9 +329,49 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					continue;
 				}
 
-				$disposition    = $this->ingest_proposal( $room, $client_id, $state, $proposal );
+				$disposition    = $this->ingest_proposal( $room, $client_id, $state, $proposal, $review );
 				$disposition    = array_merge( array( 'intentId' => $proposal_id ), $disposition );
 				$dispositions[] = $disposition;
+			}
+
+			/*
+			 * Resolutions, after proposals: close open parked proposals.
+			 * Idempotent by proposalId — a redelivered, concurrent, or
+			 * trimmed-and-resolved (unknown) id acks as resolved without a
+			 * new row; only a currently-open proposal appends one.
+			 */
+			foreach ( $resolutions as $resolution ) {
+				$proposal_id = $resolution['proposalId'];
+				if ( null === $review ) {
+					$review = $this->load_review_ledger( $room );
+				}
+				if ( isset( $review['open'][ $proposal_id ] ) && ! isset( $review['resolved'][ $proposal_id ] ) ) {
+					$stored = $this->add_row(
+						$room,
+						$client_id,
+						self::UPDATE_TYPE_RESOLVED,
+						wp_json_encode(
+							array(
+								'proposalId' => $proposal_id,
+								'resolution' => $resolution['resolution'],
+								'resolvedBy' => get_current_user_id(),
+								'time'       => time(),
+							)
+						)
+					);
+					if ( ! $stored ) {
+						return new WP_Error(
+							'rest_sync_storage_error',
+							__( 'Failed to store sync update.', 'gutenberg' ),
+							array( 'status' => 500 )
+						);
+					}
+					$review['resolved'][ $proposal_id ] = true;
+				}
+				$dispositions[] = array(
+					'intentId' => $proposal_id,
+					'status'   => 'resolved',
+				);
 			}
 
 			$counts = array();
@@ -320,9 +409,10 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * @param int    $client_id Client identifier.
 		 * @param array  $state     Room state (by reference via room cache).
 		 * @param array  $proposal  Decoded proposal payload.
+		 * @param array  $review    Review ledger (lazily loaded, by reference).
 		 * @return array Disposition fields (status, reason?, version?).
 		 */
-		private function ingest_proposal( string $room, int $client_id, array &$state, array $proposal ) {
+		private function ingest_proposal( string $room, int $client_id, array &$state, array $proposal, &$review ) {
 			$base_content = $this->resolve_base_content( $state, $proposal['baseVersion'] );
 			if ( null === $base_content ) {
 				return array(
@@ -337,14 +427,15 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			 * The capability lane, at ingest: an author without
 			 * unfiltered_html cannot land content that kses would rewrite.
 			 * Upstream DE-RTC sequesters exactly the risky blocks for a
-			 * privileged reviewer; this engine does not have the review lane
-			 * yet, so the whole proposal escalates (the author keeps their
-			 * local copy and the disposition names the reason). Documented as
-			 * a gap in docs/engine-comparison.md.
+			 * privileged reviewer; here the whole proposal escalates AND
+			 * parks for review — restoring it re-proposes the parked blocks
+			 * under the RESTORER's capability, so restore IS the approval
+			 * (per-block sequestration remains a documented gap).
 			 */
 			if ( ! current_user_can( 'unfiltered_html' ) ) {
 				$sanitized = wp_kses_post( $proposed_content );
 				if ( $sanitized !== $proposed_content ) {
+					$this->park_proposal( $room, $client_id, $proposal, 'requires-unfiltered-html', $base_content, $review );
 					return array(
 						'status' => 'escalated',
 						'reason' => 'requires-unfiltered-html',
@@ -362,8 +453,10 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			if ( is_wp_error( $result ) ) {
 				if ( 'de_rtc_rebase_failed' === $result->get_error_code() ) {
 					// A genuine conflict: DE-RTC policy is a human decision,
-					// not a silent merge. The author rebases onto the latest
-					// content row and resubmits (or resolves by hand).
+					// not a silent merge. The proposal parks for review; the
+					// canonical state wins locally once it applies, and a
+					// human restores or dismisses the parked work.
+					$this->park_proposal( $room, $client_id, $proposal, 'manual-conflict-required', $base_content, $review );
 					return array(
 						'status' => 'escalated',
 						'reason' => 'manual-conflict-required',
@@ -451,6 +544,139 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			}
 
 			return null;
+		}
+
+		/**
+		 * Parks an escalated proposal as a durable review row.
+		 *
+		 * The row carries the CHANGED top-level blocks (proposed blocks whose
+		 * serialized form differs from the base at the same index, plus
+		 * appended blocks) with their indices, so a reviewer's restore can
+		 * overlay them at sensible anchors — and a plain-text excerpt for
+		 * display after offsets go stale. Idempotent by proposalId: a
+		 * redelivered escalation never double-parks.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param string $room         Room identifier.
+		 * @param int    $client_id    Escalating client id.
+		 * @param array  $proposal     Decoded proposal payload.
+		 * @param string $reason       Escalation reason.
+		 * @param string $base_content Content of the proposal's base version.
+		 * @param array  $review       Review ledger (lazily loaded, by reference).
+		 * @return void
+		 */
+		private function park_proposal( string $room, int $client_id, array $proposal, string $reason, string $base_content, &$review ): void {
+			$proposal_id = $proposal['proposalId'];
+			if ( null === $review ) {
+				$review = $this->load_review_ledger( $room );
+			}
+			if ( isset( $review['open'][ $proposal_id ] ) || isset( $review['resolved'][ $proposal_id ] ) ) {
+				return; // Redelivery: already parked (or already resolved).
+			}
+
+			$changed_blocks = $this->changed_blocks( $base_content, (string) $proposal['proposedContent'] );
+			$changed_text   = '';
+			foreach ( $changed_blocks as $block ) {
+				$changed_text .= ' ' . wp_strip_all_tags( $block['html'] );
+			}
+			$excerpt = trim( preg_replace( '/\s+/', ' ', $changed_text ) );
+			if ( function_exists( 'mb_substr' ) ) {
+				$excerpt = mb_substr( $excerpt, 0, 80 );
+			} else {
+				$excerpt = substr( $excerpt, 0, 80 );
+			}
+
+			$stored = $this->add_row(
+				$room,
+				$client_id,
+				self::UPDATE_TYPE_PROPOSAL_PARKED,
+				wp_json_encode(
+					array(
+						'proposalId'     => $proposal_id,
+						'reason'         => $reason,
+						'authorClientId' => $client_id,
+						'author'         => get_current_user_id(),
+						'at'             => time(),
+						'baseVersion'    => $proposal['baseVersion'],
+						'changedBlocks'  => $changed_blocks,
+						'excerpt'        => $excerpt,
+					)
+				)
+			);
+			if ( $stored ) {
+				$review['open'][ $proposal_id ] = true;
+			}
+		}
+
+		/**
+		 * The changed top-level blocks of a proposal against its base.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param string $base_content     Base version content.
+		 * @param string $proposed_content Proposed content.
+		 * @return array<int, array{index: int, html: string}> Changed blocks.
+		 */
+		private function changed_blocks( string $base_content, string $proposed_content ): array {
+			$base_records     = wp_de_rtc_get_top_level_serialized_block_records( $base_content );
+			$proposed_records = wp_de_rtc_get_top_level_serialized_block_records( $proposed_content );
+			if ( is_wp_error( $base_records ) || is_wp_error( $proposed_records ) ) {
+				// Freeform boundaries defeat per-block extraction; park the
+				// whole proposed content as one restorable unit.
+				return array(
+					array(
+						'index' => 0,
+						'html'  => $proposed_content,
+					),
+				);
+			}
+
+			$changed = array();
+			foreach ( $proposed_records as $index => $serialized ) {
+				if ( ( $base_records[ $index ] ?? null ) === $serialized ) {
+					continue;
+				}
+				$changed[] = array(
+					'index' => (int) $index,
+					'html'  => $serialized,
+				);
+			}
+
+			return $changed;
+		}
+
+		/**
+		 * Derives the open/resolved review ledger from retained rows.
+		 *
+		 * Parked rows are always retained while unresolved (the compaction
+		 * rule re-appends them above the trim floor), so the retained window
+		 * is authoritative for what is open.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param string $room Room identifier.
+		 * @return array{open: array<string, array>, resolved: array<string, bool>} Ledger.
+		 */
+		private function load_review_ledger( string $room ): array {
+			$ledger = array(
+				'open'     => array(),
+				'resolved' => array(),
+			);
+			$rows   = $this->storage->get_updates_after_cursor( $room, 0 );
+			foreach ( $rows as $row ) {
+				$decoded = json_decode( (string) $row['data'], true );
+				if ( ! is_array( $decoded ) || ! is_string( $decoded['proposalId'] ?? null ) ) {
+					continue;
+				}
+				if ( self::UPDATE_TYPE_PROPOSAL_PARKED === $row['type'] ) {
+					$ledger['open'][ $decoded['proposalId'] ] = $decoded;
+				} elseif ( self::UPDATE_TYPE_RESOLVED === $row['type'] ) {
+					$ledger['resolved'][ $decoded['proposalId'] ] = true;
+				}
+			}
+
+			return $ledger;
 		}
 
 		/**
@@ -590,6 +816,9 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			foreach ( $rows as $row ) {
 				if ( self::UPDATE_TYPE_PROPOSAL === $row['type'] ) {
 					continue; // Not stored by this engine, but be tolerant.
+				}
+				if ( in_array( $row['type'], array( self::UPDATE_TYPE_PROPOSAL_PARKED, self::UPDATE_TYPE_RESOLVED ), true ) ) {
+					continue; // Review-lane rows never carry canonical content.
 				}
 				$decoded = json_decode( (string) $row['data'], true );
 				if ( ! is_array( $decoded ) || ! is_string( $decoded['version'] ?? null ) || ! is_string( $decoded['content'] ?? null ) ) {
@@ -761,15 +990,71 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				return false;
 			}
 
-			$stored = $this->add_row(
+			/*
+			 * UNRESOLVED parked proposals below the future trim floor survive
+			 * by re-appending them above the previous checkpoint; resolved
+			 * pairs age out with the trim (the intent-log retention rule —
+			 * escalated work parked for review must survive compaction).
+			 * Rows do not expose their cursor, so the previous checkpoint row
+			 * is identified by the checkpointId it was stamped with.
+			 */
+			$prev_checkpoint_id = is_array( $previous ) ? (int) ( $previous['id'] ?? 0 ) : 0;
+			if ( $prev_cursor > 0 ) {
+				$rows           = $this->storage->get_updates_after_cursor( $room, 0 );
+				$resolved_ids   = array();
+				$below          = array();
+				$found_previous = false;
+				foreach ( $rows as $row ) {
+					if ( self::UPDATE_TYPE_RESOLVED !== $row['type'] ) {
+						continue;
+					}
+					$decoded = json_decode( (string) $row['data'], true );
+					if ( is_array( $decoded ) && isset( $decoded['proposalId'] ) ) {
+						$resolved_ids[ $decoded['proposalId'] ] = true;
+					}
+				}
+				foreach ( $rows as $row ) {
+					$decoded = json_decode( (string) $row['data'], true );
+					if ( ! is_array( $decoded ) ) {
+						continue;
+					}
+					if (
+						self::UPDATE_TYPE_SNAPSHOT === $row['type'] &&
+						! empty( $decoded['checkpoint'] ) &&
+						(int) ( $decoded['checkpointId'] ?? -1 ) === $prev_checkpoint_id
+					) {
+						$found_previous = true;
+						break;
+					}
+					if (
+						self::UPDATE_TYPE_PROPOSAL_PARKED === $row['type'] &&
+						is_string( $decoded['proposalId'] ?? null ) &&
+						! isset( $resolved_ids[ $decoded['proposalId'] ] )
+					) {
+						$below[] = array(
+							'client_id' => (int) ( $row['client_id'] ?? 0 ),
+							'decoded'   => $decoded,
+						);
+					}
+				}
+				if ( $found_previous ) {
+					foreach ( $below as $parked ) {
+						$this->add_row( $room, $parked['client_id'], self::UPDATE_TYPE_PROPOSAL_PARKED, wp_json_encode( $parked['decoded'] ) );
+					}
+				}
+			}
+
+			$checkpoint_id = $prev_checkpoint_id + 1;
+			$stored        = $this->add_row(
 				$room,
 				self::SERVER_CLIENT_ID,
 				self::UPDATE_TYPE_SNAPSHOT,
 				wp_json_encode(
 					array(
-						'version'    => $state['version'],
-						'content'    => $state['content'],
-						'checkpoint' => true,
+						'version'      => $state['version'],
+						'content'      => $state['content'],
+						'checkpoint'   => true,
+						'checkpointId' => $checkpoint_id,
 					)
 				)
 			);
@@ -782,7 +1067,14 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			if ( $cursor <= 0 ) {
 				return true;
 			}
-			$this->storage->set_room_meta( $room, self::META_CHECKPOINT, array( 'cursor' => $cursor ) );
+			$this->storage->set_room_meta(
+				$room,
+				self::META_CHECKPOINT,
+				array(
+					'cursor' => $cursor,
+					'id'     => $checkpoint_id,
+				)
+			);
 			// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 			do_action( 'qm/debug', "wp-sync: de-rtc checkpoint at {$state['version']} for {$room}" );
 

@@ -26,13 +26,37 @@ import { createYjsDoc, serializeCrdtDoc } from '../yjs/doc';
 import { docContainsSnapshot, encodeDocSnapshot } from '../yjs/snapshot';
 import { createUndoManager } from '../yjs/undo';
 import { applyServerAwarenessStates } from '../awareness-sync';
-import { createDeRtcDocBridge, DE_RTC_REMOTE_ORIGIN } from './doc-bridge';
+import type { EngineReviewSource } from '../review-manager-decorator';
+import {
+	createDeRtcDocBridge,
+	DE_RTC_REMOTE_ORIGIN,
+	DE_RTC_RESTORE_ORIGIN,
+	parseCanonicalBlocks,
+} from './doc-bridge';
+import {
+	createDeRtcReviewState,
+	type DeRtcParkedProposal,
+	type DeRtcReviewState,
+} from './review';
 import {
 	createDeRtcSessionCodec,
 	DE_RTC_ENGINE_PROTOCOL,
 	DE_RTC_ENGINE_SLUG,
 	DE_RTC_SNAPSHOT_TYPE,
 } from './session';
+
+/**
+ * The de-rtc engine's server reasons, normalized to the framework review
+ * vocabulary the panel understands: `requires-approval` gates restore on
+ * the reviewer's unfiltered_html capability (restore IS the approval),
+ * and `frame-conflict` carries the "conflicted with a collaborator's
+ * change" label. Raw reasons stay on the wire; only review items map.
+ */
+const REVIEW_REASON_MAP: Record< string, string > = {
+	'requires-unfiltered-html': 'requires-approval',
+	'manual-conflict-required': 'frame-conflict',
+	'property-conflict': 'frame-conflict',
+};
 
 /**
  * An awareness-only codec for de-rtc collection rooms: presence flows,
@@ -99,24 +123,74 @@ function createInertDeRtcCollectionCodec(
  * machinery, and an undo transaction marks the doc dirty like any other
  * local edit, so undone state propagates as an ordinary proposal.
  *
- * Known v1 gaps (see docs/engine-comparison.md): the title is not
- * synced (proposals carry content only), and a proposal the server
- * escalates as a genuine conflict is abandoned locally once the
- * canonical state applies — the upstream review/decision UI is not
- * ported yet.
+ * Conflict review: a proposal the server escalates parks as a durable
+ * `proposal-parked` row; the entity's review registry presents it
+ * through the framework's review surface (panel, notices) via the
+ * review-manager decorator, and a reviewer restores (overlaying the
+ * parked blocks as an ordinary local edit under their own capability,
+ * which re-proposes) or dismisses it.
  *
- * @return {SyncEngine} The de-rtc engine.
+ * @return The de-rtc engine, carrying its review source.
  */
-export function createDeRtcEngine(): SyncEngine {
+export function createDeRtcEngine(): SyncEngine & {
+	review: EngineReviewSource;
+} {
+	interface EntityReviewHandle {
+		review: DeRtcReviewState;
+		getItems: () => ReturnType< EngineReviewSource[ 'getOpenItems' ] >;
+		restore: ( proposalId: string ) => void;
+	}
+	const entityReviews = new Map< string, EntityReviewHandle >();
+	const reviewKey = ( objectType: string, objectId: unknown ) =>
+		`${ objectType }:${ String( objectId ) }`;
+
+	/*
+	 * Review-source subscriptions are keyed at the ENGINE level, not the
+	 * entity: the review-manager decorator subscribes while the entity is
+	 * still being created (its `load()` captures handlers BEFORE
+	 * delegating to the inner manager, which is what creates the entity),
+	 * so a subscription must be valid before — and survive across — the
+	 * entity's lifetime. Each entity's ledger notifies its key's
+	 * listeners.
+	 */
+	const keyListeners = new Map< string, Set< () => void > >();
+	const notifyKey = ( key: string ) =>
+		keyListeners.get( key )?.forEach( ( listener ) => listener() );
+
+	const reviewSource: EngineReviewSource = {
+		getOpenItems: ( objectType, objectId ) =>
+			entityReviews
+				.get( reviewKey( objectType, objectId ) )
+				?.getItems() ?? [],
+		subscribe: ( objectType, objectId, listener ) => {
+			const key = reviewKey( objectType, objectId );
+			if ( ! keyListeners.has( key ) ) {
+				keyListeners.set( key, new Set() );
+			}
+			keyListeners.get( key )!.add( listener );
+			return () => keyListeners.get( key )?.delete( listener );
+		},
+		resolveProposal: ( objectType, objectId, proposalId, resolution ) =>
+			entityReviews
+				.get( reviewKey( objectType, objectId ) )
+				?.review.resolve( proposalId, resolution ),
+		restoreProposal: ( objectType, objectId, proposalId ) =>
+			entityReviews
+				.get( reviewKey( objectType, objectId ) )
+				?.restore( proposalId ),
+	};
+
 	return {
 		slug: DE_RTC_ENGINE_SLUG,
 		protocolVersion: DE_RTC_ENGINE_PROTOCOL,
 		createUndoManager,
-		createEntity( { syncConfig, objectType } ): EngineEntity {
+		review: reviewSource,
+		createEntity( { syncConfig, objectType, objectId } ): EngineEntity {
 			const ydoc = createYjsDoc( { objectType } );
 			const recordMap = ydoc.getMap( CRDT_RECORD_MAP_KEY );
 			const awareness = syncConfig.createAwareness?.( ydoc );
 			const bridge = createDeRtcDocBridge( ydoc, syncConfig );
+			const review = createDeRtcReviewState();
 
 			// Edits made before the server snapshot arrives, replayed in
 			// order once it does.
@@ -146,6 +220,79 @@ export function createDeRtcEngine(): SyncEngine {
 				}
 			} );
 
+			const localBlocks = (): any[] => {
+				const stored: any = recordMap.get( 'blocks' );
+				return (
+					stored?.toJSON?.() ??
+					( Array.isArray( stored ) ? stored : [] )
+				);
+			};
+
+			/**
+			 * Overlays a parked proposal's changed blocks into the doc as an
+			 * ordinary local edit under the restorer's capability: a changed
+			 * block replaces the local block at its recorded index when the
+			 * block name still matches, and appends at the end otherwise
+			 * (the intent-log restore's degraded-anchor rule). The restore
+			 * origin reaches the editor like a remote change AND marks the
+			 * doc dirty so the restored state re-proposes.
+			 *
+			 * @param parked The parked proposal.
+			 */
+			const overlayParkedBlocks = ( parked: DeRtcParkedProposal ) => {
+				const next = localBlocks().slice();
+				for ( const changed of parked.changedBlocks ?? [] ) {
+					const parsed = parseCanonicalBlocks(
+						String( changed?.html ?? '' )
+					);
+					parsed.forEach( ( block, offset ) => {
+						const index = Number( changed.index ) + offset;
+						if (
+							next[ index ] &&
+							next[ index ].name === block.name
+						) {
+							next[ index ] = block;
+						} else {
+							next.push( block );
+						}
+					} );
+				}
+				applyChanges( { blocks: next }, DE_RTC_RESTORE_ORIGIN );
+			};
+
+			const key = reviewKey( objectType, objectId );
+			review.onChange( () => notifyKey( key ) );
+			entityReviews.set( key, {
+				review,
+				getItems: () =>
+					review.getOpen().map( ( parked ) => ( {
+						id: parked.proposalId,
+						unitId: parked.proposalId,
+						isLocal: parked.authorClientId === ydoc.clientID,
+						actorId: `u${ parked.author ?? 0 }c${
+							parked.authorClientId
+						}`,
+						reason:
+							REVIEW_REASON_MAP[ parked.reason ] ?? parked.reason,
+						intentType: 'proposal',
+						summary: parked.excerpt || undefined,
+					} ) ),
+				restore: ( proposalId ) => {
+					const parked = review
+						.getOpen()
+						.find(
+							( candidate ) => candidate.proposalId === proposalId
+						);
+					if ( ! parked ) {
+						return;
+					}
+					if ( bridge.isBootstrapped() ) {
+						overlayParkedBlocks( parked );
+					}
+					review.resolve( proposalId, 'restored' );
+				},
+			} );
+
 			let observersAttached = false;
 			let onRecordUpdate:
 				| ( (
@@ -158,7 +305,7 @@ export function createDeRtcEngine(): SyncEngine {
 				awareness,
 
 				createSession: () =>
-					createDeRtcSessionCodec( { awareness, bridge } ),
+					createDeRtcSessionCodec( { awareness, bridge, review } ),
 
 				hydrate() {
 					// Deliberately empty: the server's genesis snapshot is
@@ -187,11 +334,13 @@ export function createDeRtcEngine(): SyncEngine {
 
 				observe( observers ) {
 					onRecordUpdate = ( _events, transaction ) => {
-						// Canonical applications (remote origin) and undo
-						// transactions must reach the editor; the editor's
-						// own edits must not echo back into it.
+						// Canonical applications (remote origin), undo
+						// transactions, and proposal restores must reach the
+						// editor; the editor's own edits must not echo back
+						// into it.
 						if (
 							DE_RTC_REMOTE_ORIGIN !== transaction.origin &&
+							DE_RTC_RESTORE_ORIGIN !== transaction.origin &&
 							! ( transaction.origin instanceof Y.UndoManager )
 						) {
 							return;
@@ -210,6 +359,9 @@ export function createDeRtcEngine(): SyncEngine {
 				destroy() {
 					if ( observersAttached && onRecordUpdate ) {
 						recordMap.unobserveDeep( onRecordUpdate );
+					}
+					if ( entityReviews.get( key )?.review === review ) {
+						entityReviews.delete( key );
 					}
 					ydoc.destroy();
 				},
