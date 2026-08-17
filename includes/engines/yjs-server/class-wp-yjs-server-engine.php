@@ -1120,20 +1120,46 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 			$state->set( 'version', 1 );
 
 			if ( $post instanceof WP_Post ) {
-				$title = $post->post_title;
-
 				/*
-				 * A fresh auto-draft is stored with the placeholder "Auto Draft"
-				 * title while the editor shows an empty title (core blanks it
-				 * with an initial edit in edit-form-blocks.php). Seeding the
-				 * placeholder into the canonical document would push the "Auto Draft"
-				 * title to everyone as a title change.
+				 * The shared REST-shaped property seed (title with the
+				 * auto-draft placeholder blanked, the scalar whitelist gated
+				 * on post-type supports, taxonomies by rest_base, registered
+				 * meta) — the same map intent-log and de-rtc genesis seed,
+				 * so a joiner sees identical field state under any engine.
+				 * Values byte-match the joiner's REST record, so the
+				 * client's change detection reports nothing and the post
+				 * never opens dirty. Seeded in SORTED order: genesis must
+				 * stay deterministic (fixed clientID + fixed op order) so
+				 * racing initializers merge idempotently.
 				 */
-				if ( 'auto-draft' === $post->post_status && ( 'Auto Draft' === $title || __( 'Auto Draft', 'default' ) === $title ) ) {
-					$title = '';
+				$props = class_exists( 'WP_Sync_Post_Genesis_Props' )
+					? WP_Sync_Post_Genesis_Props::for_post( $post )
+					: array( 'title' => $post->post_title );
+				ksort( $props );
+
+				$meta_values = array();
+				foreach ( $props as $name => $value ) {
+					if ( 0 === strpos( $name, 'meta.' ) ) {
+						$meta_values[ substr( $name, 5 ) ] = $value;
+						continue;
+					}
+					// The client CRDT schema (core-data crdt.ts): title and
+					// excerpt are Y.Text; everything else plain map values.
+					if ( 'title' === $name || 'excerpt' === $name ) {
+						$record->set( $name, new \Yjs\Types\YText( (string) $value ) );
+						continue;
+					}
+					$record->set( $name, $value );
+				}
+				if ( array() !== $meta_values ) {
+					ksort( $meta_values );
+					$ymeta = new \Yjs\Types\YMap();
+					$record->set( 'meta', $ymeta );
+					foreach ( $meta_values as $meta_key => $meta_value ) {
+						$ymeta->set( $meta_key, $meta_value );
+					}
 				}
 
-				$record->set( 'title', new \Yjs\Types\YText( $title ) );
 				$yblocks = new \Yjs\Types\YArray();
 				$record->set( 'blocks', $yblocks );
 				if ( '' !== $post->post_content ) {

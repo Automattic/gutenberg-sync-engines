@@ -852,6 +852,52 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 		$this->assertSame( 1, $doc->getMap( 'document' )->get( 'blocks' )->length );
 	}
 
+	public function test_genesis_seeds_the_full_shared_property_set() {
+		register_post_meta(
+			'post',
+			'yjs_note',
+			array(
+				'show_in_rest' => true,
+				'single'       => true,
+				'type'         => 'string',
+				'default'      => '',
+			)
+		);
+		$post_id = self::factory()->post->create(
+			array(
+				'post_author'  => self::$editor_id,
+				'post_title'   => 'Full seed post',
+				'post_excerpt' => 'Seeded excerpt',
+				'post_status'  => 'publish',
+				'post_content' => "<!-- wp:paragraph -->\n<p>Body</p>\n<!-- /wp:paragraph -->",
+			)
+		);
+		update_post_meta( $post_id, 'yjs_note', 'noted' );
+
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( 'postType/post:' . $post_id, 101, 0, array() );
+		$doc      = $this->client_doc_from_response( $response );
+		$record   = $doc->getMap( 'document' );
+		$expected = WP_Sync_Post_Genesis_Props::for_post( get_post( $post_id ) );
+
+		unregister_post_meta( 'post', 'yjs_note' );
+
+		// Rich-text properties seed as Y.Text in the client schema…
+		$this->assertSame( $expected['title'], $record->get( 'title' )->toString() );
+		$this->assertSame( $expected['excerpt'], $record->get( 'excerpt' )->toString() );
+		// …scalars and taxonomy term-ID arrays as plain values…
+		$this->assertSame( 'publish', $record->get( 'status' ) );
+		$this->assertSame( $expected['date'], $record->get( 'date' ) );
+		$this->assertSame( $expected['author'], $record->get( 'author' ) );
+		$this->assertSame( $expected['categories'], $record->get( 'categories' ) );
+		$this->assertSame( array(), $record->get( 'tags' ) );
+		// …and registered meta nested under ONE meta map, matching the
+		// crdt.ts schema (per-key merge on the client).
+		$this->assertSame( 'noted', $record->get( 'meta' )->get( 'yjs_note' ) );
+
+		wp_delete_post( $post_id, true );
+	}
+
 	public function test_kses_lane_sanitizes_a_filtered_authors_markup_and_every_client_converges() {
 		$engine     = $this->engine();
 		$response_a = $engine->get_updates_since( $this->room(), 101, 0, array() );
