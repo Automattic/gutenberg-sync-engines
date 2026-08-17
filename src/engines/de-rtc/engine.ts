@@ -32,6 +32,7 @@ import {
 	DE_RTC_REMOTE_ORIGIN,
 	DE_RTC_RESTORE_ORIGIN,
 	parseCanonicalBlocks,
+	unflattenProperties,
 } from './doc-bridge';
 import {
 	createDeRtcReviewState,
@@ -129,6 +130,11 @@ function createInertDeRtcCollectionCodec(
  * review-manager decorator, and a reviewer restores (overlaying the
  * parked blocks as an ordinary local edit under their own capability,
  * which re-proposes) or dismisses it.
+ *
+ * Entity properties (title, scalars, taxonomies, meta) ride the
+ * proposal wire beside the content as a full flattened register map;
+ * the server three-way-merges them per property and canonical rows
+ * carry the merged map back (see the doc bridge's property surfaces).
  *
  * @return The de-rtc engine, carrying its review source.
  */
@@ -240,6 +246,19 @@ export function createDeRtcEngine(): SyncEngine & {
 			 * @param parked The parked proposal.
 			 */
 			const overlayParkedBlocks = ( parked: DeRtcParkedProposal ) => {
+				// A parked PROPERTY register restores by re-applying the
+				// losing value as a local edit — the next proposal carries
+				// it and wins the three-way merge (canonical now agrees
+				// with the base for that property).
+				if ( parked.property?.name ) {
+					applyChanges(
+						unflattenProperties( {
+							[ parked.property.name ]: parked.property.value,
+						} ),
+						DE_RTC_RESTORE_ORIGIN
+					);
+					return;
+				}
 				const next = localBlocks().slice();
 				for ( const changed of parked.changedBlocks ?? [] ) {
 					const parsed = parseCanonicalBlocks(

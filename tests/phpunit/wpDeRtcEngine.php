@@ -607,6 +607,198 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 		$this->assertSame( 'rest_sync_invalid_intent', $result->get_error_code() );
 	}
 
+	/**
+	 * Builds a proposal carrying entity-property registers.
+	 *
+	 * @param string $proposal_id  Correlation id.
+	 * @param string $base_version Base version label.
+	 * @param string $content      Base and proposed content (unchanged).
+	 * @param array  $properties   Proposed property map.
+	 * @return array Typed update row.
+	 */
+	private function property_proposal( string $proposal_id, string $base_version, string $content, array $properties ): array {
+		return array(
+			'data' => wp_json_encode(
+				array(
+					'proposalId'         => $proposal_id,
+					'baseVersion'        => $base_version,
+					'proposedContent'    => $content,
+					'proposedProperties' => $properties,
+					'clientUpdate'       => null,
+				)
+			),
+			'type' => WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL,
+		);
+	}
+
+	/**
+	 * The property map carried by the latest canonical row in a response.
+	 *
+	 * @param array $response Room response.
+	 * @return array|null Latest canonical property map.
+	 */
+	private function latest_properties( array $response ): ?array {
+		$latest = null;
+		foreach ( $response['updates'] as $update ) {
+			$decoded = json_decode( $update['data'], true );
+			if ( is_array( $decoded ) && is_string( $decoded['version'] ?? null ) && is_array( $decoded['properties'] ?? null ) ) {
+				$latest = $decoded['properties'];
+			}
+		}
+		return $latest;
+	}
+
+	public function test_genesis_snapshot_carries_the_shared_property_seed() {
+		$response = $this->engine()->get_updates_since( $this->room(), 1, 0, array() );
+
+		$snapshot = null;
+		foreach ( $response['updates'] as $update ) {
+			if ( WP_De_RTC_Engine::UPDATE_TYPE_SNAPSHOT === $update['type'] ) {
+				$snapshot = json_decode( $update['data'], true );
+				break;
+			}
+		}
+		$this->assertNotNull( $snapshot );
+		$this->assertSame(
+			WP_Sync_Post_Genesis_Props::for_post( get_post( self::$post_id ) ),
+			$snapshot['properties'],
+			'de-rtc genesis must seed the identical property set intent-log seeds'
+		);
+	}
+
+	public function test_property_only_change_applies_and_broadcasts() {
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( $this->room(), 1, 0, array() );
+		$genesis  = $this->latest_from_response( $response );
+		$seed     = $this->latest_properties( $response );
+
+		$proposed          = $seed;
+		$proposed['title'] = 'A synced title';
+		$result            = $engine->handle_updates(
+			$this->room(),
+			1,
+			0,
+			array( $this->property_proposal( 'p-title', $genesis['version'], $genesis['content'], $proposed ) ),
+			array()
+		);
+
+		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
+
+		// The canonical row every peer receives carries the new value; the
+		// content itself is untouched.
+		$after = $this->engine()->get_updates_since( $this->room(), 2, 0, array() );
+		$props = $this->latest_properties( $after );
+		$this->assertSame( 'A synced title', $props['title'] );
+		$this->assertSame( $genesis['content'], $this->engine()->materialize( $this->room() ) );
+	}
+
+	public function test_property_three_way_matrix() {
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( $this->room(), 1, 0, array() );
+		$genesis  = $this->latest_from_response( $response );
+		$seed     = $this->latest_properties( $response );
+
+		// Client A changes title AND excerpt from genesis.
+		$a_props            = $seed;
+		$a_props['title']   = 'Title by A';
+		$a_props['excerpt'] = 'Excerpt by A';
+		$a_result           = $engine->handle_updates(
+			$this->room(),
+			1,
+			0,
+			array( $this->property_proposal( 'p-props-a', $genesis['version'], $genesis['content'], $a_props ) ),
+			array()
+		);
+		$this->assertSame( 'applied', $a_result['dispositions'][0]['status'] );
+
+		/*
+		 * Client B proposes from the SAME (now stale) base: an unchanged
+		 * excerpt (loses silently to A's — B never touched it), an
+		 * AGREEING title (both wrote the same value — agreement applies),
+		 * and a conflicting slug… wait, B also rewrites the title
+		 * DIFFERENTLY in this matrix: that single property parks while the
+		 * rest of the proposal applies.
+		 */
+		$b_props          = $seed;
+		$b_props['title'] = 'Title by B';
+		$b_result         = $this->engine()->handle_updates(
+			$this->room(),
+			2,
+			0,
+			array( $this->property_proposal( 'p-props-b', $genesis['version'], $genesis['content'], $b_props ) ),
+			array()
+		);
+		$this->assertSame( 'applied', $b_result['dispositions'][0]['status'], 'the proposal itself applies; only the conflicting property parks' );
+
+		$after = $this->engine()->get_updates_since( $this->room(), 3, 0, array() );
+		$props = $this->latest_properties( $after );
+		// A's concurrent title wins on the wire; A's excerpt untouched by B.
+		$this->assertSame( 'Title by A', $props['title'] );
+		$this->assertSame( 'Excerpt by A', $props['excerpt'] );
+
+		// B's losing title parked as a property-conflict review row.
+		$parked = $this->rows_of_type( $after, WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED );
+		$this->assertCount( 1, $parked );
+		$this->assertSame( 'p-props-b:title', $parked[0]['proposalId'] );
+		$this->assertSame( 'property-conflict', $parked[0]['reason'] );
+		$this->assertSame( array( 'name' => 'title', 'value' => 'Title by B' ), $parked[0]['property'] );
+	}
+
+	public function test_taxonomy_arrays_compare_order_insensitively() {
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( $this->room(), 1, 0, array() );
+		$genesis  = $this->latest_from_response( $response );
+		$seed     = $this->latest_properties( $response );
+		$this->assertArrayHasKey( 'categories', $seed );
+
+		// The same category SET in a different order is not a change.
+		$proposed               = $seed;
+		$proposed['categories'] = array_reverse( array_merge( $seed['categories'], array() ) );
+		$result                 = $engine->handle_updates(
+			$this->room(),
+			1,
+			0,
+			array( $this->property_proposal( 'p-tax-order', $genesis['version'], $genesis['content'], $proposed ) ),
+			array()
+		);
+		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
+
+		$after = $this->engine()->get_updates_since( $this->room(), 2, 0, array() );
+		$this->assertSame(
+			array(),
+			$this->rows_of_type( $after, WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED ),
+			'a reordered identical set must never park a conflict'
+		);
+	}
+
+	public function test_markup_bearing_property_from_filtered_author_parks() {
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( $this->room(), 1, 0, array() );
+		$genesis  = $this->latest_from_response( $response );
+		$seed     = $this->latest_properties( $response );
+
+		wp_set_current_user( self::$author_id );
+		$proposed          = $seed;
+		$proposed['title'] = 'Sneaky <script>alert(1)</script> title';
+		$result            = $engine->handle_updates(
+			$this->room(),
+			3,
+			0,
+			array( $this->property_proposal( 'p-risky-prop', $genesis['version'], $genesis['content'], $proposed ) ),
+			array()
+		);
+		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
+
+		$after = $this->engine()->get_updates_since( $this->room(), 4, 0, array() );
+		$props = $this->latest_properties( $after );
+		$this->assertStringNotContainsString( '<script>', (string) ( $props['title'] ?? '' ) );
+
+		$parked = $this->rows_of_type( $after, WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED );
+		$this->assertCount( 1, $parked );
+		$this->assertSame( 'requires-unfiltered-html', $parked[0]['reason'] );
+		$this->assertSame( 'title', $parked[0]['property']['name'] );
+	}
+
 	public function test_unresolved_parked_rows_survive_compaction_and_resolved_pairs_age_out() {
 		add_filter( 'wp_sync_de_rtc_checkpoint_interval', $interval_filter = static fn() => 4 );
 		try {

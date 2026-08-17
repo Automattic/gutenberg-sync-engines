@@ -477,6 +477,13 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			$next_version = 'v' . $next_seq;
 			$merged       = (string) $result['merged_content'];
 
+			// Entity-property registers ride the proposal beside the
+			// content: a per-property three-way merge against the same base
+			// version. Runs only on the accepted path — an escalated
+			// proposal parks whole, and the client re-carries its full
+			// property map on the next proposal, so nothing is lost.
+			$this->merge_proposed_properties( $room, $client_id, $state, $proposal, $review );
+
 			$state['sync_meta'] = wp_de_rtc_update_automerge_version_snapshots(
 				is_array( $state['sync_meta'] ) ? $state['sync_meta'] : array(),
 				$state['version'],
@@ -494,6 +501,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 						'version'        => $next_version,
 						'baseVersion'    => $state['version'],
 						'content'        => $merged,
+						'properties'     => $state['properties'] ?? array(),
 						'authorClientId' => $client_id,
 						'proposalId'     => $proposal['proposalId'],
 					)
@@ -509,12 +517,212 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			$state['version']     = $next_version;
 			$state['version_seq'] = $next_seq;
 			$state['content']     = $merged;
+			$this->record_properties_snapshot( $state, $next_version );
 			$this->save_canonical( $room, $state );
 
 			return array(
 				'status'  => 'applied',
 				'version' => $next_version,
 			);
+		}
+
+		/**
+		 * Merges a proposal's entity-property registers into canonical.
+		 *
+		 * Per-property three-way rule against the proposal's base version:
+		 * an unchanged property (proposed == base) is a no-op; a property
+		 * only the client changed applies; a property changed BOTH by the
+		 * client and concurrently in canonical is a genuine conflict and
+		 * parks for review (`property-conflict`) — the canonical value
+		 * wins on the wire, the parked row carries the losing value.
+		 * Markup-bearing string values from an author without
+		 * unfiltered_html park as `requires-unfiltered-html` instead of
+		 * applying (the property twin of the content kses gate).
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param string $room      Room identifier.
+		 * @param int    $client_id Proposing client id.
+		 * @param array  $state     Room state (by reference).
+		 * @param array  $proposal  Decoded proposal payload.
+		 * @param array  $review    Review ledger (lazily loaded, by reference).
+		 * @return void
+		 */
+		private function merge_proposed_properties( string $room, int $client_id, array &$state, array $proposal, &$review ): void {
+			$proposed_props = $proposal['proposedProperties'] ?? null;
+			if ( ! is_array( $proposed_props ) ) {
+				return;
+			}
+
+			$base_props      = $this->resolve_base_properties( $state, (string) $proposal['baseVersion'] );
+			$canonical_props = is_array( $state['properties'] ?? null ) ? $state['properties'] : array();
+			$can_unfiltered  = current_user_can( 'unfiltered_html' );
+
+			foreach ( $proposed_props as $name => $proposed_value ) {
+				if ( ! is_string( $name ) || '' === $name ) {
+					continue;
+				}
+				$base_value      = $base_props[ $name ] ?? null;
+				$canonical_value = $canonical_props[ $name ] ?? null;
+
+				if ( self::property_values_equal( $proposed_value, $base_value ) ) {
+					continue; // The client did not change this property.
+				}
+
+				if ( ! $can_unfiltered && is_string( $proposed_value ) && wp_kses_post( $proposed_value ) !== $proposed_value ) {
+					$this->park_property_conflict( $room, $client_id, (string) $proposal['proposalId'], $name, $proposed_value, 'requires-unfiltered-html', $review );
+					continue;
+				}
+
+				if (
+					self::property_values_equal( $canonical_value, $base_value ) ||
+					self::property_values_equal( $proposed_value, $canonical_value )
+				) {
+					$canonical_props[ $name ] = $proposed_value;
+					continue;
+				}
+
+				// Both sides changed it to different values: a human decides.
+				$this->park_property_conflict( $room, $client_id, (string) $proposal['proposalId'], $name, $proposed_value, 'property-conflict', $review );
+			}
+
+			$state['properties'] = $canonical_props;
+		}
+
+		/**
+		 * Parks a conflicting property register for review.
+		 *
+		 * The parked id suffixes the property name onto the proposalId so
+		 * each conflicting property resolves independently.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param string $room        Room identifier.
+		 * @param int    $client_id   Proposing client id.
+		 * @param string $proposal_id Proposal correlation id.
+		 * @param string $name        Property name.
+		 * @param mixed  $value       The losing proposed value.
+		 * @param string $reason      Escalation reason.
+		 * @param array  $review      Review ledger (lazily loaded, by reference).
+		 * @return void
+		 */
+		private function park_property_conflict( string $room, int $client_id, string $proposal_id, string $name, $value, string $reason, &$review ): void {
+			$parked_id = $proposal_id . ':' . $name;
+			if ( null === $review ) {
+				$review = $this->load_review_ledger( $room );
+			}
+			if ( isset( $review['open'][ $parked_id ] ) || isset( $review['resolved'][ $parked_id ] ) ) {
+				return;
+			}
+
+			$excerpt = is_string( $value ) ? $value : (string) wp_json_encode( $value );
+			$excerpt = trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( $excerpt ) ) );
+			if ( function_exists( 'mb_substr' ) ) {
+				$excerpt = mb_substr( $excerpt, 0, 80 );
+			} else {
+				$excerpt = substr( $excerpt, 0, 80 );
+			}
+
+			$stored = $this->add_row(
+				$room,
+				$client_id,
+				self::UPDATE_TYPE_PROPOSAL_PARKED,
+				wp_json_encode(
+					array(
+						'proposalId'     => $parked_id,
+						'reason'         => $reason,
+						'authorClientId' => $client_id,
+						'author'         => get_current_user_id(),
+						'at'             => time(),
+						'property'       => array(
+							'name'  => $name,
+							'value' => $value,
+						),
+						'changedBlocks'  => array(),
+						'excerpt'        => $name . ': ' . $excerpt,
+					)
+				)
+			);
+			if ( $stored ) {
+				$review['open'][ $parked_id ] = true;
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+				do_action( 'qm/debug', "wp-sync: de-rtc parked property conflict '{$name}' ({$reason}) in {$room}" );
+			}
+		}
+
+		/**
+		 * Resolves the property map a proposal was authored against.
+		 *
+		 * Falls back to the canonical map when the base version's property
+		 * snapshot is unknown (legacy rooms written before property sync) —
+		 * the fallback treats concurrent property changes as absent, which
+		 * degrades to last-writer-wins for exactly those rooms.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param array  $state        Room state.
+		 * @param string $base_version Proposal base version label.
+		 * @return array Property map at the base version.
+		 */
+		private function resolve_base_properties( array $state, string $base_version ): array {
+			$by_version = is_array( $state['properties_by_version'] ?? null ) ? $state['properties_by_version'] : array();
+			if ( is_array( $by_version[ $base_version ] ?? null ) ) {
+				return $by_version[ $base_version ];
+			}
+
+			return is_array( $state['properties'] ?? null ) ? $state['properties'] : array();
+		}
+
+		/**
+		 * Records the canonical property map for a version and prunes the
+		 * per-version window to the frozen core's snapshot window (the base
+		 * versions resolve_base_content can still serve).
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param array  $state   Room state (by reference).
+		 * @param string $version Version label.
+		 * @return void
+		 */
+		private function record_properties_snapshot( array &$state, string $version ): void {
+			$by_version             = is_array( $state['properties_by_version'] ?? null ) ? $state['properties_by_version'] : array();
+			$by_version[ $version ] = is_array( $state['properties'] ?? null ) ? $state['properties'] : array();
+
+			$snapshots = $state['sync_meta']['version_snapshots'] ?? null;
+			if ( is_array( $snapshots ) ) {
+				$by_version = array_intersect_key( $by_version, $snapshots + array( $version => true ) );
+			}
+
+			$state['properties_by_version'] = $by_version;
+		}
+
+		/**
+		 * Order-tolerant value equality for property registers.
+		 *
+		 * Term-ID arrays are sets (the editor appends in click order while
+		 * REST serializes name order), so numeric lists compare sorted;
+		 * everything else compares by JSON encoding.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param mixed $a One value.
+		 * @param mixed $b Other value.
+		 * @return bool Whether the values are equal.
+		 */
+		private static function property_values_equal( $a, $b ): bool {
+			if ( is_array( $a ) && is_array( $b ) && wp_is_numeric_array( $a ) && wp_is_numeric_array( $b ) ) {
+				$a_ints = array_filter( $a, 'is_numeric' );
+				$b_ints = array_filter( $b, 'is_numeric' );
+				if ( count( $a_ints ) === count( $a ) && count( $b_ints ) === count( $b ) ) {
+					$a_sorted = array_map( 'intval', array_values( $a ) );
+					$b_sorted = array_map( 'intval', array_values( $b ) );
+					sort( $a_sorted, SORT_NUMERIC );
+					sort( $b_sorted, SORT_NUMERIC );
+					return $a_sorted === $b_sorted;
+				}
+			}
+
+			return wp_json_encode( $a ) === wp_json_encode( $b );
 		}
 
 		/**
@@ -790,10 +998,12 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			$meta_cursor = 0;
 			if ( is_array( $meta ) && is_string( $meta['version'] ?? null ) && is_string( $meta['content'] ?? null ) ) {
 				$state       = array(
-					'version'     => $meta['version'],
-					'version_seq' => (int) ( $meta['version_seq'] ?? 0 ),
-					'content'     => $meta['content'],
-					'sync_meta'   => is_array( $meta['sync_meta'] ?? null ) ? $meta['sync_meta'] : array(),
+					'version'               => $meta['version'],
+					'version_seq'           => (int) ( $meta['version_seq'] ?? 0 ),
+					'content'               => $meta['content'],
+					'sync_meta'             => is_array( $meta['sync_meta'] ?? null ) ? $meta['sync_meta'] : array(),
+					'properties'            => is_array( $meta['properties'] ?? null ) ? $meta['properties'] : array(),
+					'properties_by_version' => is_array( $meta['properties_by_version'] ?? null ) ? $meta['properties_by_version'] : array(),
 				);
 				$meta_cursor = (int) ( $meta['cursor'] ?? 0 );
 			}
@@ -806,10 +1016,12 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 
 			if ( null === $state ) {
 				$state = array(
-					'version'     => 'v0',
-					'version_seq' => 0,
-					'content'     => '',
-					'sync_meta'   => array(),
+					'version'               => 'v0',
+					'version_seq'           => 0,
+					'content'               => '',
+					'sync_meta'             => array(),
+					'properties'            => array(),
+					'properties_by_version' => array(),
 				);
 			}
 
@@ -838,6 +1050,10 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				$state['version']     = $decoded['version'];
 				$state['version_seq'] = $row_seq;
 				$state['content']     = $decoded['content'];
+				if ( is_array( $decoded['properties'] ?? null ) ) {
+					$state['properties'] = $decoded['properties'];
+				}
+				$this->record_properties_snapshot( $state, $decoded['version'] );
 			}
 
 			$this->room_states[ $room ] = $state;
@@ -860,13 +1076,20 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * @return array|WP_Error Room state or error.
 		 */
 		private function initialize_room( string $room ) {
-			$content   = '';
-			$sync_meta = array();
-			$parsed    = class_exists( 'WP_Sync_Config' ) ? WP_Sync_Config::parse_room( $room ) : null;
+			$content    = '';
+			$sync_meta  = array();
+			$properties = array();
+			$parsed     = class_exists( 'WP_Sync_Config' ) ? WP_Sync_Config::parse_room( $room ) : null;
 			if ( null !== $parsed && 'postType' === $parsed['entity_kind'] && ! empty( $parsed['object_id'] ) ) {
 				$post = get_post( (int) $parsed['object_id'] );
 				if ( $post instanceof WP_Post ) {
 					$content = (string) $post->post_content;
+					// The shared REST-shaped seed every field-syncing engine
+					// uses (scalars, taxonomies by rest_base, meta.<key>) —
+					// deterministic, so racing initializers stay idempotent.
+					if ( class_exists( 'WP_Sync_Post_Genesis_Props' ) ) {
+						$properties = WP_Sync_Post_Genesis_Props::for_post( $post );
+					}
 				}
 			}
 
@@ -884,10 +1107,12 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 
 			$version = 'v1';
 			$state   = array(
-				'version'     => $version,
-				'version_seq' => 1,
-				'content'     => $content,
-				'sync_meta'   => wp_de_rtc_update_automerge_version_snapshots( $sync_meta, $version, $content ),
+				'version'               => $version,
+				'version_seq'           => 1,
+				'content'               => $content,
+				'sync_meta'             => wp_de_rtc_update_automerge_version_snapshots( $sync_meta, $version, $content ),
+				'properties'            => $properties,
+				'properties_by_version' => array( $version => $properties ),
 			);
 
 			$stored = $this->add_row(
@@ -896,8 +1121,9 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				self::UPDATE_TYPE_SNAPSHOT,
 				wp_json_encode(
 					array(
-						'version' => $version,
-						'content' => $content,
+						'version'    => $version,
+						'content'    => $content,
+						'properties' => $properties,
 					)
 				)
 			);
@@ -942,11 +1168,13 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				$room,
 				self::META_DOC,
 				array(
-					'version'     => $state['version'],
-					'version_seq' => (int) $state['version_seq'],
-					'content'     => $state['content'],
-					'sync_meta'   => $state['sync_meta'],
-					'cursor'      => $cursor,
+					'version'               => $state['version'],
+					'version_seq'           => (int) $state['version_seq'],
+					'content'               => $state['content'],
+					'sync_meta'             => $state['sync_meta'],
+					'properties'            => $state['properties'] ?? array(),
+					'properties_by_version' => $state['properties_by_version'] ?? array(),
+					'cursor'                => $cursor,
 				)
 			);
 		}
@@ -1053,6 +1281,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					array(
 						'version'      => $state['version'],
 						'content'      => $state['content'],
+						'properties'   => $state['properties'] ?? array(),
 						'checkpoint'   => true,
 						'checkpointId' => $checkpoint_id,
 					)

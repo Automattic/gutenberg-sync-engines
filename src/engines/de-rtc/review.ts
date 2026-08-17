@@ -20,6 +20,8 @@ export interface DeRtcParkedProposal {
 	at?: number;
 	baseVersion?: string;
 	changedBlocks: Array< { index: number; html: string } >;
+	/** A conflicting entity-property register (property-conflict rows). */
+	property?: { name: string; value: unknown };
 	excerpt?: string;
 }
 

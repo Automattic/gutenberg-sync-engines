@@ -122,16 +122,27 @@ export function createDeRtcSessionCodec(
 	let inFlightProposalId: string | null = null;
 	let proposalCounter = 0;
 	let lastProposedContent: string | null = null;
-	let pendingCanonical: { version: string; content: string } | null = null;
+	let lastProposedProperties: Record< string, unknown > = {};
+	let pendingCanonical: {
+		version: string;
+		content: string;
+		properties?: Record< string, unknown >;
+	} | null = null;
 
 	function buildProposal(): EngineUpdate {
 		proposalCounter += 1;
 		lastProposedContent = bridge.buildContent();
+		lastProposedProperties = bridge.buildProperties();
 		inFlightProposalId = `p-${ doc.clientID }-${ proposalCounter }`;
 		const payload = {
 			proposalId: inFlightProposalId,
 			baseVersion: bridge.lastVersion() ?? '',
 			proposedContent: lastProposedContent,
+			// The FULL property map every time (save-centric, like the
+			// content): the server three-way-diffs it against the base, so
+			// unchanged properties are no-ops and an abandoned escalation
+			// self-heals on the next proposal.
+			proposedProperties: lastProposedProperties,
 			// The block-native update descriptor is server-derivable; the
 			// engine's "engine-unaware writer" lane authors it on our
 			// behalf. Porting the client-side descriptor builder (and its
@@ -156,12 +167,16 @@ export function createDeRtcSessionCodec(
 		localUpdateListener( update, update.data.length );
 	}
 
-	function applyOrDeferCanonical( version: string, content: string ): void {
+	function applyOrDeferCanonical(
+		version: string,
+		content: string,
+		properties?: Record< string, unknown >
+	): void {
 		if ( dirty || inFlight ) {
-			pendingCanonical = { version, content };
+			pendingCanonical = { version, content, properties };
 			return;
 		}
-		bridge.applyCanonical( version, content );
+		bridge.applyCanonical( version, content, properties );
 	}
 
 	function onDocUpdate( _update: Uint8Array, origin: unknown ): void {
@@ -210,9 +225,18 @@ export function createDeRtcSessionCodec(
 			return;
 		}
 
+		const rowProperties =
+			decoded.properties && 'object' === typeof decoded.properties
+				? ( decoded.properties as Record< string, unknown > )
+				: undefined;
+
 		switch ( update.type ) {
 			case DE_RTC_SNAPSHOT_TYPE:
-				applyOrDeferCanonical( decoded.version, decoded.content );
+				applyOrDeferCanonical(
+					decoded.version,
+					decoded.content,
+					rowProperties
+				);
 				return;
 
 			case DE_RTC_CONTENT_TYPE:
@@ -235,7 +259,15 @@ export function createDeRtcSessionCodec(
 						// application would clobber). Advance the version
 						// only, so the next coalesced chunk proposes against
 						// it instead of colliding with our own accepted edit.
+						// Properties the server merged from peers (values we
+						// did not touch since proposing) still incorporate.
 						pendingCanonical = null;
+						if ( rowProperties ) {
+							bridge.incorporateProperties(
+								rowProperties,
+								lastProposedProperties
+							);
+						}
 						bridge.advanceVersion( decoded.version );
 						settleQueued();
 						return;
@@ -253,11 +285,21 @@ export function createDeRtcSessionCodec(
 						// proposing (the next proposal reconciles them), and
 						// rebase onto the new version.
 						pendingCanonical = null;
+						if ( rowProperties ) {
+							bridge.incorporateProperties(
+								rowProperties,
+								lastProposedProperties
+							);
+						}
 						settleQueued();
 						return;
 					}
 				}
-				applyOrDeferCanonical( decoded.version, decoded.content );
+				applyOrDeferCanonical(
+					decoded.version,
+					decoded.content,
+					rowProperties
+				);
 				if ( ! inFlight ) {
 					settleQueued();
 				}
@@ -274,9 +316,9 @@ export function createDeRtcSessionCodec(
 			return;
 		}
 		if ( ! inFlight && pendingCanonical ) {
-			const { version, content } = pendingCanonical;
+			const { version, content, properties } = pendingCanonical;
 			pendingCanonical = null;
-			bridge.applyCanonical( version, content );
+			bridge.applyCanonical( version, content, properties );
 		}
 	}
 

@@ -64,10 +64,15 @@ export interface DeRtcDocBridge {
 	 * already incorporated are ignored (a deferred stale row must never
 	 * regress the doc).
 	 *
-	 * @param version Canonical version label.
-	 * @param content Canonical serialized-block content.
+	 * @param version    Canonical version label.
+	 * @param content    Canonical serialized-block content.
+	 * @param properties Canonical entity-property map (flat, meta.<key>).
 	 */
-	applyCanonical: ( version: string, content: string ) => void;
+	applyCanonical: (
+		version: string,
+		content: string,
+		properties?: Record< string, unknown >
+	) => void;
 
 	/**
 	 * Advances the version WITHOUT touching the doc — for the client's
@@ -108,6 +113,30 @@ export interface DeRtcDocBridge {
 	buildContent: () => string;
 
 	/**
+	 * The doc's current entity-property registers in the wire shape: every
+	 * record-map entry except `blocks`, Yjs values plainified, the `meta`
+	 * map flattened to `meta.<key>` entries, taxonomy term-ID arrays in
+	 * canonical numeric order (matching the server genesis seed).
+	 */
+	buildProperties: () => Record< string, unknown >;
+
+	/**
+	 * Incorporates the property half of the client's OWN accepted row:
+	 * adopts a canonical value the client has NOT locally changed since
+	 * proposing (the server merged a peer's property change into our
+	 * row), and keeps locally-edited values (the next proposal
+	 * reconciles them) — the property twin of the block incorporation
+	 * policy.
+	 *
+	 * @param properties         Canonical property map from the row.
+	 * @param proposedProperties The map this client last proposed.
+	 */
+	incorporateProperties: (
+		properties: Record< string, unknown >,
+		proposedProperties: Record< string, unknown >
+	) => void;
+
+	/**
 	 * Registers a one-shot listener fired when the first canonical state
 	 * applies (the bootstrap moment).
 	 *
@@ -143,6 +172,57 @@ export function parseCanonicalBlocks(
 }
 
 /**
+ * Order-tolerant value equality for property registers: term-ID arrays
+ * are sets (numeric lists compare sorted); everything else compares by
+ * JSON encoding. The client twin of the server's property comparison.
+ *
+ * @param a One value.
+ * @param b Other value.
+ * @return Whether the values are equal.
+ */
+export function propertyValuesEqual( a: unknown, b: unknown ): boolean {
+	if (
+		Array.isArray( a ) &&
+		Array.isArray( b ) &&
+		a.every( ( value ) => 'number' === typeof value ) &&
+		b.every( ( value ) => 'number' === typeof value )
+	) {
+		const aSorted = [ ...a ].sort( ( x, y ) => x - y );
+		const bSorted = [ ...b ].sort( ( x, y ) => x - y );
+		return JSON.stringify( aSorted ) === JSON.stringify( bSorted );
+	}
+	return JSON.stringify( a ) === JSON.stringify( b );
+}
+
+/**
+ * Unflattens a wire property map (`meta.<key>` entries beside plain
+ * properties) into the change shape the sync config applies: meta keys
+ * regroup under one partial `meta` object (the config merges meta per
+ * key, so a partial object never wipes sibling keys).
+ *
+ * @param flat Flat wire property map.
+ * @return Record changes.
+ */
+export function unflattenProperties(
+	flat: Record< string, unknown >
+): Record< string, unknown > {
+	const changes: Record< string, unknown > = {};
+	let meta: Record< string, unknown > | null = null;
+	for ( const [ name, value ] of Object.entries( flat ) ) {
+		if ( name.startsWith( 'meta.' ) ) {
+			meta = meta ?? {};
+			meta[ name.slice( 'meta.'.length ) ] = value;
+		} else {
+			changes[ name ] = value;
+		}
+	}
+	if ( meta ) {
+		changes.meta = meta;
+	}
+	return changes;
+}
+
+/**
  * Creates the shared doc bridge for one entity.
  *
  * @param doc        The entity's Yjs document.
@@ -171,6 +251,42 @@ export function createDeRtcDocBridge(
 		}
 	};
 
+	const readFlatProperties = (): Record< string, unknown > => {
+		const flat: Record< string, unknown > = {};
+		doc.getMap( CRDT_RECORD_MAP_KEY ).forEach(
+			( stored: any, name: string ) => {
+				if ( 'blocks' === name ) {
+					return;
+				}
+				const value =
+					stored && 'function' === typeof stored.toJSON
+						? stored.toJSON()
+						: stored;
+				if ( 'meta' === name ) {
+					if ( value && 'object' === typeof value ) {
+						for ( const [ metaKey, metaValue ] of Object.entries(
+							value as Record< string, unknown >
+						) ) {
+							flat[ `meta.${ metaKey }` ] = metaValue;
+						}
+					}
+					return;
+				}
+				if (
+					Array.isArray( value ) &&
+					value.every( ( entry ) => 'number' === typeof entry )
+				) {
+					// Term bindings are sets: canonical numeric order,
+					// matching the server genesis seed.
+					flat[ name ] = [ ...value ].sort( ( a, b ) => a - b );
+					return;
+				}
+				flat[ name ] = value;
+			}
+		);
+		return flat;
+	};
+
 	return {
 		doc,
 
@@ -178,13 +294,16 @@ export function createDeRtcDocBridge(
 
 		lastVersion: () => version,
 
-		applyCanonical( nextVersion, content ) {
+		applyCanonical( nextVersion, content, properties ) {
 			if ( bootstrapped && seqOf( nextVersion ) <= seqOf( version ) ) {
 				return;
 			}
 			const blocks = parseCanonicalBlocks( content );
+			const changes: Record< string, unknown > = properties
+				? { ...unflattenProperties( properties ), blocks }
+				: { blocks };
 			doc.transact( () => {
-				syncConfig.applyChangesToCRDTDoc( doc, { blocks } );
+				syncConfig.applyChangesToCRDTDoc( doc, changes );
 			}, DE_RTC_REMOTE_ORIGIN );
 			markVersion( nextVersion );
 		},
@@ -265,6 +384,41 @@ export function createDeRtcDocBridge(
 			const blocks =
 				stored?.toJSON?.() ?? ( Array.isArray( stored ) ? stored : [] );
 			return __unstableSerializeAndClean( blocks ).trim();
+		},
+
+		buildProperties: readFlatProperties,
+
+		incorporateProperties( properties, proposedProperties ) {
+			const currentFlat = readFlatProperties();
+			const adopt: Record< string, unknown > = {};
+			for ( const [ name, value ] of Object.entries( properties ) ) {
+				if (
+					propertyValuesEqual( value, proposedProperties[ name ] )
+				) {
+					continue; // Nothing changed server-side.
+				}
+				if (
+					propertyValuesEqual(
+						currentFlat[ name ],
+						proposedProperties[ name ]
+					)
+				) {
+					// Untouched locally since proposing: adopt the
+					// server-merged value (a peer's change).
+					adopt[ name ] = value;
+				}
+				// Locally edited since proposing: keep ours; the next
+				// proposal reconciles (block-incorporation's LWW twin).
+			}
+			if ( 0 === Object.keys( adopt ).length ) {
+				return;
+			}
+			doc.transact( () => {
+				syncConfig.applyChangesToCRDTDoc(
+					doc,
+					unflattenProperties( adopt )
+				);
+			}, DE_RTC_REMOTE_ORIGIN );
 		},
 
 		onBootstrap( listener ) {

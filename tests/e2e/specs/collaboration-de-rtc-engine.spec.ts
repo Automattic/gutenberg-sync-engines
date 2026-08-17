@@ -27,12 +27,12 @@ import {
  * polling transport → WP_De_RTC_Engine (merge core) → back. The suite
  * restores the default engine when done.
  *
- * Deliberately absent (v1 engine gaps, see docs/engine-comparison.md):
- * title sync (proposals carry content only) and the empty-post
- * concurrent-first-paragraph scenario (concurrent differing appends at
- * the same edge are a BY-DESIGN escalation under DE-RTC policy, not a
- * merge — and now a REVIEWABLE one: escalations park for the conflict
- * review panel, exercised by the review-lane spec below).
+ * Deliberately absent: the empty-post concurrent-first-paragraph
+ * scenario (concurrent differing appends at the same edge are a
+ * BY-DESIGN escalation under DE-RTC policy, not a merge — and a
+ * REVIEWABLE one: escalations park for the conflict review panel,
+ * exercised by the review-lane spec below). Title and entity
+ * properties ride the proposal wire as per-property registers.
  */
 
 async function setSyncEngine(
@@ -266,6 +266,56 @@ test.describe( 'Collaboration - de-rtc engine', () => {
 			{ attributes: { content: 'Shared start plus user two' } },
 			{ attributes: { content: 'Added by admin' } },
 		] );
+	} );
+
+	test( 'title and excerpt edits live-sync between users as property registers', async ( {
+		collaborationUtils,
+		requestUtils,
+		editor,
+	} ) => {
+		const post = await requestUtils.createPost( {
+			title: 'Original title',
+			status: 'draft',
+			content:
+				'<!-- wp:paragraph -->\n<p>Body text</p>\n<!-- /wp:paragraph -->',
+		} );
+
+		await openSession( collaborationUtils, post.id );
+		const { page2 } = collaborationUtils;
+		const page1 = editor.page;
+
+		// User one rewrites the title in the editor chrome.
+		const titleField1 = editor.canvas.getByRole( 'textbox', {
+			name: 'Add title',
+		} );
+		await titleField1.click();
+		await page1.keyboard.press( 'ControlOrMeta+a' );
+		await page1.keyboard.type( 'Title from user one' );
+
+		// User two receives it without saving.
+		await expect( async () => {
+			const title2 = await page2.evaluate( () =>
+				( window as any ).wp.data
+					.select( 'core/editor' )
+					.getEditedPostAttribute( 'title' )
+			);
+			expect( title2 ).toBe( 'Title from user one' );
+		} ).toPass( { timeout: 15000 } );
+
+		// A scalar register travels the other way.
+		await page2.evaluate( () => {
+			( window as any ).wp.data
+				.dispatch( 'core/editor' )
+				.editPost( { excerpt: 'Excerpt from user two' } );
+		} );
+		await expect( async () => {
+			const excerpt1 = await page1.evaluate( () =>
+				( window as any ).wp.data
+					.select( 'core/editor' )
+					.getEditedPostAttribute( 'excerpt' )
+			);
+			expect( excerpt1 ).toBe( 'Excerpt from user two' );
+		} ).toPass( { timeout: 15000 } );
 	} );
 
 	test( 'a genuine conflict parks for review, the panel presents it, and discard closes it for both users', async ( {
