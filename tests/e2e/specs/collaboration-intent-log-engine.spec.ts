@@ -1462,6 +1462,77 @@ test.describe( 'Collaboration - intent-log engine', () => {
 		expect( saved.meta.footnotes ).toBe( footnotes );
 	} );
 
+	test( 'a category created mid-session appears in the peer’s term list and assignment', async ( {
+		collaborationUtils,
+		requestUtils,
+		editor,
+	} ) => {
+		const post = await requestUtils.createPost( {
+			title: 'New Term Sync',
+			status: 'draft',
+			content:
+				'<!-- wp:paragraph -->\n<p>Body</p>\n<!-- /wp:paragraph -->',
+			date_gmt: new Date().toISOString(),
+		} );
+
+		await collaborationUtils.openCollaborativeSession( post.id );
+		const { page2 } = collaborationUtils;
+		const page1 = editor.page;
+
+		// Both clients resolve the term list, which loads the
+		// taxonomy/category collection room (the notification lane).
+		for ( const page of [ page1, page2 ] ) {
+			await page.evaluate( async () => {
+				await ( window as any ).wp.data
+					.resolveSelect( 'core' )
+					.getEntityRecords( 'taxonomy', 'category', {
+						per_page: -1,
+					} );
+			} );
+		}
+
+		// User 1 creates a brand-new category (the sidebar's "Add New
+		// Category" flow) and assigns it to the post.
+		const categoryName = `Live Category ${ Date.now() }`;
+		const termId = await page1.evaluate( async ( name ) => {
+			const { dispatch } = ( window as any ).wp.data;
+			const record = await dispatch( 'core' ).saveEntityRecord(
+				'taxonomy',
+				'category',
+				{ name }
+			);
+			dispatch( 'core/editor' ).editPost( {
+				categories: [ record.id ],
+			} );
+			return record.id;
+		}, categoryName );
+
+		// User 2's term list gains the new category WITHOUT any save —
+		// the peer save signal refetches the collection…
+		await expect( async () => {
+			const names = await page2.evaluate( () =>
+				(
+					( window as any ).wp.data
+						.select( 'core' )
+						.getEntityRecords( 'taxonomy', 'category', {
+							per_page: -1,
+						} ) ?? []
+				).map( ( term: { name: string } ) => term.name )
+			);
+			expect( names ).toContain( categoryName );
+		} ).toPass( { timeout: 15000 } );
+
+		// …and the post's category assignment synced alongside it.
+		await expect( async () => {
+			const categories = await page2.evaluate( () =>
+				( window as any ).wp.data
+					.select( 'core/editor' )
+					.getEditedPostAttribute( 'categories' )
+			);
+			expect( categories ).toEqual( [ termId ] );
+		} ).toPass( { timeout: 15000 } );
+	} );
+
 	test( 'concurrent divergent title edits surface an escalation notice, and editors converge', async ( {
 		collaborationUtils,
 		requestUtils,

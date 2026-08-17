@@ -37,6 +37,7 @@ import { fieldToHtml } from './intent-log/rich-text.js';
 import { getProviderCreators } from '../framework';
 import type { EngineDocument } from './intent-log/engine-types';
 import type {
+	CollectionHandlers,
 	ObjectData,
 	ObjectID,
 	ObjectType,
@@ -229,6 +230,40 @@ interface EntityState {
 	fieldsResolver: RichTextFieldsResolver;
 	rawContent?: RawContentAdapter;
 }
+
+/**
+ * A loaded collection room (post lists, taxonomy term lists): the
+ * notification-and-refetch lane. Collection documents carry no records —
+ * only per-client save registers (COLLECTION_SAVE_PREFIX names) — and a
+ * peer's register write means "a record of this type was saved; refetch
+ * the REST query". Mirrors the framework's EngineCollection contract
+ * (markSaved → onPeerSave) without syncing record content, which is what
+ * lets a newly created category reach every collaborator's term list.
+ */
+interface CollectionState {
+	session: IntentLogSession;
+	providers: ProviderCreatorResult[];
+	unloaded: boolean;
+	/** Presence surface (optional; taxonomy configs may not define one). */
+	awareness?: Awareness;
+	/** This client's save register name (its writes never refetch). */
+	selfRegister: string;
+	/** Monotonic value for the save register (one bump per save). */
+	saveSeq: number;
+	/** A save announced before the room bootstrap, replayed on init. */
+	pendingSave: boolean;
+	/** Peer-register snapshot, null until the bootstrap baseline is set. */
+	lastSignature: string | null;
+}
+
+/**
+ * Register-name prefix for collection save signals. Each client writes
+ * ONLY its own register (suffixed with its actor identity), so concurrent
+ * saves by different clients touch different names and can never escalate
+ * a property conflict — an escalated (parked) save signal would silently
+ * cost a peer its refetch.
+ */
+const COLLECTION_SAVE_PREFIX = 'savedAt:';
 
 /**
  * Entity properties synced as per-name registers (set_property intents).
@@ -832,6 +867,7 @@ function chooseObservedBaseline(
  */
 export function createIntentLogManager( debug = false ): SyncManager {
 	const entityStates = new Map< string, EntityState >();
+	const collectionStates = new Map< ObjectType, CollectionState >();
 	const userId =
 		Number(
 			( window as { _wpCollaborationUserId?: unknown } )
@@ -1416,15 +1452,158 @@ export function createIntentLogManager( debug = false ): SyncManager {
 		void record;
 	}
 
+	/**
+	 * Loads a collection room (the notification-and-refetch lane): the
+	 * room's document holds only per-client save registers, and a change
+	 * to a PEER's register triggers a REST refetch of the collection
+	 * query. The server needs nothing new — collection rooms already
+	 * initialize with an empty document, and save registers are ordinary
+	 * set_property intents through the existing log machinery
+	 * (compaction included).
+	 * @param syncConfig
+	 * @param objectType
+	 * @param handlers
+	 */
+	async function loadCollection(
+		syncConfig: SyncConfig,
+		objectType: ObjectType,
+		handlers: CollectionHandlers
+	): Promise< void > {
+		if ( collectionStates.has( objectType ) ) {
+			return;
+		}
+		if ( false === syncConfig.shouldSync?.( objectType, null ) ) {
+			return;
+		}
+		const providerCreators = getProviderCreators();
+		if ( 0 === providerCreators.length ) {
+			return;
+		}
+
+		const clientId = Math.floor( Math.random() * ( 2 ** 31 - 1 ) ) + 1;
+		const awareness = syncConfig.createAwareness?.(
+			createAwarenessDoc( clientId ) as never
+		);
+		const session = createIntentLogSession( {
+			userId,
+			clientId,
+			awareness,
+		} );
+		const state: CollectionState = {
+			session,
+			providers: [],
+			unloaded: false,
+			awareness,
+			selfRegister: `${ COLLECTION_SAVE_PREFIX }u${ userId }c${ clientId }`,
+			saveSeq: 0,
+			pendingSave: false,
+			lastSignature: null,
+		};
+		collectionStates.set( objectType, state );
+
+		/**
+		 * The peer save registers as a comparable signature. The client's
+		 * own register is excluded: its own saves must not refetch.
+		 */
+		const peerSignature = () => {
+			const doc = session.getDocument();
+			const entries = Object.entries( doc?.props ?? {} )
+				.filter(
+					( [ name ] ) =>
+						name.startsWith( COLLECTION_SAVE_PREFIX ) &&
+						name !== state.selfRegister
+				)
+				.sort( ( [ a ], [ b ] ) => ( a < b ? -1 : 1 ) );
+			return JSON.stringify( entries );
+		};
+
+		session.onChange( () => {
+			if ( state.unloaded || ! session.isInitialized() ) {
+				return;
+			}
+			if ( state.pendingSave ) {
+				state.pendingSave = false;
+				announceCollectionSave( objectType );
+			}
+			const signature = peerSignature();
+			if ( null === state.lastSignature ) {
+				/*
+				 * Bootstrap baseline: the resolver fetched the collection
+				 * via REST immediately before loading the room, so the
+				 * registers in the bootstrap document are already
+				 * reflected — refetching would be redundant.
+				 */
+				state.lastSignature = signature;
+				return;
+			}
+			if ( signature === state.lastSignature ) {
+				return;
+			}
+			state.lastSignature = signature;
+			void handlers.refetchRecords().catch( () => {} );
+		} );
+
+		log( 'connecting collection', { objectType } );
+		state.providers = await Promise.all(
+			providerCreators.map( async ( create: ProviderCreator ) => {
+				const provider = await create( {
+					objectType,
+					objectId: null,
+					session,
+				} );
+				provider.on( 'status', handlers.onStatusChange );
+				return provider;
+			} )
+		);
+
+		if ( state.unloaded ) {
+			state.providers.forEach( ( provider ) => provider.destroy() );
+		}
+	}
+
+	/**
+	 * Announces a saved record of this object type to its collection room
+	 * (when one is loaded) by bumping this client's save register. Peers
+	 * observe the register change and refetch their collection query —
+	 * how a newly created term reaches every collaborator's checklist.
+	 *
+	 * @param objectType Object type whose record was saved.
+	 */
+	function announceCollectionSave( objectType: ObjectType ): void {
+		const state = collectionStates.get( objectType );
+		if ( ! state || state.unloaded ) {
+			return;
+		}
+		if ( ! state.session.isInitialized() ) {
+			state.pendingSave = true; // Replayed on bootstrap.
+			return;
+		}
+		const doc = state.session.getDocument();
+		state.saveSeq++;
+		state.session.author( 'set_property', {
+			name: state.selfRegister,
+			value: state.saveSeq,
+			observedVersion: doc?.propVersions?.[ state.selfRegister ] ?? 0,
+		} );
+	}
+
 	return {
 		load: loadEntity,
 
-		loadCollection: async () => {
-			// Collection rooms (post lists, taxonomies) are not part of the
-			// intent-log v1 scope; entities cover the editing surface.
-		},
+		loadCollection,
 
-		update( objectType, objectId, changes, origin ) {
+		update( objectType, objectId, changes, origin, options = {} ) {
+			/*
+			 * A record SAVE announces to the object type's collection room
+			 * regardless of whether an entity is loaded: term saves arrive
+			 * here with no entity state (nobody edits a term record in the
+			 * editor), and the collection contract is save-notification,
+			 * not content sync.
+			 */
+			if ( options.isSave ) {
+				announceCollectionSave( objectType );
+			}
+
 			const state = entityStates.get( entityKey( objectType, objectId ) );
 			if ( ! state || state.unloaded ) {
 				return;
@@ -1828,6 +2007,21 @@ export function createIntentLogManager( debug = false ): SyncManager {
 		undoManager: undefined,
 
 		unload( objectType, objectId ) {
+			// A null objectId addresses the object type's collection room.
+			if ( null === objectId ) {
+				const collection = collectionStates.get( objectType );
+				if ( ! collection ) {
+					return;
+				}
+				collection.unloaded = true;
+				collection.providers.forEach( ( provider ) =>
+					provider.destroy()
+				);
+				collection.awareness?.destroy();
+				collection.session.destroy();
+				collectionStates.delete( objectType );
+				return;
+			}
 			const key = entityKey( objectType, objectId );
 			const state = entityStates.get( key );
 			if ( ! state ) {
@@ -1854,6 +2048,15 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				state.session.destroy();
 			}
 			entityStates.clear();
+			for ( const [ , collection ] of collectionStates ) {
+				collection.unloaded = true;
+				collection.providers.forEach( ( provider ) =>
+					provider.destroy()
+				);
+				collection.awareness?.destroy();
+				collection.session.destroy();
+			}
+			collectionStates.clear();
 		},
 
 		// Transport-agnostic retry: ask every live provider to retry after a
@@ -1861,6 +2064,11 @@ export function createIntentLogManager( debug = false ): SyncManager {
 		retry() {
 			for ( const [ , state ] of entityStates ) {
 				state.providers.forEach( ( provider ) => provider.retry?.() );
+			}
+			for ( const [ , collection ] of collectionStates ) {
+				collection.providers.forEach(
+					( provider ) => provider.retry?.()
+				);
 			}
 		},
 	};

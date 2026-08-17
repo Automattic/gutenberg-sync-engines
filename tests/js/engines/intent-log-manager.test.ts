@@ -1755,6 +1755,100 @@ describe( 'intent-log manager', () => {
 		).toHaveLength( 0 );
 	} );
 
+	async function loadManagedCollection() {
+		const transport = makeFakeTransport();
+		window._wpCollaborationEnabled = '1';
+		addFilter( FILTER, HOOK, () => [ transport.creator ] );
+
+		const manager = createIntentLogManager();
+		const refetchRecords = jest.fn( async () => {} );
+		await manager.loadCollection( {} as never, 'taxonomy/category', {
+			onStatusChange: jest.fn() as never,
+			refetchRecords: refetchRecords as never,
+		} );
+		return { manager, refetchRecords, transport };
+	}
+
+	it( 'collections: a peer save signal triggers a refetch; own saves announce without refetching', async () => {
+		const { manager, refetchRecords, transport } =
+			await loadManagedCollection();
+
+		// Bootstrap (empty collection genesis) sets the baseline silently.
+		transport.captured.session!.receiveUpdate( snapshotRow( [] ) );
+		expect( refetchRecords ).not.toHaveBeenCalled();
+
+		// A peer's save register write means "a term changed; refetch".
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				intentId: 'peer-save-1',
+				actorId: 'u9c9',
+				baseSeq: 0,
+				txnId: null,
+				type: 'set_property',
+				payload: {
+					name: 'savedAt:u9c9',
+					value: 1,
+					observedVersion: 0,
+				},
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.INTENT,
+		} );
+		expect( refetchRecords ).toHaveBeenCalledTimes( 1 );
+
+		// A record save on this object type announces via THIS client's
+		// register (one wire intent) and does not refetch locally.
+		manager.update( 'taxonomy/category', '77', {}, 'o', {
+			isSave: true,
+		} );
+		const sent = transport.captured.sent.map( ( update ) =>
+			JSON.parse( update.data )
+		);
+		expect( sent ).toHaveLength( 1 );
+		expect( sent[ 0 ].type ).toBe( 'set_property' );
+		expect( sent[ 0 ].payload.name ).toMatch( /^savedAt:/ );
+		expect( sent[ 0 ].payload.name ).not.toBe( 'savedAt:u9c9' );
+		expect( refetchRecords ).toHaveBeenCalledTimes( 1 );
+
+		// A further peer bump refetches again.
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				intentId: 'peer-save-2',
+				actorId: 'u9c9',
+				baseSeq: 2,
+				txnId: null,
+				type: 'set_property',
+				payload: {
+					name: 'savedAt:u9c9',
+					value: 2,
+					observedVersion: 1,
+				},
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.INTENT,
+		} );
+		expect( refetchRecords ).toHaveBeenCalledTimes( 2 );
+	} );
+
+	it( 'collections: a save announced before the bootstrap replays once the room initializes', async () => {
+		const { manager, refetchRecords, transport } =
+			await loadManagedCollection();
+
+		// The term was created while the collection room was still
+		// connecting: nothing can be sent yet…
+		manager.update( 'taxonomy/category', '78', {}, 'o', {
+			isSave: true,
+		} );
+		expect( transport.captured.sent ).toHaveLength( 0 );
+
+		// …but the signal replays on bootstrap so peers still refetch.
+		transport.captured.session!.receiveUpdate( snapshotRow( [] ) );
+		const sent = transport.captured.sent.map( ( update ) =>
+			JSON.parse( update.data )
+		);
+		expect( sent ).toHaveLength( 1 );
+		expect( sent[ 0 ].payload.name ).toMatch( /^savedAt:/ );
+		expect( refetchRecords ).not.toHaveBeenCalled();
+	} );
+
 	it( 'surfaces proposals through onEscalation with local/remote attribution', async () => {
 		const { handlers, transport } = await loadManagedEntity();
 		const onEscalation = jest.fn();
