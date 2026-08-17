@@ -42,8 +42,10 @@ constructed as `new $class( int $post_id, array $workload )`).
 This plugin ships three dedicated profiles. The **intent-log profile**
 speaks typed intents authored from each client's observed base and scores
 quality with the disposition-based oracle. Its client model is
-read-driven: each simulated client advances its observed head and
-register versions by decoding the rows the engine actually delivered
+read-driven: each simulated client advances its observed head, register
+versions, and per-field text lengths (the coordinate tail-positioned
+typing authors its insert offsets from)
+by decoding the rows the engine actually delivered
 (intent rows advance the head one seq each; snapshot rows reset it to
 their seq), exactly as the production client derives its baseSeq, and in
 the single-process runner every read asserts the decoded state matches
@@ -64,7 +66,9 @@ payload and storage bytes are therefore REAL for this engine, and quality
 is scored with a CRDT oracle (see below). The **de-rtc profile** speaks
 whole-content proposals: each simulated client keeps a local working copy
 and its base version (base = last version applied to the doc, the client
-adapter's rule), adopts the server's canonical content rows on read, and —
+adapter's rule; an APPLIED proposal advances it at settle time, mirroring
+the accepted row the polling transport returns in the same response as
+the dispositions), adopts the server's canonical content rows on read, and —
 because retry is part of that protocol — re-proposes edits the engine
 voided at an aged-out base as a coalesced follow-up proposal against the
 base it just observed (one retry per edit); payload and storage bytes are
@@ -242,7 +246,15 @@ review* (an outcome, not a demerit).
 
 The workload speaks seven operations: `text` (a keystroke batch into a
 genesis paragraph, or, in `remove-contention`, into an inserted block
-addressed by `block_id`), `attr` (an align restyle), `set_property` (an
+addressed by `block_id`; each carries a seeded abstract position — `head`
+or `tail` — that the profiles map to engine coordinates from the client's
+own observed state, so typing is not all offset-0 prepends: intent-log
+authors the intent's offset from the client's observed field length, the
+yjs profile inserts at the corresponding index in the client's own
+Y.Text, and de-rtc splices before the closing tag; the token-counting
+oracles are position-independent, and under correct transforms a token
+can never split mid-token — a split would surface as a missing-token
+convergence failure), `attr` (an align restyle), `set_property` (an
 entity-property register write — slug, template, …, the field-sync
 traffic PR #22 added; title/excerpt are deliberately excluded because the
 CRDT codec models them as merging Y.Text, not registers), `set_terms` (a
@@ -423,10 +435,15 @@ yjs-server ~26 ms (the canonical-doc rebuild dominates regardless of edit
 size). The `laggy-newsroom` scenario (one client reading every 10th round)
 settles differently per engine and loses nothing on any of them:
 intent-log absorbs stale bases with deeper transforms (more benign voids,
-heavier catch-up reads); de-rtc escalates more (~23% — cumulative
-stale-base proposals conflict more often) and exercises its retry lane
-once the laggy client's base ages out of the engine's 20-version snapshot
-window (visible as `unknown-base-version` voids + `followups`).
+heavier catch-up reads); de-rtc escalates more (cumulative stale-base
+proposals conflict more often), while its base stays mostly fresh even
+between rare reads — every applied proposal advances it at settle, like
+the shipping codec whose transport returns the accepted row with the ack
+— so its retry lane (`unknown-base-version` voids + `followups`) fires on
+the RECONNECT shape instead: a deep read gap under sustained register
+contention, where escalations never advance the base until it ages out of
+the engine's 20-version snapshot window (see the deep-read-gap PHPUnit
+test for the deterministic construction).
 
 Structural churn (concurrent inserts/removals + typing, 60 rounds, 4
 clients) is where conflict POLICIES separate hardest: intent-log and
@@ -541,10 +558,18 @@ The comparison the decision turns on:
   Escalated proposals are reverted from the simulated client's local copy
   (production keeps the author's copy on screen pending a human decision;
   the harness reverts so later proposals stay clean and the oracle can
-  assert the conflict stayed OUT of the canonical), and a retried
-  proposal's applied disposition advances the client's base directly —
-  sound here because the runner is synchronous, so a retry authored
-  against a just-observed head is always a fast-forward; production's
-  adapter reaches the same state from its own broadcast row. Each edit is
+  assert the conflict stayed OUT of the canonical), and EVERY applied
+  proposal advances the client's base at settle time — a fast-forward
+  apply advances the version only, a server-merged apply adopts the
+  canonical. That is sound because the runner is synchronous (the
+  canonical at settle IS the just-applied version), and it is what
+  production does: the polling transport returns the accepted row in the
+  same response as the dispositions, so the shipping codec's base advance
+  is row-driven and immediate. Without it, a client that reads rarely
+  would re-propose already-applied content against a pre-apply base, and
+  the engine genuinely duplicates the re-proposed text when the merge
+  regions have drifted apart (head-only workloads masked this — the
+  cumulative proposals always escalated; mixed head/tail insert positions
+  surfaced it). Each edit is
   retried once; a second stale-base void parks it (never silently drops
   it), and score() flags any edit left unsettled.

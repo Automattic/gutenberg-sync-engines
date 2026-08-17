@@ -3,7 +3,8 @@
  * The yjs-server authoring profile: real y-php clients + the CRDT oracle.
  *
  * Each simulated client holds a y-php document. Edits happen in that
- * document (text inserts into the paragraph's content Y.Text; align set on
+ * document (text inserts into the paragraph's content Y.Text at the
+ * edit's head/tail position; align set on
  * the attributes Y.Map; entity-property and taxonomy term-set registers as
  * plain values on the document map; meta registers nested per key under
  * the document's `meta` Y.Map — exactly what the editor's session codec
@@ -251,7 +252,17 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 					$target_id = 'srv-' . (int) $edit['paragraph'];
 				}
 
-				$this->find_block( $yblocks, $target_id )->get( 'attributes' )->get( 'content' )->insert( 0, $edit['text'] );
+				// The abstract position maps to an index in THIS client's
+				// own Y.Text: head is 0, tail its current end. A concurrent
+				// peer edit is invisible until the next read, so tail names
+				// the end of the text as this client observed it — CRDT
+				// ordering places the insert relative to those neighbors.
+				$ytext = $this->find_block( $yblocks, $target_id )->get( 'attributes' )->get( 'content' );
+				$index = 0;
+				if ( 'tail' === ( $edit['position'] ?? 'head' ) ) {
+					$index = (int) $ytext->length;
+				}
+				$ytext->insert( $index, $edit['text'] );
 			}
 
 			// The recovery lane: after a `resync-required` void the real

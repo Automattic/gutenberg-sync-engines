@@ -24,7 +24,13 @@
  * server-authored canonical `content` rows, which the client adopts
  * wholesale (safe here because every edit settles synchronously: applied
  * work is already IN the canonical row, and parked work was reverted from
- * the local copy when its disposition arrived).
+ * the local copy when its disposition arrived). An APPLIED proposal also
+ * advances the client's base at settle time, mirroring the shipping
+ * codec's own-accepted-row handling: the polling transport returns rows
+ * and dispositions in the SAME response, so production's base advance is
+ * row-driven and immediate — without it, a client that reads rarely
+ * would re-propose already-applied content against a pre-apply base, a
+ * duplication window production never has (see settle()).
  *
  * Retry is part of the protocol: the engine voids proposals whose base
  * version aged out of the bounded snapshot window (`unknown-base-version`)
@@ -152,11 +158,28 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 		/**
 		 * Whether the model sees EVERY ingest and can be asserted against
 		 * the wire (false in the multi-process concurrency probe, where each
-		 * process only observes its own proposals).
+		 * process only observes its own proposals). Also gates the
+		 * settle-time base advance: its fast-forward reasoning holds only in
+		 * the synchronous single-process runner.
 		 *
 		 * @var bool
 		 */
 		private $assert_model = true;
+
+		/**
+		 * Engine under test, stashed at bootstrap for the settle-time
+		 * canonical adoption (see settle()).
+		 *
+		 * @var WP_Sync_Engine|null
+		 */
+		private $engine = null;
+
+		/**
+		 * Room identifier, stashed at bootstrap.
+		 *
+		 * @var string
+		 */
+		private $room = '';
 
 		/**
 		 * In-flight bookkeeping: client => proposalId => edit records.
@@ -272,6 +295,9 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 		 * @return array<int, int> Initial read cursor per client.
 		 */
 		public function bootstrap( WP_Sync_Engine $engine, string $room ): array {
+			$this->engine = $engine;
+			$this->room   = $room;
+
 			$cursors = array();
 			for ( $client = 0; $client < $this->client_count; $client++ ) {
 				$response = $engine->get_updates_since( $room, $client, 0, array() );
@@ -493,25 +519,11 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 				return;
 			}
 			foreach ( (array) ( $result['dispositions'] ?? array() ) as $disposition ) {
+				// An applied retry advances the client's base inside
+				// settle(), like any other applied proposal (a retry is
+				// authored against the head the client observed on the read
+				// immediately before it, so it is always a fast-forward).
 				$this->settle( $client, $disposition );
-
-				/*
-				 * A retry is authored against the canonical head the client
-				 * observed on the read IMMEDIATELY before it, and the runner
-				 * is synchronous — nothing can ingest in between. An applied
-				 * retry is therefore always a fast-forward (the new
-				 * canonical IS the proposed content), so the client can
-				 * soundly advance its base to the applied version — the
-				 * adapter's "own unchanged row → version-only advance" rule,
-				 * settled from the disposition instead of the row. Without
-				 * this, later proposals still author from the pre-retry base
-				 * while carrying the retried text, and base→ours vs
-				 * base→canonical then insert the SAME text twice — a
-				 * duplication window production's row-driven advance closes.
-				 */
-				if ( 'applied' === ( $disposition['status'] ?? '' ) && is_string( $disposition['version'] ?? null ) ) {
-					$this->base_version[ $client ] = $disposition['version'];
-				}
 			}
 		}
 
@@ -792,6 +804,47 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 				if ( '' !== $version ) {
 					$this->model_props_by_version[ $version ] = $this->canonical_props;
 				}
+
+				/*
+				 * Mirror the codec's own-accepted-row handling. In
+				 * production the polling transport returns the room's rows
+				 * and the dispositions in the SAME response (rows first),
+				 * so the client's accepted content row advances its base
+				 * row-driven in the very response that acks the proposal: a
+				 * round-tripped-unchanged row advances the version only,
+				 * and a server-merged row is incorporated. A client can
+				 * therefore never author its next proposal against a base
+				 * that predates its own applied proposal while re-carrying
+				 * the applied content — base→ours vs base→canonical would
+				 * insert the SAME text twice, the duplication window the
+				 * codec's row-driven advance closes (the laggy client hit
+				 * exactly that before this settle-time advance existed).
+				 * The runner's seam splits ingest from read, so the profile
+				 * restores that pairing at settle: the runner is
+				 * synchronous, so the canonical at settle time IS the
+				 * just-applied version. A fast-forward (nothing ingested
+				 * between this client's base and the apply) means the
+				 * canonical equals the proposed content and the base
+				 * advances version-only; otherwise the client adopts the
+				 * merged canonical — with no local edits newer than the
+				 * proposal, that is exactly what the codec's
+				 * incorporateCanonicalPreservingLocalEdits reduces to.
+				 * Gated on assert_model: in the multi-process probe another
+				 * process may ingest between apply and settle, so neither
+				 * the fast-forward arithmetic nor the adoption is sound
+				 * there (its workers read every iteration instead).
+				 */
+				if ( $this->assert_model && '' !== $version ) {
+					$applied_seq = (int) ltrim( $version, 'v' );
+					$base_seq    = (int) ltrim( (string) $this->base_version[ $client ], 'v' );
+
+					if ( $applied_seq !== $base_seq + 1 && null !== $this->engine ) {
+						$this->content[ $client ]      = (string) $this->engine->materialize( $this->room );
+						$this->client_props[ $client ] = $this->canonical_props;
+					}
+
+					$this->base_version[ $client ] = $version;
+				}
 				return;
 			}
 
@@ -964,6 +1017,7 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 				'op'              => 'text',
 				'marker'          => $marker,
 				'token'           => (string) $edit['text'],
+				'position'        => (string) ( $edit['position'] ?? 'head' ),
 				'inserted_target' => $inserted_target,
 				'retried'         => false,
 			);
@@ -1073,7 +1127,7 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 						$block['attrs']['align'] = $record['align'];
 						return $block;
 					}
-					return $this->insert_paragraph_text( $block, $record['token'] );
+					return $this->insert_paragraph_text( $block, $record['token'], (string) ( $record['position'] ?? 'head' ) );
 				}
 			);
 		}
@@ -1225,22 +1279,32 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 		}
 
 		/**
-		 * Inserts a token at offset 0 of a paragraph's content field (right
-		 * after the opening tag — the same edit the intent-log profile's
-		 * insert_text at offset 0 makes).
+		 * Inserts a token into a paragraph's content field at the edit's
+		 * abstract position: `head` lands right after the opening tag,
+		 * `tail` right before the closing tag — the same field coordinates
+		 * the intent-log profile's insert_text offsets name.
 		 *
-		 * @param array  $block Paragraph block.
-		 * @param string $token Unique token.
+		 * @param array  $block    Paragraph block.
+		 * @param string $token    Unique token.
+		 * @param string $position 'head' or 'tail'.
 		 * @return array Updated block.
 		 */
-		private function insert_paragraph_text( array $block, string $token ): array {
+		private function insert_paragraph_text( array $block, string $token, string $position ): array {
 			$html = (string) $block['innerHTML'];
-			$pos  = strpos( $html, '>' );
-			if ( false !== $pos ) {
-				$html = substr( $html, 0, $pos + 1 ) . $token . substr( $html, $pos + 1 );
+
+			if ( 'tail' === $position ) {
+				$pos = strrpos( $html, '<' );
 			} else {
-				$html .= $token;
+				$open = strpos( $html, '>' );
+				$pos  = false === $open ? false : $open + 1;
 			}
+
+			if ( false === $pos ) {
+				$html .= $token;
+			} else {
+				$html = substr( $html, 0, $pos ) . $token . substr( $html, $pos );
+			}
+
 			$block['innerHTML']    = $html;
 			$block['innerContent'] = array( $html );
 			return $block;

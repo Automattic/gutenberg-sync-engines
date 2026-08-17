@@ -3,13 +3,16 @@
  * Intent-log authoring profile: typed intents + the disposition oracle.
  *
  * Speaks to the engine in typed intents (insert_text into a paragraph's
- * content field; set_attr on its align register; set_property on the
+ * content field, its offset mapped from the edit's abstract head/tail
+ * position; set_attr on its align register; set_property on the
  * document's entity-property registers — scalar properties, taxonomy
  * term sets by rest_base, and `meta.<key>` meta registers all ride it),
  * authored from the state each
  * simulated client OBSERVED at its own last read. Observation is
  * READ-DRIVEN: observe() decodes the rows the engine actually delivered
- * and advances the client's observed head and register versions from the
+ * and advances the client's observed head, register versions, and
+ * per-field text lengths (what tail-positioned typing authors its
+ * offsets from) from the
  * wire, exactly as a production client derives its baseSeq from received
  * rows, so a laggy client genuinely authors from a stale base and a
  * same-register collision escalates the later writer. The profile also
@@ -146,6 +149,17 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 		private $prop_version = array();
 
 		/**
+		 * Disposition model of each field's text length, in the engine's
+		 * UTF-16 code-unit coordinates, by syncId: genesis lengths plus
+		 * every applied insert_text/insert_block/remove_block in server
+		 * order. Used only to cross-check the wire-decoded lengths; clients
+		 * author their tail offsets from what they READ.
+		 *
+		 * @var array<string, int>
+		 */
+		private $text_len = array();
+
+		/**
 		 * Head each client observed at its own last read.
 		 *
 		 * @var int[]
@@ -175,6 +189,15 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 		 * @var array<int, array<string, mixed>>
 		 */
 		private $observed_props = array();
+
+		/**
+		 * Field text lengths each client observed at its own last read
+		 * ( client => syncId => UTF-16 code-unit length ) — the coordinate
+		 * a tail-positioned insert authors its offset from.
+		 *
+		 * @var array<int, array<string, int>>
+		 */
+		private $observed_text_len = array();
 
 		/**
 		 * Genesis syncId => paragraph index (the inverse of $paragraph_ids),
@@ -303,11 +326,44 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 				$this->sync_id_to_paragraph[ $sync_id ] = $i;
 			}
 			$this->attr_version           = array_fill( 0, max( 1, (int) $this->workload['paragraphs'] ), 0 );
+			$this->text_len               = $this->genesis_field_lengths();
 			$this->observed_head          = array_fill( 0, $this->client_count, 0 );
 			$this->observed_versions      = array_fill( 0, $this->client_count, $this->attr_version );
 			$this->observed_prop_versions = array_fill( 0, $this->client_count, array() );
 			$this->observed_props         = array_fill( 0, $this->client_count, array() );
+			$this->observed_text_len      = array_fill( 0, $this->client_count, $this->text_len );
 			return array_fill( 0, $this->client_count, 0 );
+		}
+
+		/**
+		 * The genesis text length of each paragraph's content field, keyed
+		 * by genesis syncId, in the engine's UTF-16 code-unit coordinates.
+		 *
+		 * A production client authors its first offsets from the editor's
+		 * genesis tree, which it holds before any read; the profile mirrors
+		 * that by deriving the lengths from the workload document with the
+		 * same wrapper-strip rule the engine's genesis uses ('<p>Hi</p>' →
+		 * 'Hi' — the content field stores the inner HTML of the block's
+		 * wrapper element).
+		 *
+		 * @return array<string, int> syncId => UTF-16 code-unit length.
+		 */
+		private function genesis_field_lengths(): array {
+			$lengths   = array();
+			$paragraph = 0;
+			foreach ( parse_blocks( (string) $this->workload['post_content'] ) as $block ) {
+				if ( 'core/paragraph' !== ( $block['blockName'] ?? null ) ) {
+					continue;
+				}
+				$text = trim( (string) $block['innerHTML'] );
+				if ( preg_match( '/^<([a-zA-Z][a-zA-Z0-9-]*)(\s[^>]*)?>(.*)<\/\1>$/s', $text, $matches ) ) {
+					$text = $matches[3];
+				}
+				$lengths[ $this->paragraph_ids[ $paragraph ] ] = WP_Intent_Log_Document::text_length( $text );
+				++$paragraph;
+			}
+
+			return $lengths;
 		}
 
 		/**
@@ -409,12 +465,22 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 					$sync_id = $this->paragraph_ids[ (int) $edit['paragraph'] ];
 				}
 
+				// The abstract position maps to a concrete offset in the
+				// client's OBSERVED text coordinates: head is offset 0,
+				// tail the observed length of the target field — the state
+				// the intent's baseSeq names, which is exactly where the
+				// server's transform picks the offset up.
+				$offset = 0;
+				if ( 'tail' === ( $edit['position'] ?? 'head' ) ) {
+					$offset = (int) ( $this->observed_text_len[ $client ][ $sync_id ] ?? 0 );
+				}
+
 				$payload = array(
 					'type'    => 'insert_text',
 					'payload' => array(
 						'syncId' => $sync_id,
 						'field'  => 'content',
-						'offset' => 0,
+						'offset' => $offset,
 						'text'   => $edit['text'],
 					),
 				);
@@ -468,6 +534,21 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 					$this->prop_version[ $name ] = ( $this->prop_version[ $name ] ?? 0 ) + 1;
 					// Same server-order rule as align registers.
 					$this->expected_props[ $name ] = $edit['value'];
+				} elseif ( 'text' === $op ) {
+					// An applied insert grows the field by its full text
+					// (the engine clamps offsets, never truncates payloads).
+					if ( isset( $edit['block_id'] ) ) {
+						$sync_id = 'ins-' . $edit['block_id'];
+					} else {
+						$sync_id = $this->paragraph_ids[ (int) $edit['paragraph'] ];
+					}
+
+					$this->text_len[ $sync_id ] = ( $this->text_len[ $sync_id ] ?? 0 )
+						+ WP_Intent_Log_Document::text_length( (string) $edit['text'] );
+				} elseif ( 'insert_block' === $op ) {
+					$this->text_len[ 'ins-' . $edit['block_id'] ] = WP_Intent_Log_Document::text_length( (string) $edit['marker'] );
+				} elseif ( 'remove_block' === $op ) {
+					unset( $this->text_len[ 'ins-' . $edit['block_id'] ] );
 				}
 			} elseif ( 'voided' === $status && in_array( $disposition['reason'] ?? '', self::LOGGED_VOID_REASONS, true ) ) {
 				// Apply-time voids append their intent row before the void
@@ -508,7 +589,8 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 
 		/**
 		 * A read is what the client observes: decode the delivered rows and
-		 * advance the client's observed head and register versions from the
+		 * advance the client's observed head, register versions, and
+		 * per-field text lengths from the
 		 * WIRE, exactly as a production client derives its baseSeq from
 		 * received rows. Intent rows are the log, one seq step each
 		 * (apply-time-voided ones included); snapshot rows (genesis, or a
@@ -530,6 +612,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 			$versions      = $this->observed_versions[ $client ];
 			$prop_versions = $this->observed_prop_versions[ $client ];
 			$props         = $this->observed_props[ $client ];
+			$lengths       = $this->observed_text_len[ $client ];
 			$rows          = (array) ( $response['updates'] ?? array() );
 
 			// An apply-time-voided intent sits in the log WITHOUT bumping any
@@ -562,12 +645,14 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 				if ( WP_Intent_Log_Engine::UPDATE_TYPE_SNAPSHOT === $type ) {
 					// Genesis (seq 0) or a compaction checkpoint: the client
 					// re-bootstraps at the snapshot's seq, with the register
-					// versions and property state its document carries.
+					// versions, property state, and field text its document
+					// carries.
 					$head          = (int) ( $decoded['seq'] ?? 0 );
 					$doc           = is_array( $decoded['doc'] ?? null ) ? $decoded['doc'] : array();
 					$versions      = $this->versions_from_doc( $doc );
 					$prop_versions = is_array( $doc['propVersions'] ?? null ) ? $doc['propVersions'] : array();
 					$props         = is_array( $doc['props'] ?? null ) ? $doc['props'] : array();
+					$lengths       = self::lengths_from_doc( $doc );
 					continue;
 				}
 
@@ -588,6 +673,19 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 					$name                   = (string) ( $decoded['payload']['name'] ?? '' );
 					$prop_versions[ $name ] = ( $prop_versions[ $name ] ?? 0 ) + 1;
 					$props[ $name ]         = $decoded['payload']['value'] ?? null;
+				} elseif ( 'insert_text' === ( $decoded['type'] ?? '' ) ) {
+					// An applied insert grows the field by its full text;
+					// the transform only moves offsets, never the payload.
+					$sync_id             = (string) ( $decoded['payload']['syncId'] ?? '' );
+					$lengths[ $sync_id ] = ( $lengths[ $sync_id ] ?? 0 )
+						+ WP_Intent_Log_Document::text_length( (string) ( $decoded['payload']['text'] ?? '' ) );
+				} elseif ( 'insert_block' === ( $decoded['type'] ?? '' ) ) {
+					$block = $decoded['payload']['block'] ?? null;
+					if ( is_array( $block ) && is_string( $block['syncId'] ?? null ) ) {
+						$lengths[ $block['syncId'] ] = WP_Intent_Log_Document::text_length( (string) ( $block['text'] ?? '' ) );
+					}
+				} elseif ( 'remove_block' === ( $decoded['type'] ?? '' ) ) {
+					unset( $lengths[ (string) ( $decoded['payload']['syncId'] ?? '' ) ] );
 				}
 			}
 
@@ -595,6 +693,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 			$this->observed_versions[ $client ]      = $versions;
 			$this->observed_prop_versions[ $client ] = $prop_versions;
 			$this->observed_props[ $client ]         = $props;
+			$this->observed_text_len[ $client ]      = $lengths;
 
 			if ( ! $this->assert_model ) {
 				return;
@@ -637,6 +736,24 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 				);
 			}
 
+			// Field text lengths: key order is insertion order (inserted
+			// blocks appear as they land), so compare order-insensitively.
+			$wire_lengths  = $lengths;
+			$model_lengths = $this->text_len;
+			ksort( $wire_lengths );
+			ksort( $model_lengths );
+			if ( $wire_lengths !== $model_lengths ) {
+				$this->record_consistency_failure(
+					'model-wire-text-lengths',
+					sprintf(
+						'client %d decoded field text lengths {%s} from delivered rows, but dispositions account for {%s}',
+						$client,
+						(string) wp_json_encode( $wire_lengths ),
+						(string) wp_json_encode( $model_lengths )
+					)
+				);
+			}
+
 			foreach ( $this->expected_props as $name => $value ) {
 				if ( ( $props[ $name ] ?? null ) !== $value ) {
 					$this->record_consistency_failure(
@@ -671,6 +788,25 @@ if ( ! class_exists( 'WP_Sync_Bench_Intent_Log_Profile' ) ) {
 			}
 
 			return $versions;
+		}
+
+		/**
+		 * Reads every block's content-field text length (UTF-16 code units)
+		 * out of a snapshot document, keyed by syncId. The workload never
+		 * nests blocks, so the root list is the whole document.
+		 *
+		 * @param array $doc Snapshot document.
+		 * @return array<string, int> syncId => text length.
+		 */
+		private static function lengths_from_doc( array $doc ): array {
+			$lengths = array();
+			foreach ( (array) ( $doc['root'] ?? array() ) as $block ) {
+				if ( is_string( $block['syncId'] ?? null ) ) {
+					$lengths[ $block['syncId'] ] = WP_Intent_Log_Document::text_length( (string) ( $block['fields']['content']['text'] ?? '' ) );
+				}
+			}
+
+			return $lengths;
 		}
 
 		/**

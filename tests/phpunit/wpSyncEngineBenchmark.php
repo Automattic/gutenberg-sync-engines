@@ -221,6 +221,31 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 		$this->assertSame( $d['rounds'], $e['rounds'] );
 	}
 
+	public function test_text_edits_carry_seeded_positions() {
+		$workload  = WP_Sync_Bench_Workload::build( 'parallel-paragraphs', 7, 30, 3, 4 );
+		$positions = array();
+		foreach ( $workload['rounds'] as $edits ) {
+			foreach ( $edits as $edit ) {
+				if ( 'text' === $edit['op'] ) {
+					// Every text edit carries an abstract position the
+					// profiles map to engine coordinates (intent-log: an
+					// offset from the client's observed field length;
+					// yjs: an index in the client's own Y.Text; de-rtc: a
+					// splice before the closing tag).
+					$this->assertContains( $edit['position'], array( 'head', 'tail' ) );
+					$positions[ $edit['position'] ] = true;
+				} else {
+					$this->assertArrayNotHasKey( 'position', $edit );
+				}
+			}
+		}
+
+		// The seeded draw exercises both positions (90 text edits here), so
+		// typing is no longer all prepends.
+		$this->assertArrayHasKey( 'head', $positions );
+		$this->assertArrayHasKey( 'tail', $positions );
+	}
+
 	public function test_ingest_concurrency_histogram() {
 		$workload  = WP_Sync_Bench_Workload::build( 'parallel-paragraphs', 7, 10, 3, 4 );
 		$histogram = WP_Sync_Bench_Workload::ingest_concurrency_histogram( $workload['rounds'] );
@@ -633,12 +658,43 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 		$this->assertTrue( $report['quality']['converged'] );
 	}
 
-	public function test_de_rtc_laggy_clients_retry_stale_bases_and_lose_nothing() {
-		// The laggy client reads every 10th round while three peers land
-		// ~3 versions per round: its base ages out of the engine's bounded
-		// version-snapshot window (20), so stale-base voids occur and the
-		// profile's retry-at-fresh-base lane must re-propose them.
+	public function test_de_rtc_laggy_clients_converge_and_lose_nothing() {
+		// The laggy client reads every 10th round while peers land ~3
+		// versions per round. Its base still stays mostly fresh: like the
+		// shipping codec (whose polling transport returns rows and
+		// dispositions in the same response), every APPLIED proposal
+		// advances the base at settle, so steady-state lag alone no longer
+		// ages a base out of the version-snapshot window — deep transforms
+		// and escalations happen, lost work must not.
 		$report = $this->run_de_rtc( 'laggy-newsroom', 30, 4 );
+
+		$this->assertSame( 0, $report['quality']['lost_work'] );
+		$this->assertSame( array(), $report['quality']['convergence_failures'] );
+		$this->assertTrue( $report['quality']['converged'] );
+	}
+
+	public function test_de_rtc_stale_base_voids_retry_after_deep_read_gap() {
+		// The reconnect shape: a contended register writer with a DEEP read
+		// gap. With ONE paragraph, every round restyles the same register
+		// with per-client distinct values, so the gapped client's proposals
+		// conflict every single round (escalations never advance its base;
+		// the applied-settle fast-forward/adopt lane never fires) while the
+		// winning peers advance the canonical — its base ages out of the
+		// engine's bounded version-snapshot window (20) structurally, not
+		// by seed luck: stale-base voids occur and the profile's
+		// retry-at-fresh-base lane must re-propose them after the gap ends.
+		// (More paragraphs would rotate the contended target and the gapped
+		// client would eventually land a clean apply, re-anchoring its base
+		// the way the shipping codec's row-driven advance does.)
+		$workload                  = WP_Sync_Bench_Workload::build( 'contended-paragraph', 7, 30, 3, 1 );
+		$workload['read_every'][2] = 25;
+		$post_id                   = self::factory()->post->create(
+			array( 'post_content' => $workload['post_content'] )
+		);
+		$storage                   = new WP_Sync_Bench_Memory_Storage();
+		$engine                    = new WP_De_RTC_Engine( $storage );
+
+		$report = WP_Sync_Bench_Runner::run( $engine, $storage, $post_id, $workload );
 
 		$this->assertGreaterThan( 0, $report['quality']['dispositions']['voided'], 'expected stale-base voids to exercise the retry lane' );
 		$this->assertGreaterThan( 0, $report['storage']['followups'], 'expected retry follow-up proposals' );

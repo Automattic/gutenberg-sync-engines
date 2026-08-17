@@ -12,9 +12,13 @@
  *
  * Seven operations:
  *
- * - `text` — insert a unique token at offset 0 of a paragraph's content
- *   field (a keystroke batch). Targets a genesis paragraph by index, or,
- *   in `remove-contention`, an inserted block by `block_id`.
+ * - `text` — insert a unique token into a paragraph's content field (a
+ *   keystroke batch) at a seeded abstract position: `head` (offset 0) or
+ *   `tail` (the end of the field as the authoring client observed it).
+ *   Targets a genesis paragraph by index, or, in `remove-contention`, an
+ *   inserted block by `block_id`. Profiles map the position to engine
+ *   coordinates from each client's own observed state; the token-counting
+ *   oracles are position-independent.
  * - `attr` — set a genesis paragraph's align register (a restyle).
  * - `set_property` — set an entity-property register (slug, template, …)
  *   on the document itself, the field-sync traffic PR #22 added. Names
@@ -485,7 +489,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 						break;
 				}
 
-				self::finalize_edits( $edits, $r );
+				self::finalize_edits( $edits, $r, $rand );
 				self::shuffle_edits( $edits, $rand );
 				$round_list[] = $edits;
 			}
@@ -618,7 +622,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 					}
 				}
 
-				self::finalize_edits( $edits, $r );
+				self::finalize_edits( $edits, $r, $rand );
 				self::shuffle_edits( $edits, $rand );
 				$round_list[] = array(
 					'edits'   => $edits,
@@ -681,17 +685,25 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 		/**
 		 * Stamps text/attr/property edits with their unique token or value.
 		 *
-		 * @param array $edits Round edits (by reference).
-		 * @param int   $round Round index.
+		 * Text edits also draw a seeded abstract position — `head` (offset
+		 * 0) or `tail` (the observed end of the field) — so typing is not
+		 * all prepends (offset 0 is a special case for both OT transform
+		 * paths and CRDT ordering). Profiles map the position to concrete
+		 * engine coordinates from each client's own observed state.
+		 *
+		 * @param array    $edits Round edits (by reference).
+		 * @param int      $round Round index.
+		 * @param callable $rand  Deterministic draw.
 		 */
-		private static function finalize_edits( array &$edits, int $round ): void {
+		private static function finalize_edits( array &$edits, int $round, callable $rand ): void {
 			foreach ( $edits as $index => &$edit ) {
 				if ( 'text' === $edit['op'] ) {
 					// A unique, delimiter-terminated token per edit: the
 					// convergence oracles count these in the materialized
 					// content, so no token may be a substring of another
 					// (';' terminates).
-					$edit['text'] = ' r' . $round . 'c' . $edit['client'] . '.' . $index . ';';
+					$edit['text']     = ' r' . $round . 'c' . $edit['client'] . '.' . $index . ';';
+					$edit['position'] = 0 === $rand( 2 ) ? 'head' : 'tail';
 				} elseif ( 'attr' === $edit['op'] ) {
 					$edit['align'] = self::align_value( $round, (int) $edit['client'] );
 				} elseif ( 'set_property' === $edit['op'] ) {
