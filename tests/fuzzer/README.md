@@ -38,6 +38,8 @@ npm run fuzz -- --users=3                        # adds a seeded late joiner
 npm run fuzz -- --no-faults --no-reload          # low-noise convergence-only
 npm run fuzz -- --combos=intent-log/http-polling \
     --seed-list=42 --trace=retain-on-failure     # replay one failing seed
+npm run fuzz -- --combos=yjs-server/http-polling \
+    --seed-list=8 --steps=14 --shrink            # bisect to minimal steps
 ```
 
 `--help` lists everything. Prerequisites are the standard repo setup
@@ -155,8 +157,11 @@ including the worktree duplicate-mount handling). Engine/transport are set
   look — races are real bugs too.
 - **reproducible** (failed twice): start from the recheck's Playwright trace
   (`recheck-artifacts/`) and the `fuzz-run.json` action trace; replay with
-  the command printed in `summary.md`. Shrink by re-running with smaller
-  `--steps` while the failure persists.
+  the command printed in `summary.md`. Pass `--shrink` to bisect each
+  reproduced signature to a minimal `--steps` automatically (the summary's
+  replay command then uses the shrunk count). A shrunk run is seeded
+  fresh — fewer steps reshuffles milestone placement — so only the failure
+  signature is guaranteed to match, not the exact schedule.
 - Documented engine capability gaps are excluded up front: the runner's
   `ENGINE_CAPABILITIES` map (run.mjs) disables actions an engine cannot
   sync (currently de-rtc's missing title sync) so lanes measure real

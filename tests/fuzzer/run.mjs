@@ -87,6 +87,7 @@ function parseArgs( argv ) {
 		noReload: false,
 		out: path.join( FUZZER_ROOT, 'artifacts' ),
 		recheck: true,
+		shrink: false,
 		seedList: null,
 		seedStart: 1,
 		seeds: 5,
@@ -143,6 +144,9 @@ function parseArgs( argv ) {
 			case '--no-recheck':
 				args.recheck = false;
 				break;
+			case '--shrink':
+				args.shrink = true;
+				break;
 			case '--no-faults':
 				args.noFaults = true;
 				break;
@@ -191,6 +195,7 @@ function printUsage() {
 			'  --users=N            Collaborators; 3 adds a seeded late joiner (default: 2)',
 			'  --trace=MODE         Playwright trace mode for the sweep (default: off; rechecks always retain-on-failure)',
 			'  --no-recheck         Skip the failing-seed recheck pass',
+			'  --shrink             Bisect each reproducible failure to a minimal --steps (one exemplar per signature; a shrunk run is seeded fresh, so only the failure signature is guaranteed to match)',
 			'  --no-faults          Disable sync fault injection',
 			'  --no-reload          Disable mid-run and final reload milestones',
 			'  --headed             Headed browsers',
@@ -569,15 +574,24 @@ async function readReport( reportPath ) {
 /**
  * Run the fuzz spec once for a combo + seed set.
  *
- * @param {Object} options            Invocation options.
- * @param {Object} options.combo      { engine, transport }.
- * @param {string} options.baseUrl    Tests site URL.
- * @param {string} options.comboDir   Artifact directory for this combo.
- * @param {Array}  options.seeds      Seeds to run (strings or numbers).
- * @param {Object} options.args       Parsed CLI args.
- * @param {string} options.phase      'sweep' or 'recheck'.
+ * @param {Object} options               Invocation options.
+ * @param {Object} options.combo         { engine, transport }.
+ * @param {string} options.baseUrl       Tests site URL.
+ * @param {string} options.comboDir      Artifact directory for this combo.
+ * @param {Array}  options.seeds         Seeds to run (strings or numbers).
+ * @param {Object} options.args          Parsed CLI args.
+ * @param {string} options.phase         'sweep', 'recheck', or a shrink probe label.
+ * @param {?number} options.stepsOverride Steps for this invocation (default: args.steps).
  */
-async function runPlaywright( { combo, baseUrl, comboDir, seeds, args, phase } ) {
+async function runPlaywright( {
+	combo,
+	baseUrl,
+	comboDir,
+	seeds,
+	args,
+	phase,
+	stepsOverride = null,
+} ) {
 	const reportPath = path.join( comboDir, `${ phase }-report.json` );
 	const outputDir = path.join( comboDir, `${ phase }-artifacts` );
 	await fs.mkdir( outputDir, { recursive: true } );
@@ -588,7 +602,7 @@ async function runPlaywright( { combo, baseUrl, comboDir, seeds, args, phase } )
 		RTC_FUZZ_JSON_REPORT: reportPath,
 		RTC_FUZZ_OUTPUT_DIR: outputDir,
 		RTC_FUZZ_SEEDS: seeds.join( ',' ),
-		RTC_FUZZ_STEPS: String( args.steps ),
+		RTC_FUZZ_STEPS: String( stepsOverride ?? args.steps ),
 		RTC_FUZZ_TRACE:
 			phase === 'recheck'
 				? 'retain-on-failure'
@@ -729,6 +743,8 @@ async function main() {
 
 	const ndjsonPath = path.join( runDir, 'summary.ndjson' );
 	const comboSummaries = [];
+	// `${ comboKey }|${ signature }` → minimal failing step count (--shrink).
+	const shrinkMap = new Map();
 	let reproducibleFailures = 0;
 
 	try {
@@ -796,6 +812,58 @@ async function main() {
 					seeds: failedSeeds,
 				} );
 			}
+
+			// Bisect one exemplar per reproduced signature down to the
+			// smallest failing --steps, while this combo's engine/transport
+			// (and daemon) are still configured. A shrunk run is seeded
+			// fresh — fewer steps reshuffles milestone placement — so only
+			// the failure signature is required to match.
+			if ( args.shrink ) {
+				const shrunkSignatures = new Set();
+				for ( const failure of recheck.filter(
+					( result ) => result.status !== 'passed'
+				) ) {
+					const signature = failureSignature( failure.error );
+					if ( shrunkSignatures.has( signature ) ) {
+						continue;
+					}
+					shrunkSignatures.add( signature );
+					let hi = args.steps;
+					let lo = 0;
+					while ( hi - lo > 1 ) {
+						const mid = Math.floor( ( lo + hi ) / 2 );
+						log(
+							`Shrinking ${ comboKey }#${ failure.seed }: trying ${ mid } step(s)…`
+						);
+						const probe = await runPlaywright( {
+							args,
+							baseUrl,
+							combo,
+							comboDir,
+							phase: `shrink-s${ failure.seed }-${ mid }`,
+							seeds: [ failure.seed ],
+							stepsOverride: mid,
+						} );
+						const failed = probe.find(
+							( result ) =>
+								String( result.seed ) ===
+									String( failure.seed ) &&
+								result.status !== 'passed' &&
+								failureSignature( result.error ) === signature
+						);
+						if ( failed ) {
+							hi = mid;
+						} else {
+							lo = mid;
+						}
+					}
+					log(
+						`Shrunk ${ comboKey }#${ failure.seed } to ${ hi } step(s).`
+					);
+					shrinkMap.set( `${ comboKey }|${ signature }`, hi );
+				}
+			}
+
 			if ( daemon ) {
 				stopWsDaemon();
 			}
@@ -902,11 +970,20 @@ async function main() {
 	if ( signatureMap.size ) {
 		summaryLines.push( '', '## Reproducible failure signatures', '' );
 		for ( const [ signature, entry ] of signatureMap ) {
+			const shrunkSteps = shrinkMap.get(
+				`${
+					entry.example.combo
+				}|${ signature }`
+			);
 			summaryLines.push(
 				`- \`${ signature }\``,
 				`  - combos: ${ [ ...entry.combos ].join( ', ' ) }`,
 				`  - seeds: ${ entry.seeds.join( ', ' ) }`,
-				`  - replay: \`npm run fuzz -- --combos=${ entry.example.combo } --seed-list=${ entry.example.seed } --steps=${ args.steps } --trace=retain-on-failure\``
+				`  - replay: \`npm run fuzz -- --combos=${ entry.example.combo } --seed-list=${ entry.example.seed } --steps=${
+					shrunkSteps ?? args.steps
+				} --trace=retain-on-failure\`${
+					shrunkSteps ? ` (shrunk from ${ args.steps } steps)` : ''
+				}`
 			);
 		}
 	}

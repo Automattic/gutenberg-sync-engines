@@ -32,6 +32,7 @@
   "scripts": {
     "bench": "node tests/benchmarks/bench.mjs",
     "build": "wp-scripts build",
+    "doctor": "node ./tests/e2e/bin/rtc-dev.mjs --mode=doctor",
     "env": "wp-env",
     "env:tests": "wp-env --config .wp-env.tests.json",
     "format": "wp-scripts format",

@@ -74,9 +74,9 @@ function getArg( name ) {
 
 function parseMode() {
 	const mode = getArg( 'mode' ) || 'websockets';
-	if ( ! [ 'websockets', 'daemon', 'http' ].includes( mode ) ) {
+	if ( ! [ 'websockets', 'daemon', 'http', 'doctor' ].includes( mode ) ) {
 		throw new Error(
-			`Unknown --mode=${ mode }. Expected "websockets", "daemon", or "http".`
+			`Unknown --mode=${ mode }. Expected "websockets", "daemon", "http", or "doctor".`
 		);
 	}
 	return mode;
@@ -118,9 +118,10 @@ function runCommand( command, args, options = {} ) {
 	} );
 }
 
-function runWpCli( wpArgs, { allowFailure = false } = {} ) {
+function runWpCli( wpArgs, { allowFailure = false, configFile = null } = {} ) {
 	const promise = runCommand( 'npx', [
 		'wp-env',
+		...( configFile ? [ '--config', configFile ] : [] ),
 		'run',
 		'cli',
 		'wp',
@@ -135,14 +136,16 @@ function runWpCli( wpArgs, { allowFailure = false } = {} ) {
 /**
  * The wp-env work directory for this checkout, mirroring wp-env's own
  * naming: the legacy md5( config file path ) directory when it exists,
- * else `wp-env-<project-dir>-<md5 short hash>`.
+ * else `wp-env-<project-dir>[-<variant>]-<md5 short hash>` (the variant
+ * comes from the config filename: .wp-env.tests.json → `tests`).
  *
+ * @param {string} configBasename Config filename (default: .wp-env.json).
  * @return {string} Absolute path to the work directory.
  */
-function wpEnvWorkDirectory() {
+function wpEnvWorkDirectory( configBasename = '.wp-env.json' ) {
 	const home =
 		process.env.WP_ENV_HOME || path.join( os.homedir(), '.wp-env' );
-	const configFilePath = path.join( REPO_ROOT, '.wp-env.json' );
+	const configFilePath = path.join( REPO_ROOT, configBasename );
 	const hash = createHash( 'md5' ).update( configFilePath ).digest( 'hex' );
 
 	const legacy = path.join( home, hash );
@@ -150,30 +153,43 @@ function wpEnvWorkDirectory() {
 		return legacy;
 	}
 
+	const variant = configBasename
+		.replace( /^\.wp-env\.?/, '' )
+		.replace( /\.?json$/, '' );
 	const descriptive = path.join(
 		home,
-		`wp-env-${ path.basename( REPO_ROOT ) }-${ hash.slice( 0, 8 ) }`
+		`wp-env-${ path.basename( REPO_ROOT ) }${
+			variant ? `-${ variant }` : ''
+		}-${ hash.slice( 0, 8 ) }`
 	);
 	if ( existsSync( descriptive ) ) {
 		return descriptive;
 	}
 
-	// Last resort (renamed checkout, older wp-env): scan for the compose
-	// file that mounts this checkout as the plugin.
-	const needle = `${ REPO_ROOT }:/var/www/html/wp-content/plugins/gutenberg-sync-engines`;
-	for ( const entry of readdirSync( home ) ) {
-		const composeFile = path.join( home, entry, 'docker-compose.yml' );
-		try {
-			if ( readFileSync( composeFile, 'utf8' ).includes( needle ) ) {
-				return path.join( home, entry );
+	if ( '.wp-env.json' === configBasename ) {
+		// Last resort (renamed checkout, older wp-env): scan for the compose
+		// file that mounts this checkout as the plugin. The TESTS config
+		// mounts the same plugin, so its work dir would also match — skip
+		// the `-tests-` variant or a stopped dev env reads as running on
+		// the tests site's port.
+		const needle = `${ REPO_ROOT }:/var/www/html/wp-content/plugins/gutenberg-sync-engines`;
+		for ( const entry of readdirSync( home ) ) {
+			if ( entry.includes( '-tests-' ) ) {
+				continue;
 			}
-		} catch {
-			// Not a work directory; keep scanning.
+			const composeFile = path.join( home, entry, 'docker-compose.yml' );
+			try {
+				if ( readFileSync( composeFile, 'utf8' ).includes( needle ) ) {
+					return path.join( home, entry );
+				}
+			} catch {
+				// Not a work directory; keep scanning.
+			}
 		}
 	}
 
 	throw new Error(
-		`Could not find the wp-env work directory for ${ REPO_ROOT } under ${ home }. Has \`npm run env start\` ever run here?`
+		`Could not find the wp-env work directory for ${ REPO_ROOT } (${ configBasename }) under ${ home }. Has wp-env ever started here?`
 	);
 }
 
@@ -481,8 +497,238 @@ async function runHttpMode() {
 	process.stdout.write( '\nRTC switched to HTTP polling.\n' );
 }
 
+/**
+ * Read-only environment doctor (`npm run doctor`): verifies the build and
+ * environment facts the other tools assume, printing one line per check
+ * with the fix when one fails. Mutates nothing. Exits non-zero when any
+ * FAIL was reported (info/warn lines do not fail the run).
+ */
+async function runDoctorMode() {
+	let failures = 0;
+	const ok = ( message ) => process.stdout.write( `  ok    ${ message }\n` );
+	const info = ( message ) =>
+		process.stdout.write( `  info  ${ message }\n` );
+	const warn = ( message ) =>
+		process.stdout.write( `  WARN  ${ message }\n` );
+	const fail = ( message, fix ) => {
+		failures++;
+		process.stdout.write( `  FAIL  ${ message }\n` );
+		if ( fix ) {
+			process.stdout.write( `        fix: ${ fix }\n` );
+		}
+	};
+
+	process.stdout.write( 'Builds:\n' );
+	if ( existsSync( path.join( REPO_ROOT, 'build/sync-engines.js' ) ) ) {
+		ok( 'plugin client bundle (build/sync-engines.js)' );
+	} else {
+		fail(
+			'plugin client bundle missing — the editor has no engines or transports',
+			'npm run build'
+		);
+	}
+	if ( existsSync( path.join( REPO_ROOT, 'gutenberg/build' ) ) ) {
+		ok( 'vendored Gutenberg subtree is built (gutenberg/build)' );
+	} else {
+		fail(
+			'vendored Gutenberg subtree is not built — the collaboration framework cannot load, and every editor session silently times out',
+			'cd gutenberg && npm install --ignore-scripts && npm run build'
+		);
+	}
+	if ( existsSync( path.join( REPO_ROOT, 'gutenberg/node_modules' ) ) ) {
+		ok( 'subtree node_modules present (Jest/typecheck resolve from it)' );
+	} else {
+		warn(
+			'gutenberg/node_modules missing — test:js and typecheck will fail. fix: cd gutenberg && npm install --ignore-scripts'
+		);
+	}
+
+	for ( const [ label, configFile ] of [
+		[ 'dev env (.wp-env.json)', null ],
+		[ 'tests env (.wp-env.tests.json)', '.wp-env.tests.json' ],
+	] ) {
+		process.stdout.write( `${ label }:\n` );
+		let workDirectory = null;
+		try {
+			workDirectory = wpEnvWorkDirectory( configFile || '.wp-env.json' );
+		} catch {
+			info( 'never started here (npm run env start / env:tests start)' );
+			continue;
+		}
+		const composeFile = path.join( workDirectory, 'docker-compose.yml' );
+		if ( ! ( await isEnvRunning( composeFile ) ) ) {
+			info( 'not running' );
+			continue;
+		}
+		const sitePort = devSitePort( composeFile );
+		const restRoot = `http://localhost:${ sitePort }/wp-json/`;
+		if ( await waitForHealth( restRoot, 2500 ) ) {
+			ok( `running, REST reachable at ${ restRoot }` );
+		} else {
+			fail(
+				`running but REST unreachable at ${ restRoot }`,
+				'check the wordpress container logs (docker compose -f <workdir>/docker-compose.yml logs wordpress)'
+			);
+			continue;
+		}
+
+		let plugins;
+		try {
+			plugins = JSON.parse(
+				await runWpCli(
+					[
+						'plugin',
+						'list',
+						'--fields=name,status,file',
+						'--format=json',
+					],
+					{ configFile }
+				)
+			);
+		} catch ( error ) {
+			fail( `wp-cli failed: ${ error.message }` );
+			continue;
+		}
+
+		const gutenberg = plugins.find( ( p ) => 'gutenberg' === p.name );
+		if ( gutenberg && 'active' === gutenberg.status ) {
+			ok( 'gutenberg plugin active' );
+		} else {
+			warn(
+				'gutenberg plugin inactive — collaboration framework absent. fix: wp plugin activate gutenberg (the e2e/fuzzer setups do this themselves)'
+			);
+		}
+
+		const copies = plugins.filter( ( plugin ) =>
+			plugin.file.endsWith( '/gutenberg-sync-engines.php' )
+		);
+		const active = copies.filter( ( p ) => 'active' === p.status );
+		const directoryCopy = copies.find(
+			( p ) => p.name === path.basename( REPO_ROOT )
+		);
+		if ( 0 === copies.length ) {
+			fail( 'gutenberg-sync-engines is not installed in this env' );
+		} else if ( active.length > 1 ) {
+			fail(
+				`both plugin copies are active (${ active
+					.map( ( p ) => p.name )
+					.join( ', ' ) }) — fatal redeclare`,
+				'deactivate the mapping copy: wp plugin deactivate gutenberg-sync-engines (npm run rtc:ws repairs the dev env automatically)'
+			);
+		} else if (
+			1 === active.length &&
+			directoryCopy &&
+			active[ 0 ].name !== directoryCopy.name
+		) {
+			fail(
+				`the mapping copy (${ active[ 0 ].name }) is active instead of the directory-name copy — the NEXT wp-env start re-activates ${ directoryCopy.name } and fatals`,
+				`wp plugin deactivate ${ active[ 0 ].name } && wp plugin activate ${ directoryCopy.name }`
+			);
+		} else if ( 0 === active.length ) {
+			warn(
+				'plugin installed but inactive (the e2e/fuzzer setups activate it themselves)'
+			);
+		} else {
+			ok( `plugin active as ${ active[ 0 ].name }` );
+		}
+
+		if (
+			active.length >= 1 &&
+			gutenberg &&
+			'active' === gutenberg.status
+		) {
+			try {
+				await runWpCli(
+					[ 'cli', 'has-command', 'collaboration sync-server' ],
+					{ configFile }
+				);
+				ok( 'plugin loaded (wp collaboration commands registered)' );
+			} catch {
+				fail(
+					'plugins active but wp collaboration commands are missing — the framework or plugin bailed during load',
+					'check PHP notices: wp plugin list, and whether gutenberg/build exists in the container'
+				);
+			}
+		}
+
+		const options = await runWpCli(
+			[ 'option', 'get', 'wp_collaboration_enabled' ],
+			{ configFile, allowFailure: true }
+		);
+		const engine = await runWpCli( [ 'option', 'get', 'wp_sync_engine' ], {
+			configFile,
+			allowFailure: true,
+		} );
+		const transport = await runWpCli(
+			[ 'option', 'get', TRANSPORT_OPTION ],
+			{ configFile, allowFailure: true }
+		);
+		info(
+			`collaboration ${
+				'1' === ( options || '' ).trim() ? 'enabled' : 'disabled'
+			}, engine ${ (
+				engine || '(default: intent-log)'
+			).trim() }, transport ${ (
+				transport || '(default: http-polling)'
+			).trim() }`
+		);
+
+		if ( configFile && 8889 !== sitePort ) {
+			// This checkout's tests env is NOT on the default port; if some
+			// other project's env answers there, Playwright's webServer check
+			// silently reuses that foreign site (identical credentials, auth
+			// succeeds; first visible failure is deep in global-setup).
+			if (
+				await waitForHealth( 'http://localhost:8889/wp-json/', 2500 )
+			) {
+				warn(
+					`a FOREIGN wp-env holds :8889 while this checkout's tests site is on :${ sitePort } — always pass WP_BASE_URL=http://localhost:${ sitePort } to test:e2e/fuzz runs`
+				);
+			}
+		}
+	}
+
+	process.stdout.write( 'websocket daemon:\n' );
+	const daemonState = spawnSync(
+		'docker',
+		[ 'inspect', '-f', '{{.State.Running}}', DAEMON_CONTAINER_NAME ],
+		{ encoding: 'utf8' }
+	);
+	if ( 0 !== daemonState.status ) {
+		info(
+			`not running (container ${ DAEMON_CONTAINER_NAME } absent; npm run env start or rtc:ws starts it)`
+		);
+	} else if ( 'true' !== daemonState.stdout.trim() ) {
+		warn( `container ${ DAEMON_CONTAINER_NAME } exists but is stopped` );
+	} else if (
+		await waitForHealth( `http://localhost:${ PORT }/health`, 2500 )
+	) {
+		ok(
+			`running and healthy at ws://localhost:${ PORT } (serves the most recently started dev env's database)`
+		);
+	} else {
+		fail(
+			`container running but http://localhost:${ PORT }/health does not answer — browsers retry forever with no error`,
+			`docker logs ${ DAEMON_CONTAINER_NAME }; the daemon must bind 0.0.0.0 with the port published (npm run rtc:ws does both)`
+		);
+	}
+
+	process.stdout.write(
+		failures > 0
+			? `\n${ failures } problem(s) found.\n`
+			: '\nNo problems found.\n'
+	);
+	if ( failures > 0 ) {
+		process.exit( 1 );
+	}
+}
+
 async function main() {
 	const mode = parseMode();
+	if ( 'doctor' === mode ) {
+		await runDoctorMode();
+		return;
+	}
 	if ( 'http' === mode ) {
 		await runHttpMode();
 		return;
