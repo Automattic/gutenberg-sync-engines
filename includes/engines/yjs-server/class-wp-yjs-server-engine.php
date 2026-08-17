@@ -37,6 +37,15 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 	 *   safe WITHOUT the per-room ingest lock the intent-log engine
 	 *   requires: over-application converges, and no server-assigned total
 	 *   order is needed.
+	 * - Canonical maintenance is INCREMENTAL: the snapshot re-commits only
+	 *   once enough rows accumulate past its stamp (the
+	 *   `wp_sync_yjs_server_canonical_interval` filter, default 100 rows),
+	 *   after a replay repair, or when the load's row tail contained a
+	 *   snapshot row (so a full-state row is never re-parsed on every
+	 *   load). Between folds the canonical is deliberately stale — every
+	 *   load repairs it forward from the row tail, which is the same
+	 *   non-lossy lane that heals a lost fold race — and the ingest hot
+	 *   path skips the whole-document encodes entirely.
 	 * - `snapshot` rows carry the full canonical state (base64 V2): one at
 	 *   genesis (built deterministically from post content — a fixed
 	 *   per-room clientID and a fixed operation order make concurrent
@@ -239,11 +248,13 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		/**
 		 * Ingests one client's updates for a room.
 		 *
-		 * Each update is decoded and merged into the canonical document; the
+		 * Each update is decoded and merged into the room document; the
 		 * stored row is the diff of what the update contributed beyond the
-		 * server's pre-apply state. A batch that changes nothing (a
-		 * redelivery after an unknown outcome) settles as benign
-		 * `already-merged` voids and appends no rows. Malformed payloads
+		 * server's pre-apply state. An update that changes nothing (a
+		 * redelivery after an unknown outcome) settles as a benign
+		 * `already-merged` void and appends no row — detected per update
+		 * from the y-php transaction change signal, not by re-encoding the
+		 * document. Malformed payloads
 		 * settle per-update as `invalid-payload` voids rather than failing
 		 * the batch — one bad row must not starve valid edits.
 		 *
@@ -262,6 +273,13 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		 * order, and a concurrent canonical save that loses the race is
 		 * repaired from the update log on the next load (see load_room())
 		 * or by the in-request replay above.
+		 *
+		 * The canonical snapshot is NOT re-committed per request (see the
+		 * class docblock on incremental canonical maintenance): the hot path
+		 * appends rows and returns, and the fold — the whole-document encode
+		 * plus the room-meta write — runs only at the canonical interval,
+		 * after a replay repair, or when the load's tail carried a snapshot
+		 * row.
 		 *
 		 * @since 0.2.0
 		 *
@@ -289,10 +307,11 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 			if ( is_wp_error( $state ) ) {
 				return $state;
 			}
-			$doc         = $state['doc'];
-			$load_cursor = (int) $state['cursor'];
-
-			$before_bytes = \Yjs\encodeStateAsUpdateV2( $doc )->toBinaryString();
+			$doc           = $state['doc'];
+			$load_cursor   = (int) $state['cursor'];
+			$stale_rows    = (int) ( $state['stale_rows'] ?? 0 );
+			$tail_snapshot = (bool) ( $state['tail_snapshot'] ?? false );
+			$doc_bytes     = (int) ( $state['doc_bytes'] ?? 0 );
 
 			$dispositions = array();
 			$diffs        = array();
@@ -317,10 +336,20 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				}
 				$buffer = \Yjs\Lib0\Buffer::fromBinaryString( $binary );
 
-				$diff = self::apply_update_for_row( $doc, $buffer );
-				if ( null !== $diff ) {
-					$diffs[ count( $dispositions ) ] = $diff;
-					$dispositions[]                  = array( 'status' => 'applied' );
+				$applied = self::apply_update_for_row( $doc, $buffer );
+				if ( null !== $applied['diff'] ) {
+					if ( ! $applied['changed'] ) {
+						// The update contributed nothing new (a redelivery
+						// after an unknown outcome): settle as a benign
+						// idempotent void and append no row.
+						$dispositions[] = array(
+							'status' => 'voided',
+							'reason' => 'already-merged',
+						);
+						continue;
+					}
+					$diffs[]        = $applied['diff'];
+					$dispositions[] = array( 'status' => 'applied' );
 					continue;
 				}
 
@@ -328,11 +357,14 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				 * The update did not integrate cleanly: a throw can leave
 				 * the document partially mutated, and a missing-dependency
 				 * apply can integrate a prefix and park the rest as pending.
-				 * Restore the batch baseline exactly (batch-start state plus
-				 * the diffs accepted so far) before deciding how to settle.
+				 * Restore a clean batch baseline (committed state plus the
+				 * diffs accepted so far) before deciding how to settle.
 				 */
-				$doc                      = self::rebuild_doc( $before_bytes, $diffs );
-				$this->room_docs[ $room ] = null;
+				$recovered     = $this->recover_batch_doc( $room, $diffs, $replayed );
+				$doc           = $recovered['doc'];
+				$load_cursor   = (int) $recovered['cursor'];
+				$stale_rows    = (int) ( $recovered['stale_rows'] ?? 0 );
+				$tail_snapshot = (bool) ( $recovered['tail_snapshot'] ?? $tail_snapshot );
 
 				if ( ! self::is_decodable( $buffer ) ) {
 					// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
@@ -355,23 +387,35 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				 * watermark, so the under-claim invariant holds.
 				 */
 				if ( ! $replayed ) {
-					$replayed     = true;
-					$replay       = $this->replay_room_log( $room );
-					$doc          = $replay['doc'];
-					$load_cursor  = $replay['cursor'];
-					$before_bytes = \Yjs\encodeStateAsUpdateV2( $doc )->toBinaryString();
+					$replayed    = true;
+					$replay      = $this->replay_room_log( $room );
+					$doc         = $replay['doc'];
+					$load_cursor = (int) $replay['cursor'];
 					foreach ( $diffs as $accepted ) {
 						\Yjs\applyUpdateV2( $doc, \Yjs\Lib0\Buffer::fromBase64( $accepted ) );
 					}
-				}
 
-				$diff = self::apply_update_for_row( $doc, $buffer );
-				if ( null !== $diff ) {
-					// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
-					do_action( 'qm/debug', "wp-sync: yjs-server repaired {$room} from the update log during ingest" );
-					$diffs[ count( $dispositions ) ] = $diff;
-					$dispositions[]                  = array( 'status' => 'applied' );
-					continue;
+					$applied = self::apply_update_for_row( $doc, $buffer );
+					if ( null !== $applied['diff'] ) {
+						// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+						do_action( 'qm/debug', "wp-sync: yjs-server repaired {$room} from the update log during ingest" );
+						if ( ! $applied['changed'] ) {
+							$dispositions[] = array(
+								'status' => 'voided',
+								'reason' => 'already-merged',
+							);
+							continue;
+						}
+						$diffs[]        = $applied['diff'];
+						$dispositions[] = array( 'status' => 'applied' );
+						continue;
+					}
+
+					// The retry dirtied the replayed document; restore the
+					// clean baseline again before settling.
+					$recovered   = $this->recover_batch_doc( $room, $diffs, true );
+					$doc         = $recovered['doc'];
+					$load_cursor = (int) $recovered['cursor'];
 				}
 
 				/*
@@ -380,8 +424,6 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				 * send never landed). Only the client can close that gap,
 				 * with a full-state recovery update.
 				 */
-				$doc                      = self::rebuild_doc( $before_bytes, $diffs );
-				$this->room_docs[ $room ] = null;
 				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 				do_action( 'qm/debug', "wp-sync: yjs-server update depends on items missing from {$room}; client must resync" );
 				$dispositions[] = array(
@@ -390,36 +432,39 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				);
 			}
 
-			$after_bytes = \Yjs\encodeStateAsUpdateV2( $doc )->toBinaryString();
-			if ( $after_bytes === $before_bytes ) {
-				// Nothing new: settle would-be applies as benign idempotent
-				// voids and leave the row log untouched. A replay-repaired
-				// canonical is still worth persisting.
-				if ( $replayed ) {
-					// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- Encodes the canonical document's binary bytes for storage.
-					$this->save_canonical( $room, $doc, $load_cursor, base64_encode( $after_bytes ) );
-				}
-				foreach ( $dispositions as $i => $disposition ) {
-					if ( 'applied' === $disposition['status'] ) {
-						$dispositions[ $i ] = array(
-							'status' => 'voided',
-							'reason' => 'already-merged',
-						);
-					}
-				}
-				$this->stash_ingest_debug( $room, $context, $dispositions, 0, $replayed, strlen( $after_bytes ) );
-				return array( 'dispositions' => $dispositions );
-			}
+			/**
+			 * Filters the yjs-server canonical fold interval: the canonical
+			 * document snapshot in room meta re-commits once this many rows
+			 * accumulate past its stamped cursor. Between folds the
+			 * canonical is deliberately stale — loading a room applies the
+			 * row tail on top, so staleness is repaired forward on every
+			 * load, and history is only ever trimmed behind a retained
+			 * checkpoint snapshot row that any replay applies as full
+			 * state. 1 folds on every ingest (the previous behavior);
+			 * values below 1 disable folding and leave the log alone
+			 * authoritative.
+			 *
+			 * @since 0.5.0
+			 *
+			 * @param int    $interval Fold interval in stored rows.
+			 * @param string $room     Room identifier.
+			 */
+			$interval = (int) apply_filters( 'wp_sync_yjs_server_canonical_interval', 100, $room );
 
 			if ( array() === $diffs ) {
 				/*
-				 * The document changed but no diff row was recorded: an update
-				 * threw mid-apply and left partial state. Do NOT persist the
-				 * canonical snapshot — the log is the source of truth, and the
-				 * next load rebuilds a clean document from it.
+				 * Nothing effective this batch: every update settled as a
+				 * void, and no rows were appended. A replay-repaired
+				 * canonical is still worth persisting — the repair was
+				 * expensive and making it durable spares the next load.
 				 */
-				$this->room_docs[ $room ] = null;
-				$this->stash_ingest_debug( $room, $context, $dispositions, 0, $replayed, strlen( $after_bytes ) );
+				if ( $replayed && $interval >= 1 ) {
+					$binary    = \Yjs\encodeStateAsUpdateV2( $doc )->toBinaryString();
+					$doc_bytes = strlen( $binary );
+					// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- Encodes the canonical document's binary bytes for storage.
+					$this->save_canonical( $room, $doc, $load_cursor, base64_encode( $binary ) );
+				}
+				$this->stash_ingest_debug( $room, $context, $dispositions, 0, $replayed, $doc_bytes );
 				return array( 'dispositions' => $dispositions );
 			}
 
@@ -437,7 +482,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 			 */
 			$kses_diffs = array();
 			if ( ! current_user_can( 'unfiltered_html' ) ) {
-				$kses_diffs = $this->sanitize_unfiltered_html( $room, $doc, $before_bytes );
+				$kses_diffs = $this->sanitize_unfiltered_html( $room, $doc, $replayed );
 			}
 
 			foreach ( $diffs as $diff ) {
@@ -460,17 +505,37 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 					);
 				}
 			}
-			if ( array() !== $kses_diffs ) {
-				$after_bytes = \Yjs\encodeStateAsUpdateV2( $doc )->toBinaryString();
-			}
 
-			// $after_bytes IS the canonical encoding at the new head; reuse
-			// it rather than encoding the document a third time.
-			// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- Encodes the canonical document's binary bytes for storage.
-			$this->save_canonical( $room, $doc, $load_cursor, base64_encode( $after_bytes ) );
+			/*
+			 * The incremental fold decision. Fold when the canonical has
+			 * fallen a full interval behind (its stamp plus the tail rows
+			 * this load replayed plus the rows just appended), after a
+			 * replay repair (make the expensive repair durable), or when the
+			 * load's tail carried a snapshot row (fold past it once so later
+			 * loads stop re-parsing a full-state row). Otherwise the request
+			 * appends rows and returns without any whole-document encode —
+			 * the next load repairs the staleness forward, which is also
+			 * what makes a lost fold race between concurrent requests
+			 * non-lossy (the under-claiming stamp re-applies the missing
+			 * rows).
+			 */
+			$appended = count( $diffs ) + count( $kses_diffs );
+			if ( $interval >= 1 && ( $replayed || $tail_snapshot || $stale_rows + $appended >= $interval ) ) {
+				$binary    = \Yjs\encodeStateAsUpdateV2( $doc )->toBinaryString();
+				$doc_bytes = strlen( $binary );
+				// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- Encodes the canonical document's binary bytes for storage.
+				$this->save_canonical( $room, $doc, $load_cursor, base64_encode( $binary ) );
+			} else {
+				// Request-local reuse only (a same-request materialize); the
+				// next request reloads from storage as always.
+				$this->room_docs[ $room ] = array(
+					'doc'    => $doc,
+					'cursor' => $load_cursor,
+				);
+			}
 			$this->maybe_checkpoint( $room, $client_id, $doc );
 
-			$this->stash_ingest_debug( $room, $context, $dispositions, count( $diffs ), $replayed, strlen( $after_bytes ), count( $kses_diffs ) );
+			$this->stash_ingest_debug( $room, $context, $dispositions, count( $diffs ), $replayed, $doc_bytes, count( $kses_diffs ) );
 			return array( 'dispositions' => $dispositions );
 		}
 
@@ -488,12 +553,12 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		 *
 		 * @since 0.4.0
 		 *
-		 * @param string         $room         Room identifier.
-		 * @param \Yjs\Utils\Doc $doc          Canonical document (mutated).
-		 * @param string         $before_bytes Batch-start encoding.
+		 * @param string         $room     Room identifier.
+		 * @param \Yjs\Utils\Doc $doc      Canonical document (mutated).
+		 * @param bool           $replayed Whether ingest repaired from the log.
 		 * @return string[] Base64 compensation deltas (zero or one).
 		 */
-		private function sanitize_unfiltered_html( string $room, \Yjs\Utils\Doc $doc, string $before_bytes ): array {
+		private function sanitize_unfiltered_html( string $room, \Yjs\Utils\Doc $doc, bool $replayed ): array {
 			$wrappers = $this->room_wrappers( $room );
 			$after    = self::materialize_blocks( $doc, $wrappers );
 
@@ -507,12 +572,28 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				return array();
 			}
 
-			// Only blocks THIS batch touched are judged: byte-identical
-			// pre-batch blocks pass through (a privileged author's raw
-			// HTML is not destroyed by an unprivileged peer's unrelated
-			// edit).
-			$before_doc = self::rebuild_doc( $before_bytes, array() );
-			$before_set = array_fill_keys( self::materialize_blocks( $before_doc, $wrappers ), true );
+			/*
+			 * Only blocks THIS batch touched are judged: byte-identical
+			 * pre-batch blocks pass through (a privileged author's raw
+			 * HTML is not destroyed by an unprivileged peer's unrelated
+			 * edit). The baseline loads fresh from storage — this runs
+			 * BEFORE the batch's rows are appended, so committed state IS
+			 * the pre-batch state (a row a concurrent writer lands in
+			 * between widens the pass-through, which is the protective
+			 * direction). After a replay repair the canonical is suspect,
+			 * so the baseline replays from the log — the source of truth.
+			 */
+			if ( $replayed ) {
+				$before_state = $this->replay_room_log( $room );
+			} else {
+				$this->room_docs[ $room ] = null;
+				$before_state             = $this->load_room( $room );
+				if ( is_wp_error( $before_state ) ) {
+					$before_state = $this->replay_room_log( $room );
+				}
+			}
+			$this->room_docs[ $room ] = null;
+			$before_set               = array_fill_keys( self::materialize_blocks( $before_state['doc'], $wrappers ), true );
 			foreach ( $dirty as $index => $serialized ) {
 				if ( isset( $before_set[ $serialized ] ) ) {
 					unset( $dirty[ $index ] );
@@ -755,7 +836,14 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		 * @since 0.2.0
 		 *
 		 * @param string $room Room identifier.
-		 * @return array|WP_Error array( 'doc' => \Yjs\Utils\Doc, 'cursor' => int ).
+		 * @return array|WP_Error array( 'doc' => \Yjs\Utils\Doc, 'cursor' => int,
+		 *                        'stale_rows' => int, 'tail_snapshot' => bool,
+		 *                        'doc_bytes' => int ). `stale_rows` counts the
+		 *                        tail rows replayed past the canonical stamp,
+		 *                        `tail_snapshot` whether that tail carried a
+		 *                        snapshot row, `doc_bytes` the approximate
+		 *                        binary size of the canonical snapshot loaded —
+		 *                        the fold-pacing inputs for ingest.
 		 */
 		private function load_room( string $room ) {
 			if ( isset( $this->room_docs[ $room ] ) && null !== $this->room_docs[ $room ] ) {
@@ -767,15 +855,18 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 
 			$doc         = new \Yjs\Utils\Doc();
 			$meta_cursor = 0;
+			$doc_bytes   = 0;
 			if ( is_array( $meta ) && is_string( $meta['doc'] ?? null ) ) {
 				try {
 					\Yjs\applyUpdateV2( $doc, \Yjs\Lib0\Buffer::fromBase64( $meta['doc'] ) );
 					$meta_cursor = (int) ( $meta['cursor'] ?? 0 );
+					$doc_bytes   = (int) ( strlen( $meta['doc'] ) * 3 / 4 );
 				} catch ( \Throwable $e ) {
 					// A corrupt canonical snapshot falls back to a full log
 					// replay below.
 					$doc         = new \Yjs\Utils\Doc();
 					$meta_cursor = 0;
+					$doc_bytes   = 0;
 					// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 					do_action( 'qm/debug', "wp-sync: yjs-server canonical snapshot corrupt for {$room}; replaying log" );
 				}
@@ -789,11 +880,22 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 					return $genesis;
 				}
 				$state                    = array(
-					'doc'    => $doc,
-					'cursor' => $this->storage->get_cursor( $room ),
+					'doc'           => $doc,
+					'cursor'        => $this->storage->get_cursor( $room ),
+					'stale_rows'    => 0,
+					'tail_snapshot' => false,
+					'doc_bytes'     => 0,
 				);
 				$this->room_docs[ $room ] = $state;
 				return $state;
+			}
+
+			$tail_snapshot = false;
+			foreach ( $rows as $row ) {
+				if ( self::UPDATE_TYPE_SNAPSHOT === $row['type'] ) {
+					$tail_snapshot = true;
+					break;
+				}
 			}
 
 			$clean = self::apply_rows_to_doc( $doc, $rows, $room );
@@ -802,8 +904,11 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 			// the watermark would over-claim it, so fall back to the cursor
 			// the document provably reflects.
 			$state                    = array(
-				'doc'    => $doc,
-				'cursor' => $clean ? $this->storage->get_cursor( $room ) : $meta_cursor,
+				'doc'           => $doc,
+				'cursor'        => $clean ? $this->storage->get_cursor( $room ) : $meta_cursor,
+				'stale_rows'    => count( $rows ),
+				'tail_snapshot' => $tail_snapshot,
+				'doc_bytes'     => $doc_bytes,
 			);
 			$this->room_docs[ $room ] = $state;
 
@@ -883,48 +988,89 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		 * structs stripped; the update's own delete set kept). Returns null
 		 * when the update did not integrate cleanly, either because the
 		 * apply threw or because y-php parked structs or deletes as pending
-		 * (the update references items the document lacks). A null return
+		 * (the update references items the document lacks). A null diff
 		 * leaves the document in a suspect state (partially integrated or
 		 * carrying pending state); callers must rebuild it.
+		 *
+		 * `changed` reports whether the apply made any effective change,
+		 * observed from the doc's own `update` event: y-php (mirroring JS
+		 * Yjs) emits it exactly when the apply's transaction added structs
+		 * or newly deleted something, so a redelivered update settles as a
+		 * no-op WITHOUT any whole-document encode or comparison.
 		 *
 		 * @since 0.2.0
 		 *
 		 * @param \Yjs\Utils\Doc   $doc    Document to apply onto.
 		 * @param \Yjs\Lib0\Buffer $buffer Incoming V2 update.
-		 * @return string|null Base64 diff row, or null.
+		 * @return array array( 'diff' => string|null, 'changed' => bool ).
 		 */
-		private static function apply_update_for_row( \Yjs\Utils\Doc $doc, \Yjs\Lib0\Buffer $buffer ): ?string {
+		private static function apply_update_for_row( \Yjs\Utils\Doc $doc, \Yjs\Lib0\Buffer $buffer ): array {
+			$changed  = false;
+			$observer = static function () use ( &$changed ): void {
+				$changed = true;
+			};
+			$doc->on( 'update', $observer );
 			try {
 				$sv_before = \Yjs\encodeStateVector( $doc );
 				\Yjs\applyUpdateV2( $doc, $buffer );
 				$store = $doc->store;
 				if ( null !== $store->pendingStructs || null !== $store->pendingDs ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- y-php mirrors the JS Yjs API.
-					return null;
+					return array(
+						'diff'    => null,
+						'changed' => $changed,
+					);
 				}
-				return \Yjs\diffUpdateV2( $buffer, $sv_before )->toBase64();
+				return array(
+					'diff'    => \Yjs\diffUpdateV2( $buffer, $sv_before )->toBase64(),
+					'changed' => $changed,
+				);
 			} catch ( \Throwable $e ) {
-				return null;
+				return array(
+					'diff'    => null,
+					'changed' => $changed,
+				);
+			} finally {
+				$doc->off( 'update', $observer );
 			}
 		}
 
 		/**
-		 * Rebuilds a document exactly from encoded state plus accepted diff
-		 * rows, shedding any partial mutation or pending state a failed
-		 * apply left behind. Rare path, so the O(doc) rebuild is fine.
+		 * Restores a clean batch baseline after a failed apply left the
+		 * in-memory document suspect: committed state — from a fresh
+		 * canonical-plus-tail load, or from the full log when this ingest
+		 * already replay-repaired (the canonical is suspect then) — plus
+		 * the diffs this batch accepted so far, re-applied idempotently.
+		 * Rare path, so the O(doc) reload is fine.
 		 *
-		 * @since 0.2.0
+		 * @since 0.5.0
 		 *
-		 * @param string $base_bytes Binary V2 encoding of the baseline.
-		 * @param array  $diffs      Accepted base64 diff rows, in order.
-		 * @return \Yjs\Utils\Doc Rebuilt document.
+		 * @param string $room     Room identifier.
+		 * @param array  $diffs    Accepted base64 diff rows, in order.
+		 * @param bool   $replayed Whether ingest already repaired from the log.
+		 * @return array array( 'doc' => \Yjs\Utils\Doc, 'cursor' => int, ... ).
 		 */
-		private static function rebuild_doc( string $base_bytes, array $diffs ): \Yjs\Utils\Doc {
-			$doc = new \Yjs\Utils\Doc();
-			\Yjs\applyUpdateV2( $doc, \Yjs\Lib0\Buffer::fromBinaryString( $base_bytes ) );
-			foreach ( $diffs as $diff ) {
-				\Yjs\applyUpdateV2( $doc, \Yjs\Lib0\Buffer::fromBase64( $diff ) );
+		private function recover_batch_doc( string $room, array $diffs, bool $replayed ): array {
+			if ( $replayed ) {
+				$state = $this->replay_room_log( $room );
+			} else {
+				$this->room_docs[ $room ] = null;
+				$state                    = $this->load_room( $room );
+				if ( is_wp_error( $state ) ) {
+					$state = $this->replay_room_log( $room );
+				}
 			}
-			return $doc;
+			foreach ( $diffs as $diff ) {
+				try {
+					\Yjs\applyUpdateV2( $state['doc'], \Yjs\Lib0\Buffer::fromBase64( $diff ) );
+				} catch ( \Throwable $e ) {
+					// An accepted diff re-applies onto committed state; a
+					// throw would mean storage itself is inconsistent, and
+					// the row (already validated) still lands in the log.
+					continue;
+				}
+			}
+			$this->room_docs[ $room ] = null;
+			return $state;
 		}
 
 		/**

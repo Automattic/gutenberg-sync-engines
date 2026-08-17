@@ -124,6 +124,37 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 		return \Yjs\encodeStateAsUpdateV2( $doc, $sv_before )->toBase64();
 	}
 
+	/**
+	 * Encodes one head-of-content text edit from the client doc and ingests
+	 * it through a fresh engine, asserting it applied.
+	 *
+	 * @param \Yjs\Utils\Doc $doc_a     Client document (mutated).
+	 * @param int            $client_id Client identifier.
+	 * @param int            $cursor    Client cursor.
+	 * @param string         $token     Text to insert at offset 0.
+	 */
+	private function ingest_edit( \Yjs\Utils\Doc $doc_a, int $client_id, int $cursor, string $token ): void {
+		$update = $this->encode_edit(
+			$doc_a,
+			function ( $doc ) use ( $token ) {
+				$this->first_block_content( $doc )->insert( 0, $token );
+			}
+		);
+		$result = $this->engine()->handle_updates(
+			$this->room(),
+			$client_id,
+			$cursor,
+			array(
+				array(
+					'type' => 'update',
+					'data' => $update,
+				),
+			),
+			array()
+		);
+		$this->assertSame( array( array( 'status' => 'applied' ) ), $result['dispositions'] );
+	}
+
 	public function test_identity() {
 		$engine = $this->engine();
 		$this->assertSame( 'yjs-server', $engine->get_slug() );
@@ -1112,5 +1143,188 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 		);
 		$this->assertSame( array( array( 'status' => 'applied' ) ), $result['dispositions'] );
 		$this->assertStringContainsString( '<script>ok()</script>', (string) $this->engine()->materialize( $this->room() ) );
+	}
+
+	/**
+	 * Incremental canonical maintenance: between folds the canonical
+	 * snapshot stays stale (its stamp does not advance per ingest) while
+	 * reads and materialization stay correct from canonical + tail, and
+	 * crossing the fold interval re-commits it.
+	 */
+	public function test_canonical_folds_at_the_interval_not_per_ingest() {
+		$interval = static function () {
+			return 4;
+		};
+		add_filter( 'wp_sync_yjs_server_canonical_interval', $interval );
+
+		try {
+			$response_a = $this->engine()->get_updates_since( $this->room(), 101, 0, array() );
+			$doc_a      = $this->client_doc_from_response( $response_a );
+			$cursor_a   = (int) $response_a['end_cursor'];
+
+			// Ingest 1 folds past the genesis snapshot row (so later loads
+			// stop re-parsing a full-state row) and stamps the load-time
+			// watermark.
+			$this->ingest_edit( $doc_a, 101, $cursor_a, 'one ' );
+			$meta = ( new WP_Sync_Post_Meta_Storage() )->get_room_meta( $this->room(), WP_Yjs_Server_Engine::META_DOC );
+			$this->assertSame( $cursor_a, (int) $meta['cursor'] );
+
+			// Ingests 2 and 3 append rows WITHOUT re-committing the
+			// canonical: the stamp stays put while the log advances.
+			$this->ingest_edit( $doc_a, 101, $cursor_a, 'two ' );
+			$this->ingest_edit( $doc_a, 101, $cursor_a, 'three ' );
+			$meta = ( new WP_Sync_Post_Meta_Storage() )->get_room_meta( $this->room(), WP_Yjs_Server_Engine::META_DOC );
+			$this->assertSame( $cursor_a, (int) $meta['cursor'], 'the canonical must stay stale between folds' );
+
+			// Staleness is invisible to readers: the save path and a fresh
+			// peer both see every edit (canonical + tail replay).
+			$materialized = (string) $this->engine()->materialize( $this->room() );
+			$doc_b        = $this->client_doc_from_response( $this->engine()->get_updates_since( $this->room(), 202, 0, array() ) );
+			foreach ( array( 'one ', 'two ', 'three ' ) as $token ) {
+				$this->assertSame( 1, substr_count( $materialized, $token ), "token '{$token}' in: {$materialized}" );
+				$this->assertSame( 1, substr_count( $this->first_block_content( $doc_b )->toString(), $token ) );
+			}
+
+			// Ingest 4 crosses the interval (3 stale tail rows + 1 appended):
+			// the canonical re-commits, stamped with an under-claiming cursor.
+			$this->ingest_edit( $doc_a, 101, $cursor_a, 'four ' );
+			$meta = ( new WP_Sync_Post_Meta_Storage() )->get_room_meta( $this->room(), WP_Yjs_Server_Engine::META_DOC );
+			$this->assertGreaterThan( $cursor_a, (int) $meta['cursor'], 'reaching the interval must re-commit the canonical' );
+
+			$storage = new WP_Sync_Post_Meta_Storage();
+			$storage->get_updates_after_cursor( $this->room(), 0 );
+			$this->assertLessThan( $storage->get_cursor( $this->room() ), (int) $meta['cursor'] );
+		} finally {
+			remove_filter( 'wp_sync_yjs_server_canonical_interval', $interval );
+		}
+	}
+
+	/**
+	 * A lost fold race leaves an arbitrarily stale canonical (the winning
+	 * writer folded a document missing the loser's rows — regressed to
+	 * genesis in the worst case). The under-claiming stamp plus the load
+	 * path's tail replay repairs it forward: no committed row is ever
+	 * lost, and the next ingest folds the canonical back up to date.
+	 */
+	public function test_stale_canonical_from_a_lost_fold_race_never_loses_rows() {
+		$response_a = $this->engine()->get_updates_since( $this->room(), 101, 0, array() );
+		$doc_a      = $this->client_doc_from_response( $response_a );
+		$cursor_a   = (int) $response_a['end_cursor'];
+		$genesis    = json_decode( $response_a['updates'][0]['data'], true );
+
+		$this->ingest_edit( $doc_a, 101, $cursor_a, 'alpha ' );
+		$this->ingest_edit( $doc_a, 101, $cursor_a, 'bravo ' );
+
+		// Regress the canonical all the way to genesis, stamp 0 — the
+		// worst-case fold-race outcome (a writer that loaded before every
+		// row committed folds last).
+		$storage = new WP_Sync_Post_Meta_Storage();
+		$storage->set_room_meta(
+			$this->room(),
+			WP_Yjs_Server_Engine::META_DOC,
+			array(
+				'doc'    => $genesis['doc'],
+				'cursor' => 0,
+			)
+		);
+
+		// Readers repair forward from the tail: nothing lost.
+		$materialized = (string) $this->engine()->materialize( $this->room() );
+		foreach ( array( 'alpha ', 'bravo ' ) as $token ) {
+			$this->assertSame( 1, substr_count( $materialized, $token ), "token '{$token}' in: {$materialized}" );
+		}
+
+		// The next ingest still applies cleanly and, with the genesis
+		// snapshot row back in its stale tail, folds the canonical forward
+		// again with an under-claiming stamp.
+		$this->ingest_edit( $doc_a, 101, $cursor_a, 'charlie ' );
+		$meta = ( new WP_Sync_Post_Meta_Storage() )->get_room_meta( $this->room(), WP_Yjs_Server_Engine::META_DOC );
+		$this->assertGreaterThan( 0, (int) $meta['cursor'] );
+
+		$doc_b  = $this->client_doc_from_response( $this->engine()->get_updates_since( $this->room(), 202, 0, array() ) );
+		$text_b = $this->first_block_content( $doc_b )->toString();
+		foreach ( array( 'alpha ', 'bravo ', 'charlie ' ) as $token ) {
+			$this->assertSame( 1, substr_count( $text_b, $token ), "token '{$token}' in: {$text_b}" );
+		}
+	}
+
+	/**
+	 * A batch mixing a redelivered update with a new one settles the
+	 * redelivery as a benign per-update `already-merged` void and stores
+	 * only the effective row — the change signal is per update, not a
+	 * whole-batch comparison.
+	 */
+	public function test_mixed_batch_settles_redelivered_updates_as_already_merged_voids() {
+		$response_a = $this->engine()->get_updates_since( $this->room(), 101, 0, array() );
+		$doc_a      = $this->client_doc_from_response( $response_a );
+		$cursor_a   = (int) $response_a['end_cursor'];
+
+		// Edit 1 lands normally; edit 2 is authored on top of it but the
+		// client never learns edit 1's outcome and redelivers both.
+		$first = $this->encode_edit(
+			$doc_a,
+			function ( $doc ) {
+				$this->first_block_content( $doc )->insert( 0, 'A' );
+			}
+		);
+		$this->engine()->handle_updates(
+			$this->room(),
+			101,
+			$cursor_a,
+			array(
+				array(
+					'type' => 'update',
+					'data' => $first,
+				),
+			),
+			array()
+		);
+
+		$second = $this->encode_edit(
+			$doc_a,
+			function ( $doc ) {
+				$this->first_block_content( $doc )->insert( 0, 'B' );
+			}
+		);
+
+		$storage = new WP_Sync_Post_Meta_Storage();
+		$storage->get_updates_after_cursor( $this->room(), 0 );
+		$rows_before = $storage->get_update_count( $this->room() );
+
+		$result = $this->engine()->handle_updates(
+			$this->room(),
+			101,
+			$cursor_a,
+			array(
+				array(
+					'type' => 'update',
+					'data' => $first,
+				),
+				array(
+					'type' => 'update',
+					'data' => $second,
+				),
+			),
+			array()
+		);
+		$this->assertSame(
+			array(
+				array(
+					'status' => 'voided',
+					'reason' => 'already-merged',
+				),
+				array( 'status' => 'applied' ),
+			),
+			$result['dispositions']
+		);
+
+		// Only the effective update stored a row.
+		$storage = new WP_Sync_Post_Meta_Storage();
+		$storage->get_updates_after_cursor( $this->room(), 0 );
+		$this->assertSame( $rows_before + 1, $storage->get_update_count( $this->room() ) );
+
+		// Content converges with each edit exactly once.
+		$materialized = (string) $this->engine()->materialize( $this->room() );
+		$this->assertStringContainsString( 'BAHello world', $materialized );
 	}
 }
