@@ -12,19 +12,26 @@
  *
  * Four operations:
  *
- * - `text` — insert a unique token at offset 0 of a genesis paragraph's
- *   content field (a keystroke batch).
+ * - `text` — insert a unique token at offset 0 of a paragraph's content
+ *   field (a keystroke batch). Targets a genesis paragraph by index, or,
+ *   in `remove-contention`, an inserted block by `block_id`.
  * - `attr` — set a genesis paragraph's align register (a restyle).
  * - `insert_block` — insert a NEW paragraph (its body is a unique marker)
  *   after a genesis paragraph.
- * - `remove_block` — remove a block the SAME client inserted earlier.
+ * - `remove_block` — remove a block the SAME client inserted earlier
+ *   (`remove-contention`: any client's earlier insert).
  *
- * Structural discipline keeps the oracles sound under concurrency: text
- * and attr edits target GENESIS paragraphs only (identified by their
+ * Structural discipline keeps the oracles sound under concurrency: attr
+ * edits target GENESIS paragraphs only (identified by their
  * delimiter-terminated markers `Paragraph N;`, which are never removed),
- * and removals target only the removing client's own earlier inserts, so
- * whether any marker should exist in the final document is decidable
- * purely from the engine's dispositions.
+ * and each inserted block is removed at most once. In most scenarios text
+ * edits also stay on genesis paragraphs and removals target only the
+ * removing client's own earlier inserts; `remove-contention` deliberately
+ * relaxes both (a text edit may target an inserted block, addressed by
+ * `block_id`, that ANOTHER client concurrently removes) and stays
+ * decidable through the profiles' scoping rule: a text token is expected
+ * in the materialized content iff its edit applied AND its target block's
+ * final state is alive, both facts the dispositions already determine.
  *
  * The generator is engine-agnostic and deterministic: same seed, same
  * rounds. Each round's edit list is shuffled at build time with the seeded
@@ -62,6 +69,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 				'mixed-newsroom'      => 'Mostly parallel editing with occasional collisions.',
 				'laggy-newsroom'      => 'Mixed newsroom where the last client reads only every 10th round (stale bases, deep transforms, catch-up reads).',
 				'structural-churn'    => 'Concurrent block inserts/removals alongside typing (block-structure stress).',
+				'remove-contention'   => 'One client edits an inserted block another client concurrently removes (edit-vs-remove conflict class; degenerates to sequential same-client edit-then-remove at clients=1).',
 				'editorial-session'   => 'A wall-clock editing session: one round per second, staggered joins/leaves, typing bursts with think-time pauses, every present client polling every round, periodic saves. rounds=3600 clients=3 is a one-hour three-user session.',
 			);
 		}
@@ -152,6 +160,12 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 			// Per-client roster of own inserted-and-not-yet-removed blocks
 			// (structural-churn's removal pool).
 			$own_blocks = array_fill( 0, max( 1, $clients ), array() );
+			// remove-contention's SHARED pool: inserted blocks every client
+			// has observed (each is contended, and thereby consumed, at most
+			// once). $pending_remove staggers the single-client degenerate
+			// case across rounds.
+			$pool           = array();
+			$pending_remove = null;
 			for ( $r = 0; $r < $rounds; $r++ ) {
 				$edits = array();
 
@@ -204,6 +218,82 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 								$edits[] = self::insert_edit( $c, $r, count( $edits ), $rand( $paragraphs ), $own_blocks );
 							} else {
 								$edits[] = self::remove_edit( $c, $rand( count( $own_blocks[ $c ] ) ), $own_blocks );
+							}
+						}
+						break;
+
+					case 'remove-contention':
+						// The edit-vs-remove conflict class: one client types
+						// into an inserted block while another concurrently
+						// removes it. When the pool of contendable blocks is
+						// dry, a SEED round has every client insert one block;
+						// those become contendable the NEXT round (every
+						// client authors every round, so every client's
+						// end-of-round read delivers the inserts before
+						// anyone contends them). Otherwise one pool block is
+						// contended by a distinct editor/remover pair while
+						// the remaining clients type into genesis paragraphs.
+						// This is the ONE scenario where a removal targets
+						// another client's insert and a text edit targets an
+						// inserted block; the oracles stay decidable by
+						// scoping each text token's expectation to its target
+						// block's final state (see the profiles).
+						//
+						// At clients=1 there is no second client to contend
+						// with, and a real client cannot type into a block it
+						// already removed (its canvas no longer has it), so
+						// the pair degenerates to SEQUENTIAL edit-then-remove
+						// across consecutive rounds; the read between them
+						// keeps the single client's authoring realizable.
+						if ( 1 === $clients && null !== $pending_remove ) {
+							$edits[]        = $pending_remove;
+							$pending_remove = null;
+							break;
+						}
+
+						if ( array() === $pool ) {
+							for ( $c = 0; $c < $clients; $c++ ) {
+								$seed_edit = self::insert_edit( $c, $r, count( $edits ), $rand( $paragraphs ), $own_blocks );
+								$edits[]   = $seed_edit;
+								$pool[]    = array(
+									'block_id' => $seed_edit['block_id'],
+									'marker'   => $seed_edit['marker'],
+									'after'    => $seed_edit['after'],
+								);
+							}
+							break;
+						}
+
+						$picked      = array_splice( $pool, $rand( count( $pool ) ), 1 );
+						$block       = $picked[0];
+						$editor      = $rand( $clients );
+						$remover     = ( $editor + 1 + $rand( $clients - 1 ) ) % $clients;
+						$edits[]     = array(
+							'client'   => $editor,
+							'op'       => 'text',
+							'block_id' => $block['block_id'],
+							'marker'   => $block['marker'],
+						);
+						$remove_edit = array(
+							'client'   => $remover,
+							'op'       => 'remove_block',
+							'block_id' => $block['block_id'],
+							'marker'   => $block['marker'],
+							'after'    => $block['after'],
+						);
+
+						if ( 1 === $clients ) {
+							$pending_remove = $remove_edit;
+						} else {
+							$edits[] = $remove_edit;
+						}
+						for ( $c = 0; $c < $clients; $c++ ) {
+							if ( $c !== $editor && $c !== $remover ) {
+								$edits[] = array(
+									'client'    => $c,
+									'paragraph' => $rand( $paragraphs ),
+									'op'        => 'text',
+								);
 							}
 						}
 						break;

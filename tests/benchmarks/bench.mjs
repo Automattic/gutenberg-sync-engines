@@ -6,9 +6,10 @@
  *   npm run bench -- engines=de-rtc scenarios=editorial-session
  *   npm run bench -- certify=10          # invariant sweep across 10 seeds
  *
- * The matrix runs each engine over three complementary scenarios
+ * The matrix runs each engine over four complementary scenarios
  * (mixed-newsroom for steady concurrent editing, structural-churn for
- * block-structure conflict policy, editorial-session for wall-clock
+ * block-structure conflict policy, remove-contention for the
+ * edit-vs-remove conflict class, editorial-session for wall-clock
  * session behavior + the hosting cost card), writes every JSON report to
  * bench-results/, and renders the per-scenario comparison tables. The run
  * FAILS (nonzero exit) if any engine loses work or fails convergence —
@@ -44,7 +45,8 @@ const ENGINES = ( args.engines ?? 'intent-log,yjs-server,de-rtc' )
 	.filter( Boolean );
 
 // The decision matrix: steady concurrency, structural conflict policy,
-// and a wall-clock session (which also emits the hosting cost card).
+// edit-vs-remove conflict policy, and a wall-clock session (which also
+// emits the hosting cost card).
 const MATRIX = {
 	'mixed-newsroom': {
 		rounds: 150,
@@ -54,6 +56,13 @@ const MATRIX = {
 		warmup: 1,
 	},
 	'structural-churn': {
+		rounds: 60,
+		clients: 4,
+		paragraphs: 4,
+		reps: 3,
+		warmup: 1,
+	},
+	'remove-contention': {
 		rounds: 60,
 		clients: 4,
 		paragraphs: 4,
@@ -352,9 +361,14 @@ async function runConcurrencyMode() {
 if ( args.concurrency ) {
 	await runConcurrencyMode();
 } else if ( args.certify ) {
-	// Invariant sweep: many seeds, every engine, the two adversarial
+	// Invariant sweep: many seeds, every engine, the adversarial
 	// scenarios — cheap per run, additive as evidence.
 	const seeds = Math.max( 1, Number( args.certify ) );
+	const certifyScenarios = [
+		'mixed-newsroom',
+		'structural-churn',
+		'remove-contention',
+	];
 	const config = {
 		rounds: 40,
 		clients: 3,
@@ -365,7 +379,7 @@ if ( args.concurrency ) {
 	let edits = 0;
 	const dispositions = { applied: 0, escalated: 0, voided: 0 };
 
-	for ( const scenario of [ 'mixed-newsroom', 'structural-churn' ] ) {
+	for ( const scenario of certifyScenarios ) {
 		for ( const engine of ENGINES ) {
 			for ( let i = 0; i < seeds; i++ ) {
 				const seed = SEED + i;
@@ -402,7 +416,7 @@ if ( args.concurrency ) {
 
 	console.log( '' );
 	console.log(
-		`certified ${ edits } edits across ${ seeds } seed(s) x ${ ENGINES.length } engine(s) x 2 scenarios: ` +
+		`certified ${ edits } edits across ${ seeds } seed(s) x ${ ENGINES.length } engine(s) x ${ certifyScenarios.length } scenarios: ` +
 			`${ dispositions.applied } applied, ${ dispositions.escalated } escalated for review, ` +
 			`${ dispositions.voided } voided — ${
 				violations.length

@@ -29,7 +29,19 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 	 * @return array Report.
 	 */
 	private function run_intent_log( string $scenario ): array {
-		$workload = WP_Sync_Bench_Workload::build( $scenario, 7, 8, 3, 4 );
+		return $this->run_intent_log_rounds( $scenario, 8, 3 );
+	}
+
+	/**
+	 * Runs a workload against the intent-log engine with explicit sizing.
+	 *
+	 * @param string $scenario Scenario slug.
+	 * @param int    $rounds   Rounds.
+	 * @param int    $clients  Clients.
+	 * @return array Report.
+	 */
+	private function run_intent_log_rounds( string $scenario, int $rounds, int $clients ): array {
+		$workload = WP_Sync_Bench_Workload::build( $scenario, 7, $rounds, $clients, 4 );
 		$post_id  = self::factory()->post->create(
 			array( 'post_content' => $workload['post_content'] )
 		);
@@ -289,6 +301,104 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 			$this->assertSame( array(), $report['quality']['convergence_failures'], $engine_class . ' failed convergence under structural churn' );
 			$this->assertTrue( $report['quality']['converged'], $engine_class . ' did not converge under structural churn' );
 			wp_delete_post( $post_id, true );
+		}
+	}
+
+	public function test_remove_contention_generates_cross_client_edit_vs_remove() {
+		$workload = WP_Sync_Bench_Workload::build( 'remove-contention', 7, 30, 3, 4 );
+
+		$seed_round = array(); // block_id => the round its insert was scripted.
+		$inserter   = array(); // block_id => inserting client.
+		$contended  = array(); // block_id => the round it was contended.
+		foreach ( $workload['rounds'] as $round_index => $edits ) {
+			$texts   = array(); // block_id => editing client (this round).
+			$removes = array(); // block_id => removing client (this round).
+			foreach ( $edits as $edit ) {
+				if ( 'insert_block' === $edit['op'] ) {
+					$seed_round[ $edit['block_id'] ] = $round_index;
+					$inserter[ $edit['block_id'] ]   = $edit['client'];
+				} elseif ( 'remove_block' === $edit['op'] ) {
+					$removes[ $edit['block_id'] ] = $edit['client'];
+				} elseif ( 'text' === $edit['op'] && isset( $edit['block_id'] ) ) {
+					$texts[ $edit['block_id'] ] = $edit['client'];
+				}
+			}
+
+			foreach ( $removes as $block_id => $remover ) {
+				// Every removal is one half of a contention pair: a text
+				// edit into the SAME block, in the SAME round, from a
+				// DISTINCT client (clients=3 here, so the degenerate
+				// same-client case cannot occur).
+				$this->assertArrayHasKey( $block_id, $texts, 'a removal must pair with a concurrent text edit' );
+				$this->assertNotSame( $texts[ $block_id ], $remover, 'editor and remover must be distinct clients' );
+				// The block was seeded in an EARLIER round (every client
+				// observed it before contending) and is contended once.
+				$this->assertArrayHasKey( $block_id, $seed_round );
+				$this->assertLessThan( $round_index, $seed_round[ $block_id ] );
+				$this->assertArrayNotHasKey( $block_id, $contended );
+				$contended[ $block_id ] = $round_index;
+			}
+		}
+		$this->assertNotEmpty( $contended );
+
+		// The point of the scenario: removals are NOT limited to the
+		// remover's own inserts (the discipline every other scenario keeps).
+		$cross_client = 0;
+		foreach ( $contended as $block_id => $round_index ) {
+			$remover = null;
+			foreach ( $workload['rounds'][ $round_index ] as $edit ) {
+				if ( 'remove_block' === $edit['op'] && $edit['block_id'] === $block_id ) {
+					$remover = $edit['client'];
+				}
+			}
+			if ( $remover !== $inserter[ $block_id ] ) {
+				++$cross_client;
+			}
+		}
+		$this->assertGreaterThan( 0, $cross_client );
+	}
+
+	public function test_remove_contention_converges_on_every_engine() {
+		$workload = WP_Sync_Bench_Workload::build( 'remove-contention', 7, 30, 3, 4 );
+		foreach ( array( 'WP_Intent_Log_Engine', 'WP_Yjs_Server_Engine', 'WP_De_RTC_Engine' ) as $engine_class ) {
+			$post_id = self::factory()->post->create(
+				array( 'post_content' => $workload['post_content'] )
+			);
+			$storage = new WP_Sync_Bench_Memory_Storage();
+			$engine  = new $engine_class( $storage );
+
+			$report = WP_Sync_Bench_Runner::run( $engine, $storage, $post_id, $workload );
+
+			$this->assertSame( 0, $report['quality']['lost_work'], $engine_class . ' lost work under remove contention' );
+			$this->assertSame( array(), $report['quality']['convergence_failures'], $engine_class . ' failed convergence under remove contention' );
+			$this->assertTrue( $report['quality']['converged'], $engine_class . ' did not converge under remove contention' );
+			wp_delete_post( $post_id, true );
+		}
+	}
+
+	public function test_intent_log_floor_reset_retries_recover_stale_voided_edits() {
+		$interval = static function () {
+			return 20;
+		};
+		add_filter( 'wp_sync_intent_log_checkpoint_interval', $interval );
+
+		try {
+			// 30 rounds x 3 clients against a 20-row checkpoint interval:
+			// checkpoints raise the retention floor mid-round, stale-voiding
+			// in-flight intents, including seed-round INSERTS whose blocks
+			// the workload later contends. The profile's floor-reset retry
+			// lane must re-author them (visible as followups), or those
+			// contentions would target blocks the room never had and show
+			// phantom missing-target lost work.
+			$report = $this->run_intent_log_rounds( 'remove-contention', 30, 3 );
+
+			$this->assertGreaterThan( 0, $report['quality']['dispositions']['voided'], 'expected stale-base voids to exercise the retry lane' );
+			$this->assertGreaterThan( 0, $report['storage']['followups'], 'expected floor-reset re-authoring follow-ups' );
+			$this->assertSame( 0, $report['quality']['lost_work'] );
+			$this->assertSame( array(), $report['quality']['convergence_failures'] );
+			$this->assertTrue( $report['quality']['converged'] );
+		} finally {
+			remove_filter( 'wp_sync_intent_log_checkpoint_interval', $interval );
 		}
 	}
 

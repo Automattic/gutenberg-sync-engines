@@ -35,6 +35,10 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 		 * re-delivers the voided content). `invalid-payload` is NOT benign:
 		 * the engine reserves it for genuinely malformed bytes, which the
 		 * profile never sends, so its appearance means work was rejected.
+		 * The edit-vs-remove contention class adds nothing here: a text
+		 * update into a concurrently deleted block still APPLIES (CRDT
+		 * deletion semantics resolve it; the token dissolves with the
+		 * block), so no new void reasons surface for this engine.
 		 *
 		 * @var string[]
 		 */
@@ -194,9 +198,21 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 					$yblocks->delete( $index, 1 );
 				}
 			} else {
-				// Genesis blocks are addressed by their stable clientId, not
-				// their position — concurrent structural edits shift indexes.
-				$this->find_block( $yblocks, 'srv-' . (int) $edit['paragraph'] )->get( 'attributes' )->get( 'content' )->insert( 0, $edit['text'] );
+				// Blocks are addressed by their stable clientId, not their
+				// position; concurrent structural edits shift indexes.
+				// Genesis paragraphs carry srv-N ids; an inserted block
+				// (remove-contention's contended target) its ins-<block_id>.
+				// The editor's own doc always still holds the target: the
+				// workload only contends blocks every client has observed,
+				// and a concurrent remove is invisible to this client until
+				// its next read.
+				if ( isset( $edit['block_id'] ) ) {
+					$target_id = 'ins-' . $edit['block_id'];
+				} else {
+					$target_id = 'srv-' . (int) $edit['paragraph'];
+				}
+
+				$this->find_block( $yblocks, $target_id )->get( 'attributes' )->get( 'content' )->insert( 0, $edit['text'] );
 			}
 
 			// The recovery lane: after a `resync-required` void the real
@@ -320,9 +336,15 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 		private function record_expectation( array $edit, string $status ): void {
 			$op = $edit['op'] ?? 'text';
 			if ( 'text' === $op ) {
+				// A text edit into an INSERTED block records its target
+				// marker: under CRDT deletion semantics an applied token
+				// dissolves with its concurrently deleted block, so the
+				// oracle scopes the token's expectation to the block's final
+				// state.
 				$this->expected_texts[] = array(
 					'text'   => (string) $edit['text'],
 					'status' => $status,
+					'target' => isset( $edit['block_id'] ) ? (string) $edit['marker'] : null,
 				);
 			} elseif ( 'insert_block' === $op ) {
 				$this->expected_markers[ $edit['marker'] ] = 'applied' === $status ? 'alive' : 'absent';
@@ -440,7 +462,10 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 		 *
 		 * @param string $content          Materialized post content.
 		 * @param int    $paragraph_count  Paragraphs the document started with.
-		 * @param array  $expected_texts   List of array( 'text', 'status' ).
+		 * @param array  $expected_texts   List of array( 'text', 'status', 'target'? );
+		 *                                 'target' is the inserted-block marker a
+		 *                                 block-targeted text edit wrote into, null
+		 *                                 for genesis-targeted edits.
 		 * @param array  $ydocs            Caught-up client documents.
 		 * @param array  $expected_markers Inserted marker => 'alive' | 'absent'.
 		 * @return array Failures (empty when converged).
@@ -514,7 +539,21 @@ if ( ! class_exists( 'WP_Sync_Bench_Yjs_Server_Profile' ) ) {
 
 			foreach ( $expected_texts as $entry ) {
 				$found = substr_count( $content, $entry['text'] );
-				if ( 'applied' === $entry['status'] && 1 !== $found ) {
+				// Scoping rule for the edit-vs-remove class: CRDT deletion
+				// wins over a concurrent text insert INTO the deleted block.
+				// The applied token dissolves with the block (deterministic
+				// merge semantics, not lost work), so its expectation follows
+				// the target block's final state.
+				$target         = $entry['target'] ?? null;
+				$target_removed = null !== $target && 'absent' === ( $expected_markers[ $target ] ?? null );
+				if ( 'applied' === $entry['status'] && $target_removed ) {
+					if ( 0 !== $found ) {
+						$failures[] = array(
+							'check'  => 'applied-text',
+							'detail' => sprintf( "token '%s' survived the deletion of its target block '%s'", $entry['text'], $target ),
+						);
+					}
+				} elseif ( 'applied' === $entry['status'] && 1 !== $found ) {
 					$failures[] = array(
 						'check'  => 'applied-text',
 						'detail' => sprintf( "applied token '%s' found %d times (expected exactly 1)", $entry['text'], $found ),

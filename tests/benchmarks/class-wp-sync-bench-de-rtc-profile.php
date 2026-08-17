@@ -51,7 +51,12 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 	class WP_Sync_Bench_De_RTC_Profile implements WP_Sync_Bench_Authoring_Profile {
 		/** Void reasons that are NOT lost work for this engine: a stale base
 		 * is retried against a fresher one (the protocol's contract), and a
-		 * malformed row never carries real content.
+		 * malformed row never carries real content. The edit-vs-remove
+		 * contention class adds nothing here: whichever side of the conflict
+		 * reaches the server second ESCALATES (the whole proposal parks for
+		 * review; a three-way merge refuses to auto-resolve
+		 * removed-in-one/modified-in-the-other), which the shared accounting
+		 * already covers.
 		 *
 		 * @var string[]
 		 */
@@ -116,6 +121,16 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 		 * @var array<string, string>
 		 */
 		private $expected_texts = array();
+
+		/**
+		 * Oracle input: token => the INSERTED block's marker it was written
+		 * into (absent for genesis-targeted tokens). An applied token whose
+		 * target block ends up removed is expected to vanish with it, the
+		 * edit-vs-remove scoping rule.
+		 *
+		 * @var array<string, string>
+		 */
+		private $text_targets = array();
 
 		/**
 		 * Oracle input: paragraph index => last applied CHANGED align write.
@@ -461,7 +476,20 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 
 			foreach ( $this->expected_texts as $token => $status ) {
 				$found = substr_count( $content, $token );
-				if ( 'applied' === $status && 1 !== $found ) {
+				// Scoping rule for the edit-vs-remove class: an applied token
+				// whose inserted target block was subsequently removed by an
+				// APPLIED proposal vanishes with the block; expected, not
+				// lost work.
+				$target         = $this->text_targets[ $token ] ?? null;
+				$target_removed = null !== $target && 'absent' === ( $this->expected_markers[ $target ] ?? null );
+				if ( 'applied' === $status && $target_removed ) {
+					if ( 0 !== $found ) {
+						$failures[] = array(
+							'check'  => 'applied-text',
+							'detail' => sprintf( "token '%s' survived the removal of its target block '%s'", $token, $target ),
+						);
+					}
+				} elseif ( 'applied' === $status && 1 !== $found ) {
 					$failures[] = array(
 						'check'  => 'applied-text',
 						'detail' => sprintf( "applied token '%s' found %d times (expected exactly 1)", $token, $found ),
@@ -563,6 +591,12 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 				foreach ( $records as $record ) {
 					if ( 'text' === $record['op'] ) {
 						$this->expected_texts[ $record['token'] ] = 'applied';
+						if ( ! empty( $record['inserted_target'] ) ) {
+							// Scope the token to its inserted target block:
+							// a later applied removal takes the token with
+							// it, and the oracle must expect that.
+							$this->text_targets[ $record['token'] ] = $record['marker'];
+						}
 					} elseif ( 'insert_block' === $record['op'] ) {
 						$this->expected_markers[ $record['marker'] ] = 'alive';
 					} elseif ( 'remove_block' === $record['op'] ) {
@@ -671,11 +705,23 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 					'retried'       => false,
 				);
 			}
+			// A text edit addresses its target by identity marker: a genesis
+			// paragraph's, or (remove-contention's contended case) the
+			// inserted block's own marker.
+			if ( isset( $edit['block_id'] ) ) {
+				$marker          = (string) $edit['marker'];
+				$inserted_target = true;
+			} else {
+				$marker          = WP_Sync_Bench_Workload::genesis_marker( (int) $edit['paragraph'] );
+				$inserted_target = false;
+			}
+
 			return array(
-				'op'      => 'text',
-				'marker'  => WP_Sync_Bench_Workload::genesis_marker( (int) $edit['paragraph'] ),
-				'token'   => (string) $edit['text'],
-				'retried' => false,
+				'op'              => 'text',
+				'marker'          => $marker,
+				'token'           => (string) $edit['text'],
+				'inserted_target' => $inserted_target,
+				'retried'         => false,
 			);
 		}
 

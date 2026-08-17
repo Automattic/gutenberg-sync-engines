@@ -112,7 +112,18 @@ typing) the conflict policies separate hardest: intent-log and yjs-server
 merge everything cleanly while de-rtc escalates ~50% of proposals —
 whole-document proposals against a structurally-shifting base are what
 its three-way merge refuses to auto-resolve; nothing is lost on any
-engine. Under a ten-minute three-user `editorial-session` (joins, typing
+engine. `remove-contention` isolates the edit-vs-remove conflict class
+(one client types into an inserted block another client concurrently
+removes; 60 rounds, 4 clients, seed 42): intent-log escalates the
+trailing edit (~8% of edits settle `target-deleted`; the keystrokes park
+for review, and when the text lands first both apply and the token
+vanishes with the removed block), yjs-server escalates nothing (CRDT
+deletion dissolves the edit with the deleted block; deterministic, never
+surfaced), and de-rtc escalates ~22% (its whole-proposal grain sends the
+entire trailing proposal to review, roughly one escalation per contended
+pair plus collateral from the shifting base). Zero lost work on all
+three, verified by a token oracle scoped to each target block's final
+state. Under a ten-minute three-user `editorial-session` (joins, typing
 bursts, per-second polling, autosaves), intent-log holds ~0.6 ms flat,
 de-rtc holds ~2.9 ms but its room tail (and therefore the next joiner's
 download) reaches ~1.2 MB, and **yjs-server's ingest degrades with the
@@ -170,7 +181,10 @@ noise under intent-log), with one exception noted below.
   under concurrent STRUCTURE changes the whole-proposal grain bites
   hard: the benchmark's `structural-churn` scenario measures ~50% of
   proposals escalating (vs 0 for intent-log and yjs-server on the same
-  workload). Nothing is lost, and every escalation now parks durably and
+  workload), and `remove-contention` (edit-vs-remove on one block)
+  measures ~22% (vs ~8% for intent-log, which escalates only the
+  trailing edit, and 0 for yjs-server, which silently dissolves it).
+  Nothing is lost, and every escalation now parks durably and
   presents in the review panel — but a workload that escalates half its
   proposals is still a workload asking humans to arbitrate constantly;
   prefer another engine for structure-churn-heavy sessions.
