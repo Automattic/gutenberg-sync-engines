@@ -139,8 +139,42 @@ Three honest readings of that table:
   (block-level last-writer-wins) and whole-proposal conflict parking are
   artifacts of our port, not of Dennis's design; the original resolves
   the same situations through explicit human adoption of pending edits
-  and per-block partial acceptance. Restoring fidelity is TODO-2 and
-  TODO-3.
+  and per-block partial acceptance. Restoring fidelity is a program,
+  not a patch: TODO-2 and TODO-3 treat symptoms, and the fidelity audit
+  below (TODO-12 through TODO-19) treats causes.
+
+## Fidelity to the DE-RTC vision
+
+The de-rtc engine is a port of a *design*, not just of code — and the
+design has an author. This section audits our adaptation against the
+vision stated in [Distributed Editing with unlimited
+Codex](https://collaborativeediting.wordpress.com/2026/07/02/distributed-editing-with-unlimited-codex/)
+and, secondarily, against the wordpress-develop prototype. The
+standard, per project direction: **compromises made so DE-RTC fits this
+plugin's protocol or transports are not acceptable.** It is fine for
+DE-RTC to work differently from the other engines, and fine for it not
+to support every transport. "Faithful" below means the vision survived
+our port; "corrupted" means our adaptation replaced a vision element
+with something protocol-convenient.
+
+| Vision element | The vision / prototype | Our port | Verdict |
+| --- | --- | --- | --- |
+| Save and Sync are distinct, deliberate operations; "pending edits" are the unit of adoption | Editors confirm their own changes and *choose* to adopt others'; sync may be polled, socketed, or run manually with long delays | The client auto-proposes every poll cycle and auto-incorporates canonical rows; no adoption step, no pending-edit concept | **Corrupted** — and it is the root cause of the silent same-block LWW (scenario C). TODO-12 |
+| Sync metadata co-located with saved `post_content` (a `wp/post-sync-meta` pseudo-block); revisions become a backup mechanism | The document's history travels with the post; any writer that round-trips content carries the lineage; recovery mines revisions and autosaves | Canonical content + sync-meta live in room meta (plugin storage posts); `materialize()` returns bare content with no sync-meta; genesis merely *adopts* an upstream block if one is embedded | **Corrupted** (plugin-storage adaptation). TODO-13 |
+| Self-healing when unaware writers mangle the document | The server detects CRDT/content divergence, recovers from revisions or autosaves, and appends a repairing edit so "operations which would otherwise wipe-out a post appear as any other collaborative update" | Absent — scenario F fails | **Unported.** TODO-14 |
+| Arbitrarily long offline editing still recombines | Old bases recoverable via the co-located history and revision copies | The upstream 20-version snapshot limit is faithful, but with sync-meta only in room meta there is no revision fallback: past the window, proposals void | **Half-ported.** TODO-15 (depends on TODO-13) |
+| Undo/redo "never undo, but rather apply revert edits"; a history slider scrubs versions | Explicitly offered to RTC: "This could easily be adopted by RTC" | de-rtc reuses the shared Yjs *local* undo manager — precisely the model the vision rejects. (Ironically, intent-log's inverse-intent undo IS this concept, adopted by the other engine) | **Corrupted** (client-machinery reuse). TODO-16 |
+| Reviewers can modify before adopting | The prototype's review schema carries `reviewed_block_source` ("modify-and-adopt"); approvals are hash-pinned | Restore/dismiss only | **Unported.** TODO-17 |
+| Per-edit authorship: "hover over a user's avatar and highlight the changes they applied" | Range-grain attribution; the prototype shipped authorship-focus overlays | `authorClientId` on whole-content rows; no range attribution, no surface | **Unported.** TODO-18 |
+| Per-block kses sequestration — "accept partial edits, adopting the safe parts" | Prototype-proven | Restored as the shipping capability lane | **Faithful** |
+| The shipping merge is the hand-written block-aware three-way merge; Automerge backs only the legacy lane | Same | Same — ported verbatim as a frozen call-graph closure | **Faithful** |
+| Optimistic concurrency; no database lock | Base-version preflight, hash validation, merge-and-retry on the save path | Per-room `GET_LOCK` added by our port | **Corrupted.** TODO-1 |
+| Clients need no CRDT library; Gutenberg couples via semantic Redux actions | Stage 3 of the development plan | The client rides a `Y.Doc` editor bridge (undo + awareness reuse) and sends `clientUpdate: null` | **Adaptation debt.** TODO-2 plus architecture item 5 |
+| Cheap-host cadence is a feature: "that $3/mo host … can still support multiple concurrent edit sessions polling … once every ten seconds" | Polling interval scales to the host's comfort; presence is separate from content | The engine runs and is benchmarked at the plugin's RTC poll cadence | **Acceptably different in operation; unfair in measurement.** TODO-19 |
+
+The pattern across the corrupted rows is one pattern: wherever DE-RTC's
+save-centric, post-co-located design met this plugin's room protocol,
+the protocol won. The fidelity program reverses that default.
 
 ## Feature parity
 
@@ -193,7 +227,11 @@ For scale, the retired append-only relay sat at the timer floor — read
 it as "negligible", and as the price of observing nothing. Where de-rtc
 pays is bytes, not cycles: whole documents travel in every proposal and
 every accepted proposal stores a full content row, so its request and
-storage bytes dwarf the other engines' and scale with document size.
+storage bytes dwarf the other engines' and scale with document size —
+with one fairness caveat: the session scenarios run at the harness's
+RTC poll cadence, which measures de-rtc as we adapted it, not as
+designed; at the vision's save-and-sync cadence the byte and
+escalation profiles would differ (TODO-19).
 All three engines' payload/storage bytes are REAL (each benchmark
 profile speaks its engine's actual wire format), all three converge
 with **zero lost work** on every scenario, and the escalation policies
@@ -291,7 +329,9 @@ bytes here).
   Its next proposal reads as a clean sole-writer change — the server
   never sees a conflict, and the peer's text is overwritten. Block-level
   last-writer-wins, silently (P3 violation — a port artifact, not the
-  upstream design; TODO-2). Only when both proposals are in flight from
+  upstream design: the vision resolves this moment through pending-edit
+  adoption, which our auto-incorporation replaced — TODO-12 for the
+  model, TODO-2 for merge quality). Only when both proposals are in flight from
   the same stale base with overlapping ranges does the server's merge
   refuse (`de_rtc_rebase_failed`) and park — and then it parks the
   WHOLE proposal, clean blocks included (TODO-3).
@@ -375,7 +415,64 @@ idle traffic on your hardware; the stable shape:
 | websocket | tens of milliseconds | a few frames per heartbeat — plus a persistent daemon, TLS termination, and an exposed port |
 
 Transport latency is engine-independent (the HTTP rows replicate within
-noise under intent-log).
+noise under intent-log). One caveat on the axis itself: "engines run
+over any transport" is an inherited framework property, not a
+principle. It fits the log-shaped engines; for DE-RTC it is part of the
+adaptation under review (architecture item 4) — that engine is allowed
+to declare its own transport story, including "manual sync with long
+delays," without penalty.
+
+## Architectural decisions to revisit
+
+This plugin has no external users; severity is cheap now and expensive
+later. These are the load-bearing early decisions the fidelity audit
+and the scorecard put in question, each with the change we would scope.
+
+1. **One wire protocol for every engine.** The framework's session
+   protocol (opaque `EngineUpdate` envelopes over rows-after-cursor)
+   was inherited from the relay era and imposed on every engine. It
+   fits log-shaped engines (intent-log, yjs-server); it visibly
+   reshaped DE-RTC — save-centric semantics were squeezed into
+   poll-cadence proposals, which is where the LWW and the loss of
+   pending edits came from. Revisit: narrow the engine SPI to
+   principle-level obligations (authorize, attribute, merge, review,
+   materialize) and let each engine own its wire surface. An engine
+   that wants its own REST routes — or no live transport at all —
+   should be able to say so. Feeds TODO-12.
+2. **Canonical state lives in plugin storage posts for every engine.**
+   Room meta was chosen for plugin containment. For the log-is-truth
+   engines it is a reasonable substrate. For de-rtc it inverted the
+   vision: the canonical document is supposed to BE the post, with
+   sync-meta riding `post_content` and revisions as the backup
+   mechanism. The consequence is shared: every engine fails scenario F,
+   and de-rtc additionally lost its self-healing story. Revisit: make
+   the storage substrate an engine decision; de-rtc moves to
+   `post_content` + revisions (TODO-13) and room rows demote to a
+   transport cache.
+3. **`GET_LOCK` as the serialization primitive.** Covered by TODO-1,
+   listed here because it is also a decision smell: we reached for a
+   database lock because the room protocol forced per-request merges at
+   RTC cadence. Restoring de-rtc's optimistic concurrency removes the
+   lock from the engine that needed it least; intent-log still needs a
+   Core-style lock.
+4. **Transport universality as a design goal.** A fine property for
+   log-shaped engines and a Procrustean bed for DE-RTC. Revisit:
+   transports become a capability an engine declares, and the
+   comparison stops treating transport-independence as a virtue worth
+   buying at the price of engine fidelity.
+5. **Client machinery reuse across engines.** de-rtc's client rides a
+   `Y.Doc` editor bridge purely to reuse the shared Yjs undo manager
+   and awareness plumbing. That bought porting speed at the price of
+   two fidelity losses: local-snapshot undo (TODO-16) and a CRDT
+   dependency the vision says clients don't need. Revisit together with
+   TODO-2 — the descriptor builder is the natural moment to couple
+   de-rtc's client to the editor's semantic actions instead of a shadow
+   CRDT.
+6. **Benchmarking every engine at RTC cadence.** The session-shaped
+   scenarios poll every second, so they measure de-rtc-as-adapted, not
+   DE-RTC-as-designed: its whole-content byte profile and escalation
+   shares are partly artifacts of a cadence the vision does not
+   prescribe. TODO-19.
 
 ## Current state versus desired state
 
@@ -383,10 +480,11 @@ The desired state is the principles, fully honored, by whichever engine
 wins the bake-off. The current state is close enough to compare engines
 honestly and far enough that pretending otherwise would corrupt the
 comparison. The enumerated TODOs below are the delta. TODO-1 through
-TODO-4 are the ones that change engine *verdicts*; the rest change
-polish and confidence.
+TODO-4 change engine *verdicts*; TODO-12 through TODO-19 are the DE-RTC
+fidelity program — they change whether the engine we are comparing is
+the engine Dennis designed; the rest change polish and confidence.
 
-- **TODO-1 — Implement room locking the way WordPress Core would.**
+- **TODO-1 — Remove `GET_LOCK`; lock the way WordPress Core would.**
   intent-log and de-rtc serialize ingest with per-room MySQL `GET_LOCK`.
   Core never uses `GET_LOCK` — Core locks with atomic option writes and
   TTLs (the upgrader/cron pattern) precisely to stay topology-agnostic —
@@ -394,11 +492,13 @@ polish and confidence.
   pooling/multiplexing, under read/write-splitting drop-ins (a
   `SELECT GET_LOCK(...)` pattern-matches as a read and can land on a
   replica), on multi-primary clusters (user locks are node-local), and
-  on SQLite builds (the function does not exist). Replace with a
-  Core-style advisory lock (atomic CAS + TTL + retryable contention
-  response), or with the upstream DE-RTC approach for that engine
-  (optimistic base-version validation + retry). Note the original DE-RTC
-  has NO lock — the `GET_LOCK` is this port's addition. Principle: P5.
+  on SQLite builds (the function does not exist). The fix differs per
+  engine: **de-rtc drops the lock entirely** and restores the upstream
+  approach — optimistic base-version validation with merge-and-retry
+  (the original DE-RTC has NO lock; `GET_LOCK` is this port's addition,
+  see the fidelity audit); **intent-log** gets a Core-style advisory
+  lock (atomic CAS + TTL + retryable contention response). Principles:
+  P5; DE-RTC fidelity.
 - **TODO-2 — Port the DE-RTC client descriptor lane (`clientUpdate`) —
   timeboxed.** Restores Dennis's intended semantics for same-block
   concurrency and retires the silent client-side keep-local LWW
@@ -422,7 +522,9 @@ polish and confidence.
 - **TODO-4 — Machine-writer participation (scenario F).** Per engine:
   (a) **de-rtc**: port the upstream `wp_update_post` base-version
   preflight so REST/CLI/plugin writes become ordinary proposals — the
-  engine's ingest already accepts descriptor-less whole-content writers;
+  engine's ingest already accepts descriptor-less whole-content writers
+  (this covers writers that cooperate; writers that never will are
+  TODO-14, and lineage carriage in the content itself is TODO-13);
   (b) **intent-log**: two layered lanes — an intents API for
   intent-aware machines (agents, plugins) that can state what they
   mean, and a save-path diff-to-intents lane keyed by the block
@@ -471,6 +573,60 @@ polish and confidence.
   blocks born in-session). Sourced attributes beyond the content field
   don't survive server materialization yet.
 
+The DE-RTC fidelity program (see the fidelity audit for the vision
+each item restores):
+
+- **TODO-12 — Restore Save/Sync and pending edits.** The vision's
+  deepest structural element: editors confirm their own changes and
+  choose to adopt others'; pending edits are the reviewable, adoptable
+  unit; sync cadence is a host/user choice ("automated through polling,
+  replaced with a WebSocket, or manually run with long delays").
+  Replacing our auto-propose/auto-incorporate loop with this model
+  dissolves the same-block LWW at its root (scenario C) rather than
+  patching it. Depends on architecture item 1 — the room protocol has
+  no vocabulary for "pending, not yet adopted." TODO-2's descriptor
+  lane remains the merge-quality half of the same vision (its stage 3);
+  this is the interaction-model half.
+- **TODO-13 — Co-locate de-rtc sync-meta with `post_content`.** Write
+  the `wp/post-sync-meta` pseudo-block on materialize, treat revisions
+  as the backup mechanism, and demote room rows to a transport cache.
+  Today `materialize()` returns bare content and the lineage lives only
+  in room meta — a writer that round-trips the post carries nothing.
+  Unlocks TODO-14 and TODO-15; pairs with architecture item 2.
+- **TODO-14 — Self-healing from unaware writers.** Detect
+  CRDT/content divergence at save, recover the last-known sync-meta
+  from revisions/autosaves, and append a repairing edit so an unaware
+  overwrite "appears as any other collaborative update." This is the
+  vision's answer to scenario F for writers that will never cooperate;
+  TODO-4(a)'s base-version preflight covers the writers that will.
+  Depends on TODO-13.
+- **TODO-15 — Revision-backed base resolution.** The 20-version
+  snapshot window is upstream-faithful, but upstream could fall back to
+  revision copies of the sync-meta; we void (`unknown-base-version`)
+  instead. Resolve aged-out bases from revisions so arbitrarily long
+  offline editing recombines, as the vision promises. Depends on
+  TODO-13.
+- **TODO-16 — Revert-edit undo for de-rtc.** "Undo and Redo never
+  undo, but rather apply revert edits." Replace the local Yjs undo
+  manager with revert-edits derived against accepted canonical history
+  — the concept intent-log's inverse-intent undo already implements —
+  and leave the door open for the history slider. Pairs with
+  architecture item 5.
+- **TODO-17 — Modify-before-adopt in the review lane.** Port the
+  prototype's `reviewed_block_source` lane: an approver can edit
+  sequestered content before adopting it, and approvals are hash-pinned
+  to what was reviewed. Today's restore/dismiss is the germ, not the
+  feature.
+- **TODO-18 — Per-edit authorship surface.** Attribution at range
+  grain ("hover over a user's avatar and highlight the changes they
+  applied"), not just `authorClientId` on whole-content rows. Becomes
+  tractable once proposals carry descriptors (TODO-2).
+- **TODO-19 — Benchmark DE-RTC at its native cadence.** Add
+  save-and-sync-cadence scenarios (ten-second and manual-sync
+  intervals, save-shaped bursts) so the harness measures the design,
+  not our adaptation. Until then, read de-rtc's session-scenario byte
+  and escalation figures with that asterisk. Principles: P6; fairness.
+
 ## Known gaps and qualifications
 
 Residual facts that color conclusions but don't rise to TODOs of their
@@ -483,7 +639,8 @@ own:
   `long-form` at YOUR document sizes before concluding. Deep-lag
   behavior is distinct: rarely-reading clients escalate more, and past
   the 20-version snapshot window their proposals void and retry
-  (scenario G).
+  (scenario G; TODO-15 would resolve aged-out bases from revisions
+  instead of voiding).
 - **Intent-log same-paragraph typing can escalate instead of merging**
   (scenario C). The echo race that corrupted canvas text is fixed —
   capture diffs the editor tree against the document state that tree
