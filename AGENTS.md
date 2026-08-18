@@ -65,10 +65,18 @@ The framework/plugin split is complete: the framework ships **neither** engines
     Core/Gutenberg build that ships DE-RTC itself wins.
   - `lib/y-php/` — **vendored y-php** (PHP port of Yjs 13.6.31), imported
     verbatim from <https://github.com/alecgeatches/y-php> (MIT; upstream
-    commit recorded in the import commit). ONE deliberate local delta:
-    `composer.json` pins `config.platform.php` to 7.4 (with the lock
-    resolved for it) so the suite installs on WP-supported PHP — preserve
-    it when re-vendoring. Excluded from our phpcs (it
+    commit recorded in the import commit). TWO deliberate local deltas,
+    preserve both when re-vendoring: `composer.json` pins
+    `config.platform.php` to 7.4 (with the lock resolved for it) so the
+    suite installs on WP-supported PHP; and `src/Lib0/StringDecoder.php`
+    (marked DELTA in place, regression test
+    `tests/Unit/StringDecoderTest.php`) replaces a per-read rescan of the
+    V2 format's shared string buffer with a one-time char split + forward
+    cursor — upstream's decode was O(n²) in the string count (an order of
+    magnitude on the benchmark ingest; see docs/engine-comparison.md), a
+    porting artifact of JS `str.slice()` being native. Candidate for
+    upstreaming; drop the
+    delta if upstream adopts an equivalent fix. Excluded from our phpcs (it
     deliberately mirrors JS Yjs style and carries its own configs). Its own
     conformance suite runs in CI:
     `composer --working-dir=includes/lib/y-php install && composer
@@ -150,9 +158,10 @@ The framework/plugin split is complete: the framework ships **neither** engines
   byte-identical by `tests/js/engines/intent-log/vector-parity.test.js`;
   regenerate with the `tests/tools/` scripts and always update both.
 - `docs/engine-comparison.md` — the engine comparison guide: parity table,
-  host resource profiles, measured transport numbers, known gaps. The
-  interpretation layer over both benchmark harnesses; keep it current when
-  engine capabilities or benchmarks change.
+  host resource profiles, transport trade-offs, known gaps. The
+  interpretation layer over both benchmark harnesses; deliberately
+  number-free (run `npm run bench` for numbers) — keep the SHAPES current
+  when engine capabilities or benchmarks change.
 - `PORTING.md` — historical record of the client-side split (mostly DONE).
 
 ## The `gutenberg/` subtree
@@ -495,8 +504,10 @@ they exist so a failure is observable without re-instrumenting:
   taxonomies by rest_base, `meta.<key>`), so joiners see identical field
   state under any engine and never open dirty.
 - **yjs-server known gaps** (docs/engine-comparison.md has the full list):
-  ingest cost is real y-php CPU (~30 ms/edit at benchmark sizes — the
-  canonical doc is decoded/merged/re-encoded per request), no review lane
+  ingest cost is real y-php CPU — the canonical doc is
+  decoded/merged/re-encoded per request, the most expensive per-ingest
+  path of the three engines (much cheaper since the StringDecoder delta;
+  run `npm run bench` for numbers), no review lane
   (register conflicts LWW silently), kses is sanitize-and-compensate (no
   human review of stripped markup), the genesis size gate
   (`wp_sync_yjs_server_max_genesis_bytes`, default 1 MB) is genesis-only
