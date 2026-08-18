@@ -118,18 +118,30 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			require_once $transports . 'websocket/class-wp-websocket-sync-transport.php';
 			if ( defined( 'WP_CLI' ) && WP_CLI ) {
 				require_once $transports . 'websocket/class-wp-sync-server-cli-command.php';
+			}
 
-				/*
-				 * Room diagnostics (`wp collaboration rooms`) are a development
-				 * tool, deliberately kept OUT of the production path: the file
-				 * only loads on local/development sites (wp-env reports
-				 * 'local'), or when a site opts in explicitly by defining the
-				 * GUTENBERG_SYNC_ENGINES_DIAGNOSTICS constant.
-				 */
-				$diagnostics_allowed = in_array( wp_get_environment_type(), array( 'local', 'development' ), true )
-					|| ( defined( 'GUTENBERG_SYNC_ENGINES_DIAGNOSTICS' ) && GUTENBERG_SYNC_ENGINES_DIAGNOSTICS );
-				if ( $diagnostics_allowed ) {
-					require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/diagnostics/class-gutenberg-sync-engines-rooms-cli-command.php';
+			/*
+			 * Diagnostics are development tools, deliberately kept OUT of the
+			 * production path: these files only load on local/development
+			 * sites (wp-env reports 'local'), or when a site opts in
+			 * explicitly by defining the GUTENBERG_SYNC_ENGINES_DIAGNOSTICS
+			 * constant. The room CLI is WP-CLI-only; session capture and the
+			 * per-request benchmark log hook web requests too (both are
+			 * no-ops until a capture session is started / a request carries
+			 * the X-RTC-Test tag).
+			 */
+			$diagnostics_allowed = in_array( wp_get_environment_type(), array( 'local', 'development' ), true )
+				|| ( defined( 'GUTENBERG_SYNC_ENGINES_DIAGNOSTICS' ) && GUTENBERG_SYNC_ENGINES_DIAGNOSTICS );
+			if ( $diagnostics_allowed ) {
+				$diagnostics = GUTENBERG_SYNC_ENGINES_PATH . 'includes/diagnostics/';
+				require_once $diagnostics . 'class-gutenberg-sync-engines-request-log.php';
+				require_once $diagnostics . 'class-gutenberg-sync-engines-session-capture.php';
+				( new Gutenberg_Sync_Engines_Request_Log() )->register();
+				( new Gutenberg_Sync_Engines_Session_Capture() )->register();
+				if ( defined( 'WP_CLI' ) && WP_CLI ) {
+					require_once $diagnostics . 'class-gutenberg-sync-engines-rooms-cli-command.php';
+					require_once $diagnostics . 'class-gutenberg-sync-engines-capture-cli-command.php';
+					require_once $diagnostics . 'class-gutenberg-sync-engines-bench-log-cli-command.php';
 				}
 			}
 
