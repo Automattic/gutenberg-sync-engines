@@ -82,12 +82,14 @@ async function fetchToken(): Promise< string > {
 }
 
 /**
- * The announced socket URL with the token appended.
+ * The announced socket URL. The one-time token deliberately does NOT
+ * ride the URL (query strings land in server and proxy access logs);
+ * it travels as a Sec-WebSocket-Protocol offer instead — the one
+ * handshake header a browser page can influence (TODO-9).
  *
- * @param {string} token One-time token.
  * @return {string} Socket URL.
  */
-function socketUrl( token: string ): string {
+function socketUrl(): string {
 	// Announced through the framework's `wp_sync_transport_client_config`
 	// filter (hooked by this plugin's PHP half).
 	const transportConfig = (
@@ -101,8 +103,7 @@ function socketUrl( token: string ): string {
 	if ( ! base ) {
 		throw new Error( 'WebSocket URL is not configured' );
 	}
-	const separator = base.includes( '?' ) ? '&' : '?';
-	return `${ base }${ separator }token=${ encodeURIComponent( token ) }`;
+	return base;
 }
 
 /**
@@ -298,7 +299,13 @@ function connect(): void {
 
 	fetchToken()
 		.then( ( token ) => {
-			socket = new window.WebSocket( socketUrl( token ) );
+			// The token rides the subprotocol offer list, never the URL
+			// (TODO-9): the daemon consumes the `wp-sync-token.<hex>`
+			// offer and echoes the base `wp-sync` protocol on accept.
+			socket = new window.WebSocket( socketUrl(), [
+				'wp-sync',
+				`wp-sync-token.${ token }`,
+			] );
 			socket.addEventListener( 'open', () => {
 				connecting = false;
 				reconnectAttempts = 0;

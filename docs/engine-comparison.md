@@ -687,9 +687,18 @@ the engine Dennis designed; the rest change polish and confidence.
   growth coming. Tier 3 (epoch compaction that actually SHRINKS the
   canonical) stays parked, to be done together with incremental
   canonical maintenance.
-- **TODO-9 — Harden the websocket transport.** The one-time auth token
-  travels as a URL query parameter, and plaintext `ws://` must never
-  leave a dev box. Experimental until fixed.
+- **TODO-9 — Harden the websocket transport. Token lane DONE
+  (2026-08-18):** the one-time auth token no longer travels as a URL
+  query parameter (query strings land in server and proxy access
+  logs); it rides the `Sec-WebSocket-Protocol` offer list — the one
+  handshake header a browser page can influence — as
+  `wp-sync-token.<hex>` beside the base `wp-sync` subprotocol, which
+  the daemon echoes on accept per RFC 6455. The query lane is removed,
+  not deprecated (both halves ship together). Still true and still the
+  operator's job: plaintext `ws://` must never leave a dev box —
+  terminate TLS in front of the daemon. The transport remains
+  experimental until a real-daemon e2e lane exists (the websocket-only
+  suite exercises the TEST provider, not this daemon).
 - **TODO-10 — Validate the hosting cost cards end-to-end.** The
   per-user-hour projections compose exactly-measured engine-seam costs,
   but no browser-driven multi-client soak (three windows, an hour,
