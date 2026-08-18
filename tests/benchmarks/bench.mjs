@@ -105,18 +105,48 @@ const SCENARIOS = ( args.scenarios ?? Object.keys( MATRIX ).join( ',' ) )
 	.filter( Boolean );
 
 // Async variant for the concurrency mode: N workers must be IN FLIGHT
-// simultaneously, which spawnSync cannot do.
+// simultaneously, which spawnSync cannot do. Deliberately NOT `wp-env
+// run`: every wp-env invocation read-modify-writes the shared
+// ~/.wp-env/<env>/wp-env-cache.json, and N concurrent invocations race
+// on it — a torn read drops the saved `runtime` key and every LATER
+// wp-env command dies with "Environment not initialized" (bitten
+// 2026-08-18). The workers exec straight into the already-running cli
+// container instead; wp-env is only used serially, before and after.
+let cachedCliContainer = null;
+function cliContainer() {
+	if ( cachedCliContainer ) {
+		return cachedCliContainer;
+	}
+	const names = spawnSync( 'docker', [ 'ps', '--format', '{{.Names}}' ], {
+		encoding: 'utf8',
+	} )
+		.stdout.split( '\n' )
+		.filter( Boolean );
+	const project = path.basename( process.cwd() );
+	const suffix = ENV_CONFIG.includes( 'tests' ) ? '-tests-' : '-';
+	cachedCliContainer = names.find(
+		( name ) =>
+			name.startsWith( `wp-env-${ project }${ suffix }` ) &&
+			name.endsWith( '-cli-1' ) &&
+			( '-tests-' === suffix || ! name.includes( '-tests-' ) )
+	);
+	if ( ! cachedCliContainer ) {
+		throw new Error(
+			`could not find the running wp-env cli container for ${ project }`
+		);
+	}
+	return cachedCliContainer;
+}
+
 function wpAsync( ...wpArgs ) {
 	return new Promise( ( resolve, reject ) => {
 		const child = spawn(
-			'npx',
+			'docker',
 			[
-				'wp-env',
-				'--config',
-				ENV_CONFIG,
-				'run',
-				'cli',
-				`--env-cwd=${ ENV_CWD }`,
+				'exec',
+				'-w',
+				`/var/www/html/${ ENV_CWD }`,
+				cliContainer(),
 				...wpArgs,
 			],
 			{ stdio: [ 'ignore', 'pipe', 'pipe' ] }

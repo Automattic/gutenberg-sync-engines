@@ -117,7 +117,7 @@ shows up.
 | P2 no silent loss | **Meets, one window.** Oracle-certified; unacked outbox intents die with a tab reload (undo makes the loss visible) | **Meets.** Oracle-certified; races heal via idempotent full-state recovery | **Meets.** Oracle-certified; escalations park durably, voided proposals re-propose |
 | P3 conflicts surfaced | **Meets.** Per-register review lane; residual over-escalation on same-paragraph bursts (rate, not silence) | **Violates, currently by design.** Register conflicts resolve by silent CRDT last-writer-wins; no review lane (TODO-7) | **Partially violates — port artifact.** Server-detected conflicts park for review, but same-block concurrency silently LWWs client-side (TODO-2) and conflict grain is the whole proposal (TODO-3) |
 | P4 machine writers | **Not yet.** Ingest speaks typed intents only; the persisted `metadata.syncId` identity makes a diff lane tractable (TODO-4) | **Accepted limitation.** Ingest speaks binary CRDT updates; a diff-to-CRDT lane would be semantically worse, not just costly (TODO-4) | **Nearest, unported.** The protocol unit (base version + whole content) IS the `wp_update_post` shape and the server already derives operations for descriptor-less writers; the save-path preflight itself is unported (TODO-4) |
-| P5 cheap hosting | **Partially.** Cheapest per-ingest CPU; but `GET_LOCK` assumes single-primary topology (TODO-1) | **Partially.** No lock (good); heaviest per-ingest CPU, scaling with document size | **Partially.** Cheap CPU; `GET_LOCK` (TODO-1); wire/storage bytes scale with document size |
+| P5 cheap hosting | **Meets.** Cheapest per-ingest CPU; Core-style options-row lock, topology-safe (TODO-1 done) | **Partially.** No lock (good); heaviest per-ingest CPU, scaling with document size | **Partially.** Cheap CPU; lock-free optimistic claims, topology-safe (TODO-1 done); wire/storage bytes still scale with document size |
 | P6 measured economics | **Meets.** Real wire format in its benchmark profile | **Meets.** Real wire format; convergence oracle | **Meets.** Real wire format; disposition/lineage oracle |
 | P7 intent & identity | **Meets.** Typed intents end-to-end; syncIds persist in saved `post_content` and round-trip genesis | **Fails.** Snapshot-diff binding inherited from the relay; no semantic ops, no stable identity in the merge | **Designed for it, half-wired.** Block identity + rich-text ops live in the merge core, but clients send `clientUpdate: null`, so intent is server-derived from whole-content diffs (TODO-2) |
 
@@ -168,7 +168,7 @@ with something protocol-convenient.
 | Per-edit authorship: "hover over a user's avatar and highlight the changes they applied" | Range-grain attribution; the prototype shipped authorship-focus overlays | `authorClientId` on whole-content rows; no range attribution, no surface | **Unported.** TODO-18 |
 | Per-block kses sequestration — "accept partial edits, adopting the safe parts" | Prototype-proven | Restored as the shipping capability lane | **Faithful** |
 | The shipping merge is the hand-written block-aware three-way merge; Automerge backs only the legacy lane | Same | Same — ported verbatim as a frozen call-graph closure | **Faithful** |
-| Optimistic concurrency; no database lock | Base-version preflight, hash validation, merge-and-retry on the save path | Per-room `GET_LOCK` added by our port | **Corrupted.** TODO-1 |
+| Optimistic concurrency; no database lock | Base-version preflight, hash validation, merge-and-retry on the save path | Lock-free again: accepted proposals atomically claim their version advancement and a lost claim reloads + re-merges (`WP_Sync_Atomic_Option` CAS) | **Restored** (TODO-1 done) |
 | Clients need no CRDT library; Gutenberg couples via semantic Redux actions | Stage 3 of the development plan | The client rides a `Y.Doc` editor bridge (undo + awareness reuse) and sends `clientUpdate: null` | **Adaptation debt.** TODO-2 plus architecture item 5 |
 | Cheap-host cadence is a feature: "that $3/mo host … can still support multiple concurrent edit sessions polling … once every ten seconds" | Polling interval scales to the host's comfort; presence is separate from content | The engine runs and is benchmarked at the plugin's RTC poll cadence | **Acceptably different in operation; unfair in measurement.** TODO-19 |
 
@@ -198,19 +198,22 @@ the protocol won. The fidelity program reverses that default.
 | Concern | intent-log | yjs-server | de-rtc |
 | --- | --- | --- | --- |
 | Per-ingest CPU | Replay from checkpoint + transform planning — the cheapest of the three | Load + merge + re-encode the canonical y-php doc — the dominant cost of the three, scales with document size | Parse + three-way merge of three content strings (pure PHP over `parse_blocks` trees) — cheap at benchmark sizes, scales with document size |
-| Locking | Per-room MySQL `GET_LOCK` serializes ingest (5 s timeout; contenders get a retryable 503). One real lock round-trip pair inside every timed request — the engine benchmark's `calibration` block exists to subtract it. Topology-fragile: see TODO-1 | None — CRDT merge needs no total order; the update log is the source of truth and a lost canonical-save race is repaired from it on the next load | Same per-room `GET_LOCK` as intent-log (three-way merges are order-dependent) — an addition of OUR port; the save-centric original used optimistic base-version validation instead. See TODO-1 |
+| Locking | Per-room Core-style options-row lock (`WP_Sync_Room_Lock`, the upgrader pattern: atomic INSERT IGNORE + TTL; 5 s wait budget, contenders get a retryable 503). One claim/release pair of DB writes inside every timed request — the engine benchmark's `calibration` block exists to subtract it. Topology-safe by construction (TODO-1, done) | None — CRDT merge needs no total order; the update log is the source of truth and a lost canonical-save race is repaired from it on the next load | None — lock-free optimistic version claims (`WP_Sync_Atomic_Option` CAS): an accepted proposal atomically claims v(n+1), a lost claim reloads + re-merges, exhaustion returns the retryable 503. Upstream's validate-and-retry model, restored (TODO-1, done) |
 | Idle reads | Cheap by design (rows after cursor; no reconstruction) | Cheap (the canonical doc is never touched on the read path) | Cheap (rows after cursor; canonical untouched) |
 | Storage growth | Bounded: checkpoint + trim every 100 rows | Bounded: server checkpoint + trim every 100 rows, no client needed | Bounded: server checkpoint + trim every 100 rows — but every accepted proposal stores a FULL content row, so row bytes scale with document size |
 | Row contents | Small JSON intents + periodic full-document checkpoint rows | Base64 V2 diffs (server strips what it already had) + full-state snapshot rows, plus the canonical doc in room meta | Full-content JSON rows (content + version + attribution) + snapshot rows, plus canonical content and version snapshots in room meta |
 
-In plain terms, the locking row is a pro/con pair. intent-log and
-de-rtc: one edit merges at a time per post — concurrent editors wait
-briefly, and under heavy load a request may be told to retry; in
-exchange, nothing ever needs to resync. yjs-server: nobody ever waits —
-in exchange, every concurrent request redundantly pays the full merge
+In plain terms, the locking row is a pro/con set. intent-log: one edit
+merges at a time per post — concurrent editors wait briefly, and under
+heavy load a request may be told to retry; in exchange, nothing ever
+needs to resync. de-rtc: nobody waits — a request that loses the
+version race redoes its merge against the fresh state (duplicate merge
+CPU under contention, still nothing to resync), and only sustained
+contention turns into a retry. yjs-server: nobody ever waits — in
+exchange, every concurrent request redundantly pays the full merge
 cost, and a client is occasionally asked to re-upload its state (one
-extra round trip, nothing lost). Same contention, different currency:
-latency queueing versus duplicate CPU plus occasional resync.
+extra round trip, nothing lost). Same contention, three currencies:
+latency queueing; re-merge CPU; duplicate CPU plus occasional resync.
 
 This guide deliberately carries NO measured numbers: they vary by
 machine, PHP build, and code revision, and stale numbers mislead harder
@@ -292,8 +295,9 @@ situation through all three engines, and names the principle at stake.
   row. No lock, no transform.
 - **de-rtc**: Keystrokes edit the doc and mark it dirty. On the next
   poll, if no proposal is in flight, the client proposes its WHOLE
-  content against the version it last incorporated. The server locks,
-  three-way-merges (a fast-forward solo), broadcasts a full canonical
+  content against the version it last incorporated. The server
+  three-way-merges (a fast-forward solo), claims the version advance
+  (an uncontended CAS write), broadcasts a full canonical
   content row, and the client advances its version without touching the
   doc (its own content came back unchanged).
 
@@ -449,12 +453,12 @@ and the scorecard put in question, each with the change we would scope.
    the storage substrate an engine decision; de-rtc moves to
    `post_content` + revisions (TODO-13) and room rows demote to a
    transport cache.
-3. **`GET_LOCK` as the serialization primitive.** Covered by TODO-1,
-   listed here because it is also a decision smell: we reached for a
-   database lock because the room protocol forced per-request merges at
-   RTC cadence. Restoring de-rtc's optimistic concurrency removes the
-   lock from the engine that needed it least; intent-log still needs a
-   Core-style lock.
+3. **`GET_LOCK` as the serialization primitive.** RESOLVED by TODO-1:
+   de-rtc is lock-free again (optimistic version claims, upstream's
+   model) and intent-log holds a Core-style options-row lock. Kept here
+   as a record of the decision smell — we had reached for a database
+   lock because the room protocol forced per-request merges at RTC
+   cadence.
 4. **Transport universality as a design goal.** A fine property for
    log-shaped engines and a Procrustean bed for DE-RTC. Revisit:
    transports become a capability an engine declares, and the
@@ -484,8 +488,18 @@ TODO-4 change engine *verdicts*; TODO-12 through TODO-19 are the DE-RTC
 fidelity program — they change whether the engine we are comparing is
 the engine Dennis designed; the rest change polish and confidence.
 
-- **TODO-1 — Remove `GET_LOCK`; lock the way WordPress Core would.**
-  intent-log and de-rtc serialize ingest with per-room MySQL `GET_LOCK`.
+- **TODO-1 — Remove `GET_LOCK`; lock the way WordPress Core would.
+  DONE (2026-08-18):** intent-log now holds a Core-style options-row
+  lock (`WP_Sync_Room_Lock`, the upgrader pattern: atomic INSERT IGNORE
+  claim, TTL takeover of a crashed holder, token-checked release) and
+  de-rtc is lock-free — accepted proposals atomically claim their
+  version advancement via an options-row CAS (`WP_Sync_Atomic_Option`)
+  with reload-and-re-merge on a lost claim, orphaned-claim TTL healing,
+  and a genesis re-seed so room resets cannot wedge the counter; claim
+  exhaustion keeps the old retryable-503 contract. Covered by
+  `tests/phpunit/wpSyncConcurrencyPrimitives.php`. The original
+  rationale, kept for the record:
+  intent-log and de-rtc serialized ingest with per-room MySQL `GET_LOCK`.
   Core never uses `GET_LOCK` — Core locks with atomic option writes and
   TTLs (the upgrader/cron pattern) precisely to stay topology-agnostic —
   and `GET_LOCK` quietly loses its meaning under connection
@@ -699,8 +713,13 @@ own:
   resync** (scenario G). Measured with `npm run bench -- concurrency=8`:
   most runs settle fully applied with zero voids, the occasional run a
   handful of benign `resync-required` voids that heal by full-state
-  upload. The per-room-lock engines showed zero voids under the same
-  load, paying instead with measured lock queueing. The benchmark
+  upload. intent-log showed zero voids under the same load, paying
+  with measured lock queueing. de-rtc (lock-free since TODO-1) pays
+  with optimistic re-merge retries — and at hammer cadence a share of
+  contenders settles as escalations or stale-base voids instead of
+  waiting: surfaced, retryable outcomes, zero lost work by the same
+  oracle, and exactly the shape upstream's validate-and-retry model
+  predicts under contention it was never designed to queue. The benchmark
   treats `resync-required` as benign and `invalid-payload` as REAL loss
   that fails the run.
 - **yjs-server ingest cost is real and scales with document size**, and

@@ -218,37 +218,34 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 		}
 
 		/**
-		 * Acquires the per-room ingest lock (MySQL GET_LOCK, held by this
-		 * request's database connection).
+		 * Tokens for locks this instance currently holds, by room.
+		 *
+		 * @since 0.5.0
+		 *
+		 * @var array<string, string>
+		 */
+		private $room_lock_tokens = array();
+
+		/**
+		 * Acquires the per-room ingest lock (Core-style options-row lock;
+		 * see WP_Sync_Room_Lock for why not GET_LOCK).
 		 *
 		 * @since 7.2.0
-		 *
-		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
 		 * @param string $room Room identifier.
 		 * @return true|WP_Error True when held, retryable error otherwise.
 		 */
 		private function acquire_room_lock( string $room ) {
-			global $wpdb;
-
-			$acquired = $wpdb->get_var(
-				$wpdb->prepare(
-					'SELECT GET_LOCK(%s, %d)',
-					$this->room_lock_name( $room ),
-					5 // Seconds; a plan is milliseconds, so contention clears fast.
-				)
-			);
-			if ( '1' === (string) $acquired ) {
-				return true;
+			// 5s budget; a plan is milliseconds, so contention clears fast.
+			$token = WP_Sync_Room_Lock::acquire( $this->room_lock_name( $room ), 5.0 );
+			if ( is_wp_error( $token ) ) {
+				// Budget exhausted: the client retries on its normal poll
+				// cadence.
+				return $token;
 			}
+			$this->room_lock_tokens[ $room ] = $token;
 
-			// Timeout or connection error: the client retries on its normal
-			// poll cadence.
-			return new WP_Error(
-				'rest_sync_room_busy',
-				__( 'The room is busy processing another request. Retry shortly.', 'gutenberg' ),
-				array( 'status' => 503 )
-			);
+			return true;
 		}
 
 		/**
@@ -256,21 +253,19 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 		 *
 		 * @since 7.2.0
 		 *
-		 * @global wpdb $wpdb WordPress database abstraction object.
-		 *
 		 * @param string $room Room identifier.
 		 */
 		private function release_room_lock( string $room ): void {
-			global $wpdb;
-
-			$wpdb->query(
-				$wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $this->room_lock_name( $room ) )
+			WP_Sync_Room_Lock::release(
+				$this->room_lock_name( $room ),
+				(string) ( $this->room_lock_tokens[ $room ] ?? '' )
 			);
+			unset( $this->room_lock_tokens[ $room ] );
 		}
 
 		/**
-		 * The MySQL user-lock name for a room, prefixed for multisite/table
-		 * isolation and hashed to stay under the 64-character lock-name cap.
+		 * The lock option name for a room, table-prefixed for isolation and
+		 * hashed to a bounded length.
 		 *
 		 * @since 7.2.0
 		 *

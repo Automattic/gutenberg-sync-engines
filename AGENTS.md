@@ -369,7 +369,7 @@ they exist so a failure is observable without re-instrumenting:
   `debug: true` on each room request; all THREE engines respond with an
   `_debug` envelope (intent-log: lock wait, window rows, head seq, plan
   counts, checkpoint; yjs-server: doc bytes, appended rows, replay-repair
-  flag, disposition counts; de-rtc: lock wait, version, content bytes,
+  flag, disposition counts; de-rtc: claim retries, version, content bytes,
   disposition counts, checkpoint) plus read-side row counts, printed as
   `⚙ server` in the tail. Gated server-side by `SCRIPT_DEBUG` (dev env:
   on; tests env: off) or the `wp_sync_debug_enabled` filter.
@@ -538,8 +538,10 @@ they exist so a failure is observable without re-instrumenting:
   unported); kses SEQUESTERS per block (risky blocks revert to base and
   park for review while the safe remainder lands; whole-proposal
   escalation remains the fallback for freeform boundaries and
-  descriptor-carrying proposals); ingest serializes per room under the
-  intent-log-style GET_LOCK, and every accepted proposal broadcasts FULL
+  descriptor-carrying proposals); ingest is lock-free — each accepted
+  proposal atomically claims its version advancement (options-row CAS,
+  `WP_Sync_Atomic_Option`) and a lost claim reloads + re-merges, the
+  upstream optimistic model — and every accepted proposal broadcasts FULL
   content rows (storage bounded by checkpoints, but row bytes scale with
   document size).
 - **Intent-log observed-baseline residuals** (the echo race is FIXED — capture

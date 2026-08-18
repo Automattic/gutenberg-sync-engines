@@ -87,10 +87,12 @@ if ( ! in_array( $engine_slug, $wp_sync_bench_engine_slugs, true ) ) {
 
 /**
  * Times the environment's database round-trips so the intent-log service
- * time can be decomposed: its handle_updates() holds a per-room MySQL
- * GET_LOCK for the length of the request, so each timed request includes
- * one lock/release pair of DB round-trips that lock-free engines (e.g.
- * yjs-server's ingest) do not pay.
+ * time can be decomposed: its handle_updates() holds a Core-style
+ * options-row lock (WP_Sync_Room_Lock, the GET_LOCK replacement — see
+ * TODO-1 in docs/engine-comparison.md) for the length of the request, so
+ * each timed request includes one claim/release pair of DB writes that
+ * lock-free engines (yjs-server's CRDT ingest, de-rtc's optimistic
+ * version claims) do not pay.
  *
  * @return array db_rtt and lock_pair p50, in milliseconds.
  */
@@ -107,8 +109,10 @@ if ( ! function_exists( 'wp_sync_bench_calibrate' ) ) {
 			$db_rtt[] = ( hrtime( true ) - $start ) / 1e3;
 
 			$start = hrtime( true );
-			$wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, %d)', $lock_name, 5 ) );
-			$wpdb->query( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock_name ) );
+			$token = WP_Sync_Room_Lock::acquire( $lock_name, 0.0 );
+			if ( ! is_wp_error( $token ) ) {
+				WP_Sync_Room_Lock::release( $lock_name, $token );
+			}
 			$lock_pair[] = ( hrtime( true ) - $start ) / 1e3;
 		}
 

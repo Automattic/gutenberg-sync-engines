@@ -155,6 +155,16 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		private $debug_stash = array();
 
 		/**
+		 * Version-claim retries performed during the current request
+		 * (optimistic-concurrency losses; surfaced in the debug envelope).
+		 *
+		 * @since 0.5.0
+		 *
+		 * @var int
+		 */
+		private $claim_retries = 0;
+
+		/**
 		 * Constructor.
 		 *
 		 * @since 0.3.0
@@ -210,12 +220,15 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		/**
 		 * Ingests a batch of proposals from one client.
 		 *
-		 * Each proposal is merged against the canonical document under the
-		 * per-room ingest lock (three-way merges are order-dependent, unlike
-		 * CRDT merges, so ingest must serialize per room — same rationale as
-		 * the intent-log engine). Accepted proposals advance the canonical
-		 * version and append a server-authored `content` row; conflicts and
-		 * invalid proposals settle per-proposal as dispositions.
+		 * Lock-free, optimistic — upstream DE-RTC's own concurrency model
+		 * (validate the base, merge, retry when the world moved): an
+		 * accepted proposal atomically CLAIMS its version advancement
+		 * (see claim_version()); a lost claim reloads canonical and
+		 * re-merges. Rejection paths (escalations, voids) never advance
+		 * the version, and every other row type is idempotent, so no
+		 * exclusion is needed anywhere else. Accepted proposals append a
+		 * server-authored `content` row; conflicts and invalid proposals
+		 * settle per-proposal as dispositions.
 		 *
 		 * @since 0.3.0
 		 *
@@ -241,34 +254,23 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				}
 			}
 
-			$lock_started = microtime( true );
-			$lock         = $this->acquire_room_lock( $room );
-			$lock_wait_ms = (int) round( 1000 * ( microtime( true ) - $lock_started ) );
-			if ( is_wp_error( $lock ) ) {
-				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
-				do_action( 'qm/debug', "wp-sync: de-rtc ingest lock timeout for {$room} after {$lock_wait_ms}ms" );
-				return $lock;
-			}
-			try {
-				return $this->handle_updates_locked( $room, $client_id, $updates, $context, $lock_wait_ms );
-			} finally {
-				$this->release_room_lock( $room );
-			}
+			$this->claim_retries = 0;
+
+			return $this->process_updates( $room, $client_id, $updates, $context );
 		}
 
 		/**
-		 * The body of handle_updates(), run under the per-room ingest lock.
+		 * The body of handle_updates().
 		 *
 		 * @since 0.3.0
 		 *
-		 * @param string $room         Room identifier.
-		 * @param int    $client_id    Client identifier.
-		 * @param array  $updates      Proposal updates.
-		 * @param array  $context      Transport context.
-		 * @param int    $lock_wait_ms Milliseconds spent waiting for the lock.
+		 * @param string $room      Room identifier.
+		 * @param int    $client_id Client identifier.
+		 * @param array  $updates   Proposal updates.
+		 * @param array  $context   Transport context.
 		 * @return array|WP_Error array( 'dispositions' => array ) or error.
 		 */
-		private function handle_updates_locked( string $room, int $client_id, array $updates, array $context, int $lock_wait_ms ) {
+		private function process_updates( string $room, int $client_id, array $updates, array $context ) {
 			$state = $this->load_room( $room );
 			if ( is_wp_error( $state ) ) {
 				return $state;
@@ -329,7 +331,13 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					continue;
 				}
 
-				$disposition    = $this->ingest_proposal( $room, $client_id, $state, $proposal, $review );
+				$disposition = $this->ingest_proposal( $room, $client_id, $state, $proposal, $review );
+				if ( is_wp_error( $disposition ) ) {
+					// Claim attempts exhausted under heavy contention: the
+					// whole request retries (503), the old lock-timeout
+					// contract — a re-sent proposal merges idempotently.
+					return $disposition;
+				}
 				$disposition    = array_merge( array( 'intentId' => $proposal_id ), $disposition );
 				$dispositions[] = $disposition;
 			}
@@ -389,7 +397,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 
 			if ( ! empty( $context['debug'] ) ) {
 				$this->debug_stash[ $room ] = array(
-					'lock_wait_ms'  => $lock_wait_ms,
+					'claim_retries' => $this->claim_retries,
 					'version'       => $state['version'],
 					'content_bytes' => strlen( (string) $state['content'] ),
 					'ingest'        => $counts,
@@ -410,7 +418,9 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * @param array  $state     Room state (by reference via room cache).
 		 * @param array  $proposal  Decoded proposal payload.
 		 * @param array  $review    Review ledger (lazily loaded, by reference).
-		 * @return array Disposition fields (status, reason?, version?).
+		 * @return array|WP_Error Disposition fields (status, reason?,
+		 *                        version?), or a retryable 503 when claim
+		 *                        attempts are exhausted under contention.
 		 */
 		private function ingest_proposal( string $room, int $client_id, array &$state, array $proposal, &$review ) {
 			$base_content = $this->resolve_base_content( $state, $proposal['baseVersion'] );
@@ -453,86 +463,143 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				}
 			}
 
-			$result = wp_de_rtc_get_automerge_retry_save_result(
-				$base_content,
-				$state['content'],
-				$proposed_content,
-				$proposal['clientUpdate'] ?? null
-			);
+			/*
+			 * Merge, claim, commit — optimistically. The claim is the commit
+			 * point: an atomic version-advancement swap (upstream DE-RTC's
+			 * validate-and-retry model, not a lock). Losing the claim means
+			 * another request advanced canonical between our load and our
+			 * commit: reload, re-merge against the fresh state, try again.
+			 * Rejection outcomes never advance the version, so they need no
+			 * claim.
+			 */
+			for ( $attempt = 0; $attempt < 10; $attempt++ ) {
+				if ( $attempt > 0 ) {
+					/*
+					 * Lost the optimistic race. Jittered backoff first —
+					 * under a thundering herd, immediate re-claims lose
+					 * repeatedly to whichever rival is mid-commit — THEN
+					 * reload, so the state we merge against is as fresh as
+					 * possible when we claim.
+					 */
+					usleep( 1000 * wp_rand( 2, 6 * $attempt ) );
+					unset( $this->room_states[ $room ] );
+					$reloaded = $this->load_room( $room );
+					if ( is_wp_error( $reloaded ) ) {
+						return array(
+							'status' => 'voided',
+							'reason' => 'storage-error',
+						);
+					}
+					$state        = $reloaded;
+					$base_content = $this->resolve_base_content( $state, $proposal['baseVersion'] );
+					if ( null === $base_content ) {
+						// The base aged out of the snapshot window mid-retry.
+						return array(
+							'status' => 'voided',
+							'reason' => 'unknown-base-version',
+						);
+					}
+				}
+				$result = wp_de_rtc_get_automerge_retry_save_result(
+					$base_content,
+					$state['content'],
+					$proposed_content,
+					$proposal['clientUpdate'] ?? null
+				);
 
-			if ( is_wp_error( $result ) ) {
-				if ( 'de_rtc_rebase_failed' === $result->get_error_code() ) {
-					// A genuine conflict: DE-RTC policy is a human decision,
-					// not a silent merge. The proposal parks for review; the
-					// canonical state wins locally once it applies, and a
-					// human restores or dismisses the parked work.
-					$this->park_proposal( $room, $client_id, $proposal, 'manual-conflict-required', $base_content, $review );
+				if ( is_wp_error( $result ) ) {
+					if ( 'de_rtc_rebase_failed' === $result->get_error_code() ) {
+						// A genuine conflict: DE-RTC policy is a human decision,
+						// not a silent merge. The proposal parks for review; the
+						// canonical state wins locally once it applies, and a
+						// human restores or dismisses the parked work.
+						$this->park_proposal( $room, $client_id, $proposal, 'manual-conflict-required', $base_content, $review );
+						return array(
+							'status' => 'escalated',
+							'reason' => 'manual-conflict-required',
+						);
+					}
+
+					$data = $result->get_error_data();
 					return array(
-						'status' => 'escalated',
-						'reason' => 'manual-conflict-required',
+						'status' => 'voided',
+						'reason' => is_array( $data ) && is_string( $data['detail'] ?? null )
+							? $data['detail']
+							: $result->get_error_code(),
 					);
 				}
 
-				$data = $result->get_error_data();
-				return array(
-					'status' => 'voided',
-					'reason' => is_array( $data ) && is_string( $data['detail'] ?? null )
-						? $data['detail']
-						: $result->get_error_code(),
+				if ( ! $this->claim_version( $room, (int) $state['version_seq'] ) ) {
+					// Lost the optimistic race: back off, reload, re-merge
+					// (the loop-top retry block).
+					++$this->claim_retries;
+					continue;
+				}
+
+				// Claimed: this request owns the advancement to the next
+				// version. (A crash between here and add_row() leaves an
+				// orphaned claim; claim_version() heals that by TTL
+				// takeover.)
+				$next_seq     = (int) $state['version_seq'] + 1;
+				$next_version = 'v' . $next_seq;
+				$merged       = (string) $result['merged_content'];
+
+				// Entity-property registers ride the proposal beside the
+				// content: a per-property three-way merge against the same base
+				// version. Runs only on the accepted path — an escalated
+				// proposal parks whole, and the client re-carries its full
+				// property map on the next proposal, so nothing is lost.
+				$this->merge_proposed_properties( $room, $client_id, $state, $proposal, $review );
+
+				$state['sync_meta'] = wp_de_rtc_update_automerge_version_snapshots(
+					is_array( $state['sync_meta'] ) ? $state['sync_meta'] : array(),
+					$state['version'],
+					$state['content'],
+					$next_version,
+					$merged
 				);
-			}
 
-			// Accepted: advance the canonical version.
-			$next_seq     = (int) $state['version_seq'] + 1;
-			$next_version = 'v' . $next_seq;
-			$merged       = (string) $result['merged_content'];
-
-			// Entity-property registers ride the proposal beside the
-			// content: a per-property three-way merge against the same base
-			// version. Runs only on the accepted path — an escalated
-			// proposal parks whole, and the client re-carries its full
-			// property map on the next proposal, so nothing is lost.
-			$this->merge_proposed_properties( $room, $client_id, $state, $proposal, $review );
-
-			$state['sync_meta'] = wp_de_rtc_update_automerge_version_snapshots(
-				is_array( $state['sync_meta'] ) ? $state['sync_meta'] : array(),
-				$state['version'],
-				$state['content'],
-				$next_version,
-				$merged
-			);
-
-			$stored = $this->add_row(
-				$room,
-				self::SERVER_CLIENT_ID,
-				self::UPDATE_TYPE_CONTENT,
-				wp_json_encode(
-					array(
-						'version'        => $next_version,
-						'baseVersion'    => $state['version'],
-						'content'        => $merged,
-						'properties'     => $state['properties'] ?? array(),
-						'authorClientId' => $client_id,
-						'proposalId'     => $proposal['proposalId'],
+				$stored = $this->add_row(
+					$room,
+					self::SERVER_CLIENT_ID,
+					self::UPDATE_TYPE_CONTENT,
+					wp_json_encode(
+						array(
+							'version'        => $next_version,
+							'baseVersion'    => $state['version'],
+							'content'        => $merged,
+							'properties'     => $state['properties'] ?? array(),
+							'authorClientId' => $client_id,
+							'proposalId'     => $proposal['proposalId'],
+						)
 					)
-				)
-			);
-			if ( ! $stored ) {
+				);
+				if ( ! $stored ) {
+					return array(
+						'status' => 'voided',
+						'reason' => 'storage-error',
+					);
+				}
+
+				$state['version']     = $next_version;
+				$state['version_seq'] = $next_seq;
+				$state['content']     = $merged;
+				$this->record_properties_snapshot( $state, $next_version );
+				$this->save_canonical( $room, $state );
+
 				return array(
-					'status' => 'voided',
-					'reason' => 'storage-error',
+					'status'  => 'applied',
+					'version' => $next_version,
 				);
 			}
 
-			$state['version']     = $next_version;
-			$state['version_seq'] = $next_seq;
-			$state['content']     = $merged;
-			$this->record_properties_snapshot( $state, $next_version );
-			$this->save_canonical( $room, $state );
-
-			return array(
-				'status'  => 'applied',
-				'version' => $next_version,
+			// Claim attempts exhausted: heavy contention. Same retryable
+			// contract as the old lock timeout — the client re-sends on its
+			// normal cadence and the re-proposal merges idempotently.
+			return new WP_Error(
+				'rest_sync_room_busy',
+				__( 'The room is busy processing another request. Retry shortly.', 'gutenberg' ),
+				array( 'status' => 503 )
 			);
 		}
 
@@ -1264,6 +1331,15 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			// The genesis row is the room's first stored row: stamp lineage.
 			$this->storage->set_room_engine( $room, $this->get_slug() );
 
+			/*
+			 * Re-seed the version claim to genesis. Genesis only runs when
+			 * the room is empty, which is exactly when a leftover claim row
+			 * (from a room reset / engine flip) must not outlive the state
+			 * it described. Racing initializers write the same seq —
+			 * idempotent, like the genesis row itself.
+			 */
+			WP_Sync_Atomic_Option::reset( $this->version_claim_name( $room ), '1:' . sprintf( '%.6F', microtime( true ) ) );
+
 			$this->save_canonical( $room, $state );
 
 			return $state;
@@ -1344,6 +1420,35 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				return false;
 			}
 
+			/*
+			 * Without an ingest lock, concurrent requests can both reach
+			 * here; a zero-wait try-lock elects one checkpointer and the
+			 * rest skip (best-effort — the next request past the interval
+			 * re-triggers).
+			 */
+			$lock_name  = $this->version_claim_name( $room ) . '_ckpt';
+			$lock_token = WP_Sync_Room_Lock::acquire( $lock_name, 0.0 );
+			if ( is_wp_error( $lock_token ) ) {
+				return false;
+			}
+			$checkpointed = $this->perform_checkpoint( $room, $state, $previous, $prev_cursor );
+			WP_Sync_Room_Lock::release( $lock_name, $lock_token );
+
+			return $checkpointed;
+		}
+
+		/**
+		 * The body of maybe_checkpoint(), run by the elected checkpointer.
+		 *
+		 * @since 0.5.0
+		 *
+		 * @param string $room        Room identifier.
+		 * @param array  $state       Room state at the head.
+		 * @param mixed  $previous    Previous checkpoint meta.
+		 * @param int    $prev_cursor Previous checkpoint cursor.
+		 * @return bool Whether a checkpoint was appended.
+		 */
+		private function perform_checkpoint( string $room, array $state, $previous, int $prev_cursor ): bool {
 			/*
 			 * UNRESOLVED parked proposals below the future trim floor survive
 			 * by re-appending them above the previous checkpoint; resolved
@@ -1444,69 +1549,76 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		}
 
 		/**
-		 * Acquires the per-room ingest lock (MySQL GET_LOCK).
-		 *
-		 * @since 0.3.0
-		 *
-		 * @global wpdb $wpdb WordPress database abstraction object.
-		 *
-		 * @param string $room Room identifier.
-		 * @return true|WP_Error True when held, retryable error otherwise.
+		 * Seconds after which an uncommitted version claim is treated as
+		 * orphaned (its writer died between claim and row append).
 		 */
-		private function acquire_room_lock( string $room ) {
-			global $wpdb;
+		const CLAIM_TTL_SECONDS = 15;
 
-			$acquired = $wpdb->get_var(
-				$wpdb->prepare(
-					'SELECT GET_LOCK(%s, %d)',
-					$this->room_lock_name( $room ),
-					5
-				)
-			);
-			if ( '1' === (string) $acquired ) {
-				return true;
+		/**
+		 * Atomically claims advancement of the canonical version.
+		 *
+		 * The claim row (an options-table compare-and-swap; see
+		 * WP_Sync_Atomic_Option) holds `<seq>:<time>`. A successful swap
+		 * from the seq this request merged against to seq+1 makes this
+		 * request the sole writer of version v(seq+1) — upstream DE-RTC's
+		 * optimistic validate-and-retry model, not a lock.
+		 *
+		 * Healing, both directions: a claim row BEHIND storage (restored
+		 * backup, lost row) is swapped forward from whatever it holds; a
+		 * claim row one AHEAD of storage whose writer never committed is
+		 * taken over once it is older than CLAIM_TTL_SECONDS. Both repairs
+		 * are CAS-guarded, so two rescuers cannot both win.
+		 *
+		 * @since 0.5.0
+		 *
+		 * @param string $room        Room identifier.
+		 * @param int    $current_seq Version seq this request merged against.
+		 * @return bool Whether this request now owns v(current_seq + 1).
+		 */
+		private function claim_version( string $room, int $current_seq ): bool {
+			$name = $this->version_claim_name( $room );
+			$next = ( $current_seq + 1 ) . ':' . sprintf( '%.6F', microtime( true ) );
+
+			$existing = WP_Sync_Atomic_Option::read( $name );
+			if ( null === $existing ) {
+				// Legacy room with no claim row: swap() seeds it at the
+				// current seq atomically, then performs the swap.
+				return WP_Sync_Atomic_Option::swap( $name, $current_seq . ':0', $next );
 			}
 
-			return new WP_Error(
-				'rest_sync_room_busy',
-				__( 'The room is busy processing another request. Retry shortly.', 'gutenberg' ),
-				array( 'status' => 503 )
-			);
+			$parts        = explode( ':', $existing, 2 );
+			$claimed_seq  = (int) $parts[0];
+			$claimed_time = isset( $parts[1] ) ? (float) $parts[1] : 0.0;
+
+			if ( $claimed_seq <= $current_seq ) {
+				// Normal claim (equal), or a claim row behind storage (heal
+				// forward from whatever it holds).
+				return WP_Sync_Atomic_Option::swap( $name, $existing, $next );
+			}
+
+			if ( $claimed_seq === $current_seq + 1 && microtime( true ) - $claimed_time > self::CLAIM_TTL_SECONDS ) {
+				// Orphaned claim: claimed, never committed a row, expired.
+				return WP_Sync_Atomic_Option::swap( $name, $existing, $next );
+			}
+
+			return false;
 		}
 
 		/**
-		 * Releases the per-room ingest lock.
+		 * The claim option name for a room, table-prefixed for isolation
+		 * and hashed to a bounded length.
 		 *
-		 * @since 0.3.0
+		 * @since 0.5.0
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
 		 * @param string $room Room identifier.
-		 * @return void
+		 * @return string Option name.
 		 */
-		private function release_room_lock( string $room ): void {
+		private function version_claim_name( string $room ): string {
 			global $wpdb;
 
-			$wpdb->query(
-				$wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $this->room_lock_name( $room ) )
-			);
-		}
-
-		/**
-		 * The MySQL user-lock name for a room (shared shape with the
-		 * intent-log engine, so the two engines cannot deadlock each other).
-		 *
-		 * @since 0.3.0
-		 *
-		 * @global wpdb $wpdb WordPress database abstraction object.
-		 *
-		 * @param string $room Room identifier.
-		 * @return string Lock name.
-		 */
-		private function room_lock_name( string $room ): string {
-			global $wpdb;
-
-			return $wpdb->prefix . 'sync_ingest_' . md5( $room );
+			return $wpdb->prefix . 'sync_de_rtc_claim_' . md5( $room );
 		}
 
 		/**

@@ -95,6 +95,10 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			// The automerge-php support gate (tiny; the library itself stays lazy).
 			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/lib/automerge-php-loader.php';
 
+			// Shared concurrency primitives (Core-style lock + optimistic CAS).
+			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/class-wp-sync-room-lock.php';
+			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/class-wp-sync-atomic-option.php';
+
 			$engines = GUTENBERG_SYNC_ENGINES_PATH . 'includes/engines/';
 			require_once $engines . 'class-wp-sync-post-genesis-props.php';
 			require_once $engines . 'intent-log/class-wp-intent-log-document.php';
