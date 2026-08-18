@@ -587,6 +587,52 @@ each item restores):
   no vocabulary for "pending, not yet adopted." TODO-2's descriptor
   lane remains the merge-quality half of the same vision (its stage 3);
   this is the interaction-model half.
+
+  Design sketch — the commit path and the transport separate into two
+  channels with different jobs:
+
+  - **Save is the only commit primitive.** Whole content +
+    `base_version` through the ordinary WordPress save path
+    (`wp_update_post` / REST, autosaves included — the prototype
+    shipped a DE-RTC autosaves controller). The server merges at save
+    time, canonical state advances only at saves, and dispositions
+    (merged / sequestered / needs-review) return in the save response.
+    Pseudo-realtime is a save/autosave cadence dial, not a second
+    commit channel — "pseudo-realtime, collaborative, and offline
+    editing are one latency spectrum." This is also where TODO-12 and
+    TODO-4(a) converge into one door: the browser, a curl call, an AI
+    agent, and a plugin all commit through the same
+    save-with-base-version lane; the browser stops being a privileged
+    client with its own commit protocol.
+  - **The transport narrows to Sync — advisory, never mutating.** Sync
+    events exchange: presence/awareness (who is here, which block each
+    person holds); canonical version announcements ("the post advanced
+    to version X" as a token/hash, content fetched or included so a
+    client can offer "adopt the latest"); pending edits awaiting
+    adoption or review (sequestered blocks, needs-review proposals —
+    summaries plus enough content to preview and act); and late-arriving
+    dispositions of earlier saves. Adoption of a newer canonical is the
+    client-side step our port wrongly automated: explicit when the
+    change contests local work, policy-automatable only when trivially
+    safe (no overlap) — which is exactly where the silent LWW
+    disappears.
+  - **Unsaved keystrokes never travel.** Local work stays local until a
+    save commits it. Live cursors-and-keystrokes is the vision's final
+    progressive-enhancement stage, not the foundation.
+  - **Existing transports survive, demoted to Sync carriers.** Sync
+    traffic is small, idempotent, and latency-tolerant — ten-second
+    polling on a cheap host is a comfortable cadence, not a degraded
+    one; a WebSocket just delivers announcements faster; manual sync or
+    no transport at all degrades gracefully to plain saves that merge
+    on arrival. Room rows become an ephemeral gossip cache; durable
+    truth moves to `post_content` + sync-meta + revisions (TODO-13).
+  - **Consequences the comparison must absorb.** The byte profile
+    inverts — small sync events per poll instead of full-content rows,
+    resolving most of the "de-rtc pays in bytes" con (measure under
+    TODO-19 before re-judging). And edit-to-visible latency becomes
+    save-cadence-bounded rather than poll-bounded: a deliberate policy
+    trade of the vision, to be presented as such rather than as a
+    deficiency.
 - **TODO-13 — Co-locate de-rtc sync-meta with `post_content`.** Write
   the `wp/post-sync-meta` pseudo-block on materialize, treat revisions
   as the backup mechanism, and demote room rows to a transport cache.
