@@ -116,7 +116,7 @@ shows up.
 | P1 server authority | **Meets.** Typed intents authorized, attributed, and transformed at ingest | **Meets.** Server merges and materializes; per-update dispositions | **Meets.** Server merges every proposal; per-proposal dispositions with version lineage |
 | P2 no silent loss | **Meets, one window.** Oracle-certified; unacked outbox intents die with a tab reload (undo makes the loss visible) | **Meets.** Oracle-certified; races heal via idempotent full-state recovery | **Meets.** Oracle-certified; escalations park durably, voided proposals re-propose |
 | P3 conflicts surfaced | **Meets.** Per-register review lane; residual over-escalation on same-paragraph bursts (rate, not silence) | **Violates, currently by design.** Register conflicts resolve by silent CRDT last-writer-wins; no review lane (TODO-7) | **Partially violates — port artifact.** Server-detected conflicts park for review, but same-block concurrency silently LWWs client-side (TODO-2) and conflict grain is the whole proposal (TODO-3) |
-| P4 machine writers | **Not yet.** Ingest speaks typed intents only; the persisted `metadata.syncId` identity makes a diff lane tractable (TODO-4) | **Accepted limitation.** Ingest speaks binary CRDT updates; a diff-to-CRDT lane would be semantically worse, not just costly (TODO-4) | **Nearest, unported.** The protocol unit (base version + whole content) IS the `wp_update_post` shape and the server already derives operations for descriptor-less writers; the save-path preflight itself is unported (TODO-4) |
+| P4 machine writers | **Not yet.** Ingest speaks typed intents only; the persisted `metadata.syncId` identity makes a diff lane tractable (TODO-4) | **Accepted limitation.** Ingest speaks binary CRDT updates; a diff-to-CRDT lane would be semantically worse, not just costly (TODO-4) | **Half-met.** Unaware writers are handled (TODO-14 self-healing: out-of-band writes merge in, scenario F passes); the *cooperating*-writer lane — the `wp_update_post` base-version preflight — remains unported (TODO-4) |
 | P5 cheap hosting | **Meets.** Cheapest per-ingest CPU; Core-style options-row lock, topology-safe (TODO-1 done) | **Partially.** No lock (good); heaviest per-ingest CPU, scaling with document size | **Partially.** Cheap CPU; lock-free optimistic claims, topology-safe (TODO-1 done); wire/storage bytes still scale with document size |
 | P6 measured economics | **Meets.** Real wire format in its benchmark profile | **Meets.** Real wire format; convergence oracle | **Meets.** Real wire format; disposition/lineage oracle |
 | P7 intent & identity | **Meets.** Typed intents end-to-end; syncIds persist in saved `post_content` and round-trip genesis | **Fails.** Snapshot-diff binding inherited from the relay; no semantic ops, no stable identity in the merge | **Designed for it, half-wired.** Block identity + rich-text ops live in the merge core, but clients send `clientUpdate: null`, so intent is server-derived from whole-content diffs (TODO-2) |
@@ -161,7 +161,7 @@ with something protocol-convenient.
 | --- | --- | --- | --- |
 | Save and Sync are distinct, deliberate operations; "pending edits" are the unit of adoption | Editors confirm their own changes and *choose* to adopt others'; sync may be polled, socketed, or run manually with long delays | The client auto-proposes every poll cycle and auto-incorporates canonical rows; no adoption step, no pending-edit concept | **Corrupted** — and it is the root cause of the silent same-block LWW (scenario C). TODO-12 |
 | Sync metadata co-located with saved `post_content` (a `wp/post-sync-meta` pseudo-block); revisions become a backup mechanism | The document's history travels with the post; any writer that round-trips content carries the lineage; recovery mines revisions and autosaves | Restored as write-through: every save of a de-rtc-roomed post embeds the room's sync-meta (upstream's exact grammar) at the content edge, revisions copy it, and genesis adopts it back — resuming the version lineage after a room reset. Room meta remains the *working* store; the full inversion (post as sole durable store) rides with TODO-12/architecture item 2 | **Restored (write-through)** (TODO-13 done) |
-| Self-healing when unaware writers mangle the document | The server detects CRDT/content divergence, recovers from revisions or autosaves, and appends a repairing edit so "operations which would otherwise wipe-out a post appear as any other collaborative update" | Absent — scenario F fails | **Unported.** TODO-14 |
+| Self-healing when unaware writers mangle the document | The server detects CRDT/content divergence, recovers from revisions or autosaves, and appends a repairing edit so "operations which would otherwise wipe-out a post appear as any other collaborative update" | Restored: room load detects out-of-band `post_content` writes (the co-location `content_hash` stamp is the tell), three-way-merges meta-carrying external edits with concurrent session work, converges to meta-less replacements, refuses to roll back stale copies, and parks genuine conflicts for review. Revision *mining* for lost bases is TODO-15 | **Restored** (TODO-14 done; scenario F) |
 | Arbitrarily long offline editing still recombines | Old bases recoverable via the co-located history and revision copies | The upstream 20-version snapshot limit is faithful, but with sync-meta only in room meta there is no revision fallback: past the window, proposals void | **Half-ported.** TODO-15 (depends on TODO-13) |
 | Undo/redo "never undo, but rather apply revert edits"; a history slider scrubs versions | Explicitly offered to RTC: "This could easily be adopted by RTC" | de-rtc reuses the shared Yjs *local* undo manager — precisely the model the vision rejects. (Ironically, intent-log's inverse-intent undo IS this concept, adopted by the other engine) | **Corrupted** (client-machinery reuse). TODO-16 |
 | Reviewers can modify before adopting | The prototype's review schema carries `reviewed_block_source` ("modify-and-adopt"); approvals are hash-pinned | Restore/dismiss only | **Unported.** TODO-17 |
@@ -368,20 +368,28 @@ benchmark's `remove-contention` scenario measures exactly this spread.
   Whole-proposal escalation remains the fallback for freeform
   boundaries and descriptor-carrying proposals.
 
-### F. An out-of-band machine write lands mid-session (P4 — honest: unsolved)
+### F. An out-of-band machine write lands mid-session (P4 — de-rtc solves it; the others don't)
 
 A scheduled integration fetched the post before the session and writes
-back its modified copy while two editors are collaborating. **Today, on
-all three engines, the room never learns about that write**: no engine
-hooks the save path, the room's canonical state diverges from
-`post_content`, and the session's next materializing save clobbers the
-integration's work — exactly the content-loss scenario the problem
-statement names. Nothing in the current plugin passes this scenario;
-TODO-4 is the plan, and the engines start from very different distances:
-de-rtc's ingest unit already *is* what the integration produces (whole
-content + a base), intent-log has the identity substrate to diff
-against (persisted syncIds), and yjs-server would need to invent
-semantic operations no writer expressed.
+back its modified copy while two editors are collaborating.
+
+- **de-rtc** (since TODO-13/14): the next room access detects the write
+  — an aware save's embedded `content_hash` matches its own content;
+  this one doesn't — and heals it as an ordinary collaborative update.
+  If the integration round-tripped the embedded sync-meta, the server
+  three-way-merges from that base and the editors' concurrent work
+  survives alongside the integration's changes; a metaless replacement
+  converges the room to the accepted post state (prior canonical stays
+  in history); a stale copy heals nothing (rollback guard); an edit
+  colliding with concurrent session work parks for review. Connected
+  editors see the external change arrive like any peer's edit.
+- **intent-log and yjs-server**: the room never learns about the write.
+  Canonical diverges from `post_content` and the session's next
+  materializing save clobbers the integration's work — exactly the
+  content-loss scenario the problem statement names. TODO-4 is the
+  plan: intent-log has the identity substrate to diff against
+  (persisted syncIds); yjs-server would need to invent semantic
+  operations no writer expressed (accepted limitation).
 
 ### G. A lagging client comes back (deep lag, reload, reconnection)
 
@@ -448,11 +456,12 @@ and the scorecard put in question, each with the change we would scope.
    engines it is a reasonable substrate. For de-rtc it inverted the
    vision: the canonical document is supposed to BE the post, with
    sync-meta riding `post_content` and revisions as the backup
-   mechanism. The consequence is shared: every engine fails scenario F,
-   and de-rtc additionally lost its self-healing story. Revisit: make
-   the storage substrate an engine decision; de-rtc moves to
-   `post_content` + revisions (TODO-13) and room rows demote to a
-   transport cache.
+   mechanism. TODO-13 and TODO-14 have since restored de-rtc's
+   co-location (write-through) and self-healing, so de-rtc now passes
+   scenario F; intent-log and yjs-server still fail it. What remains of
+   this revisit: make the storage substrate an engine decision and
+   complete the inversion for de-rtc (room rows demote to a transport
+   cache) as part of TODO-12.
 3. **`GET_LOCK` as the serialization primitive.** RESOLVED by TODO-1:
    de-rtc is lock-free again (optimistic version claims, upstream's
    model) and intent-log holds a Core-style options-row lock. Kept here
@@ -667,13 +676,21 @@ each item restores):
   revision directly and don't re-embed; room meta remains the working
   store — the full storage inversion rides with TODO-12/architecture
   item 2.
-- **TODO-14 — Self-healing from unaware writers.** Detect
-  CRDT/content divergence at save, recover the last-known sync-meta
-  from revisions/autosaves, and append a repairing edit so an unaware
-  overwrite "appears as any other collaborative update." This is the
-  vision's answer to scenario F for writers that will never cooperate;
-  TODO-4(a)'s base-version preflight covers the writers that will.
-  Depends on TODO-13.
+- **TODO-14 — Self-healing from unaware writers. DONE (2026-08-18):**
+  `maybe_heal_external_save()` runs on room load: an out-of-band
+  `post_content` write is detected by the co-location stamp (an aware
+  save's embedded `content_hash` matches its own content; anything else
+  is out-of-band), and healed as an ordinary collaborative update —
+  three-way-merged from the embedded base when lineage rode along
+  (including a base the room aged out but the embed still carries),
+  fast-forwarded to when no lineage is usable ("WordPress accepted this
+  as post state"), with stale copies of known versions stamped-and-
+  skipped (the rollback guard) and genuine conflicts parked for review.
+  Idempotent via a persisted `healed_hash`; claim-guarded like every
+  version advancement; prior canonical survives in row history. Covered
+  by `tests/phpunit/wpDeRtcSelfHealing.php`. TODO-4(a)'s base-version
+  preflight remains the lane for writers that cooperate; revision
+  MINING for bases neither the room nor the embed carries is TODO-15.
 - **TODO-15 — Revision-backed base resolution.** The 20-version
   snapshot window is upstream-faithful, but upstream could fall back to
   revision copies of the sync-meta; we void (`unknown-base-version`)

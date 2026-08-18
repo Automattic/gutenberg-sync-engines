@@ -1197,6 +1197,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					'sync_meta'             => is_array( $meta['sync_meta'] ?? null ) ? $meta['sync_meta'] : array(),
 					'properties'            => is_array( $meta['properties'] ?? null ) ? $meta['properties'] : array(),
 					'properties_by_version' => is_array( $meta['properties_by_version'] ?? null ) ? $meta['properties_by_version'] : array(),
+					'healed_hash'           => is_string( $meta['healed_hash'] ?? null ) ? $meta['healed_hash'] : null,
 				);
 				$meta_cursor = (int) ( $meta['cursor'] ?? 0 );
 			}
@@ -1215,6 +1216,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					'sync_meta'             => array(),
 					'properties'            => array(),
 					'properties_by_version' => array(),
+					'healed_hash'           => null,
 				);
 			}
 
@@ -1249,7 +1251,206 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				$this->record_properties_snapshot( $state, $decoded['version'] );
 			}
 
+			// Self-healing: fold in an out-of-band post_content write before
+			// anyone reads or merges against this state.
+			$state = $this->maybe_heal_external_save( $room, $state );
+
 			$this->room_states[ $room ] = $state;
+
+			return $state;
+		}
+
+		/**
+		 * Detects and heals an out-of-band write to the post's content.
+		 *
+		 * The vision's self-healing rule: unaware plugins, direct database
+		 * writes, and legacy flows will change post_content without telling
+		 * the room; the server notices, merges the external state in as an
+		 * ordinary collaborative update, and connected editors simply see
+		 * the change. Detection uses the co-location stamp
+		 * (WP_De_RTC_Sync_Meta_Colocation writes `content_hash` on every
+		 * aware save): a save whose stamp matches its own content came
+		 * through the filter; anything else is out-of-band.
+		 *
+		 * Healing policy, in order:
+		 * - Content matching canonical or ANY known version snapshot is a
+		 *   stale copy, not new work — stamped as seen, never merged (this
+		 *   is the guard against rolling the room back to an old copy).
+		 * - An embedded base version that resolves (room snapshots first,
+		 *   then the embed's own snapshots) gets a genuine three-way merge:
+		 *   concurrent session work is preserved, overlapping edits park
+		 *   for review like any conflicting proposal.
+		 * - Otherwise the external content is WordPress's accepted post
+		 *   state and the room converges TO it (fast-forward from
+		 *   canonical): "operations which would otherwise wipe-out a post
+		 *   appear as any other collaborative update" — prior canonical
+		 *   content stays in the row history.
+		 *
+		 * Idempotent via the persisted `healed_hash` stamp (each external
+		 * content is attempted once), and claim-guarded like every other
+		 * version advancement.
+		 *
+		 * @since 0.5.0
+		 *
+		 * @param string $room  Room identifier.
+		 * @param array  $state Loaded room state.
+		 * @return array Possibly-healed room state.
+		 */
+		private function maybe_heal_external_save( string $room, array $state ): array {
+			$parsed_room = class_exists( 'WP_Sync_Config' ) ? WP_Sync_Config::parse_room( $room ) : null;
+			if ( null === $parsed_room || 'postType' !== $parsed_room['entity_kind'] || empty( $parsed_room['object_id'] ) ) {
+				return $state;
+			}
+			$post = get_post( (int) $parsed_room['object_id'] );
+			if ( ! $post instanceof WP_Post || '' === (string) $post->post_content ) {
+				return $state;
+			}
+
+			$raw           = (string) $post->post_content;
+			$embedded_meta = array();
+			$stripped      = null;
+			$parsed        = wp_de_rtc_parse_post_content_sync_meta( $raw, array( 'allow_script_stripped_sync_meta' => true ) );
+			if ( is_array( $parsed ) && is_string( $parsed['content'] ?? null ) ) {
+				$stripped = $parsed['content'];
+				if ( is_array( $parsed['sync_meta'] ?? null ) ) {
+					$embedded_meta = $parsed['sync_meta'];
+				}
+			}
+			if ( null === $stripped ) {
+				$stripped = wp_de_rtc_canonicalize_post_content_core_block_names( $raw );
+			}
+
+			$external_hash = wp_de_rtc_hash_content( $stripped );
+
+			// An aware save (the co-location stamp matches its content), or
+			// an external content already attempted: nothing to do.
+			if ( ( $embedded_meta['content_hash'] ?? null ) === $external_hash || ( $state['healed_hash'] ?? null ) === $external_hash ) {
+				return $state;
+			}
+
+			// In sync, or a stale copy of a version the room knows: stamp
+			// as seen so the check stays cheap, but never merge (rollback
+			// guard).
+			$known = $external_hash === wp_de_rtc_hash_content( (string) $state['content'] );
+			if ( ! $known && is_array( $state['sync_meta']['version_snapshots'] ?? null ) ) {
+				foreach ( $state['sync_meta']['version_snapshots'] as $snapshot ) {
+					if ( is_array( $snapshot ) && ( $snapshot['content_hash'] ?? null ) === $external_hash ) {
+						$known = true;
+						break;
+					}
+				}
+			}
+			if ( $known ) {
+				$state['healed_hash'] = $external_hash;
+				$this->save_canonical( $room, $state );
+				return $state;
+			}
+
+			// Genuinely new out-of-band content. Resolve the best base.
+			$base         = null;
+			$base_version = is_string( $embedded_meta['room_version'] ?? null ) ? $embedded_meta['room_version'] : null;
+			if ( null !== $base_version ) {
+				$base = $this->resolve_base_content( $state, $base_version );
+				if ( null === $base && is_array( $embedded_meta['version_snapshots'][ $base_version ] ?? null ) ) {
+					// The room aged the base out, but the writer carried a
+					// copy of it (co-location pays off): use theirs.
+					$carried = $embedded_meta['version_snapshots'][ $base_version ];
+					if ( 'base64' === ( $carried['encoding'] ?? null ) && is_string( $carried['content_base64'] ?? null ) ) {
+						$decoded = base64_decode( $carried['content_base64'], true );
+						if ( is_string( $decoded ) && wp_de_rtc_hash_content( $decoded ) === ( $carried['content_hash'] ?? null ) ) {
+							$base = $decoded;
+						}
+					}
+				}
+			}
+			$replacement = null === $base;
+			if ( $replacement ) {
+				// No usable lineage: WordPress accepted this as post state,
+				// so the room converges to it (fast-forward).
+				$base = (string) $state['content'];
+			}
+
+			for ( $attempt = 0; $attempt < 3; $attempt++ ) {
+				$result = wp_de_rtc_get_automerge_retry_save_result( $base, (string) $state['content'], $stripped, null );
+
+				if ( is_wp_error( $result ) ) {
+					if ( 'de_rtc_rebase_failed' === $result->get_error_code() ) {
+						// The external edit collides with concurrent session
+						// work: a human decides, like any conflicting
+						// proposal.
+						$review = $this->load_review_ledger( $room );
+						$this->park_proposal(
+							$room,
+							self::SERVER_CLIENT_ID,
+							array(
+								'proposalId'      => 'external-' . substr( $external_hash, 0, 12 ),
+								'baseVersion'     => null !== $base_version ? $base_version : $state['version'],
+								'proposedContent' => $stripped,
+								'clientUpdate'    => null,
+							),
+							'manual-conflict-required',
+							$base,
+							$review
+						);
+						// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+						do_action( 'qm/debug', "wp-sync: de-rtc parked a conflicting external save for {$room}" );
+					}
+					$state['healed_hash'] = $external_hash;
+					$this->save_canonical( $room, $state );
+					return $state;
+				}
+
+				if ( ! $this->claim_version( $room, (int) $state['version_seq'] ) ) {
+					// Lost to a concurrent commit; a later request retries
+					// the healing (healed_hash is deliberately NOT stamped).
+					++$this->claim_retries;
+					continue;
+				}
+
+				$next_seq     = (int) $state['version_seq'] + 1;
+				$next_version = 'v' . $next_seq;
+				$merged       = (string) $result['merged_content'];
+
+				$state['sync_meta'] = wp_de_rtc_update_automerge_version_snapshots(
+					is_array( $state['sync_meta'] ) ? $state['sync_meta'] : array(),
+					$state['version'],
+					$state['content'],
+					$next_version,
+					$merged
+				);
+
+				$stored = $this->add_row(
+					$room,
+					self::SERVER_CLIENT_ID,
+					self::UPDATE_TYPE_CONTENT,
+					wp_json_encode(
+						array(
+							'version'        => $next_version,
+							'baseVersion'    => $state['version'],
+							'content'        => $merged,
+							'properties'     => $state['properties'] ?? array(),
+							'authorClientId' => self::SERVER_CLIENT_ID,
+							'proposalId'     => 'external-' . substr( $external_hash, 0, 12 ),
+							'healedFrom'     => $replacement ? 'external-save' : 'external-save-merged',
+						)
+					)
+				);
+				if ( ! $stored ) {
+					return $state;
+				}
+
+				$state['version']     = $next_version;
+				$state['version_seq'] = $next_seq;
+				$state['content']     = $merged;
+				$state['healed_hash'] = $external_hash;
+				$this->record_properties_snapshot( $state, $next_version );
+				$this->save_canonical( $room, $state );
+
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+				do_action( 'qm/debug', "wp-sync: de-rtc healed an external save into {$room} as {$next_version}" );
+
+				return $state;
+			}
 
 			return $state;
 		}
@@ -1390,6 +1591,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					'sync_meta'             => $state['sync_meta'],
 					'properties'            => $state['properties'] ?? array(),
 					'properties_by_version' => $state['properties_by_version'] ?? array(),
+					'healed_hash'           => is_string( $state['healed_hash'] ?? null ) ? $state['healed_hash'] : null,
 					'cursor'                => $cursor,
 				)
 			);
