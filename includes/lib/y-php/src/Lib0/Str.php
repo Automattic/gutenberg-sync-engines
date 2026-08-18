@@ -44,18 +44,58 @@ final class Str {
 	}
 
 	/**
+	 * The per-char walk (two PHP calls per character) dominates the cost of
+	 * encoding or decoding any real document, while in JS `str.length` IS the
+	 * UTF-16 length, natively. For valid UTF-8 the same number is a
+	 * byte-histogram formula:
+	 *
+	 *   Units = bytes - continuationBytes(0x80..0xBF) + fourByteLeads(0xF0..)
+	 *
+	 * (every code point contributes its lead byte; astral code points count
+	 * one extra unit for the surrogate pair). count_chars() computes the
+	 * histogram in C. Invalid UTF-8 counts one unit per byte, i.e. strlen(),
+	 * the same accounting the char-split fallback uses in sliceUtf16() and
+	 * StringDecoder, so the string codec stays self-consistent on garbage
+	 * input.
+	 *
 	 * @param string $string UTF-8 string.
 	 * @return int
 	 */
 	public static function utf16Length( string $string ): int {
-		$length = 0;
-		foreach ( self::utf8Chars( $string ) as $char ) {
-			$length += self::utf16UnitLength( $char );
+		if ( '' === $string ) {
+			return 0;
 		}
+
+		if ( ! preg_match( '/[\x80-\xFF]/', $string ) ) {
+			return strlen( $string );
+		}
+
+		if ( 1 !== preg_match( '//u', $string ) ) {
+			return strlen( $string );
+		}
+
+		$length = strlen( $string );
+
+		foreach ( count_chars( $string, 1 ) as $byte => $count ) {
+			if ( $byte >= 0x80 && $byte < 0xC0 ) {
+				$length -= $count;
+			} elseif ( $byte >= 0xF0 ) {
+				$length += $count;
+			}
+		}
+
 		return $length;
 	}
 
 	/**
+	 * Fast paths for the overwhelmingly common shapes, avoiding the per-char
+	 * PHP walk. ASCII: one UTF-16 unit per byte, so the slice is substr().
+	 * Valid UTF-8 without astral code points (no 0xF0+ lead bytes): one unit
+	 * per code point, so the slice is mb_substr() by code-point offsets. Both
+	 * agree with the walk exactly (no char can straddle a boundary when every
+	 * char is a single unit). Astral, invalid, or negative-start input keeps
+	 * the original walk.
+	 *
 	 * @param string   $string UTF-8 string.
 	 * @param int      $start  Inclusive UTF-16 code-unit start.
 	 * @param int|null $end    Exclusive UTF-16 code-unit end.
@@ -66,13 +106,47 @@ final class Str {
 			return '';
 		}
 
+		if ( '' === $string ) {
+			return '';
+		}
+
+		if ( $start >= 0 && ! preg_match( '/[\x80-\xFF]/', $string ) ) {
+			if ( $start >= strlen( $string ) ) {
+				// The walk returns '' here; on PHP < 8 substr() would return false.
+				return '';
+			}
+
+			if ( null === $end ) {
+				return substr( $string, $start );
+			}
+
+			return substr( $string, $start, $end - $start );
+		}
+
+		if ( $start >= 0 && function_exists( 'mb_substr' ) && ! preg_match( '/[\xF0-\xFF]/', $string ) && 1 === preg_match( '//u', $string ) ) {
+			if ( null === $end ) {
+				return mb_substr( $string, $start, null, 'UTF-8' );
+			}
+
+			return mb_substr( $string, $start, $end - $start, 'UTF-8' );
+		}
+
 		$out      = '';
 		$position = 0;
 		$limit    = $end;
 
 		foreach ( self::utf8Chars( $string ) as $char ) {
-			$unitLength = self::utf16UnitLength( $char );
-			$next       = $position + $unitLength;
+			// A valid 4-byte UTF-8 sequence is exactly an astral code point,
+			// i.e. two UTF-16 units; every other char (including single bytes
+			// from the invalid-UTF-8 str_split() fallback) counts one, keeping
+			// unit accounting consistent with utf16Length() and StringDecoder.
+			if ( 4 === strlen( $char ) ) {
+				$unitLength = 2;
+			} else {
+				$unitLength = 1;
+			}
+
+			$next = $position + $unitLength;
 
 			if ( $next <= $start ) {
 				$position = $next;
@@ -141,29 +215,4 @@ final class Str {
 		return $matches[0];
 	}
 
-	/**
-	 * @param string $char UTF-8 character.
-	 * @return int
-	 */
-	private static function utf16UnitLength( string $char ): int {
-		return self::codePoint( $char ) > 0xFFFF ? 2 : 1;
-	}
-
-	/**
-	 * @param string $char UTF-8 character.
-	 * @return int
-	 */
-	private static function codePoint( string $char ): int {
-		$first = ord( $char[0] );
-		if ( $first < 0x80 ) {
-			return $first;
-		}
-		if ( $first < 0xE0 ) {
-			return ( ( $first & 0x1F ) << 6 ) | ( ord( $char[1] ) & 0x3F );
-		}
-		if ( $first < 0xF0 ) {
-			return ( ( $first & 0x0F ) << 12 ) | ( ( ord( $char[1] ) & 0x3F ) << 6 ) | ( ord( $char[2] ) & 0x3F );
-		}
-		return ( ( $first & 0x07 ) << 18 ) | ( ( ord( $char[1] ) & 0x3F ) << 12 ) | ( ( ord( $char[2] ) & 0x3F ) << 6 ) | ( ord( $char[3] ) & 0x3F );
-	}
 }

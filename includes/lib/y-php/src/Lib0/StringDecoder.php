@@ -25,6 +25,9 @@ namespace Yjs\Lib0;
  * split is exactly a code point above 0xFFFF, i.e. two UTF-16 units), and a
  * char straddling a read boundary is kept for re-inclusion in the next read,
  * mirroring sliceUtf16()'s global-position behavior.
+ *
+ * The buffer's shape is additionally classified once on first read so the
+ * common shapes skip the per-char cursor walk entirely; see $mode.
  */
 class StringDecoder {
 	/**
@@ -43,11 +46,27 @@ class StringDecoder {
 	private int $spos = 0;
 
 	/**
-	 * Chars of $str, split once on first read (null until then).
+	 * Chars of $str, split once on first read (null until then). Unused in
+	 * 'ascii' mode, where no split is needed.
 	 *
 	 * @var array<int,string>|null
 	 */
 	private ?array $chars = null;
+
+	/**
+	 * Buffer shape, classified once on first read (null until then).
+	 *
+	 * 'ascii' buffers (no bytes >= 0x80) need no char split at all: one
+	 * UTF-16 unit per byte, so a read is substr() by unit offsets. 'single'
+	 * buffers (valid UTF-8 without astral code points, or the str_split()
+	 * fallback for invalid UTF-8) have one unit per char, so a read is an
+	 * array_slice() of the char split. Only 'walk' buffers (astral input,
+	 * where a char can straddle a read boundary) pay the per-char cursor
+	 * walk.
+	 *
+	 * @var string|null
+	 */
+	private ?string $mode = null;
 
 	/**
 	 * Index into $chars of the first unconsumed char.
@@ -84,16 +103,50 @@ class StringDecoder {
 			return '';
 		}
 
-		if ( null === $this->chars ) {
-			$matches = array();
-
-			if ( '' === $this->str ) {
-				$this->chars = array();
-			} elseif ( false === preg_match_all( '/./us', $this->str, $matches ) ) {
-				$this->chars = str_split( $this->str );
+		if ( null === $this->mode ) {
+			if ( ! preg_match( '/[\x80-\xFF]/', $this->str ) ) {
+				$this->mode = 'ascii';
 			} else {
-				$this->chars = $matches[0];
+				$matches = array();
+
+				if ( false === preg_match_all( '/./us', $this->str, $matches ) ) {
+					// Invalid UTF-8: one char per byte, each one unit.
+					$this->chars = str_split( $this->str );
+					$this->mode  = 'single';
+				} else {
+					$this->chars = $matches[0];
+
+					if ( preg_match( '/[\xF0-\xFF]/', $this->str ) ) {
+						$this->mode = 'walk';
+					} else {
+						$this->mode = 'single';
+					}
+				}
 			}
+		}
+
+		if ( 'ascii' === $this->mode ) {
+			// One unit per byte: the unit cursor is a byte cursor.
+			$result = substr( $this->str, $this->spos, $end - $this->spos );
+
+			if ( false === $result ) {
+				// PHP < 8: reading past a truncated buffer returns false
+				// where the walk below returns ''.
+				$result = '';
+			}
+
+			$this->spos = $end;
+			return $result;
+		}
+
+		if ( 'single' === $this->mode ) {
+			// One unit per char, so no char can straddle a read boundary.
+			$take             = $end - $this->charPos;
+			$result           = implode( '', array_slice( $this->chars, $this->charIndex, $take ) );
+			$this->charIndex += $take;
+			$this->charPos    = $end;
+			$this->spos       = $end;
+			return $result;
 		}
 
 		$result = '';
