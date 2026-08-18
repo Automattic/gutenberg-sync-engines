@@ -68,12 +68,7 @@ The framework/plugin split is complete: the framework ships **neither** engines
     commit recorded in the import commit). ONE deliberate local delta,
     preserve it when re-vendoring: `composer.json` pins
     `config.platform.php` to 7.4 (with the lock resolved for it) so the
-    suite installs on WP-supported PHP. The former second delta (the
-    `src/Lib0/StringDecoder.php` one-time char split + forward cursor
-    that fixed upstream's O(n²) V2 string decode, with regression test
-    `tests/Unit/StringDecoderTest.php`) was adopted upstream in
-    alecgeatches/y-php#4; the vendored copy now matches upstream
-    verbatim there. Excluded from our phpcs (it
+    suite installs on WP-supported PHP. Excluded from our phpcs (it
     deliberately mirrors JS Yjs style and carries its own configs). Its own
     conformance suite runs in CI:
     `composer --working-dir=includes/lib/y-php install && composer
@@ -503,8 +498,8 @@ they exist so a failure is observable without re-instrumenting:
 - **yjs-server known gaps** (docs/engine-comparison.md has the full list):
   ingest cost is real y-php CPU — the canonical doc is
   decoded/merged/re-encoded per request, the most expensive per-ingest
-  path of the three engines (much cheaper since the StringDecoder fix,
-  now upstream y-php; run `npm run bench` for numbers), no review lane
+  path of the three engines (run `npm run bench` for numbers), no
+  review lane
   (register conflicts LWW silently), kses is sanitize-and-compensate (no
   human review of stripped markup), the genesis size gate
   (`wp_sync_yjs_server_max_genesis_bytes`, default 1 MB) is genesis-only
