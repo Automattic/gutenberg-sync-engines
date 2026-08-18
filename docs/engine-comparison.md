@@ -676,12 +676,17 @@ the engine Dennis designed; the rest change polish and confidence.
   wins — no review lane". Revisiting this decision starts with
   building detection, and should also produce a P3 story for what
   detection would even mean at CRDT granularity.
-- **TODO-8 — Police post-genesis room growth in yjs-server.** The
-  genesis size gate refuses to *initialize* oversized rooms, but a room
-  that grows past any threshold after genesis is unpoliced. The parked
-  three-tier design (observability, terminal ceiling, epoch compaction)
-  applies; do the compaction tier together with incremental canonical
-  maintenance.
+- **TODO-8 — Police post-genesis room growth in yjs-server. Tiers 1+2
+  DONE (2026-08-18):** tier 1 observability already existed (canonical
+  doc bytes in the `_debug` envelope and `wp collaboration rooms
+  inspect`); tier 2 adds the terminal ceiling — a room whose canonical
+  document grows past `wp_sync_yjs_server_max_room_bytes` (default
+  8 MB; 0 disables) rejects further WRITES with 413 while reads and
+  saves continue (nothing merged is lost; the room just stops
+  accumulating), with a qm/debug warning from 75% so operators see the
+  growth coming. Tier 3 (epoch compaction that actually SHRINKS the
+  canonical) stays parked, to be done together with incremental
+  canonical maintenance.
 - **TODO-9 — Harden the websocket transport.** The one-time auth token
   travels as a URL query parameter, and plaintext `ws://` must never
   leave a dev box. Experimental until fixed.
@@ -877,9 +882,13 @@ own:
   by the conformance suite). The remaining one-decode-two-encodes per
   request is the structural floor for a server-authoritative CRDT in
   per-request PHP.
-- **yjs-server's genesis size gate is genesis-only** (default 1 MB via
-  `wp_sync_yjs_server_max_genesis_bytes`; RTC never activates above it,
-  writes 413). Post-genesis growth is TODO-8.
+- **yjs-server rooms are size-gated at both ends**: genesis refuses to
+  initialize above `wp_sync_yjs_server_max_genesis_bytes` (default 1 MB;
+  RTC never activates, writes 413), and a room that GROWS past
+  `wp_sync_yjs_server_max_room_bytes` (default 8 MB) rejects further
+  writes with 413 while reads/saves continue (TODO-8 tier 2). What the
+  ceiling cannot do is shrink an over-limit room — epoch compaction is
+  the parked tier 3.
 - **de-rtc clients do not author block-native update descriptors yet**
   (`clientUpdate: null`; the server's engine-unaware-writer lane derives
   operations). Tamper detection is active only for descriptor-carrying
