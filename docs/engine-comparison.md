@@ -249,8 +249,9 @@ noise under intent-log), with one exception noted below.
   the shared string buffer from offset 0 on every read (JS lib0's
   `str.slice()` is native and cheap; the PHP port's UTF-16 offset
   search was O(buffer) per string, O(n²) per decode), fixed 2026-08-18
-  by a marked DELTA in `includes/lib/y-php/src/Lib0/StringDecoder.php`
-  (one-time char split plus forward cursor; identical per-char
+  in `includes/lib/y-php/src/Lib0/StringDecoder.php` and since adopted
+  by upstream y-php (alecgeatches/y-php#4, no longer a vendored delta;
+  one-time char split plus forward cursor, identical per-char
   semantics, held to byte-parity by the conformance suite plus a
   StringDecoder round-trip test). The remaining cost — one full-doc
   decode + two encodes per request — is the structural floor for a
