@@ -485,6 +485,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			 * Rejection outcomes never advance the version, so they need no
 			 * claim.
 			 */
+			$salvage_parked = 0;
 			for ( $attempt = 0; $attempt < 10; $attempt++ ) {
 				if ( $attempt > 0 ) {
 					/*
@@ -525,8 +526,24 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 
 				if ( is_wp_error( $result ) ) {
 					if ( 'de_rtc_rebase_failed' === $result->get_error_code() ) {
-						// A genuine conflict: DE-RTC policy is a human decision,
-						// not a silent merge. The proposal parks for review; the
+						/*
+						 * A genuine conflict. Before parking the WHOLE
+						 * proposal, try per-block salvage (upstream's
+						 * partial-acceptance model, the same grain the kses
+						 * sequestration lane already uses): land the blocks
+						 * that merge, park exactly the conflicted ones.
+						 */
+						if ( null === ( $proposal['clientUpdate'] ?? null ) ) {
+							$salvaged = $this->salvage_conflicting_blocks( $room, $client_id, $proposal, $base_content, (string) $state['content'], $proposed_content, $review, $salvage_parked );
+							if ( null !== $salvaged && $salvaged !== $proposed_content ) {
+								$proposed_content = $salvaged;
+								continue; // Re-merge the salvaged content.
+							}
+						}
+						// Per-block extraction unavailable (structural
+						// divergence, freeform boundaries, descriptor
+						// proposals): DE-RTC policy is a human decision, not
+						// a silent merge. The proposal parks for review; the
 						// canonical state wins locally once it applies, and a
 						// human restores or dismisses the parked work.
 						$this->park_proposal( $room, $client_id, $proposal, 'manual-conflict-required', $base_content, $review );
@@ -603,10 +620,17 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				$this->record_properties_snapshot( $state, $next_version );
 				$this->save_canonical( $room, $state );
 
-				return array(
+				$disposition = array(
 					'status'  => 'applied',
 					'version' => $next_version,
 				);
+				if ( $salvage_parked > 0 ) {
+					// Partial acceptance: the clean remainder landed and
+					// this many conflicted blocks parked for review.
+					$disposition['parkedBlocks'] = $salvage_parked;
+				}
+
+				return $disposition;
 			}
 
 			// Claim attempts exhausted: heavy contention. Same retryable
@@ -1015,6 +1039,92 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		}
 
 		/**
+		 * Per-block salvage of a proposal whose whole-document three-way
+		 * merge failed: the partial-acceptance grain (TODO-3 in
+		 * docs/engine-comparison.md), mirroring the kses sequestration
+		 * lane. Blocks only the client changed pass through; blocks only
+		 * canonical changed adopt canonical; blocks BOTH changed get their
+		 * own three-way merge — and when that conflicts too, canonical
+		 * wins the position while the client's block parks for review.
+		 *
+		 * Sound only when the block structure aligns positionally on all
+		 * three sides (equal top-level record counts): structural
+		 * divergence is exactly where positional alignment lies, so it
+		 * returns null and the caller keeps the whole-proposal fallback.
+		 *
+		 * @since 0.5.0
+		 *
+		 * @param string $room             Room identifier.
+		 * @param int    $client_id        Proposing client id.
+		 * @param array  $proposal         Decoded proposal payload.
+		 * @param string $base_content     Content of the proposal's base version.
+		 * @param string $current_content  Current canonical content.
+		 * @param string $proposed_content Proposed content (post-kses lane).
+		 * @param array  $review           Review ledger (lazily loaded, by reference).
+		 * @param int    $parked_count     Accumulates how many blocks parked (by reference).
+		 * @return string|null Salvaged proposed content, or null when
+		 *                     per-block extraction cannot apply.
+		 */
+		private function salvage_conflicting_blocks( string $room, int $client_id, array $proposal, string $base_content, string $current_content, string $proposed_content, &$review, &$parked_count ): ?string {
+			$base_records     = wp_de_rtc_get_top_level_serialized_block_records( $base_content );
+			$current_records  = wp_de_rtc_get_top_level_serialized_block_records( $current_content );
+			$proposed_records = wp_de_rtc_get_top_level_serialized_block_records( $proposed_content );
+			if ( is_wp_error( $base_records ) || is_wp_error( $current_records ) || is_wp_error( $proposed_records ) ) {
+				return null; // Freeform boundaries defeat per-block extraction.
+			}
+			if ( count( $base_records ) !== count( $proposed_records ) || count( $base_records ) !== count( $current_records ) ) {
+				return null; // Structural divergence: positional alignment lies.
+			}
+
+			$salvaged   = array();
+			$conflicted = array();
+			foreach ( $proposed_records as $index => $proposed_block ) {
+				$base_block    = (string) $base_records[ $index ];
+				$current_block = (string) $current_records[ $index ];
+
+				if ( $proposed_block === $base_block ) {
+					$salvaged[] = $current_block; // Client untouched: adopt canonical.
+					continue;
+				}
+				if ( $current_block === $base_block || $current_block === $proposed_block ) {
+					$salvaged[] = $proposed_block; // Sole writer (or agreement).
+					continue;
+				}
+
+				// Both sides changed this block: its own three-way merge.
+				$merged = wp_de_rtc_get_automerge_retry_save_result( $base_block, $current_block, $proposed_block, null );
+				if ( ! is_wp_error( $merged ) ) {
+					$salvaged[] = (string) $merged['merged_content'];
+					continue;
+				}
+				if ( 'de_rtc_rebase_failed' !== $merged->get_error_code() ) {
+					return null; // Unexpected failure: keep the whole-proposal path.
+				}
+				// True conflict: canonical wins the position, the client's
+				// block parks for review.
+				$conflicted[] = array(
+					'index' => (int) $index,
+					'html'  => $proposed_block,
+				);
+				$salvaged[]   = $current_block;
+			}
+
+			if ( array() === $conflicted ) {
+				// The whole-document merge failed for a reason per-block
+				// analysis cannot see; nothing to salvage differently.
+				return null;
+			}
+
+			$this->park_changed_blocks( $room, $client_id, (string) $proposal['proposalId'], 'manual-conflict-required', (string) $proposal['baseVersion'], $conflicted, $review, false );
+			$parked_count += count( $conflicted );
+
+			// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+			do_action( 'qm/debug', 'wp-sync: de-rtc salvaged a conflicting proposal in ' . $room . ' — ' . count( $conflicted ) . ' block(s) parked, the remainder lands' );
+
+			return implode( "\n\n", $salvaged );
+		}
+
+		/**
 		 * The block name of a serialized top-level block.
 		 *
 		 * @since 0.4.0
@@ -1397,18 +1507,26 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				if ( is_wp_error( $result ) ) {
 					if ( 'de_rtc_rebase_failed' === $result->get_error_code() ) {
 						// The external edit collides with concurrent session
-						// work: a human decides, like any conflicting
-						// proposal.
-						$review = $this->load_review_ledger( $room );
+						// work. Try per-block salvage first (the clean part
+						// of the external edit lands; only the collision
+						// parks) — then fall back to parking it whole.
+						$review              = $this->load_review_ledger( $room );
+						$external_proposal   = array(
+							'proposalId'      => 'external-' . substr( $external_hash, 0, 12 ),
+							'baseVersion'     => null !== $base_version ? $base_version : $state['version'],
+							'proposedContent' => $stripped,
+							'clientUpdate'    => null,
+						);
+						$heal_salvage_parked = 0;
+						$salvaged            = $this->salvage_conflicting_blocks( $room, self::SERVER_CLIENT_ID, $external_proposal, $base, (string) $state['content'], $stripped, $review, $heal_salvage_parked );
+						if ( null !== $salvaged && $salvaged !== $stripped ) {
+							$stripped = $salvaged;
+							continue; // Re-merge the salvaged external content.
+						}
 						$this->park_proposal(
 							$room,
 							self::SERVER_CLIENT_ID,
-							array(
-								'proposalId'      => 'external-' . substr( $external_hash, 0, 12 ),
-								'baseVersion'     => null !== $base_version ? $base_version : $state['version'],
-								'proposedContent' => $stripped,
-								'clientUpdate'    => null,
-							),
+							$external_proposal,
 							'manual-conflict-required',
 							$base,
 							$review

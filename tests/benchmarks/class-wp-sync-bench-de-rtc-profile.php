@@ -771,7 +771,25 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 				if ( '' !== $version ) {
 					$this->applied_versions[ $version ] = $proposal_id;
 				}
+
+				/*
+				 * Partial acceptance (the engine's per-block conflict
+				 * salvage): the proposal applied, but `parkedBlocks`
+				 * conflicted blocks parked for review instead of landing.
+				 * The runner is synchronous, so the canonical AT SETTLE is
+				 * exactly the applied version — consult it to classify each
+				 * record as landed (applied expectations) or parked.
+				 */
+				$salvage_canonical = null;
+				if ( (int) ( $disposition['parkedBlocks'] ?? 0 ) > 0 && null !== $this->engine ) {
+					$salvage_canonical = (string) $this->engine->materialize( $this->room );
+				}
+
 				foreach ( $records as $record ) {
+					if ( null !== $salvage_canonical && ! $this->record_landed( $record, $salvage_canonical ) ) {
+						$this->park( $client, $record );
+						continue;
+					}
 					if ( 'text' === $record['op'] ) {
 						$this->expected_texts[ $record['token'] ] = 'applied';
 						if ( ! empty( $record['inserted_target'] ) ) {
@@ -838,7 +856,13 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 					$applied_seq = (int) ltrim( $version, 'v' );
 					$base_seq    = (int) ltrim( (string) $this->base_version[ $client ], 'v' );
 
-					if ( $applied_seq !== $base_seq + 1 && null !== $this->engine ) {
+					if ( null !== $salvage_canonical ) {
+						// A salvaged apply is NEVER a plain fast-forward:
+						// the canonical differs from the proposed content
+						// (conflicted blocks reverted), so adopt it.
+						$this->content[ $client ]      = $salvage_canonical;
+						$this->client_props[ $client ] = $this->canonical_props;
+					} elseif ( $applied_seq !== $base_seq + 1 && null !== $this->engine ) {
 						$this->content[ $client ]      = (string) $this->engine->materialize( $this->room );
 						$this->client_props[ $client ] = $this->canonical_props;
 					}
@@ -914,6 +938,41 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 				'value' => $record['value'],
 			);
 			$this->revert_edit( $client, $record );
+		}
+
+		/**
+		 * Whether a record's effect is present in the given canonical —
+		 * used to classify records of a PARTIALLY accepted proposal (the
+		 * engine's per-block conflict salvage) as landed or parked.
+		 *
+		 * @param array  $record    Edit record.
+		 * @param string $canonical Canonical content at settle.
+		 * @return bool Whether the record landed.
+		 */
+		private function record_landed( array $record, string $canonical ): bool {
+			if ( 'text' === $record['op'] ) {
+				return 1 === substr_count( $canonical, (string) $record['token'] );
+			}
+			if ( 'insert_block' === $record['op'] ) {
+				return 1 === substr_count( $canonical, (string) $record['marker'] );
+			}
+			if ( 'remove_block' === $record['op'] ) {
+				return 0 === substr_count( $canonical, (string) $record['marker'] );
+			}
+			if ( 'set_property' === $record['op'] ) {
+				return true; // Properties merge on the accepted path regardless of content salvage.
+			}
+			if ( ! empty( $record['changed'] ) ) {
+				// Attr register write: read the block's actual align.
+				$marker = WP_Sync_Bench_Workload::genesis_marker( (int) $record['paragraph'] );
+				foreach ( parse_blocks( $canonical ) as $block ) {
+					if ( 'core/paragraph' === ( $block['blockName'] ?? null ) && false !== strpos( (string) ( $block['innerHTML'] ?? '' ), $marker ) ) {
+						return ( $block['attrs']['align'] ?? null ) === $record['align'];
+					}
+				}
+				return false;
+			}
+			return true; // A no-op write neither lands nor parks.
 		}
 
 		/**

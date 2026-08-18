@@ -115,7 +115,7 @@ shows up.
 | --- | --- | --- | --- |
 | P1 server authority | **Meets.** Typed intents authorized, attributed, and transformed at ingest | **Meets.** Server merges and materializes; per-update dispositions | **Meets.** Server merges every proposal; per-proposal dispositions with version lineage |
 | P2 no silent loss | **Meets, one window.** Oracle-certified; unacked outbox intents die with a tab reload (undo makes the loss visible) | **Meets.** Oracle-certified; races heal via idempotent full-state recovery | **Meets.** Oracle-certified; escalations park durably, voided proposals re-propose |
-| P3 conflicts surfaced | **Meets.** Per-register review lane; residual over-escalation on same-paragraph bursts (rate, not silence) | **Violates, currently by design.** Register conflicts resolve by silent CRDT last-writer-wins; no review lane (TODO-7) | **Partially violates — port artifact.** Server-detected conflicts park for review, but same-block concurrency silently LWWs client-side (TODO-2) and conflict grain is the whole proposal (TODO-3) |
+| P3 conflicts surfaced | **Meets.** Per-register review lane; residual over-escalation on same-paragraph bursts (rate, not silence) | **Violates, currently by design.** Register conflicts resolve by silent CRDT last-writer-wins; no review lane (TODO-7) | **Partially violates — port artifact.** Server-detected conflicts park for review at BLOCK grain (per-block salvage: the clean remainder lands, exactly the conflicted blocks park — TODO-3 done; whole-proposal parking remains only for structural divergence), but same-block concurrency still silently LWWs client-side (TODO-2) |
 | P4 machine writers | **Not yet.** Ingest speaks typed intents only; the persisted `metadata.syncId` identity makes a diff lane tractable (TODO-4) | **Accepted limitation.** Ingest speaks binary CRDT updates; a diff-to-CRDT lane would be semantically worse, not just costly (TODO-4) | **Half-met.** Unaware writers are handled (TODO-14 self-healing: out-of-band writes merge in, scenario F passes); the *cooperating*-writer lane — the `wp_update_post` base-version preflight — remains unported (TODO-4) |
 | P5 cheap hosting | **Meets.** Cheapest per-ingest CPU; Core-style options-row lock, topology-safe (TODO-1 done) | **Partially.** No lock (good); heaviest per-ingest CPU, scaling with document size | **Partially.** Cheap CPU; lock-free optimistic claims, topology-safe (TODO-1 done); wire/storage bytes still scale with document size |
 | P6 measured economics | **Meets.** Real wire format in its benchmark profile | **Meets.** Real wire format; convergence oracle | **Meets.** Real wire format; disposition/lineage oracle |
@@ -239,16 +239,19 @@ All three engines' payload/storage bytes are REAL (each benchmark
 profile speaks its engine's actual wire format), all three converge
 with **zero lost work** on every scenario, and the escalation policies
 differ visibly on the same contended workload: intent-log parks
-escalations at per-register grain, de-rtc fewer but coarser
-(whole-proposal grain), yjs-server none (silent CRDT last-writer-wins).
+escalations at per-register grain, de-rtc at per-block grain since
+TODO-3 (whole-proposal only for structural divergence), yjs-server
+none (silent CRDT last-writer-wins).
 
 The session-shaped scenarios add the time dimension single workloads
 miss. Under `structural-churn` (concurrent block inserts/removals plus
 typing) the conflict policies separate hardest: intent-log and
-yjs-server merge everything cleanly while de-rtc escalates a large share
-of proposals — whole-document proposals against a structurally-shifting
-base are what its three-way merge refuses to auto-resolve; nothing is
-lost on any engine. `remove-contention` isolates the edit-vs-remove
+yjs-server merge everything cleanly while de-rtc escalates a share of
+proposals — structural divergence is what per-block salvage (TODO-3)
+correctly refuses, so those conflicts still park whole; since salvage,
+the non-structural share lands its clean blocks and the overall
+escalation rate dropped markedly (run the scenario for the current
+share); nothing is lost on any engine. `remove-contention` isolates the edit-vs-remove
 conflict class; `field-sync` separates the same policies at field grain
 (see the scenario narratives below for what actually happens on the
 wire). Under a ten-minute three-user `editorial-session` (joins, typing
@@ -337,8 +340,10 @@ bytes here).
   adoption, which our auto-incorporation replaced — TODO-12 for the
   model, TODO-2 for merge quality). Only when both proposals are in flight from
   the same stale base with overlapping ranges does the server's merge
-  refuse (`de_rtc_rebase_failed`) and park — and then it parks the
-  WHOLE proposal, clean blocks included (TODO-3).
+  refuse (`de_rtc_rebase_failed`) — and since TODO-3 it parks at BLOCK
+  grain: the clean blocks of the proposal land, exactly the conflicted
+  blocks park for review, and only structural divergence still parks
+  the proposal whole.
 
 ### D. Edit versus remove (one client types into a block another removes)
 
@@ -346,11 +351,13 @@ intent-log escalates the trailing side: if the removal lands first, the
 trailing keystrokes park as `target-deleted`; if the text lands first,
 both apply and the token vanishes with the removed block. yjs-server
 escalates nothing — CRDT deletion dissolves the edit with the deleted
-block, deterministically and invisibly. de-rtc escalates the most: the
-structural change shifts the base under the whole-content proposal, and
-its whole-proposal grain sends the entire trailing proposal to review
-(roughly one escalation per contended pair, plus collateral). The
-benchmark's `remove-contention` scenario measures exactly this spread.
+block, deterministically and invisibly. de-rtc still escalates the
+most: the structural change shifts the base under the whole-content
+proposal, and structural divergence is exactly the class per-block
+salvage refuses — the trailing proposal parks whole (roughly one
+escalation per contended pair; TODO-3 removed the *collateral* from
+non-structural rounds). The benchmark's `remove-contention` scenario
+measures exactly this spread.
 
 ### E. An author without `unfiltered_html` pastes risky markup (P1)
 
@@ -536,14 +543,25 @@ the engine Dennis designed; the rest change polish and confidence.
   spirals in complexity** — the fallback is the cheap policy swap (park
   the losing block text for review instead of keeping it), which honors
   P3 at the cost of review noise. Principles: P3, P7.
-- **TODO-3 — Per-block parking for `manual-conflict-required`.** Extend
-  the sequestration pattern (already per-block for the kses lane, per
-  upstream's partial-acceptance model) to merge conflicts: align the
-  base/current/proposed block records, land the clean remainder, park
-  only the conflicted blocks. Whole-proposal parking remains the
-  fallback for structural conflicts, where block alignment itself is
-  what broke. Engine-layer orchestration; the frozen merge core stays
-  untouched. Principle: P3.
+- **TODO-3 — Per-block parking for `manual-conflict-required`. DONE
+  (2026-08-18):** `salvage_conflicting_blocks()` extends the
+  sequestration pattern to merge conflicts: when the whole-document
+  three-way merge fails, base/current/proposed block records are
+  aligned positionally, each both-changed block gets its own three-way
+  merge, the clean remainder lands, and exactly the truly conflicted
+  blocks park for review (canonical wins their positions; the applied
+  disposition carries `parkedBlocks`). Whole-proposal parking remains
+  the fallback for structural divergence (unequal block counts, where
+  positional alignment lies), freeform boundaries, and
+  descriptor-carrying proposals. Also wired into the self-healing lane
+  (a conflicting external save salvages before parking whole).
+  Engine-layer only; the frozen merge core is untouched. The de-rtc
+  benchmark profile models partial acceptance (settle-time
+  classification against the just-applied canonical). Covered by
+  `tests/phpunit/wpDeRtcBlockConflictSalvage.php`. Consequence worth
+  knowing: a *present* client can barely age out of the snapshot window
+  anymore (even its conflicts partially apply and advance its base) —
+  stale-base voids now come from genuinely absent clients.
 - **TODO-4 — Machine-writer participation (scenario F).** Per engine:
   (a) **de-rtc**: port the upstream `wp_update_post` base-version
   preflight so REST/CLI/plugin writes become ordinary proposals — the
