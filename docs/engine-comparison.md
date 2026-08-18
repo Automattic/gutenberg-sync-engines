@@ -735,11 +735,21 @@ the engine Dennis designed; the rest change polish and confidence.
   terminate TLS in front of the daemon. The transport remains
   experimental until a real-daemon e2e lane exists (the websocket-only
   suite exercises the TEST provider, not this daemon).
-- **TODO-10 — Validate the hosting cost cards end-to-end.** The
-  per-user-hour projections compose exactly-measured engine-seam costs,
-  but no browser-driven multi-client soak (three windows, an hour,
-  through the real transport stack) has confirmed the composed totals.
-  Until then, treat the cards as engine-seam floors, not hosting bills.
+- **TODO-10 — Validate the hosting cost cards end-to-end. SCOPED
+  (2026-08-18), run pending.** The per-user-hour projections compose
+  exactly-measured engine-seam costs, but no browser-driven
+  multi-client soak has confirmed the composed totals — treat the
+  cards as engine-seam floors until it exists. The scoped plan:
+  parameterize `tests/benchmarks/transport/benchmark-transport.mjs`
+  from its hardcoded two contexts to N windows; add a duration-based
+  soak mode (staggered typing bursts with think time, periodic saves,
+  per-minute sampling of request latency, payload bytes, and server
+  metrics via the `rtc-test/v1` request log); end with the convergence
+  check plus a composed-vs-measured comparison against the cost card
+  for the same engine/transport/user-count. The deliverable is a
+  one-command run (`soak=3600 windows=3`) per engine — an hour of
+  supervised wall clock each, which is why this is its own session,
+  not a batch item.
 - **TODO-11 — Round-trip complex sourced attributes through
   materialization.** intent-log and yjs-server share the Phase-2a
   simplification: rich-text content maps onto a block's single wrapper
