@@ -86,9 +86,7 @@ differently. The tables below are how the price shows up.
 
 This guide deliberately carries NO measured numbers: they vary by
 machine, PHP build, and code revision, and stale numbers mislead harder
-than no numbers (the yjs-server figures an earlier revision printed here
-predated the vendored y-php StringDecoder fix and overstated that
-engine's ingest cost by an order of magnitude). Run `npm run bench` for
+than no numbers. Run `npm run bench` for
 current numbers on your hardware — every claim below is a shape the
 tables it prints make concrete. The stable shape: intent-log is the
 cheapest per ingest; de-rtc costs a small multiple of it (the content
@@ -243,19 +241,10 @@ noise under intent-log), with one exception noted below.
   PHP — the most expensive per-ingest path of the three engines — and
   the SAVE path is worse: a save request starts with no per-request
   cache and decodes the whole canonical doc cold (`materialize_us` in
-  the benchmark). This used to be an order of magnitude worse than it
-  is: the dominant cost was not CRDT merge but a quadratic in the
-  vendored y-php V2 decoder — `Lib0\StringDecoder::read()` re-scanned
-  the shared string buffer from offset 0 on every read (JS lib0's
-  `str.slice()` is native and cheap; the PHP port's UTF-16 offset
-  search was O(buffer) per string, O(n²) per decode), fixed 2026-08-18
-  by a marked DELTA in `includes/lib/y-php/src/Lib0/StringDecoder.php`
-  (one-time char split plus forward cursor; identical per-char
-  semantics, held to byte-parity by the conformance suite plus a
-  StringDecoder round-trip test). The remaining cost — one full-doc
-  decode + two encodes per request — is the structural floor for a
-  server-authoritative CRDT in per-request PHP; it still scales with
-  document size, so run `long-form` benchmarks at YOUR sizes first.
+  the benchmark). One full-doc decode + two encodes per request is the
+  structural floor for a server-authoritative CRDT in per-request PHP;
+  it scales with document size, so run `long-form` benchmarks at YOUR
+  sizes first.
 - **yjs-server kses is sanitize, not park.** The per-update capability
   lane replaces a filtered author's offending blocks with their
   kses-sanitized form and broadcasts the compensation (WordPress's

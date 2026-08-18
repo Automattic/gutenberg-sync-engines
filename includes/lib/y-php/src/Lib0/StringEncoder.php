@@ -11,13 +11,17 @@ namespace Yjs\Lib0;
 
 /**
  * Port of lib0/encoding.js StringEncoder.
+ *
+ * The JS original flushes `s` into a `sarr` chunk list once its recomputed
+ * UTF-16 length passes 19, which would cost an extra utf16Length() of the
+ * accumulated chunk on every write here. That chunking exists in lib0 only
+ * to avoid quadratic string concatenation in JS; the chunks are joined back
+ * into ONE string in toUint8Array(), so chunk boundaries have zero wire
+ * effect, and PHP string appends are already amortized O(1). This port
+ * keeps a single running string instead: byte-identical output, one
+ * utf16Length() per write (of the written piece only).
  */
 class StringEncoder {
-	/**
-	 * @var array<int,string>
-	 */
-	private array $sarr = array();
-
 	/**
 	 * @var string
 	 */
@@ -38,10 +42,6 @@ class StringEncoder {
 	 */
 	public function write( string $string ): void {
 		$this->s .= $string;
-		if ( Str::utf16Length( $this->s ) > 19 ) {
-			$this->sarr[] = $this->s;
-			$this->s      = '';
-		}
 		$this->lensE->write( Str::utf16Length( $string ) );
 	}
 
@@ -49,10 +49,9 @@ class StringEncoder {
 	 * @return Buffer
 	 */
 	public function toUint8Array(): Buffer {
-		$encoder      = Encoding::createEncoder();
-		$this->sarr[] = $this->s;
-		$this->s      = '';
-		Encoding::writeVarString( $encoder, implode( '', $this->sarr ) );
+		$encoder = Encoding::createEncoder();
+		Encoding::writeVarString( $encoder, $this->s );
+		$this->s = '';
 		Encoding::writeUint8Array( $encoder, $this->lensE->toUint8Array() );
 		return Encoding::toUint8Array( $encoder );
 	}
