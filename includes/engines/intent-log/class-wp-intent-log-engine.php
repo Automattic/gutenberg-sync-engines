@@ -115,6 +115,17 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 		const UPDATE_TYPE_RESOLVED = 'resolved';
 
 		/**
+		 * Client-sent only, never stored: cancels intents that are still
+		 * queued (the pre-settle undo lane — TODO-5 in
+		 * docs/engine-comparison.md). All-or-nothing per cancel row: if
+		 * ANY target already settled, nothing cancels and the cancel acks
+		 * `cancel-too-late` (the client resurrects the unit from the
+		 * accepted rows). Confirmed cancellations settle each target as a
+		 * `voided`/`canceled` marker row, so redeliveries stay idempotent.
+		 */
+		const UPDATE_TYPE_CANCEL = 'cancel';
+
+		/**
 		 * Escalation reason for intents whose payload carries markup the
 		 * authoring user may not publish (per `wp_kses_post`): the intent is
 		 * parked for review instead of applied, and only a user with
@@ -202,6 +213,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 				self::UPDATE_TYPE_PROPOSAL,
 				self::UPDATE_TYPE_VOIDED,
 				self::UPDATE_TYPE_RESOLVED,
+				self::UPDATE_TYPE_CANCEL,
 			);
 		}
 
@@ -344,6 +356,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 			$head_seq      = $base_seq + count( $state['log'] );
 			$intents       = array();
 			$resolutions   = array();
+			$cancels       = array();
 			$invalid       = array();
 			$submitted_ids = array();
 			foreach ( $updates as $update ) {
@@ -363,10 +376,26 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 					$resolutions[] = $resolution;
 					continue;
 				}
+				if ( self::UPDATE_TYPE_CANCEL === $update['type'] ) {
+					$cancel = json_decode( $update['data'], true );
+					if (
+						! is_array( $cancel ) ||
+						! is_string( $cancel['cancelId'] ?? null ) || '' === $cancel['cancelId'] ||
+						! is_array( $cancel['intentIds'] ?? null ) || array() === $cancel['intentIds']
+					) {
+						return new WP_Error(
+							'rest_sync_invalid_intent',
+							__( 'Malformed intent cancellation.', 'gutenberg' ),
+							array( 'status' => 400 )
+						);
+					}
+					$cancels[] = $cancel;
+					continue;
+				}
 				if ( self::UPDATE_TYPE_INTENT !== $update['type'] ) {
 					return new WP_Error(
 						'rest_invalid_update_type',
-						__( 'Clients may only send intent or resolution updates to an intent-log room.', 'gutenberg' ),
+						__( 'Clients may only send intent, cancel, or resolution updates to an intent-log room.', 'gutenberg' ),
 						array( 'status' => 400 )
 					);
 				}
@@ -412,6 +441,68 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 			if ( count( $invalid ) > 0 ) {
 				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 				do_action( 'qm/debug', 'wp-sync: ' . count( $invalid ) . " invalid intent(s) voided in {$room}" );
+			}
+
+			/*
+			 * Intent cancellations (the pre-settle undo lane, TODO-5).
+			 * All-or-nothing per cancel row: if ANY target already settled
+			 * (other than as canceled), nothing cancels and the cancel acks
+			 * `cancel-too-late` — the client resurrects the unit from the
+			 * accepted rows. Confirmed targets settle as voided/`canceled`
+			 * marker rows: idempotent against redelivery, dead against a
+			 * late-arriving copy of the intent, and same-batch copies drop
+			 * in the settled filter below.
+			 */
+			$cancel_dispositions = array();
+			foreach ( $cancels as $cancel ) {
+				$targets  = array_values( array_filter( $cancel['intentIds'], 'is_string' ) );
+				$too_late = false;
+				foreach ( $targets as $target_id ) {
+					$prior = $state['settled'][ $target_id ] ?? null;
+					if ( null !== $prior && 'canceled' !== ( $prior['reason'] ?? null ) ) {
+						$too_late = true;
+						break;
+					}
+				}
+				if ( $too_late ) {
+					$cancel_dispositions[] = array(
+						'intentId' => $cancel['cancelId'],
+						'status'   => 'voided',
+						'reason'   => 'cancel-too-late',
+					);
+					continue;
+				}
+				foreach ( $targets as $target_id ) {
+					if ( isset( $state['settled'][ $target_id ] ) ) {
+						continue; // Redelivered cancel: already confirmed.
+					}
+					$stored = $this->add_row(
+						$room,
+						$client_id,
+						self::UPDATE_TYPE_VOIDED,
+						array(
+							'intentId' => $target_id,
+							'reason'   => 'canceled',
+						)
+					);
+					if ( ! $stored ) {
+						return new WP_Error(
+							'rest_sync_storage_error',
+							__( 'Failed to store sync update.', 'gutenberg' ),
+							array( 'status' => 500 )
+						);
+					}
+					$state['settled'][ $target_id ] = array(
+						'status' => 'voided',
+						'reason' => 'canceled',
+					);
+				}
+				$cancel_dispositions[] = array(
+					'intentId' => $cancel['cancelId'],
+					'status'   => 'applied',
+				);
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+				do_action( 'qm/debug', 'wp-sync: canceled ' . count( $targets ) . " queued intent(s) in {$room}" );
 			}
 
 			// Group first, then drop already-settled intents within units, so
@@ -690,6 +781,9 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 					'intentId' => $resolution['proposalId'],
 					'status'   => 'resolved',
 				);
+			}
+			foreach ( $cancel_dispositions as $cancel_disposition ) {
+				$dispositions[] = $cancel_disposition;
 			}
 
 			return array( 'dispositions' => $dispositions );

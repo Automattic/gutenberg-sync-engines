@@ -569,13 +569,14 @@ they exist so a failure is observable without re-instrumenting:
     (`CAPTURE_SYNC_DELAY`, 1.2 s), so identity write-backs and merged views
     reach the canvas that late. This is forced by core-data (see the gotcha
     on pushes from inside `update()`), not by choice.
-  - Undo arms only after a unit SETTLES (capture delay + ack round trip,
-    ~1–2 s over polling): undo pressed inside that window is a silent
-    no-op. Measured parity gap (fuzzer undo profile, 2026-08-17): undo
-    0–900 ms after typing was armed 34/34 times on yjs-server/de-rtc,
-    1/12 on intent-log. Inverses derive from ACCEPTED rows by design, so
-    closing this means canceling pending outbox intents, not deriving
-    from originals.
+  - FIXED (2026-08-18): undo inside the settle window now CANCELS the
+    pending unit (outbox removal + optimistic replan + a `cancel` row
+    that drops still-queued intents server-side; a cancel that loses
+    the race to the wire acks `cancel-too-late` and the unit resurrects
+    as a settled undo candidate). Inverses still derive only from
+    ACCEPTED rows. The old behavior — silent no-op until rows + acks
+    landed, measured 1/12 armed vs 34/34 on the yjs engines — is gone;
+    re-run the fuzzer undo profile to re-measure parity.
   - An undo whose inverse intents are still unacked when that tab reloads
     loses them with the outbox: the undone edit (already accepted
     server-side) resurrects for everyone. The general unacked-edit-loss

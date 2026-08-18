@@ -115,7 +115,7 @@ shows up.
 | --- | --- | --- | --- |
 | P1 server authority | **Meets.** Typed intents authorized, attributed, and transformed at ingest | **Meets.** Server merges and materializes; per-update dispositions | **Meets.** Server merges every proposal; per-proposal dispositions with version lineage |
 | P2 no silent loss | **Meets, one window.** Oracle-certified; unacked outbox intents die with a tab reload (undo makes the loss visible) | **Meets.** Oracle-certified; races heal via idempotent full-state recovery | **Meets.** Oracle-certified; escalations park durably, voided proposals re-propose |
-| P3 conflicts surfaced | **Meets.** Per-register review lane; residual over-escalation on same-paragraph bursts (rate, not silence) | **Violates, by documented policy (TODO-7 decided).** Register conflicts resolve by silent CRDT last-writer-wins; no review lane. Stated on the settings screen; pinned by the escalation-criteria fixture | **Partially violates — port artifact.** Server-detected conflicts park for review at BLOCK grain (per-block salvage: the clean remainder lands, exactly the conflicted blocks park — TODO-3 done; whole-proposal parking remains only for structural divergence), but same-block concurrency still silently LWWs client-side (TODO-2b) |
+| P3 conflicts surfaced | **Meets.** Per-register review lane; residual over-escalation on same-paragraph bursts (rate, not silence) | **Violates, by documented policy (TODO-7 decided).** Register conflicts resolve by silent CRDT last-writer-wins; no review lane. Stated on the settings screen; pinned by the escalation-criteria fixture | **Meets (since TODO-2b/3).** Conflicts park for review at BLOCK grain (per-block salvage: the clean remainder lands, exactly the conflicted blocks park; whole-proposal parking only for structural divergence), and the client-side same-block LWW is retired: kept blocks declare their TRUE base (`blockBaseVersions`), so real same-block concurrency merges when non-overlapping and parks when it overlaps. Residual: a client that omits the map (legacy/simple writers) still presents sole-writer changes |
 | P4 machine writers | **Not yet.** Ingest speaks typed intents only; the persisted `metadata.syncId` identity makes a diff lane tractable (TODO-4) | **Accepted limitation.** Ingest speaks binary CRDT updates; a diff-to-CRDT lane would be semantically worse, not just costly (TODO-4) | **Met.** Unaware writers heal in (TODO-14, scenario F) and cooperating writers merge through the room: `wp_update_post( …, 'base_version' => 'vN' )` — WP-CLI, plugins, REST (`base_version` param on posts/pages) — three-way-merges via the ingest lane with per-block salvage and review parking; conflicts reject the save with a rich 409 (TODO-4a) |
 | P5 cheap hosting | **Meets.** Cheapest per-ingest CPU; Core-style options-row lock, topology-safe (TODO-1 done) | **Partially.** No lock (good); heaviest per-ingest CPU, scaling with document size | **Partially.** Cheap CPU; lock-free optimistic claims, topology-safe (TODO-1 done); wire/storage bytes still scale with document size |
 | P6 measured economics | **Meets.** Real wire format in its benchmark profile | **Meets.** Real wire format; convergence oracle | **Meets.** Real wire format; disposition/lineage oracle |
@@ -181,7 +181,7 @@ the protocol won. The fidelity program reverses that default.
 | Area | intent-log | yjs-server | de-rtc |
 | --- | --- | --- | --- |
 | Conflict handling | Transform on the server; genuine conflicts park in the editor's review panel (escalation notice, marker chip, durable resolutions — e2e-verified) | Silent CRDT auto-merge, but ON THE SERVER — outcomes observable, still no review lane (conflict DETECTION is the undesigned prerequisite) | Three-way merge on the server; genuine conflicts PARK as durable `proposal-parked` rows and present in the same review panel (restore re-proposes under the reviewer; dismiss resolves; retention survives compaction — e2e-verified) |
-| Collaborative undo | Inverse intents over the accepted log (`src/engines/intent-log-undo.ts`): per-user undo/redo, transformed over peers' rows, conflicts park for review; arms once the unit settles (rows + acks, ~a poll cycle) | Per-peer undo manager (`src/engines/yjs/undo.ts`, inherited from the retired relay) | Per-peer undo manager (shared `src/engines/yjs/undo.ts` over the local doc bridge); undone state propagates as an ordinary proposal |
+| Collaborative undo | Inverse intents over the accepted log (`src/engines/intent-log-undo.ts`): per-user undo/redo, transformed over peers' rows, conflicts park for review. Armed immediately: a still-pending unit CANCELS (outbox + a wire-chasing `cancel` row; a lost race resurrects the unit as a settled candidate — TODO-5), a settled unit inverts | Per-peer undo manager (`src/engines/yjs/undo.ts`, inherited from the retired relay) | Per-peer undo manager (shared `src/engines/yjs/undo.ts` over the local doc bridge); undone state propagates as an ordinary proposal |
 | Refresh/offline recovery | Server materializes the document; queued intents are memory-only. Solo edits flush every poll (`syncWhileSolo`), and discarded unsent work surfaces an editor notice | Server holds the canonical doc; a rejoining client re-bootstraps from the retained snapshot + tail and uploads its own state idempotently. Solo edits flush every poll (`syncWhileSolo`) — REQUIRED here, not an optimization: a page reload holds no local state to upload, so a room that never saw the solo session's updates would bootstrap the editor back to its stale snapshot, wiping the freshly loaded record (e2e-covered: the solo save-and-reload spec) | Server holds canonical content + version snapshots; a rejoining client re-bootstraps from the retained snapshot + content rows. Un-acked local edits re-propose (the server merges); the save-centric model keeps the room tracking saves, so a solo save-and-reload survives without `syncWhileSolo` (verified) |
 | Error recovery | Exact re-send; ingest is idempotent by intentId | Full-state recovery update, IDEMPOTENT server-side (the server diffs out what it already has — redelivery settles as a benign `already-merged` void); the server explicitly requests it with a `resync-required` void when an update's dependencies are missing from the room | Recovery re-proposes the doc's current state; if the lost send landed, the re-proposal merges as a no-op |
 | History compaction | Server checkpoints every 100 intent rows and trims | Server checkpoints every 100 rows and trims — abandoned rooms stay bounded | Server checkpoints every 100 rows and trims (same retention invariant) |
@@ -344,19 +344,19 @@ bytes here).
 - **de-rtc**: The peer's accepted proposal broadcasts a canonical row
   that arrives mid-burst. The client cannot merge (clients never merge)
   and cannot apply it verbatim (that would clobber unsent keystrokes),
-  so it *incorporates*: adopts canonical blocks it hasn't touched,
-  keeps its own version of the contested block, and advances its base.
-  Its next proposal reads as a clean sole-writer change — the server
-  never sees a conflict, and the peer's text is overwritten. Block-level
-  last-writer-wins, silently (P3 violation — a port artifact, not the
-  upstream design: the vision resolves this moment through pending-edit
-  adoption, which our auto-incorporation replaced — TODO-12 for the
-  model, TODO-2b — per-block base honesty — for merge quality). Only when both proposals are in flight from
-  the same stale base with overlapping ranges does the server's merge
-  refuse (`de_rtc_rebase_failed`) — and since TODO-3 it parks at BLOCK
-  grain: the clean blocks of the proposal land, exactly the conflicted
-  blocks park for review, and only structural divergence still parks
-  the proposal whole.
+  so it *incorporates*: adopts canonical blocks it hasn't touched and
+  keeps its own version of the contested block — but since TODO-2b it
+  also RECORDS the version that block's text was really written
+  against, and its next proposal declares it (`blockBaseVersions`).
+  The server merges the contested block from its TRUE base:
+  non-overlapping concurrent edits to the same block merge (both texts
+  land), true overlaps park for review at block grain (TODO-3) while
+  the clean remainder lands. The silent block-level last-writer-wins
+  this moment used to cause is retired; what remains is the
+  interaction-model question (the vision resolves this moment through
+  explicit pending-edit adoption — TODO-12) and the residual that a
+  map-less legacy client still presents sole-writer changes. Structural
+  divergence still parks the proposal whole.
 
 ### D. Edit versus remove (one client types into a block another removes)
 
@@ -569,19 +569,21 @@ the engine Dennis designed; the rest change polish and confidence.
     vector discipline, NOT the 22k-line upstream editor store (which is
     mostly other machinery). Bounded; restores proof-carrying proposals
     and activates the server's tamper rejection.
-  - **TODO-2b — Per-block base honesty (the actual scenario-C fix).**
-    The silent LWW lives in the client incorporation policy: when it
-    keeps a locally-edited block and advances the whole-document base,
-    the server sees a clean sole-writer change. Fix: remember each
-    kept block's TRUE base version at incorporation and carry an
-    optional per-block base map on the next proposal; the engine
-    merges a mapped block from ITS OWN base — landing in the existing
-    TODO-3 salvage machinery, where non-overlapping same-block edits
-    merge and true overlaps park for review. Client work in the
-    doc-bridge/session plus a small engine-layer extension; no merge
-    core changes. This retires the LWW without sacrificing canvas
-    liveness (the fallback policy swap — park the losing text — stays
-    available if 2b stalls).
+  - **TODO-2b — Per-block base honesty (the actual scenario-C fix).
+    DONE (2026-08-18):** the doc bridge records the TRUE base of each
+    block kept through a colliding incorporation (once — the oldest
+    pending base wins; cleared when the block adopts canonical, on
+    wholesale adoption, and on version-only advance), the session
+    carries the map as `blockBaseVersions`, and the engine's
+    `resolve_effective_base()` substitutes each declared block's
+    true-base record into the merge base (snapshots first, then
+    revision mining). Real same-block concurrency then MERGES when
+    non-overlapping and parks for review when it overlaps — the silent
+    LWW is retired for map-carrying clients, with unsound
+    substitutions degrading to exactly the old behavior. Covered by
+    bridge Jest tests and engine PHPUnit tests (including a
+    regression pin on the map-less residual); fuzz-smoked end-to-end.
+    No merge core changes.
   Neither half spirals; 2b is the fidelity-critical one. Principles:
   P1 (2a), P3/P7 (2b).
 - **TODO-3 — Per-block parking for `manual-conflict-required`. DONE
@@ -631,13 +633,23 @@ the engine Dennis designed; the rest change polish and confidence.
   limitation — a diff-to-CRDT lane is mechanically feasible but
   semantically wrong (inferred character operations no writer
   expressed). Principles: P4, P2.
-- **TODO-5 — Close the intent-log undo arming gap.** Undo pressed
-  within the settle window (capture delay + ack round trip) is a silent
-  no-op; the yjs engines arm instantly. Closing it means canceling
-  pending outbox intents — inverses must keep deriving from ACCEPTED
-  rows (outbox originals carry offsets the transforms never updated).
-  Also in scope: an undo whose inverse intents are unacked at tab
-  reload loses them with the outbox, resurrecting the undone edit.
+- **TODO-5 — Close the intent-log undo arming gap. DONE (2026-08-18):**
+  undo inside the settle window now CANCELS the pending unit instead of
+  no-oping. A fully-unacked unit is undoable immediately: its intents
+  leave the outbox (the optimistic document replans and the canvas
+  reverts), and a `cancel` row chases any copies already queued on the
+  wire — the server drops intents canceled within the same batch
+  (settling them as `voided`/`canceled` marker rows, idempotent against
+  redelivery and dead against late arrival) and acks `cancel-too-late`
+  when an intent was already ingested, in which case the accepted row
+  resurrects the effect and the unit returns to the stack as a normal
+  settled undo candidate — all-or-nothing per unit, so nothing is ever
+  half-canceled. Inverses still derive ONLY from accepted rows.
+  Covered by Jest (cancel, lost-race resurrection, all-or-nothing) and
+  PHPUnit (same-batch drop, too-late, redelivery idempotence, dead
+  late copy); undo-profile fuzz green. Remaining, unchanged: an undo
+  whose INVERSE intents are unacked at tab reload still loses them
+  with the outbox (the general unacked-loss window).
 - **TODO-6 — Promote escalation rate to an acceptance criterion. DONE
   (2026-08-18):** `tests/phpunit/wpSyncEscalationCriteria.php` runs the
   conflict fixtures (clean, contended, structural, native-cadence) per
