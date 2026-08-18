@@ -262,11 +262,17 @@ ingest grows with the accumulating document**. Run `editorial-session
 rounds=3600` for the full hour before concluding about long sessions.
 And run `save-sync-session` before concluding about de-rtc at all: at
 the vision's ten-second save-and-sync cadence the escalation ranking
-INVERTS — de-rtc escalates nothing (staggered saves rarely truly
-collide; per-block salvage absorbs what does) while intent-log becomes
-the escalation-heavy engine (its same-paragraph frame-conflict residual
-bites hardest when editors observe peers seconds late). Cadence is not
-a detail; it is half the comparison.
+INVERTS — de-rtc surfaces only a small share of parked blocks
+(staggered saves rarely truly collide; per-block salvage absorbs most
+of what does) while intent-log becomes the escalation-heavy engine
+(its same-paragraph frame-conflict residual bites hardest when editors
+observe peers seconds late). Cadence is not a detail; it is half the
+comparison. The escalation-criteria fixture
+(`tests/phpunit/wpSyncEscalationCriteria.php`) pins these shapes as
+policy bands — note that "escalated dispositions" undercounts de-rtc's
+surfaced conflicts since TODO-3: partial acceptance parks blocks while
+the proposal reports applied, so the honest metric is escalations PLUS
+parked rows, which is what the fixture measures.
 
 Two costs live off the edit path and are easy to miss; the benchmark
 reports both. The **later-joiner read** (a cold read at cursor 0 — what
@@ -609,11 +615,20 @@ the engine Dennis designed; the rest change polish and confidence.
   rows (outbox originals carry offsets the transforms never updated).
   Also in scope: an undo whose inverse intents are unacked at tab
   reload loses them with the outbox, resurrecting the undone edit.
-- **TODO-6 — Promote escalation rate to an acceptance criterion.** The
-  benchmark already prints per-scenario escalation shares; build the
-  conflict-fixture suite around them and set thresholds. "Too high"
-  fails an engine as surely as lost work does — this is the P3
-  fine line made measurable.
+- **TODO-6 — Promote escalation rate to an acceptance criterion. DONE
+  (2026-08-18):** `tests/phpunit/wpSyncEscalationCriteria.php` runs the
+  conflict fixtures (clean, contended, structural, native-cadence) per
+  engine and enforces POLICY BANDS on the surfaced-conflict rate: clean
+  workloads must ask humans nothing; genuinely contended workloads must
+  surface (>0 — "silently zero is a failure of honesty") while staying
+  under an upper bound (overburdening is also failure); yjs-server's
+  silence is pinned as documented policy (TODO-7 owns changing it).
+  Metric honesty matters: for de-rtc the count is unique parked-row
+  proposalIds (escalated dispositions both undercount salvage and
+  double-count whole-parks); for the per-intent engines it is escalated
+  dispositions. Runs in CI with the PHPUnit suite. The fixture earned
+  its keep immediately — it caught this very document overstating
+  de-rtc's native-cadence result.
 - **TODO-7 — Decide yjs-server's conflict story.** Either build
   conflict detection plus a review lane (detection is the undesigned
   prerequisite), or formally accept silent register-LWW as that
@@ -767,11 +782,13 @@ each item restores):
   staggered ~10s save beats and syncs every 10th round — the "$3/mo
   host polling every ten seconds" shape) runs against ALL engines and
   in the default matrix. First finding, and it flips the per-second
-  ranking: at this cadence de-rtc escalates NOTHING (staggered saves
-  rarely truly collide, and salvage absorbs what does) while
-  INTENT-LOG becomes the escalation-heavy engine (its same-paragraph
-  frame-conflict residual bites hardest when editors observe peers ~10s
-  late); de-rtc still pays in bytes. Zero loss everywhere, certified by
+  ranking: at this cadence de-rtc surfaces only a small parked-block
+  share (staggered saves rarely truly collide, and salvage absorbs
+  most of what does — the TODO-6 fixture caught an earlier draft of
+  this entry overstating "nothing") while INTENT-LOG becomes the
+  escalation-heavy engine (its same-paragraph frame-conflict residual
+  bites hardest when editors observe peers ~10s late); de-rtc still
+  pays in bytes. Zero loss everywhere, certified by
   `test_save_sync_session_converges_on_every_engine`. Run
   `npm run bench -- scenarios=save-sync-session` for current numbers.
 
