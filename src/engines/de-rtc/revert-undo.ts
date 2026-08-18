@@ -52,6 +52,10 @@ export interface DeRtcUndoFeedRow {
 	content: string;
 	/** Whether this row is the local client's own accepted proposal. */
 	own: boolean;
+	/** Server-stamped author user id (content rows since TODO-18). */
+	author?: number;
+	/** The authoring transport client id. */
+	authorClientId?: number;
 }
 
 /** The session→undo feed: sessions publish every canonical row. */

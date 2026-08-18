@@ -165,7 +165,7 @@ with something protocol-convenient.
 | Arbitrarily long offline editing still recombines | Old bases recoverable via the co-located history and revision copies | Restored: a base past the room's 20-version window resolves from post revisions (each aware save embeds its own snapshot window, hash-verified), so deep-lag proposals merge with intervening work intact; only a base no revision carries still voids | **Restored** (TODO-15 done) |
 | Undo/redo "never undo, but rather apply revert edits"; a history slider scrubs versions | Explicitly offered to RTC: "This could easily be adopted by RTC" | Restored: de-rtc's undo derives revert edits from the client's OWN accepted canonical rows (per-block, with an untouched-since guard so peer work is never collateral) and applies them as ordinary dirty edits that propose like any change; redo re-applies the reverted delta. The history-slider UI remains TODO-12-era editor UX | **Restored** (TODO-16 done) |
 | Reviewers can modify before adopting | The prototype's review schema carries `reviewed_block_source` ("modify-and-adopt"); approvals are hash-pinned | Restored: `restoreProposalWithChanges()` applies the reviewer's edited replacements for specific parked blocks — what the reviewer supplies is exactly what applies and re-proposes under their capability, pinning approval and content by construction. API-level; the review panel UI still offers plain restore/dismiss | **Restored (API)** (TODO-17 done) |
-| Per-edit authorship: "hover over a user's avatar and highlight the changes they applied" | Range-grain attribution; the prototype shipped authorship-focus overlays | `authorClientId` on whole-content rows; no range attribution, no surface | **Unported.** TODO-18 |
+| Per-edit authorship: "hover over a user's avatar and highlight the changes they applied" | Range-grain attribution; the prototype shipped authorship-focus overlays | Data surface restored: content rows carry the server-stamped author user id, and the client derives block-grain "who last touched this" from row-vs-base diffs at zero extra wire cost (`engine.authorship.getBlockAuthorship()`; structural shifts reset to unknown rather than lie). The hover overlay is TODO-12-era UX; range grain needs descriptors (TODO-2a) | **Restored (data)** (TODO-18 done) |
 | Per-block kses sequestration — "accept partial edits, adopting the safe parts" | Prototype-proven | Restored as the shipping capability lane | **Faithful** |
 | The shipping merge is the hand-written block-aware three-way merge; Automerge backs only the legacy lane | Same | Same — ported verbatim as a frozen call-graph closure | **Faithful** |
 | Optimistic concurrency; no database lock | Base-version preflight, hash validation, merge-and-retry on the save path | Lock-free again: accepted proposals atomically claim their version advancement and a lost claim reloads + re-merges (`WP_Sync_Atomic_Option` CAS) | **Restored** (TODO-1 done) |
@@ -874,10 +874,18 @@ each item restores):
   parameter); the framework review panel still offers plain
   restore/dismiss — the modify-and-adopt UI is editor UX that belongs
   with TODO-12's interaction-model work.
-- **TODO-18 — Per-edit authorship surface.** Attribution at range
-  grain ("hover over a user's avatar and highlight the changes they
-  applied"), not just `authorClientId` on whole-content rows. Becomes
-  tractable once proposals carry descriptors (TODO-2a).
+- **TODO-18 — Per-edit authorship surface. DONE (data level,
+  2026-08-18):** de-rtc content rows now carry the server-stamped
+  author user id beside `authorClientId`, and the client's
+  `createDeRtcAuthorship` tracker derives block-grain attribution from
+  each row's diff against its base — the last author of every
+  top-level block, at zero extra wire cost, exposed as
+  `engine.authorship.getBlockAuthorship( objectType, objectId )`.
+  Honest bounds, by design: attribution is block-grain and positional,
+  and a structural change resets the map to unknown rather than
+  attribute across a shift. The hover-highlight overlay is TODO-12-era
+  editor UX; range-grain (which characters) attribution needs the
+  descriptor lane (TODO-2a).
 - **TODO-19 — Benchmark DE-RTC at its native cadence. DONE
   (2026-08-18):** the `save-sync-session` scenario (rounds are
   wall-clock seconds; each client submits its typing burst only on

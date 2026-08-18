@@ -261,6 +261,12 @@ export function createDeRtcSessionCodec(
 				own:
 					DE_RTC_CONTENT_TYPE === update.type &&
 					decoded.authorClientId === doc.clientID,
+				...( 'number' === typeof decoded.author
+					? { author: decoded.author }
+					: {} ),
+				...( 'number' === typeof decoded.authorClientId
+					? { authorClientId: decoded.authorClientId }
+					: {} ),
 			} );
 		}
 

@@ -24,6 +24,7 @@ import type {
 import { CRDT_RECORD_MAP_KEY } from '../yjs/constants';
 import { createYjsDoc, serializeCrdtDoc } from '../yjs/doc';
 import { docContainsSnapshot, encodeDocSnapshot } from '../yjs/snapshot';
+import { createDeRtcAuthorship, type DeRtcBlockAuthorship } from './authorship';
 import {
 	createDeRtcRevertUndoManager,
 	createDeRtcUndoFeed,
@@ -145,6 +146,12 @@ function createInertDeRtcCollectionCodec(
  */
 export function createDeRtcEngine(): SyncEngine & {
 	review: EngineReviewSource;
+	authorship: {
+		getBlockAuthorship: (
+			objectType: string,
+			objectId: unknown
+		) => Array< DeRtcBlockAuthorship | null >;
+	};
 } {
 	interface EntityReviewHandle {
 		review: DeRtcReviewState;
@@ -155,6 +162,12 @@ export function createDeRtcEngine(): SyncEngine & {
 		) => void;
 	}
 	const entityReviews = new Map< string, EntityReviewHandle >();
+	// Per-entity authorship trackers (TODO-18): block-grain "who last
+	// touched this", derived from the canonical row feed.
+	const entityAuthorship = new Map<
+		string,
+		() => Array< DeRtcBlockAuthorship | null >
+	>();
 	const reviewKey = ( objectType: string, objectId: unknown ) =>
 		`${ objectType }:${ String( objectId ) }`;
 
@@ -202,6 +215,11 @@ export function createDeRtcEngine(): SyncEngine & {
 		// rows, proposed like any other change.
 		createUndoManager: createDeRtcRevertUndoManager,
 		review: reviewSource,
+		authorship: {
+			getBlockAuthorship: ( objectType, objectId ) =>
+				entityAuthorship.get( reviewKey( objectType, objectId ) )?.() ??
+				[],
+		},
 		createEntity( { syncConfig, objectType, objectId } ): EngineEntity {
 			const ydoc = createYjsDoc( { objectType } );
 			const recordMap = ydoc.getMap( CRDT_RECORD_MAP_KEY );
@@ -209,6 +227,11 @@ export function createDeRtcEngine(): SyncEngine & {
 			const bridge = createDeRtcDocBridge( ydoc, syncConfig );
 			const review = createDeRtcReviewState();
 			const undoFeed = createDeRtcUndoFeed();
+			const authorship = createDeRtcAuthorship( undoFeed );
+			entityAuthorship.set(
+				reviewKey( objectType, objectId ),
+				authorship.getBlockAuthorship
+			);
 
 			// Edits made before the server snapshot arrives, replayed in
 			// order once it does.

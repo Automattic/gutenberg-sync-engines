@@ -597,6 +597,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 							'content'        => $merged,
 							'properties'     => $state['properties'] ?? array(),
 							'authorClientId' => $client_id,
+							'author'         => get_current_user_id(),
 							'proposalId'     => $proposal['proposalId'],
 						)
 					)
@@ -1563,6 +1564,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 							'content'        => $merged,
 							'properties'     => $state['properties'] ?? array(),
 							'authorClientId' => self::SERVER_CLIENT_ID,
+							'author'         => get_current_user_id(),
 							'proposalId'     => 'external-' . substr( $external_hash, 0, 12 ),
 							'healedFrom'     => $replacement ? 'external-save' : 'external-save-merged',
 						)
