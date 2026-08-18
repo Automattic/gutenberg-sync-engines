@@ -116,7 +116,7 @@ shows up.
 | P1 server authority | **Meets.** Typed intents authorized, attributed, and transformed at ingest | **Meets.** Server merges and materializes; per-update dispositions | **Meets.** Server merges every proposal; per-proposal dispositions with version lineage |
 | P2 no silent loss | **Meets, one window.** Oracle-certified; unacked outbox intents die with a tab reload (undo makes the loss visible) | **Meets.** Oracle-certified; races heal via idempotent full-state recovery | **Meets.** Oracle-certified; escalations park durably, voided proposals re-propose |
 | P3 conflicts surfaced | **Meets.** Per-register review lane; residual over-escalation on same-paragraph bursts (rate, not silence) | **Violates, by documented policy (TODO-7 decided).** Register conflicts resolve by silent CRDT last-writer-wins; no review lane. Stated on the settings screen; pinned by the escalation-criteria fixture | **Meets (since TODO-2b/3).** Conflicts park for review at BLOCK grain (per-block salvage: the clean remainder lands, exactly the conflicted blocks park; whole-proposal parking only for structural divergence), and the client-side same-block LWW is retired: kept blocks declare their TRUE base (`blockBaseVersions`), so real same-block concurrency merges when non-overlapping and parks when it overlaps. Residual: a client that omits the map (legacy/simple writers) still presents sole-writer changes |
-| P4 machine writers | **Not yet.** Ingest speaks typed intents only; the persisted `metadata.syncId` identity makes a diff lane tractable (TODO-4) | **Accepted limitation.** Ingest speaks binary CRDT updates; a diff-to-CRDT lane would be semantically worse, not just costly (TODO-4) | **Met.** Unaware writers heal in (TODO-14, scenario F) and cooperating writers merge through the room: `wp_update_post( …, 'base_version' => 'vN' )` — WP-CLI, plugins, REST (`base_version` param on posts/pages) — three-way-merges via the ingest lane with per-block salvage and review parking; conflicts reject the save with a rich 409 (TODO-4a) |
+| P4 machine writers | **Met for read-modify-write.** `wp_update_post( …, 'intent_log_base_seq' => N )` (REST: `base_seq`) diffs the save against the declared base by persisted syncId and authors typed intents — transforms merge concurrent work, collisions park for review, the save lands as merged canonical (TODO-4b). Unaware writers still bypass the room (no detection stamp) | **Accepted limitation.** Ingest speaks binary CRDT updates; a diff-to-CRDT lane would be semantically worse, not just costly (TODO-4) | **Met.** Unaware writers heal in (TODO-14, scenario F) and cooperating writers merge through the room: `wp_update_post( …, 'base_version' => 'vN' )` — WP-CLI, plugins, REST (`base_version` param on posts/pages) — three-way-merges via the ingest lane with per-block salvage and review parking; conflicts reject the save with a rich 409 (TODO-4a) |
 | P5 cheap hosting | **Meets.** Cheapest per-ingest CPU; Core-style options-row lock, topology-safe (TODO-1 done) | **Partially.** No lock (good); heaviest per-ingest CPU, scaling with document size | **Partially.** Cheap CPU; lock-free optimistic claims, topology-safe (TODO-1 done); wire/storage bytes still scale with document size |
 | P6 measured economics | **Meets.** Real wire format in its benchmark profile | **Meets.** Real wire format; convergence oracle | **Meets.** Real wire format; disposition/lineage oracle |
 | P7 intent & identity | **Meets.** Typed intents end-to-end; syncIds persist in saved `post_content` and round-trip genesis | **Fails.** Snapshot-diff binding inherited from the relay; no semantic ops, no stable identity in the merge | **Designed for it, half-wired.** Block identity + rich-text ops live in the merge core, but clients send `clientUpdate: null`, so intent is server-derived from whole-content diffs — merge-equivalent, but tamper evidence is inactive (TODO-2a) |
@@ -408,13 +408,18 @@ back its modified copy while two editors are collaborating.
   in history); a stale copy heals nothing (rollback guard); an edit
   colliding with concurrent session work parks for review. Connected
   editors see the external change arrive like any peer's edit.
-- **intent-log and yjs-server**: the room never learns about the write.
-  Canonical diverges from `post_content` and the session's next
-  materializing save clobbers the integration's work — exactly the
-  content-loss scenario the problem statement names. TODO-4 is the
-  plan: intent-log has the identity substrate to diff against
-  (persisted syncIds); yjs-server would need to invent semantic
-  operations no writer expressed (accepted limitation).
+- **intent-log** (since TODO-4b): a *cooperating* integration declares
+  `intent_log_base_seq` and its save diffs into typed intents — the
+  session's concurrent work merges by transform, register collisions
+  park for review, and the save lands as the merged canonical. An
+  *unaware* intent-log writer still bypasses the room: canonical
+  diverges from `post_content` and the session's next materializing
+  save clobbers the write — this engine has no divergence-detection
+  stamp yet (the residual in TODO-4b).
+- **yjs-server**: the room never learns about the write in either
+  variant — the content-loss scenario stands, as this engine's
+  accepted, documented limitation (a diff-to-CRDT lane would invent
+  semantic operations no writer expressed).
 
 ### G. A lagging client comes back (deep lag, reload, reconnection)
 
@@ -623,16 +628,31 @@ the engine Dennis designed; the rest change polish and confidence.
   content-canonical preflight closure — covered by
   `tests/phpunit/wpDeRtcBaseVersionPreflight.php`. Unaware writers were
   TODO-14; lineage carriage was TODO-13.
-  Remaining lanes:
-  (b) **intent-log**: two layered lanes — an intents API for
-  intent-aware machines (agents, plugins) that can state what they
-  mean, and a save-path diff-to-intents lane keyed by the block
-  identity `materialize()` already persists (`metadata.syncId`), which
-  doubles as DE-RTC-style self-healing when an unaware plugin mangles a
-  collaborative post; (c) **yjs-server**: accept and document the
-  limitation — a diff-to-CRDT lane is mechanically feasible but
-  semantically wrong (inferred character operations no writer
-  expressed). Principles: P4, P2.
+  (b) **intent-log — save-path diff lane DONE (2026-08-18)**:
+  `WP_Intent_Log_Base_Seq_Preflight` gives `wp_update_post()` callers
+  (and REST via `base_seq` on posts/pages) the single-arg contract:
+  declare `intent_log_base_seq` — the room seq whose materialization
+  you read — and the save is diffed against the document at that seq
+  (keyed by the `metadata.syncId` identity `materialize()` persists)
+  and authored as ordinary typed intents: versioned
+  `replace_attr_content` field writes plus `format_text` span replays,
+  versioned `set_attr`/`remove_attr`, and
+  `insert_block`/`remove_block`/`move_block`. Concurrent session work
+  merges by transform; register collisions ESCALATE to review (the
+  engine's per-intent policy — conflicts never reject the save, unlike
+  de-rtc's whole-save 409); only an unusable base aborts
+  (`last_error()`; per-edit outcomes via `last_dispositions()`). The
+  saved content becomes the merged canonical, so post and room stay
+  convergent. Covered by
+  `tests/phpunit/wpIntentLogBaseSeqPreflight.php`. Residuals: a direct
+  typed-intents REST API (machines that can state intent without
+  diffing) remains open, and UNAWARE intent-log writers still bypass
+  the room entirely (no divergence detection stamp exists for this
+  engine — the de-rtc healing pattern would need an intent-log
+  co-location equivalent first);
+  (c) **yjs-server**: accepted and documented — a diff-to-CRDT lane is
+  mechanically feasible but semantically wrong (inferred character
+  operations no writer expressed). Principles: P4, P2.
 - **TODO-5 — Close the intent-log undo arming gap. DONE (2026-08-18):**
   undo inside the settle window now CANCELS the pending unit instead of
   no-oping. A fully-unacked unit is undoable immediately: its intents
@@ -806,6 +826,15 @@ each item restores):
   by `tests/phpunit/wpDeRtcSelfHealing.php`. TODO-4(a)'s base-version
   preflight remains the lane for writers that cooperate; revision
   MINING for bases neither the room nor the embed carries is TODO-15.
+  Honest gap, found while building TODO-4b: a plain `wp_update_post`
+  machine write WITHOUT `base_version` passes through the co-location
+  filter, gets a fresh matching `content_hash` stamp, and therefore
+  looks "aware" — it neither merges nor heals, and the room diverges
+  until the next session save. The covered classes are preflighted
+  writers (merge) and filter-bypassing writers (heal); the plain-save
+  class needs the save-centric rework (TODO-12) to resolve
+  principledly — bolting heal-on-save onto the current model risks the
+  merge-duplication trap for mid-session editor saves.
 - **TODO-15 — Revision-backed base resolution. DONE (2026-08-18):**
   `resolve_base_from_revisions()` — when a proposal's (or an external
   save's) base version aged out of the room's snapshot window, the

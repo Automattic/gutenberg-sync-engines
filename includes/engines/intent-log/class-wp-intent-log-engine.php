@@ -1253,6 +1253,52 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 		 * @param string $room Room identifier.
 		 * @return string|null Serialized block content, or null on failure.
 		 */
+		/**
+		 * The engine document at an absolute log seq — the machine-writer
+		 * preflight's diff base (TODO-4b in docs/engine-comparison.md).
+		 *
+		 * @since 0.5.0
+		 *
+		 * @param string $room Room identifier.
+		 * @param int    $seq  Absolute log seq.
+		 * @return array|null Engine document, or null when the room is
+		 *                    uninitialized or the seq is outside the
+		 *                    retained window (below the floor / past head).
+		 */
+		public function document_at( string $room, int $seq ) {
+			$state = $this->load_room( $room );
+			if ( is_wp_error( $state ) || ! is_array( $state['genesis'] ?? null ) ) {
+				return null;
+			}
+			$base_seq = (int) ( $state['base_seq'] ?? 0 );
+			$head_seq = $base_seq + count( $state['log'] );
+			if ( $seq < $base_seq || $seq > $head_seq ) {
+				return null;
+			}
+
+			return WP_Intent_Log_Document::replay(
+				$state['genesis'],
+				array_slice( $state['log'], 0, $seq - $base_seq )
+			);
+		}
+
+		/**
+		 * The room's current head seq, or null pre-genesis.
+		 *
+		 * @since 0.5.0
+		 *
+		 * @param string $room Room identifier.
+		 * @return int|null Head seq.
+		 */
+		public function head_seq( string $room ): ?int {
+			$state = $this->load_room( $room );
+			if ( is_wp_error( $state ) || ! is_array( $state['genesis'] ?? null ) ) {
+				return null;
+			}
+
+			return (int) ( $state['base_seq'] ?? 0 ) + count( $state['log'] );
+		}
+
 		public function materialize( string $room ): ?string {
 			$state = $this->load_room( $room );
 			if ( is_wp_error( $state ) ) {
@@ -1447,7 +1493,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 		 * @param array $path    Block path within the post.
 		 * @return array Block specs for WP_Intent_Log_Document.
 		 */
-		private static function blocks_to_specs( array $blocks, int $post_id, array $path ): array {
+		public static function blocks_to_specs( array $blocks, int $post_id, array $path ): array {
 			$specs = array();
 			$index = 0;
 			foreach ( $blocks as $block ) {

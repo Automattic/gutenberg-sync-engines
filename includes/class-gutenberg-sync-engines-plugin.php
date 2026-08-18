@@ -105,6 +105,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			require_once $engines . 'intent-log/class-wp-intent-log-planner.php';
 			require_once $engines . 'intent-log/class-wp-intent-log-rich-text.php';
 			require_once $engines . 'intent-log/class-wp-intent-log-engine.php';
+			require_once $engines . 'intent-log/class-wp-intent-log-base-seq-preflight.php';
 			require_once $engines . 'yjs-server/class-wp-yjs-server-engine.php';
 			// The DE-RTC merge core is ported verbatim from wordpress-develop;
 			// a Core/Gutenberg build that ships DE-RTC itself wins the guard.
@@ -166,6 +167,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			add_filter( 'wp_sync_engines', array( $this, 'register_engines' ), 10, 2 );
 			WP_De_RTC_Sync_Meta_Colocation::register();
 			WP_De_RTC_Base_Version_Preflight::register();
+			WP_Intent_Log_Base_Seq_Preflight::register();
 			add_filter( 'wp_sync_transports', array( $this, 'register_transports' ), 10, 3 );
 			add_filter( 'wp_sync_transport_client_config', array( $this, 'filter_transport_client_config' ), 10, 2 );
 			add_action( 'enqueue_block_editor_assets', array( $this, 'enqueue_editor_assets' ) );
