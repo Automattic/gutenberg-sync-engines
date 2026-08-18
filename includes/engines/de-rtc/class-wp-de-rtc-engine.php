@@ -1298,10 +1298,24 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				}
 			}
 
-			$version = 'v1';
-			$state   = array(
+			/*
+			 * Resume the version lineage when the adopted sync-meta carries
+			 * it (the co-location lane stamps room_version/room_version_seq
+			 * into every saved post — see WP_De_RTC_Sync_Meta_Colocation).
+			 * A room rebuilt after a reset then continues at the version its
+			 * clients and revisions already reference instead of restarting
+			 * at v1 with colliding labels.
+			 */
+			$version     = 'v1';
+			$version_seq = 1;
+			$adopted_seq = isset( $sync_meta['room_version_seq'] ) ? (int) $sync_meta['room_version_seq'] : 0;
+			if ( $adopted_seq >= 1 && ( 'v' . $adopted_seq ) === ( $sync_meta['room_version'] ?? null ) ) {
+				$version     = 'v' . $adopted_seq;
+				$version_seq = $adopted_seq;
+			}
+			$state = array(
 				'version'               => $version,
-				'version_seq'           => 1,
+				'version_seq'           => $version_seq,
 				'content'               => $content,
 				'sync_meta'             => wp_de_rtc_update_automerge_version_snapshots( $sync_meta, $version, $content ),
 				'properties'            => $properties,
@@ -1338,7 +1352,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			 * it described. Racing initializers write the same seq —
 			 * idempotent, like the genesis row itself.
 			 */
-			WP_Sync_Atomic_Option::reset( $this->version_claim_name( $room ), '1:' . sprintf( '%.6F', microtime( true ) ) );
+			WP_Sync_Atomic_Option::reset( $this->version_claim_name( $room ), $version_seq . ':' . sprintf( '%.6F', microtime( true ) ) );
 
 			$this->save_canonical( $room, $state );
 

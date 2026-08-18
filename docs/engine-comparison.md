@@ -160,7 +160,7 @@ with something protocol-convenient.
 | Vision element | The vision / prototype | Our port | Verdict |
 | --- | --- | --- | --- |
 | Save and Sync are distinct, deliberate operations; "pending edits" are the unit of adoption | Editors confirm their own changes and *choose* to adopt others'; sync may be polled, socketed, or run manually with long delays | The client auto-proposes every poll cycle and auto-incorporates canonical rows; no adoption step, no pending-edit concept | **Corrupted** — and it is the root cause of the silent same-block LWW (scenario C). TODO-12 |
-| Sync metadata co-located with saved `post_content` (a `wp/post-sync-meta` pseudo-block); revisions become a backup mechanism | The document's history travels with the post; any writer that round-trips content carries the lineage; recovery mines revisions and autosaves | Canonical content + sync-meta live in room meta (plugin storage posts); `materialize()` returns bare content with no sync-meta; genesis merely *adopts* an upstream block if one is embedded | **Corrupted** (plugin-storage adaptation). TODO-13 |
+| Sync metadata co-located with saved `post_content` (a `wp/post-sync-meta` pseudo-block); revisions become a backup mechanism | The document's history travels with the post; any writer that round-trips content carries the lineage; recovery mines revisions and autosaves | Restored as write-through: every save of a de-rtc-roomed post embeds the room's sync-meta (upstream's exact grammar) at the content edge, revisions copy it, and genesis adopts it back — resuming the version lineage after a room reset. Room meta remains the *working* store; the full inversion (post as sole durable store) rides with TODO-12/architecture item 2 | **Restored (write-through)** (TODO-13 done) |
 | Self-healing when unaware writers mangle the document | The server detects CRDT/content divergence, recovers from revisions or autosaves, and appends a repairing edit so "operations which would otherwise wipe-out a post appear as any other collaborative update" | Absent — scenario F fails | **Unported.** TODO-14 |
 | Arbitrarily long offline editing still recombines | Old bases recoverable via the co-located history and revision copies | The upstream 20-version snapshot limit is faithful, but with sync-meta only in room meta there is no revision fallback: past the window, proposals void | **Half-ported.** TODO-15 (depends on TODO-13) |
 | Undo/redo "never undo, but rather apply revert edits"; a history slider scrubs versions | Explicitly offered to RTC: "This could easily be adopted by RTC" | de-rtc reuses the shared Yjs *local* undo manager — precisely the model the vision rejects. (Ironically, intent-log's inverse-intent undo IS this concept, adopted by the other engine) | **Corrupted** (client-machinery reuse). TODO-16 |
@@ -647,12 +647,26 @@ each item restores):
     save-cadence-bounded rather than poll-bounded: a deliberate policy
     trade of the vision, to be presented as such rather than as a
     deficiency.
-- **TODO-13 — Co-locate de-rtc sync-meta with `post_content`.** Write
-  the `wp/post-sync-meta` pseudo-block on materialize, treat revisions
-  as the backup mechanism, and demote room rows to a transport cache.
-  Today `materialize()` returns bare content and the lineage lives only
-  in room meta — a writer that round-trips the post carries nothing.
-  Unlocks TODO-14 and TODO-15; pairs with architecture item 2.
+- **TODO-13 — Co-locate de-rtc sync-meta with `post_content`. DONE
+  (2026-08-18):** every save of a post whose room carries de-rtc
+  lineage embeds the room's sync metadata at the content's trailing
+  edge (`WP_De_RTC_Sync_Meta_Colocation`, hooked on
+  `wp_insert_post_data` — the save path, upstream's co-location point,
+  NOT `materialize()`, which is a read used by tests/oracles). The
+  embed uses upstream's exact `data-wp-sync-meta` SCRIPT grammar plus
+  `room_version`/`room_version_seq`/`content_hash`, so
+  `wp_de_rtc_parse_post_content_sync_meta()` reads it back verbatim;
+  revisions copy it for free (the backup mechanism); genesis adopts it
+  and RESUMES the version lineage after a room reset instead of
+  restarting at v1. Room lookup is non-creating (the storage API's own
+  lookup creates posts). Covered by
+  `tests/phpunit/wpDeRtcSyncMetaColocation.php`. Honest residuals: the
+  pseudo-block is visible to non-collaborative editors and in raw
+  front-end markup (upstream's sync-meta-in-content protection
+  periphery is unported); autosave REST writes update the autosave
+  revision directly and don't re-embed; room meta remains the working
+  store — the full storage inversion rides with TODO-12/architecture
+  item 2.
 - **TODO-14 — Self-healing from unaware writers.** Detect
   CRDT/content divergence at save, recover the last-known sync-meta
   from revisions/autosaves, and append a repairing edit so an unaware
