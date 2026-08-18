@@ -100,6 +100,9 @@ if ( ! class_exists( 'WP_De_RTC_Sync_Meta_Colocation' ) ) {
 
 		/**
 		 * Reads a room's canonical doc state WITHOUT creating storage.
+		 * (The framework storage API's own lookups create storage posts;
+		 * read-only lanes — this embed, the base-version preflight — must
+		 * never do that.)
 		 *
 		 * @since 0.5.0
 		 *
@@ -109,7 +112,7 @@ if ( ! class_exists( 'WP_De_RTC_Sync_Meta_Colocation' ) ) {
 		 * @return array|null Doc state (version, version_seq, sync_meta, …),
 		 *                    or null when the room has no de-rtc lineage.
 		 */
-		private static function room_doc_state( string $room ): ?array {
+		public static function room_doc_state( string $room ): ?array {
 			global $wpdb;
 
 			$storage_ids = get_posts(

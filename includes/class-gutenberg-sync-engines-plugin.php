@@ -113,6 +113,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			}
 			require_once $engines . 'de-rtc/class-wp-de-rtc-engine.php';
 			require_once $engines . 'de-rtc/class-wp-de-rtc-sync-meta-colocation.php';
+			require_once $engines . 'de-rtc/class-wp-de-rtc-base-version-preflight.php';
 
 			$transports = GUTENBERG_SYNC_ENGINES_PATH . 'includes/transports/';
 			require_once $transports . 'class-wp-http-polling-sync-server.php';
@@ -164,6 +165,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 		private function register(): void {
 			add_filter( 'wp_sync_engines', array( $this, 'register_engines' ), 10, 2 );
 			WP_De_RTC_Sync_Meta_Colocation::register();
+			WP_De_RTC_Base_Version_Preflight::register();
 			add_filter( 'wp_sync_transports', array( $this, 'register_transports' ), 10, 3 );
 			add_filter( 'wp_sync_transport_client_config', array( $this, 'filter_transport_client_config' ), 10, 2 );
 			add_action( 'enqueue_block_editor_assets', array( $this, 'enqueue_editor_assets' ) );

@@ -116,7 +116,7 @@ shows up.
 | P1 server authority | **Meets.** Typed intents authorized, attributed, and transformed at ingest | **Meets.** Server merges and materializes; per-update dispositions | **Meets.** Server merges every proposal; per-proposal dispositions with version lineage |
 | P2 no silent loss | **Meets, one window.** Oracle-certified; unacked outbox intents die with a tab reload (undo makes the loss visible) | **Meets.** Oracle-certified; races heal via idempotent full-state recovery | **Meets.** Oracle-certified; escalations park durably, voided proposals re-propose |
 | P3 conflicts surfaced | **Meets.** Per-register review lane; residual over-escalation on same-paragraph bursts (rate, not silence) | **Violates, currently by design.** Register conflicts resolve by silent CRDT last-writer-wins; no review lane (TODO-7) | **Partially violates — port artifact.** Server-detected conflicts park for review at BLOCK grain (per-block salvage: the clean remainder lands, exactly the conflicted blocks park — TODO-3 done; whole-proposal parking remains only for structural divergence), but same-block concurrency still silently LWWs client-side (TODO-2) |
-| P4 machine writers | **Not yet.** Ingest speaks typed intents only; the persisted `metadata.syncId` identity makes a diff lane tractable (TODO-4) | **Accepted limitation.** Ingest speaks binary CRDT updates; a diff-to-CRDT lane would be semantically worse, not just costly (TODO-4) | **Half-met.** Unaware writers are handled (TODO-14 self-healing: out-of-band writes merge in, scenario F passes); the *cooperating*-writer lane — the `wp_update_post` base-version preflight — remains unported (TODO-4) |
+| P4 machine writers | **Not yet.** Ingest speaks typed intents only; the persisted `metadata.syncId` identity makes a diff lane tractable (TODO-4) | **Accepted limitation.** Ingest speaks binary CRDT updates; a diff-to-CRDT lane would be semantically worse, not just costly (TODO-4) | **Met.** Unaware writers heal in (TODO-14, scenario F) and cooperating writers merge through the room: `wp_update_post( …, 'base_version' => 'vN' )` — WP-CLI, plugins, REST (`base_version` param on posts/pages) — three-way-merges via the ingest lane with per-block salvage and review parking; conflicts reject the save with a rich 409 (TODO-4a) |
 | P5 cheap hosting | **Meets.** Cheapest per-ingest CPU; Core-style options-row lock, topology-safe (TODO-1 done) | **Partially.** No lock (good); heaviest per-ingest CPU, scaling with document size | **Partially.** Cheap CPU; lock-free optimistic claims, topology-safe (TODO-1 done); wire/storage bytes still scale with document size |
 | P6 measured economics | **Meets.** Real wire format in its benchmark profile | **Meets.** Real wire format; convergence oracle | **Meets.** Real wire format; disposition/lineage oracle |
 | P7 intent & identity | **Meets.** Typed intents end-to-end; syncIds persist in saved `post_content` and round-trip genesis | **Fails.** Snapshot-diff binding inherited from the relay; no semantic ops, no stable identity in the merge | **Designed for it, half-wired.** Block identity + rich-text ops live in the merge core, but clients send `clientUpdate: null`, so intent is server-derived from whole-content diffs (TODO-2) |
@@ -380,9 +380,14 @@ measures exactly this spread.
 A scheduled integration fetched the post before the session and writes
 back its modified copy while two editors are collaborating.
 
-- **de-rtc** (since TODO-13/14): the next room access detects the write
-  — an aware save's embedded `content_hash` matches its own content;
-  this one doesn't — and heals it as an ordinary collaborative update.
+- **de-rtc** (since TODO-13/14/4a): a *cooperating* integration passes
+  `base_version` with its save and gets a genuine three-way merge
+  through the room — concurrent session work survives, conflicts
+  reject the save with a 409 (and park for review). An *unaware*
+  integration is healed after the fact: the next room access detects
+  the write — an aware save's embedded `content_hash` matches its own
+  content; this one doesn't — and heals it as an ordinary collaborative
+  update.
   If the integration round-tripped the embedded sync-meta, the server
   three-way-merges from that base and the editors' concurrent work
   survives alongside the integration's changes; a metaless replacement
@@ -563,11 +568,24 @@ the engine Dennis designed; the rest change polish and confidence.
   anymore (even its conflicts partially apply and advance its base) —
   stale-base voids now come from genuinely absent clients.
 - **TODO-4 — Machine-writer participation (scenario F).** Per engine:
-  (a) **de-rtc**: port the upstream `wp_update_post` base-version
-  preflight so REST/CLI/plugin writes become ordinary proposals — the
-  engine's ingest already accepts descriptor-less whole-content writers
-  (this covers writers that cooperate; writers that never will are
-  TODO-14, and lineage carriage in the content itself is TODO-13);
+  (a) **de-rtc — DONE (2026-08-18)**: `WP_De_RTC_Base_Version_Preflight`
+  gives any `wp_update_post()` caller (WP-CLI, plugins, REST via the
+  `base_version` request param on posts/pages) the upstream single-arg
+  contract: pass `base_version` and the save three-way-merges THROUGH
+  the room's ingest lane — claims, per-block salvage, review parking,
+  and attribution all apply — with the merged canonical written back
+  (plus fresh embedded lineage); an unsalvageable conflict or unknown
+  base rejects the save (Core's generic error; the rich 409 via
+  `last_error()`, the same adaptation limitation upstream documents).
+  The hook choreography mirrors the upstream branch's plugin adaptation
+  (raw-content capture pre-kses so a filtered author's markup reaches
+  the sequestration lane, preflight in `wp_insert_post_empty_content`,
+  content replacement in `wp_insert_post_data`); the merge itself
+  deliberately runs through OUR engine rather than porting upstream's
+  content-canonical preflight closure — covered by
+  `tests/phpunit/wpDeRtcBaseVersionPreflight.php`. Unaware writers were
+  TODO-14; lineage carriage was TODO-13.
+  Remaining lanes:
   (b) **intent-log**: two layered lanes — an intents API for
   intent-aware machines (agents, plugins) that can state what they
   mean, and a save-path diff-to-intents lane keyed by the block
