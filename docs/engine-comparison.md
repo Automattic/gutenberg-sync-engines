@@ -170,7 +170,7 @@ with something protocol-convenient.
 | The shipping merge is the hand-written block-aware three-way merge; Automerge backs only the legacy lane | Same | Same — ported verbatim as a frozen call-graph closure | **Faithful** |
 | Optimistic concurrency; no database lock | Base-version preflight, hash validation, merge-and-retry on the save path | Lock-free again: accepted proposals atomically claim their version advancement and a lost claim reloads + re-merges (`WP_Sync_Atomic_Option` CAS) | **Restored** (TODO-1 done) |
 | Clients need no CRDT library; Gutenberg couples via semantic Redux actions | Stage 3 of the development plan | The client rides a `Y.Doc` editor bridge (undo + awareness reuse) and sends `clientUpdate: null` | **Adaptation debt.** TODO-2 plus architecture item 5 |
-| Cheap-host cadence is a feature: "that $3/mo host … can still support multiple concurrent edit sessions polling … once every ten seconds" | Polling interval scales to the host's comfort; presence is separate from content | The engine runs and is benchmarked at the plugin's RTC poll cadence | **Acceptably different in operation; unfair in measurement.** TODO-19 |
+| Cheap-host cadence is a feature: "that $3/mo host … can still support multiple concurrent edit sessions polling … once every ten seconds" | Polling interval scales to the host's comfort; presence is separate from content | Measured fairly now: the `save-sync-session` scenario runs every engine at the vision's cadence — where de-rtc escalates nothing and intent-log becomes the escalation-heavy engine (its stale-observation residual), inverting the per-second ranking | **Measured** (TODO-19 done); operating cadence itself is TODO-12 |
 
 The pattern across the corrupted rows is one pattern: wherever DE-RTC's
 save-centric, post-co-located design met this plugin's room protocol,
@@ -260,6 +260,13 @@ flat, de-rtc's holds nearly flat while its room tail (and therefore the
 next joiner's download) grows past a megabyte, and **yjs-server's
 ingest grows with the accumulating document**. Run `editorial-session
 rounds=3600` for the full hour before concluding about long sessions.
+And run `save-sync-session` before concluding about de-rtc at all: at
+the vision's ten-second save-and-sync cadence the escalation ranking
+INVERTS — de-rtc escalates nothing (staggered saves rarely truly
+collide; per-block salvage absorbs what does) while intent-log becomes
+the escalation-heavy engine (its same-paragraph frame-conflict residual
+bites hardest when editors observe peers seconds late). Cadence is not
+a detail; it is half the comparison.
 
 Two costs live off the edit path and are easy to miss; the benchmark
 reports both. The **later-joiner read** (a cold read at cursor 0 — what
@@ -754,11 +761,19 @@ each item restores):
   grain ("hover over a user's avatar and highlight the changes they
   applied"), not just `authorClientId` on whole-content rows. Becomes
   tractable once proposals carry descriptors (TODO-2).
-- **TODO-19 — Benchmark DE-RTC at its native cadence.** Add
-  save-and-sync-cadence scenarios (ten-second and manual-sync
-  intervals, save-shaped bursts) so the harness measures the design,
-  not our adaptation. Until then, read de-rtc's session-scenario byte
-  and escalation figures with that asterisk. Principles: P6; fairness.
+- **TODO-19 — Benchmark DE-RTC at its native cadence. DONE
+  (2026-08-18):** the `save-sync-session` scenario (rounds are
+  wall-clock seconds; each client submits its typing burst only on
+  staggered ~10s save beats and syncs every 10th round — the "$3/mo
+  host polling every ten seconds" shape) runs against ALL engines and
+  in the default matrix. First finding, and it flips the per-second
+  ranking: at this cadence de-rtc escalates NOTHING (staggered saves
+  rarely truly collide, and salvage absorbs what does) while
+  INTENT-LOG becomes the escalation-heavy engine (its same-paragraph
+  frame-conflict residual bites hardest when editors observe peers ~10s
+  late); de-rtc still pays in bytes. Zero loss everywhere, certified by
+  `test_save_sync_session_converges_on_every_engine`. Run
+  `npm run bench -- scenarios=save-sync-session` for current numbers.
 
 ## Known gaps and qualifications
 

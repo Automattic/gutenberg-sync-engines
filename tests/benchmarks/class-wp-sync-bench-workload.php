@@ -141,6 +141,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 				'field-sync'          => 'Entity-field register writes (scalar properties, taxonomy term sets, post meta) alongside typing: clean parallel field sync plus rounds where every client writes the SAME register (the register-contention analog of contended-paragraph).',
 				'remove-contention'   => 'One client edits an inserted block another client concurrently removes (edit-vs-remove conflict class; degenerates to sequential same-client edit-then-remove at clients=1).',
 				'editorial-session'   => 'A wall-clock editing session: one round per second, staggered joins/leaves, typing bursts with think-time pauses, every present client polling every round, periodic saves. rounds=3600 clients=3 is a one-hour three-user session.',
+				'save-sync-session'   => 'DE-RTC\'s native cadence, applied to every engine: rounds are wall-clock seconds, each client submits its typing burst only on staggered ~10s save beats and syncs every 10th round — the "$3/mo host polling every ten seconds" shape the Distributed Editing vision prescribes (TODO-19 in docs/engine-comparison.md).',
 			);
 		}
 
@@ -264,6 +265,10 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 			if ( 'laggy-newsroom' === $scenario && $clients > 1 ) {
 				$read_every[ $clients - 1 ] = 10;
 			}
+			if ( 'save-sync-session' === $scenario ) {
+				// The sync cadence: every client reads every 10th round.
+				$read_every = array_fill( 0, max( 1, $clients ), 10 );
+			}
 
 			$workload = array(
 				'scenario'          => $scenario,
@@ -334,6 +339,33 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 								'paragraph' => $target,
 								'op'        => 'attr',
 							);
+						}
+						break;
+
+					case 'save-sync-session':
+						/*
+						 * DE-RTC's native cadence (TODO-19): rounds are
+						 * wall-clock seconds; a client WRITES only on its
+						 * staggered ~10s save beats, submitting the burst it
+						 * typed since its last save as one batch, and reads
+						 * on the sync cadence (read_every = 10 for every
+						 * client). Engine-agnostic like every scenario — it
+						 * measures each engine at the cadence the
+						 * Distributed Editing vision prescribes instead of
+						 * per-second RTC hammering.
+						 */
+						for ( $c = 0; $c < $clients; $c++ ) {
+							if ( 0 !== ( ( $r + 3 * $c ) % 10 ) ) {
+								continue; // Between saves: typing stays local.
+							}
+							$burst = 2 + $rand( 3 );
+							for ( $b = 0; $b < $burst; $b++ ) {
+								$edits[] = array(
+									'client'    => $c,
+									'paragraph' => $rand( $paragraphs ),
+									'op'        => $rand( 4 ) < 3 ? 'text' : 'attr',
+								);
+							}
 						}
 						break;
 

@@ -341,6 +341,37 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 		}
 	}
 
+	public function test_save_sync_session_converges_on_every_engine() {
+		// DE-RTC's native cadence (TODO-19), applied to every engine:
+		// staggered ~10s save beats, 10s sync reads. The fair measurement
+		// for the save-centric design; every engine must still converge
+		// with zero loss at this cadence.
+		$workload = WP_Sync_Bench_Workload::build( 'save-sync-session', 7, 60, 3, 6 );
+
+		// The cadence shape itself: no client writes on two consecutive
+		// rounds, and every client's reads are 10 rounds apart.
+		foreach ( $workload['rounds'] as $round ) {
+			$writers = array_unique( array_column( is_array( $round['edits'] ?? null ) ? $round['edits'] : $round, 'client' ) );
+			$this->assertLessThanOrEqual( 1, count( $writers ), 'Save beats are staggered: at most one client saves per second.' );
+		}
+		$this->assertSame( array( 10, 10, 10 ), $workload['read_every'] );
+
+		foreach ( array( 'WP_Intent_Log_Engine', 'WP_Yjs_Server_Engine', 'WP_De_RTC_Engine' ) as $engine_class ) {
+			$post_id = self::factory()->post->create(
+				array( 'post_content' => $workload['post_content'] )
+			);
+			$storage = new WP_Sync_Bench_Memory_Storage();
+			$engine  = new $engine_class( $storage );
+
+			$report = WP_Sync_Bench_Runner::run( $engine, $storage, $post_id, $workload );
+
+			$this->assertSame( 0, $report['quality']['lost_work'], $engine_class . ' lost work at save-sync cadence' );
+			$this->assertSame( array(), $report['quality']['convergence_failures'], $engine_class . ' failed convergence at save-sync cadence' );
+			$this->assertTrue( $report['quality']['converged'], $engine_class . ' did not converge at save-sync cadence' );
+			wp_delete_post( $post_id, true );
+		}
+	}
+
 	public function test_remove_contention_generates_cross_client_edit_vs_remove() {
 		$workload = WP_Sync_Bench_Workload::build( 'remove-contention', 7, 30, 3, 4 );
 
