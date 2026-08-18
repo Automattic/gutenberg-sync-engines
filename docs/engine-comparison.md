@@ -567,13 +567,29 @@ the engine Dennis designed; the rest change polish and confidence.
   either way. The descriptor's sole contribution is **tamper evidence**
   (hash-pinned base/proposed + operation fingerprints), which is a P1
   integrity property, not the scenario-C fix. Split accordingly:
-  - **TODO-2a — Descriptor builder for tamper evidence.** Re-implement
-    the update derivation in TypeScript with fingerprint parity (block
-    records split, the rich-text model, splice derivation, operation
-    fingerprints) plus cross-language vectors — the intent-log core's
-    vector discipline, NOT the 22k-line upstream editor store (which is
-    mostly other machinery). Bounded; restores proof-carrying proposals
-    and activates the server's tamper rejection.
+  - **TODO-2a — Descriptor builder for tamper evidence. INVESTIGATED
+    (2026-08-18), implementation deliberately deferred.** The scoping
+    pass sharpened the estimate — and the risk. Fingerprint parity
+    covers `textSplice` and `changedTextIndexes`, so a client builder
+    must byte-match PHP's content canonicalization, top-level block
+    record splitting, and the UTF-8 rich-text splice/mark derivation.
+    The failure mode of a subtle mismatch is not graceful degradation
+    but a FALSE TAMPER REJECTION that blocks legitimate saves — the
+    worst shape for an integrity feature — so this port demands the
+    full vector discipline (fixtures generated from the PHP merge core
+    itself) done unhurried, not as a batch item. Two findings recorded
+    for the implementation session: (1) generate vectors via `wp
+    eval-file` against `wp_de_rtc_create_automerge_update_for_content_change`
+    + `..._operation_fingerprints` and test the TS builder against
+    them; (2) the ENGINE must validate a descriptor once against the
+    original proposal and then DROP it whenever kses laundering or
+    per-block salvage rewrites the proposed content — otherwise the
+    server's own modifications false-positive the tamper check — and
+    descriptor-carrying proposals currently bypass both those lanes,
+    so attaching descriptors without that engine change would REGRESS
+    partial acceptance. Sessions should also omit descriptors on
+    proposals carrying `blockBaseVersions` (the client cannot cheaply
+    reproduce the server's composite base).
   - **TODO-2b — Per-block base honesty (the actual scenario-C fix).
     DONE (2026-08-18):** the doc bridge records the TRUE base of each
     block kept through a colliding incorporation (once — the oldest
