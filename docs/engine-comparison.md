@@ -89,8 +89,8 @@ as historical context.
 
 ## One architectural choice drives everything
 
-- **Merging on the server** costs server CPU (and today, for two of the
-  three engines, a per-room ingest lock) and in exchange the server can
+- **Merging on the server** costs server CPU (and, for intent-log, a
+  per-room Core-style lock) and in exchange the server can
   *observe* outcomes: per-edit dispositions (applied / escalated /
   voided), a convergence oracle in the benchmark, a review lane for
   conflicts, and capability enforcement at ingest (an author without
@@ -115,7 +115,7 @@ shows up.
 | --- | --- | --- | --- |
 | P1 server authority | **Meets.** Typed intents authorized, attributed, and transformed at ingest | **Meets.** Server merges and materializes; per-update dispositions | **Meets.** Server merges every proposal; per-proposal dispositions with version lineage |
 | P2 no silent loss | **Meets, one window.** Oracle-certified; unacked outbox intents die with a tab reload (undo makes the loss visible) | **Meets.** Oracle-certified; races heal via idempotent full-state recovery | **Meets.** Oracle-certified; escalations park durably, voided proposals re-propose |
-| P3 conflicts surfaced | **Meets.** Per-register review lane; residual over-escalation on same-paragraph bursts (rate, not silence) | **Violates, currently by design.** Register conflicts resolve by silent CRDT last-writer-wins; no review lane (TODO-7) | **Partially violates — port artifact.** Server-detected conflicts park for review at BLOCK grain (per-block salvage: the clean remainder lands, exactly the conflicted blocks park — TODO-3 done; whole-proposal parking remains only for structural divergence), but same-block concurrency still silently LWWs client-side (TODO-2b) |
+| P3 conflicts surfaced | **Meets.** Per-register review lane; residual over-escalation on same-paragraph bursts (rate, not silence) | **Violates, by documented policy (TODO-7 decided).** Register conflicts resolve by silent CRDT last-writer-wins; no review lane. Stated on the settings screen; pinned by the escalation-criteria fixture | **Partially violates — port artifact.** Server-detected conflicts park for review at BLOCK grain (per-block salvage: the clean remainder lands, exactly the conflicted blocks park — TODO-3 done; whole-proposal parking remains only for structural divergence), but same-block concurrency still silently LWWs client-side (TODO-2b) |
 | P4 machine writers | **Not yet.** Ingest speaks typed intents only; the persisted `metadata.syncId` identity makes a diff lane tractable (TODO-4) | **Accepted limitation.** Ingest speaks binary CRDT updates; a diff-to-CRDT lane would be semantically worse, not just costly (TODO-4) | **Met.** Unaware writers heal in (TODO-14, scenario F) and cooperating writers merge through the room: `wp_update_post( …, 'base_version' => 'vN' )` — WP-CLI, plugins, REST (`base_version` param on posts/pages) — three-way-merges via the ingest lane with per-block salvage and review parking; conflicts reject the save with a rich 409 (TODO-4a) |
 | P5 cheap hosting | **Meets.** Cheapest per-ingest CPU; Core-style options-row lock, topology-safe (TODO-1 done) | **Partially.** No lock (good); heaviest per-ingest CPU, scaling with document size | **Partially.** Cheap CPU; lock-free optimistic claims, topology-safe (TODO-1 done); wire/storage bytes still scale with document size |
 | P6 measured economics | **Meets.** Real wire format in its benchmark profile | **Meets.** Real wire format; convergence oracle | **Meets.** Real wire format; disposition/lineage oracle |
@@ -652,12 +652,18 @@ the engine Dennis designed; the rest change polish and confidence.
   dispositions. Runs in CI with the PHPUnit suite. The fixture earned
   its keep immediately — it caught this very document overstating
   de-rtc's native-cadence result.
-- **TODO-7 — Decide yjs-server's conflict story.** Either build
-  conflict detection plus a review lane (detection is the undesigned
-  prerequisite), or formally accept silent register-LWW as that
-  engine's documented policy and say so wherever the engine is
-  offered. The current "by design" label defers the decision; P3 says
-  we owe one.
+- **TODO-7 — Decide yjs-server's conflict story. DECIDED (2026-08-18):
+  silent register-LWW is the engine's formal, documented policy.**
+  Rationale: conflict DETECTION in a CRDT engine is a research project
+  (the CRDT's entire design premise is that there is nothing to
+  detect), two review-capable engines already exist for deployments
+  that need P3, and the escalation-criteria fixture (TODO-6) pins the
+  silence so any change must be a deliberate act. The policy is now
+  stated wherever the engine is offered: the Settings → Collaboration
+  engine label says "concurrent conflicts merge silently, last writer
+  wins — no review lane". Revisiting this decision starts with
+  building detection, and should also produce a P3 story for what
+  detection would even mean at CRDT granularity.
 - **TODO-8 — Police post-genesis room growth in yjs-server.** The
   genesis size gate refuses to *initialize* oversized rooms, but a room
   that grows past any threshold after genesis is unpoliced. The parked

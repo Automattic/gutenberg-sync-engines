@@ -433,10 +433,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 *                        attempts are exhausted under contention.
 		 */
 		private function ingest_proposal( string $room, int $client_id, array &$state, array $proposal, &$review ) {
-			$base_content = $this->resolve_base_content( $state, $proposal['baseVersion'] );
-			if ( null === $base_content ) {
-				$base_content = $this->resolve_base_from_revisions( $room, (string) $proposal['baseVersion'] );
-			}
+			$base_content = $this->resolve_effective_base( $room, $state, $proposal );
 			if ( null === $base_content ) {
 				return array(
 					'status' => 'voided',
@@ -505,10 +502,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 						);
 					}
 					$state        = $reloaded;
-					$base_content = $this->resolve_base_content( $state, $proposal['baseVersion'] );
-					if ( null === $base_content ) {
-						$base_content = $this->resolve_base_from_revisions( $room, (string) $proposal['baseVersion'] );
-					}
+					$base_content = $this->resolve_effective_base( $room, $state, $proposal );
 					if ( null === $base_content ) {
 						// The base aged out of the snapshot window mid-retry.
 						return array(
@@ -1592,6 +1586,77 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			}
 
 			return $state;
+		}
+
+		/**
+		 * Resolves a proposal's EFFECTIVE base: the whole-document base
+		 * (room snapshots, then revision mining), with per-block base
+		 * substitutions when the proposal declares them.
+		 *
+		 * Per-block base honesty (TODO-2b in docs/engine-comparison.md):
+		 * a client that kept a locally-edited block through a colliding
+		 * incorporation re-proposes from an ADVANCED whole-document base —
+		 * which used to present the kept block as a clean sole-writer
+		 * change and silently overwrite the peer (block-level LWW). The
+		 * `blockBaseVersions` map declares each kept block's TRUE base;
+		 * substituting that version's record into the base hands the
+		 * three-way merge real concurrency to resolve: non-overlapping
+		 * same-block edits merge, true overlaps park via salvage. A
+		 * substitution that cannot be made soundly (unknown version,
+		 * structural drift between the versions) is skipped — degrading to
+		 * exactly the pre-TODO-2b behavior, never worse.
+		 *
+		 * @since 0.5.0
+		 *
+		 * @param string $room     Room identifier.
+		 * @param array  $state    Room state.
+		 * @param array  $proposal Decoded proposal payload.
+		 * @return string|null Effective base content, or null when the
+		 *                     whole-document base is unresolvable.
+		 */
+		private function resolve_effective_base( string $room, array $state, array $proposal ): ?string {
+			$base_content = $this->resolve_base_content( $state, $proposal['baseVersion'] );
+			if ( null === $base_content ) {
+				$base_content = $this->resolve_base_from_revisions( $room, (string) $proposal['baseVersion'] );
+			}
+			if ( null === $base_content ) {
+				return null;
+			}
+
+			$block_bases = $proposal['blockBaseVersions'] ?? null;
+			if ( ! is_array( $block_bases ) || array() === $block_bases ) {
+				return $base_content;
+			}
+
+			$records = wp_de_rtc_get_top_level_serialized_block_records( $base_content );
+			if ( is_wp_error( $records ) ) {
+				return $base_content;
+			}
+
+			$changed = false;
+			foreach ( $block_bases as $index => $block_version ) {
+				$index = (int) $index;
+				if ( ! is_string( $block_version ) || '' === $block_version || ! isset( $records[ $index ] ) ) {
+					continue;
+				}
+				$block_base = $this->resolve_base_content( $state, $block_version );
+				if ( null === $block_base ) {
+					$block_base = $this->resolve_base_from_revisions( $room, $block_version );
+				}
+				if ( null === $block_base ) {
+					continue;
+				}
+				$block_records = wp_de_rtc_get_top_level_serialized_block_records( $block_base );
+				if ( is_wp_error( $block_records ) || count( $block_records ) !== count( $records ) || ! isset( $block_records[ $index ] ) ) {
+					continue; // Structural drift: positional substitution would lie.
+				}
+				if ( $block_records[ $index ] !== $records[ $index ] ) {
+					$records[ $index ] = $block_records[ $index ];
+					$changed           = true;
+				}
+			}
+
+			return $changed ? implode( "\n\n", $records ) : $base_content;
 		}
 
 		/**

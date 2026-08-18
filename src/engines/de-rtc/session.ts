@@ -134,9 +134,17 @@ export function createDeRtcSessionCodec(
 		lastProposedContent = bridge.buildContent();
 		lastProposedProperties = bridge.buildProperties();
 		inFlightProposalId = `p-${ doc.clientID }-${ proposalCounter }`;
+		// Per-block base honesty (TODO-2b): blocks kept through colliding
+		// incorporations declare the version their text was really
+		// written against, so the server merges them from THEIR base
+		// instead of reading a clean sole-writer change.
+		const blockBaseVersions = bridge.blockBaseVersions();
 		const payload = {
 			proposalId: inFlightProposalId,
 			baseVersion: bridge.lastVersion() ?? '',
+			...( Object.keys( blockBaseVersions ).length > 0
+				? { blockBaseVersions }
+				: {} ),
 			proposedContent: lastProposedContent,
 			// The FULL property map every time (save-centric, like the
 			// content): the server three-way-diffs it against the base, so
