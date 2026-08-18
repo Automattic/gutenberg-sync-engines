@@ -144,7 +144,10 @@ export function createDeRtcEngine(): SyncEngine & {
 	interface EntityReviewHandle {
 		review: DeRtcReviewState;
 		getItems: () => ReturnType< EngineReviewSource[ 'getOpenItems' ] >;
-		restore: ( proposalId: string ) => void;
+		restore: (
+			proposalId: string,
+			modifiedBlocks?: Array< { index: number; html: string } >
+		) => void;
 	}
 	const entityReviews = new Map< string, EntityReviewHandle >();
 	const reviewKey = ( objectType: string, objectId: unknown ) =>
@@ -180,10 +183,10 @@ export function createDeRtcEngine(): SyncEngine & {
 			entityReviews
 				.get( reviewKey( objectType, objectId ) )
 				?.review.resolve( proposalId, resolution ),
-		restoreProposal: ( objectType, objectId, proposalId ) =>
+		restoreProposal: ( objectType, objectId, proposalId, modifiedBlocks ) =>
 			entityReviews
 				.get( reviewKey( objectType, objectId ) )
-				?.restore( proposalId ),
+				?.restore( proposalId, modifiedBlocks ),
 	};
 
 	return {
@@ -243,9 +246,20 @@ export function createDeRtcEngine(): SyncEngine & {
 			 * origin reaches the editor like a remote change AND marks the
 			 * doc dirty so the restored state re-proposes.
 			 *
-			 * @param parked The parked proposal.
+			 * Modify-before-adopt (TODO-17, upstream's
+			 * `reviewed_block_source`): `modifiedBlocks` supplies the
+			 * reviewer's edited replacement for specific parked blocks,
+			 * keyed by the parked block's index — what the reviewer
+			 * supplies is exactly what applies, so approval and content
+			 * stay pinned together by construction.
+			 *
+			 * @param parked         The parked proposal.
+			 * @param modifiedBlocks Reviewer-edited replacements by index.
 			 */
-			const overlayParkedBlocks = ( parked: DeRtcParkedProposal ) => {
+			const overlayParkedBlocks = (
+				parked: DeRtcParkedProposal,
+				modifiedBlocks?: Array< { index: number; html: string } >
+			) => {
 				// A parked PROPERTY register restores by re-applying the
 				// losing value as a local edit — the next proposal carries
 				// it and wins the three-way merge (canonical now agrees
@@ -259,10 +273,18 @@ export function createDeRtcEngine(): SyncEngine & {
 					);
 					return;
 				}
+				const replacements = new Map< number, string >();
+				for ( const modified of modifiedBlocks ?? [] ) {
+					replacements.set(
+						Number( modified.index ),
+						String( modified.html )
+					);
+				}
 				const next = localBlocks().slice();
 				for ( const changed of parked.changedBlocks ?? [] ) {
 					const parsed = parseCanonicalBlocks(
-						String( changed?.html ?? '' )
+						replacements.get( Number( changed.index ) ) ??
+							String( changed?.html ?? '' )
 					);
 					parsed.forEach( ( block, offset ) => {
 						const index = Number( changed.index ) + offset;
@@ -296,7 +318,7 @@ export function createDeRtcEngine(): SyncEngine & {
 						intentType: 'proposal',
 						summary: parked.excerpt || undefined,
 					} ) ),
-				restore: ( proposalId ) => {
+				restore: ( proposalId, modifiedBlocks ) => {
 					const parked = review
 						.getOpen()
 						.find(
@@ -306,7 +328,7 @@ export function createDeRtcEngine(): SyncEngine & {
 						return;
 					}
 					if ( bridge.isBootstrapped() ) {
-						overlayParkedBlocks( parked );
+						overlayParkedBlocks( parked, modifiedBlocks );
 					}
 					review.resolve( proposalId, 'restored' );
 				},

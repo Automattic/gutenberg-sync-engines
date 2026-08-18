@@ -237,6 +237,40 @@ describe( 'de-rtc review lane (client)', () => {
 		).toHaveLength( 0 );
 	} );
 
+	it( 'modify-before-adopt: a reviewer-edited block replaces the parked original (TODO-17)', () => {
+		const { entity, session, sent } = makeEntity();
+		session.receiveUpdate(
+			snapshotRow( 'v1', contentOf( BLOCK_A, BLOCK_B ) )
+		);
+		session.receiveUpdate(
+			parkedRow( 'p-9-1', 'manual-conflict-required', 9, [
+				{ index: 1, html: contentOf( BLOCK_C ) },
+			] )
+		);
+
+		const reviewed = {
+			name: 'core/paragraph',
+			attributes: { content: 'Gamma, softened by the reviewer' },
+		};
+		engine.review.restoreProposal( 'postType/post', '1', 'p-9-1', [
+			{ index: 1, html: contentOf( reviewed ) },
+		] );
+
+		// The reviewer's version — not the parked original — is what lands
+		// and what re-proposes (approval and content pinned together).
+		const changes = entity.getEditorChanges( { blocks: [] } as any ) as any;
+		expect( changes.blocks ).toEqual( [ BLOCK_A, reviewed ] );
+		const proposals = sent.filter(
+			( update ) => DE_RTC_PROPOSAL_TYPE === update.type
+		);
+		expect(
+			JSON.parse( JSON.parse( proposals[ 0 ].data ).proposedContent )
+		).toEqual( [ BLOCK_A, reviewed ] );
+		expect(
+			engine.review.getOpenItems( 'postType/post', '1' )
+		).toHaveLength( 0 );
+	} );
+
 	it( 'restore appends when the recorded index no longer matches by name', () => {
 		const { entity, session } = makeEntity();
 		session.receiveUpdate( snapshotRow( 'v1', contentOf( BLOCK_A ) ) );

@@ -164,7 +164,7 @@ with something protocol-convenient.
 | Self-healing when unaware writers mangle the document | The server detects CRDT/content divergence, recovers from revisions or autosaves, and appends a repairing edit so "operations which would otherwise wipe-out a post appear as any other collaborative update" | Restored: room load detects out-of-band `post_content` writes (the co-location `content_hash` stamp is the tell), three-way-merges meta-carrying external edits with concurrent session work, converges to meta-less replacements, refuses to roll back stale copies, and parks genuine conflicts for review. Revision *mining* for lost bases is TODO-15 | **Restored** (TODO-14 done; scenario F) |
 | Arbitrarily long offline editing still recombines | Old bases recoverable via the co-located history and revision copies | Restored: a base past the room's 20-version window resolves from post revisions (each aware save embeds its own snapshot window, hash-verified), so deep-lag proposals merge with intervening work intact; only a base no revision carries still voids | **Restored** (TODO-15 done) |
 | Undo/redo "never undo, but rather apply revert edits"; a history slider scrubs versions | Explicitly offered to RTC: "This could easily be adopted by RTC" | de-rtc reuses the shared Yjs *local* undo manager — precisely the model the vision rejects. (Ironically, intent-log's inverse-intent undo IS this concept, adopted by the other engine) | **Corrupted** (client-machinery reuse). TODO-16 |
-| Reviewers can modify before adopting | The prototype's review schema carries `reviewed_block_source` ("modify-and-adopt"); approvals are hash-pinned | Restore/dismiss only | **Unported.** TODO-17 |
+| Reviewers can modify before adopting | The prototype's review schema carries `reviewed_block_source` ("modify-and-adopt"); approvals are hash-pinned | Restored: `restoreProposalWithChanges()` applies the reviewer's edited replacements for specific parked blocks — what the reviewer supplies is exactly what applies and re-proposes under their capability, pinning approval and content by construction. API-level; the review panel UI still offers plain restore/dismiss | **Restored (API)** (TODO-17 done) |
 | Per-edit authorship: "hover over a user's avatar and highlight the changes they applied" | Range-grain attribution; the prototype shipped authorship-focus overlays | `authorClientId` on whole-content rows; no range attribution, no surface | **Unported.** TODO-18 |
 | Per-block kses sequestration — "accept partial edits, adopting the safe parts" | Prototype-proven | Restored as the shipping capability lane | **Faithful** |
 | The shipping merge is the hand-written block-aware three-way merge; Automerge backs only the legacy lane | Same | Same — ported verbatim as a frozen call-graph closure | **Faithful** |
@@ -851,11 +851,18 @@ each item restores):
   — the concept intent-log's inverse-intent undo already implements —
   and leave the door open for the history slider. Pairs with
   architecture item 5.
-- **TODO-17 — Modify-before-adopt in the review lane.** Port the
-  prototype's `reviewed_block_source` lane: an approver can edit
-  sequestered content before adopting it, and approvals are hash-pinned
-  to what was reviewed. Today's restore/dismiss is the germ, not the
-  feature.
+- **TODO-17 — Modify-before-adopt in the review lane. DONE (API level,
+  2026-08-18):** the decorated manager gains
+  `restoreProposalWithChanges( objectType, objectId, proposalId,
+  modifiedBlocks )` — the reviewer's edited replacements (keyed by the
+  parked block's index) are what the overlay applies and re-proposes
+  under the reviewer's capability. Approval and content are pinned by
+  construction (the reviewer supplies the bytes that land), which is
+  the property upstream's hash-pinning protected. Deliberately NOT on
+  the framework `SyncManager` SPI (its restore verb carries no content
+  parameter); the framework review panel still offers plain
+  restore/dismiss — the modify-and-adopt UI is editor UX that belongs
+  with TODO-12's interaction-model work.
 - **TODO-18 — Per-edit authorship surface.** Attribution at range
   grain ("hover over a user's avatar and highlight the changes they
   applied"), not just `authorClientId` on whole-content rows. Becomes
