@@ -165,6 +165,16 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		private $claim_retries = 0;
 
 		/**
+		 * Per-request cache of revision-mined base lookups, keyed
+		 * "room|version" (null = looked, not found).
+		 *
+		 * @since 0.5.0
+		 *
+		 * @var array<string, string|null>
+		 */
+		private $revision_base_cache = array();
+
+		/**
 		 * Constructor.
 		 *
 		 * @since 0.3.0
@@ -425,6 +435,9 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		private function ingest_proposal( string $room, int $client_id, array &$state, array $proposal, &$review ) {
 			$base_content = $this->resolve_base_content( $state, $proposal['baseVersion'] );
 			if ( null === $base_content ) {
+				$base_content = $this->resolve_base_from_revisions( $room, (string) $proposal['baseVersion'] );
+			}
+			if ( null === $base_content ) {
 				return array(
 					'status' => 'voided',
 					'reason' => 'unknown-base-version',
@@ -492,6 +505,9 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					}
 					$state        = $reloaded;
 					$base_content = $this->resolve_base_content( $state, $proposal['baseVersion'] );
+					if ( null === $base_content ) {
+						$base_content = $this->resolve_base_from_revisions( $room, (string) $proposal['baseVersion'] );
+					}
 					if ( null === $base_content ) {
 						// The base aged out of the snapshot window mid-retry.
 						return array(
@@ -1363,6 +1379,11 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					}
 				}
 			}
+			if ( null === $base && null !== $base_version ) {
+				// Last resort before replacement semantics: mine revisions
+				// (they carry embedded sync-meta since co-location).
+				$base = $this->resolve_base_from_revisions( $room, $base_version );
+			}
 			$replacement = null === $base;
 			if ( $replacement ) {
 				// No usable lineage: WordPress accepted this as post state,
@@ -1453,6 +1474,87 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			}
 
 			return $state;
+		}
+
+		/**
+		 * Resolves an aged-out base version from the post's revisions.
+		 *
+		 * Revisions carry the embedded sync-meta every aware save writes
+		 * (WP_De_RTC_Sync_Meta_Colocation), and each embed holds its own
+		 * bounded snapshot window — so a base the ROOM trimmed is often
+		 * still recoverable from the revision written closest to it. This
+		 * is the vision's "look for recent copies … in post revisions"
+		 * lane, and what lets arbitrarily long offline editing recombine
+		 * (TODO-15 in docs/engine-comparison.md) instead of voiding
+		 * `unknown-base-version`.
+		 *
+		 * Two sources per revision, newest first: a snapshot of the wanted
+		 * version inside the embed (hash-verified), or the revision's own
+		 * stripped content when the embed says that IS the wanted version.
+		 *
+		 * @since 0.5.0
+		 *
+		 * @param string $room         Room identifier.
+		 * @param string $base_version Wanted version label.
+		 * @return string|null Base content, or null when no revision holds it.
+		 */
+		private function resolve_base_from_revisions( string $room, string $base_version ): ?string {
+			if ( '' === $base_version ) {
+				return null;
+			}
+			if ( array_key_exists( $room . '|' . $base_version, $this->revision_base_cache ) ) {
+				return $this->revision_base_cache[ $room . '|' . $base_version ];
+			}
+
+			$resolved    = null;
+			$parsed_room = class_exists( 'WP_Sync_Config' ) ? WP_Sync_Config::parse_room( $room ) : null;
+			if ( null !== $parsed_room && 'postType' === $parsed_room['entity_kind'] && ! empty( $parsed_room['object_id'] ) ) {
+				$revisions = wp_get_post_revisions(
+					(int) $parsed_room['object_id'],
+					array(
+						'posts_per_page' => 30,
+						'fields'         => 'ids',
+					)
+				);
+				foreach ( $revisions as $revision_id ) {
+					$revision = get_post( $revision_id );
+					if ( ! $revision instanceof WP_Post || false === strpos( (string) $revision->post_content, 'data-wp-sync-meta' ) ) {
+						continue;
+					}
+					$parsed = wp_de_rtc_parse_post_content_sync_meta( (string) $revision->post_content, array( 'allow_script_stripped_sync_meta' => true ) );
+					if ( ! is_array( $parsed ) || ! is_array( $parsed['sync_meta'] ?? null ) ) {
+						continue;
+					}
+					$meta = $parsed['sync_meta'];
+
+					$snapshot = $meta['version_snapshots'][ $base_version ] ?? null;
+					if ( is_array( $snapshot ) && 'base64' === ( $snapshot['encoding'] ?? null ) && is_string( $snapshot['content_base64'] ?? null ) ) {
+						$decoded = base64_decode( $snapshot['content_base64'], true );
+						if ( is_string( $decoded ) && wp_de_rtc_hash_content( $decoded ) === ( $snapshot['content_hash'] ?? null ) ) {
+							$resolved = $decoded;
+							break;
+						}
+					}
+
+					if (
+						$base_version === ( $meta['room_version'] ?? null ) &&
+						is_string( $parsed['content'] ?? null ) &&
+						wp_de_rtc_hash_content( $parsed['content'] ) === ( $meta['content_hash'] ?? null )
+					) {
+						$resolved = $parsed['content'];
+						break;
+					}
+				}
+			}
+
+			$this->revision_base_cache[ $room . '|' . $base_version ] = $resolved;
+
+			if ( null !== $resolved ) {
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+				do_action( 'qm/debug', "wp-sync: de-rtc resolved aged-out base {$base_version} for {$room} from a revision" );
+			}
+
+			return $resolved;
 		}
 
 		/**

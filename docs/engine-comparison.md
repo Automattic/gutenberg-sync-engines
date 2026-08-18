@@ -162,7 +162,7 @@ with something protocol-convenient.
 | Save and Sync are distinct, deliberate operations; "pending edits" are the unit of adoption | Editors confirm their own changes and *choose* to adopt others'; sync may be polled, socketed, or run manually with long delays | The client auto-proposes every poll cycle and auto-incorporates canonical rows; no adoption step, no pending-edit concept | **Corrupted** — and it is the root cause of the silent same-block LWW (scenario C). TODO-12 |
 | Sync metadata co-located with saved `post_content` (a `wp/post-sync-meta` pseudo-block); revisions become a backup mechanism | The document's history travels with the post; any writer that round-trips content carries the lineage; recovery mines revisions and autosaves | Restored as write-through: every save of a de-rtc-roomed post embeds the room's sync-meta (upstream's exact grammar) at the content edge, revisions copy it, and genesis adopts it back — resuming the version lineage after a room reset. Room meta remains the *working* store; the full inversion (post as sole durable store) rides with TODO-12/architecture item 2 | **Restored (write-through)** (TODO-13 done) |
 | Self-healing when unaware writers mangle the document | The server detects CRDT/content divergence, recovers from revisions or autosaves, and appends a repairing edit so "operations which would otherwise wipe-out a post appear as any other collaborative update" | Restored: room load detects out-of-band `post_content` writes (the co-location `content_hash` stamp is the tell), three-way-merges meta-carrying external edits with concurrent session work, converges to meta-less replacements, refuses to roll back stale copies, and parks genuine conflicts for review. Revision *mining* for lost bases is TODO-15 | **Restored** (TODO-14 done; scenario F) |
-| Arbitrarily long offline editing still recombines | Old bases recoverable via the co-located history and revision copies | The upstream 20-version snapshot limit is faithful, but with sync-meta only in room meta there is no revision fallback: past the window, proposals void | **Half-ported.** TODO-15 (depends on TODO-13) |
+| Arbitrarily long offline editing still recombines | Old bases recoverable via the co-located history and revision copies | Restored: a base past the room's 20-version window resolves from post revisions (each aware save embeds its own snapshot window, hash-verified), so deep-lag proposals merge with intervening work intact; only a base no revision carries still voids | **Restored** (TODO-15 done) |
 | Undo/redo "never undo, but rather apply revert edits"; a history slider scrubs versions | Explicitly offered to RTC: "This could easily be adopted by RTC" | de-rtc reuses the shared Yjs *local* undo manager — precisely the model the vision rejects. (Ironically, intent-log's inverse-intent undo IS this concept, adopted by the other engine) | **Corrupted** (client-machinery reuse). TODO-16 |
 | Reviewers can modify before adopting | The prototype's review schema carries `reviewed_block_source` ("modify-and-adopt"); approvals are hash-pinned | Restore/dismiss only | **Unported.** TODO-17 |
 | Per-edit authorship: "hover over a user's avatar and highlight the changes they applied" | Range-grain attribution; the prototype shipped authorship-focus overlays | `authorClientId` on whole-content rows; no range attribution, no surface | **Unported.** TODO-18 |
@@ -409,10 +409,12 @@ back its modified copy while two editors are collaborating.
   lost send actually landed, the re-proposal merges as a no-op. A stale
   base within the engine's 20-version snapshot window is fine — that's
   what the three-way merge is for (though cumulative staleness escalates
-  more). Beyond the window the proposal voids as
-  `unknown-base-version` and the client must retry against a fresher
-  base: fetch canonical, rebase, re-propose. The benchmark models one
-  retry per edit; nothing is lost either way.
+  more). Beyond the window the server first mines post revisions for
+  the base (each aware save embeds its own snapshot window — TODO-15),
+  so even arbitrarily old bases usually merge; only a base no revision
+  carries voids as `unknown-base-version`, and the client retries
+  against a fresher base: fetch canonical, rebase, re-propose. The
+  benchmark models one retry per edit; nothing is lost either way.
 
 ## Transports are a separate axis
 
@@ -691,12 +693,16 @@ each item restores):
   by `tests/phpunit/wpDeRtcSelfHealing.php`. TODO-4(a)'s base-version
   preflight remains the lane for writers that cooperate; revision
   MINING for bases neither the room nor the embed carries is TODO-15.
-- **TODO-15 — Revision-backed base resolution.** The 20-version
-  snapshot window is upstream-faithful, but upstream could fall back to
-  revision copies of the sync-meta; we void (`unknown-base-version`)
-  instead. Resolve aged-out bases from revisions so arbitrarily long
-  offline editing recombines, as the vision promises. Depends on
-  TODO-13.
+- **TODO-15 — Revision-backed base resolution. DONE (2026-08-18):**
+  `resolve_base_from_revisions()` — when a proposal's (or an external
+  save's) base version aged out of the room's snapshot window, the
+  newest 30 revisions are mined for embedded sync-meta carrying that
+  version (a hash-verified snapshot inside the embed, or the revision's
+  own content when the embed says it IS that version). Deep-lag
+  proposals then three-way-merge with intervening session work intact;
+  only a base no revision carries still voids `unknown-base-version`.
+  Per-request cached; wired into ingest, the claim-retry path, and the
+  healing lane. Covered by `tests/phpunit/wpDeRtcRevisionBases.php`.
 - **TODO-16 — Revert-edit undo for de-rtc.** "Undo and Redo never
   undo, but rather apply revert edits." Replace the local Yjs undo
   manager with revert-edits derived against accepted canonical history
@@ -729,9 +735,9 @@ own:
   downloads (several times the other engines' join payloads). Run
   `long-form` at YOUR document sizes before concluding. Deep-lag
   behavior is distinct: rarely-reading clients escalate more, and past
-  the 20-version snapshot window their proposals void and retry
-  (scenario G; TODO-15 would resolve aged-out bases from revisions
-  instead of voiding).
+  the 20-version snapshot window their proposals fall back to
+  revision-mined bases (TODO-15) — voiding and retrying only when no
+  revision carries the base (scenario G).
 - **Intent-log same-paragraph typing can escalate instead of merging**
   (scenario C). The echo race that corrupted canvas text is fixed —
   capture diffs the editor tree against the document state that tree
