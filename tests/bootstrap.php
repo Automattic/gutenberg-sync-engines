@@ -25,6 +25,13 @@ if ( ! $gse_tests_dir ) {
 
 require_once $gse_tests_dir . '/includes/functions.php';
 
+// The diagnostics module (request log, session capture) is environment-gated
+// in the plugin bootstrap; force it on so its tests behave the same whether
+// or not the test environment reports 'local'.
+if ( ! defined( 'GUTENBERG_SYNC_ENGINES_DIAGNOSTICS' ) ) {
+	define( 'GUTENBERG_SYNC_ENGINES_DIAGNOSTICS', true );
+}
+
 tests_add_filter(
 	'muplugins_loaded',
 	static function () {

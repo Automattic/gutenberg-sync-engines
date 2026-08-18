@@ -396,7 +396,11 @@ The card covers the ENGINE seam only: the transport envelope, HTTP
 headers (~0.5–1 KB/request) and awareness traffic add overhead on top —
 the transport benchmark (`tests/benchmarks/transport/`) measures those
 per-collaborator rates on a live site, and multiplying ITS idle rate into
-the card's per-user-hour numbers is the full steady-state bill. Composing
+the card's per-user-hour numbers is the full steady-state bill. A third
+lane, `tests/benchmarks/replay/`, captures REAL editor sessions at the
+transport seam and replays them as HTTP load (community-harness fixture
+format; see its README) — repeatable full-stack traffic with genuine
+engine payloads, complementing this harness's synthetic workloads. Composing
 micro-measurements this way still assumes requests don't queue (see
 Limitations); a browser-driven multi-client soak to validate the
 projections end-to-end is the known remaining gap.
