@@ -24,7 +24,11 @@ import type {
 import { CRDT_RECORD_MAP_KEY } from '../yjs/constants';
 import { createYjsDoc, serializeCrdtDoc } from '../yjs/doc';
 import { docContainsSnapshot, encodeDocSnapshot } from '../yjs/snapshot';
-import { createUndoManager } from '../yjs/undo';
+import {
+	createDeRtcRevertUndoManager,
+	createDeRtcUndoFeed,
+	type DeRtcRevertUndoManager,
+} from './revert-undo';
 import { applyServerAwarenessStates } from '../awareness-sync';
 import type { EngineReviewSource } from '../review-manager-decorator';
 import {
@@ -120,9 +124,10 @@ function createInertDeRtcCollectionCodec(
  *   pre-sync document can never be dispatched into the editor as a
  *   mass deletion.
  *
- * Undo is the shared per-peer Yjs undo manager: undo is client-local
- * machinery, and an undo transaction marks the doc dirty like any other
- * local edit, so undone state propagates as an ordinary proposal.
+ * Undo is DE-RTC's revert-edit model (see revert-undo.ts): undo never
+ * undoes — it derives a revert from the client's own accepted canonical
+ * rows and applies it as an ordinary dirty edit, so the revert travels
+ * as an ordinary proposal in the shared history.
  *
  * Conflict review: a proposal the server escalates parks as a durable
  * `proposal-parked` row; the entity's review registry presents it
@@ -192,7 +197,10 @@ export function createDeRtcEngine(): SyncEngine & {
 	return {
 		slug: DE_RTC_ENGINE_SLUG,
 		protocolVersion: DE_RTC_ENGINE_PROTOCOL,
-		createUndoManager,
+		// The revert-edit undo (TODO-16): undo never undoes, it applies
+		// revert edits derived from the client's own accepted canonical
+		// rows, proposed like any other change.
+		createUndoManager: createDeRtcRevertUndoManager,
 		review: reviewSource,
 		createEntity( { syncConfig, objectType, objectId } ): EngineEntity {
 			const ydoc = createYjsDoc( { objectType } );
@@ -200,6 +208,7 @@ export function createDeRtcEngine(): SyncEngine & {
 			const awareness = syncConfig.createAwareness?.( ydoc );
 			const bridge = createDeRtcDocBridge( ydoc, syncConfig );
 			const review = createDeRtcReviewState();
+			const undoFeed = createDeRtcUndoFeed();
 
 			// Edits made before the server snapshot arrives, replayed in
 			// order once it does.
@@ -346,7 +355,12 @@ export function createDeRtcEngine(): SyncEngine & {
 				awareness,
 
 				createSession: () =>
-					createDeRtcSessionCodec( { awareness, bridge, review } ),
+					createDeRtcSessionCodec( {
+						awareness,
+						bridge,
+						review,
+						undoFeed,
+					} ),
 
 				hydrate() {
 					// Deliberately empty: the server's genesis snapshot is
@@ -394,6 +408,20 @@ export function createDeRtcEngine(): SyncEngine & {
 				},
 
 				addToUndoScope( undoManager, meta ) {
+					// The revert-edit manager needs the entity context —
+					// bridge (current content), row feed, and the apply
+					// lane — before the meta handlers scope in. The restore
+					// origin both reaches the editor like a remote change
+					// and marks the doc dirty, so a revert re-proposes.
+					(
+						undoManager as unknown as DeRtcRevertUndoManager
+					 ).attachEntity?.( {
+						key: recordMap as Y.Map< unknown >,
+						bridge,
+						feed: undoFeed,
+						applyRevert: ( blocks ) =>
+							applyChanges( { blocks }, DE_RTC_RESTORE_ORIGIN ),
+					} );
 					undoManager.addToScope( recordMap, meta );
 				},
 

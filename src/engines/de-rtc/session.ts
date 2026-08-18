@@ -74,6 +74,13 @@ export interface DeRtcSessionOptions {
 	bridge: DeRtcDocBridge;
 
 	/**
+	 * The revert-edit undo manager's row feed (TODO-16): every canonical
+	 * row this session decodes is published into it, own accepted
+	 * proposals tagged. Optional: collections and undo-less tests skip it.
+	 */
+	undoFeed?: import('./revert-undo').DeRtcUndoFeed;
+
+	/**
 	 * The entity's review ledger. Parked/resolved rows feed it, and it
 	 * emits resolution rows through this session's local-update lane.
 	 * Optional: collection codecs and tests without a review surface
@@ -237,6 +244,25 @@ export function createDeRtcSessionCodec(
 			decoded.properties && 'object' === typeof decoded.properties
 				? ( decoded.properties as Record< string, unknown > )
 				: undefined;
+
+		// The revert-edit undo manager (TODO-16) derives from canonical
+		// rows: feed it every row, tagging our own accepted proposals.
+		if (
+			DE_RTC_CONTENT_TYPE === update.type ||
+			DE_RTC_SNAPSHOT_TYPE === update.type
+		) {
+			options.undoFeed?.noteRow( {
+				version: decoded.version,
+				baseVersion:
+					'string' === typeof decoded.baseVersion
+						? decoded.baseVersion
+						: null,
+				content: decoded.content,
+				own:
+					DE_RTC_CONTENT_TYPE === update.type &&
+					decoded.authorClientId === doc.clientID,
+			} );
+		}
 
 		switch ( update.type ) {
 			case DE_RTC_SNAPSHOT_TYPE:

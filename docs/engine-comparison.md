@@ -163,7 +163,7 @@ with something protocol-convenient.
 | Sync metadata co-located with saved `post_content` (a `wp/post-sync-meta` pseudo-block); revisions become a backup mechanism | The document's history travels with the post; any writer that round-trips content carries the lineage; recovery mines revisions and autosaves | Restored as write-through: every save of a de-rtc-roomed post embeds the room's sync-meta (upstream's exact grammar) at the content edge, revisions copy it, and genesis adopts it back — resuming the version lineage after a room reset. Room meta remains the *working* store; the full inversion (post as sole durable store) rides with TODO-12/architecture item 2 | **Restored (write-through)** (TODO-13 done) |
 | Self-healing when unaware writers mangle the document | The server detects CRDT/content divergence, recovers from revisions or autosaves, and appends a repairing edit so "operations which would otherwise wipe-out a post appear as any other collaborative update" | Restored: room load detects out-of-band `post_content` writes (the co-location `content_hash` stamp is the tell), three-way-merges meta-carrying external edits with concurrent session work, converges to meta-less replacements, refuses to roll back stale copies, and parks genuine conflicts for review. Revision *mining* for lost bases is TODO-15 | **Restored** (TODO-14 done; scenario F) |
 | Arbitrarily long offline editing still recombines | Old bases recoverable via the co-located history and revision copies | Restored: a base past the room's 20-version window resolves from post revisions (each aware save embeds its own snapshot window, hash-verified), so deep-lag proposals merge with intervening work intact; only a base no revision carries still voids | **Restored** (TODO-15 done) |
-| Undo/redo "never undo, but rather apply revert edits"; a history slider scrubs versions | Explicitly offered to RTC: "This could easily be adopted by RTC" | de-rtc reuses the shared Yjs *local* undo manager — precisely the model the vision rejects. (Ironically, intent-log's inverse-intent undo IS this concept, adopted by the other engine) | **Corrupted** (client-machinery reuse). TODO-16 |
+| Undo/redo "never undo, but rather apply revert edits"; a history slider scrubs versions | Explicitly offered to RTC: "This could easily be adopted by RTC" | Restored: de-rtc's undo derives revert edits from the client's OWN accepted canonical rows (per-block, with an untouched-since guard so peer work is never collateral) and applies them as ordinary dirty edits that propose like any change; redo re-applies the reverted delta. The history-slider UI remains TODO-12-era editor UX | **Restored** (TODO-16 done) |
 | Reviewers can modify before adopting | The prototype's review schema carries `reviewed_block_source` ("modify-and-adopt"); approvals are hash-pinned | Restored: `restoreProposalWithChanges()` applies the reviewer's edited replacements for specific parked blocks — what the reviewer supplies is exactly what applies and re-proposes under their capability, pinning approval and content by construction. API-level; the review panel UI still offers plain restore/dismiss | **Restored (API)** (TODO-17 done) |
 | Per-edit authorship: "hover over a user's avatar and highlight the changes they applied" | Range-grain attribution; the prototype shipped authorship-focus overlays | `authorClientId` on whole-content rows; no range attribution, no surface | **Unported.** TODO-18 |
 | Per-block kses sequestration — "accept partial edits, adopting the safe parts" | Prototype-proven | Restored as the shipping capability lane | **Faithful** |
@@ -181,7 +181,7 @@ the protocol won. The fidelity program reverses that default.
 | Area | intent-log | yjs-server | de-rtc |
 | --- | --- | --- | --- |
 | Conflict handling | Transform on the server; genuine conflicts park in the editor's review panel (escalation notice, marker chip, durable resolutions — e2e-verified) | Silent CRDT auto-merge, but ON THE SERVER — outcomes observable, still no review lane (conflict DETECTION is the undesigned prerequisite) | Three-way merge on the server; genuine conflicts PARK as durable `proposal-parked` rows and present in the same review panel (restore re-proposes under the reviewer; dismiss resolves; retention survives compaction — e2e-verified) |
-| Collaborative undo | Inverse intents over the accepted log (`src/engines/intent-log-undo.ts`): per-user undo/redo, transformed over peers' rows, conflicts park for review. Armed immediately: a still-pending unit CANCELS (outbox + a wire-chasing `cancel` row; a lost race resurrects the unit as a settled candidate — TODO-5), a settled unit inverts | Per-peer undo manager (`src/engines/yjs/undo.ts`, inherited from the retired relay) | Per-peer undo manager (shared `src/engines/yjs/undo.ts` over the local doc bridge); undone state propagates as an ordinary proposal |
+| Collaborative undo | Inverse intents over the accepted log (`src/engines/intent-log-undo.ts`): per-user undo/redo, transformed over peers' rows, conflicts park for review. Armed immediately: a still-pending unit CANCELS (outbox + a wire-chasing `cancel` row; a lost race resurrects the unit as a settled candidate — TODO-5), a settled unit inverts | Per-peer undo manager (`src/engines/yjs/undo.ts`, inherited from the retired relay) | Revert-edit undo (TODO-16, the vision's model): undo derives a revert from the client's own accepted canonical rows (per-block, untouched-since guard) and proposes it as an ordinary new change; redo re-applies the reverted delta |
 | Refresh/offline recovery | Server materializes the document; queued intents are memory-only. Solo edits flush every poll (`syncWhileSolo`), and discarded unsent work surfaces an editor notice | Server holds the canonical doc; a rejoining client re-bootstraps from the retained snapshot + tail and uploads its own state idempotently. Solo edits flush every poll (`syncWhileSolo`) — REQUIRED here, not an optimization: a page reload holds no local state to upload, so a room that never saw the solo session's updates would bootstrap the editor back to its stale snapshot, wiping the freshly loaded record (e2e-covered: the solo save-and-reload spec) | Server holds canonical content + version snapshots; a rejoining client re-bootstraps from the retained snapshot + content rows. Un-acked local edits re-propose (the server merges); the save-centric model keeps the room tracking saves, so a solo save-and-reload survives without `syncWhileSolo` (verified) |
 | Error recovery | Exact re-send; ingest is idempotent by intentId | Full-state recovery update, IDEMPOTENT server-side (the server diffs out what it already has — redelivery settles as a benign `already-merged` void); the server explicitly requests it with a `resync-required` void when an update's dependencies are missing from the room | Recovery re-proposes the doc's current state; if the lost send landed, the re-proposal merges as a no-op |
 | History compaction | Server checkpoints every 100 intent rows and trims | Server checkpoints every 100 rows and trims — abandoned rooms stay bounded | Server checkpoints every 100 rows and trims (same retention invariant) |
@@ -845,12 +845,23 @@ each item restores):
   only a base no revision carries still voids `unknown-base-version`.
   Per-request cached; wired into ingest, the claim-retry path, and the
   healing lane. Covered by `tests/phpunit/wpDeRtcRevisionBases.php`.
-- **TODO-16 — Revert-edit undo for de-rtc.** "Undo and Redo never
-  undo, but rather apply revert edits." Replace the local Yjs undo
-  manager with revert-edits derived against accepted canonical history
-  — the concept intent-log's inverse-intent undo already implements —
-  and leave the door open for the history slider. Pairs with
-  architecture item 5.
+- **TODO-16 — Revert-edit undo for de-rtc. DONE (2026-08-18):**
+  `createDeRtcRevertUndoManager` replaces the borrowed local Yjs undo.
+  The undo stack is the client's own accepted canonical rows (fed by
+  the session as rows decode); undo() derives a REVERT — each block the
+  popped row changed reverts to its base form iff the current document
+  still holds the row's form (untouched-since guard: peer work is
+  never collateral) — applied through the restore origin, so it lands
+  as an ordinary proposal in the shared history, exactly "a new change
+  that returns the document to an earlier state." redo() re-applies
+  the reverted delta the same way; underivable rows (aged-out
+  versions, structural divergence) drop and the next older row is
+  tried; the accepted form of a revert is recognized by predicted
+  content and never becomes a new undoable unit (a server-merged
+  revert degrades to an ordinary own row — sane, documented). The
+  version-content record it keeps is exactly what a history-slider UI
+  would read (TODO-12-era UX). Jest-covered; de-rtc undo-profile fuzz
+  green end-to-end.
 - **TODO-17 — Modify-before-adopt in the review lane. DONE (API level,
   2026-08-18):** the decorated manager gains
   `restoreProposalWithChanges( objectType, objectId, proposalId,
