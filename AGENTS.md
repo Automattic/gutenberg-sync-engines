@@ -65,10 +65,17 @@ The framework/plugin split is complete: the framework ships **neither** engines
     Core/Gutenberg build that ships DE-RTC itself wins.
   - `lib/y-php/` — **vendored y-php** (PHP port of Yjs 13.6.31), imported
     verbatim from <https://github.com/alecgeatches/y-php> (MIT; upstream
-    commit recorded in the import commit). ONE deliberate local delta:
-    `composer.json` pins `config.platform.php` to 7.4 (with the lock
-    resolved for it) so the suite installs on WP-supported PHP — preserve
-    it when re-vendoring. Excluded from our phpcs (it
+    commit recorded in the import commit). TWO deliberate local deltas,
+    preserve both when re-vendoring: `composer.json` pins
+    `config.platform.php` to 7.4 (with the lock resolved for it) so the
+    suite installs on WP-supported PHP; and `src/Lib0/StringDecoder.php`
+    (marked DELTA in place, regression test
+    `tests/Unit/StringDecoderTest.php`) replaces a per-read rescan of the
+    V2 format's shared string buffer with a one-time char split + forward
+    cursor — upstream's decode was O(n²) in the string count (~18× on the
+    benchmark ingest; see docs/engine-comparison.md), a porting artifact
+    of JS `str.slice()` being native. Candidate for upstreaming; drop the
+    delta if upstream adopts an equivalent fix. Excluded from our phpcs (it
     deliberately mirrors JS Yjs style and carries its own configs). Its own
     conformance suite runs in CI:
     `composer --working-dir=includes/lib/y-php install && composer

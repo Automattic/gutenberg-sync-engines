@@ -91,7 +91,11 @@ locally, and never compare across machines without the harnesses'
 including the lock pair; de-rtc ~2.0 ms mean including the same lock pair
 (the content three-way merge — roughly 3× intent-log); yjs-server ~36 ms
 p50 / ~41 ms mean (roughly 55× intent-log — pure y-php CPU: the canonical
-document is decoded, merged, and re-encoded in PHP on every ingest). For
+document is decoded, merged, and re-encoded in PHP on every ingest).
+STALE for yjs-server: those numbers predate the vendored y-php
+StringDecoder fix (see the ingest-cost bullet under Known gaps), which
+removes a quadratic decode and cuts a standalone simulation of the same
+ingest ~18×; re-run `npm run bench` to refresh them. For
 scale, the retired append-only relay sat at the timer floor (single-digit
 µs — read it as "negligible"). Where de-rtc pays is bytes, not cycles:
 whole documents travel in every proposal (~2.9 KB p50 requests vs
@@ -242,10 +246,22 @@ noise under intent-log), with one exception noted below.
   PHP (~36 ms at benchmark sizes vs intent-log's ~0.7 ms) — and the SAVE
   path is worse: a save request starts with no per-request cache and
   decodes the whole canonical doc cold (~218 ms measured after a
-  600-edit session; `materialize_us` in the benchmark). Before
-  production use this needs either an incremental canonical-maintenance
-  strategy, y-php optimization, or acceptance of the latency at target
-  document sizes — run `long-form` benchmarks at YOUR sizes first.
+  600-edit session; `materialize_us` in the benchmark). MOSTLY FIXED
+  (2026-08-18, pending an in-container re-measure): those numbers were
+  dominated not by CRDT merge but by a quadratic in the vendored y-php
+  V2 decoder — `Lib0\StringDecoder::read()` re-scanned the shared string
+  buffer from offset 0 on every read (JS lib0's `str.slice()` is native
+  and cheap; the PHP port's UTF-16 offset search was O(buffer) per
+  string, O(n²) per decode). A marked DELTA in
+  `includes/lib/y-php/src/Lib0/StringDecoder.php` replaces it with a
+  one-time char split plus forward cursor (identical per-char semantics;
+  the 442-test conformance suite plus a new StringDecoder round-trip
+  test pass). Standalone simulation of the benchmark's end-of-session
+  ingest: ~168 ms → ~9.5 ms (~18×); full-doc load ~132 ms → ~3.5 ms.
+  The remaining cost — one full-doc decode + two encodes per request —
+  is the structural floor for a server-authoritative CRDT in
+  per-request PHP; it still scales with document size, so run
+  `long-form` benchmarks at YOUR sizes first.
 - **yjs-server kses is sanitize, not park.** The per-update capability
   lane replaces a filtered author's offending blocks with their
   kses-sanitized form and broadcasts the compensation (WordPress's
