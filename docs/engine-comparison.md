@@ -115,11 +115,11 @@ shows up.
 | --- | --- | --- | --- |
 | P1 server authority | **Meets.** Typed intents authorized, attributed, and transformed at ingest | **Meets.** Server merges and materializes; per-update dispositions | **Meets.** Server merges every proposal; per-proposal dispositions with version lineage |
 | P2 no silent loss | **Meets, one window.** Oracle-certified; unacked outbox intents die with a tab reload (undo makes the loss visible) | **Meets.** Oracle-certified; races heal via idempotent full-state recovery | **Meets.** Oracle-certified; escalations park durably, voided proposals re-propose |
-| P3 conflicts surfaced | **Meets.** Per-register review lane; residual over-escalation on same-paragraph bursts (rate, not silence) | **Violates, currently by design.** Register conflicts resolve by silent CRDT last-writer-wins; no review lane (TODO-7) | **Partially violates — port artifact.** Server-detected conflicts park for review at BLOCK grain (per-block salvage: the clean remainder lands, exactly the conflicted blocks park — TODO-3 done; whole-proposal parking remains only for structural divergence), but same-block concurrency still silently LWWs client-side (TODO-2) |
+| P3 conflicts surfaced | **Meets.** Per-register review lane; residual over-escalation on same-paragraph bursts (rate, not silence) | **Violates, currently by design.** Register conflicts resolve by silent CRDT last-writer-wins; no review lane (TODO-7) | **Partially violates — port artifact.** Server-detected conflicts park for review at BLOCK grain (per-block salvage: the clean remainder lands, exactly the conflicted blocks park — TODO-3 done; whole-proposal parking remains only for structural divergence), but same-block concurrency still silently LWWs client-side (TODO-2b) |
 | P4 machine writers | **Not yet.** Ingest speaks typed intents only; the persisted `metadata.syncId` identity makes a diff lane tractable (TODO-4) | **Accepted limitation.** Ingest speaks binary CRDT updates; a diff-to-CRDT lane would be semantically worse, not just costly (TODO-4) | **Met.** Unaware writers heal in (TODO-14, scenario F) and cooperating writers merge through the room: `wp_update_post( …, 'base_version' => 'vN' )` — WP-CLI, plugins, REST (`base_version` param on posts/pages) — three-way-merges via the ingest lane with per-block salvage and review parking; conflicts reject the save with a rich 409 (TODO-4a) |
 | P5 cheap hosting | **Meets.** Cheapest per-ingest CPU; Core-style options-row lock, topology-safe (TODO-1 done) | **Partially.** No lock (good); heaviest per-ingest CPU, scaling with document size | **Partially.** Cheap CPU; lock-free optimistic claims, topology-safe (TODO-1 done); wire/storage bytes still scale with document size |
 | P6 measured economics | **Meets.** Real wire format in its benchmark profile | **Meets.** Real wire format; convergence oracle | **Meets.** Real wire format; disposition/lineage oracle |
-| P7 intent & identity | **Meets.** Typed intents end-to-end; syncIds persist in saved `post_content` and round-trip genesis | **Fails.** Snapshot-diff binding inherited from the relay; no semantic ops, no stable identity in the merge | **Designed for it, half-wired.** Block identity + rich-text ops live in the merge core, but clients send `clientUpdate: null`, so intent is server-derived from whole-content diffs (TODO-2) |
+| P7 intent & identity | **Meets.** Typed intents end-to-end; syncIds persist in saved `post_content` and round-trip genesis | **Fails.** Snapshot-diff binding inherited from the relay; no semantic ops, no stable identity in the merge | **Designed for it, half-wired.** Block identity + rich-text ops live in the merge core, but clients send `clientUpdate: null`, so intent is server-derived from whole-content diffs — merge-equivalent, but tamper evidence is inactive (TODO-2a) |
 
 Three honest readings of that table:
 
@@ -140,7 +140,7 @@ Three honest readings of that table:
   artifacts of our port, not of Dennis's design; the original resolves
   the same situations through explicit human adoption of pending edits
   and per-block partial acceptance. Restoring fidelity is a program,
-  not a patch: TODO-2 and TODO-3 treat symptoms, and the fidelity audit
+  not a patch: TODO-2b and TODO-3 treat symptoms, and the fidelity audit
   below (TODO-12 through TODO-19) treats causes.
 
 ## Fidelity to the DE-RTC vision
@@ -169,7 +169,7 @@ with something protocol-convenient.
 | Per-block kses sequestration — "accept partial edits, adopting the safe parts" | Prototype-proven | Restored as the shipping capability lane | **Faithful** |
 | The shipping merge is the hand-written block-aware three-way merge; Automerge backs only the legacy lane | Same | Same — ported verbatim as a frozen call-graph closure | **Faithful** |
 | Optimistic concurrency; no database lock | Base-version preflight, hash validation, merge-and-retry on the save path | Lock-free again: accepted proposals atomically claim their version advancement and a lost claim reloads + re-merges (`WP_Sync_Atomic_Option` CAS) | **Restored** (TODO-1 done) |
-| Clients need no CRDT library; Gutenberg couples via semantic Redux actions | Stage 3 of the development plan | The client rides a `Y.Doc` editor bridge (undo + awareness reuse) and sends `clientUpdate: null` | **Adaptation debt.** TODO-2 plus architecture item 5 |
+| Clients need no CRDT library; Gutenberg couples via semantic Redux actions | Stage 3 of the development plan | The client rides a `Y.Doc` editor bridge (undo + awareness reuse) and sends `clientUpdate: null` | **Adaptation debt.** TODO-2a/2b plus architecture item 5 |
 | Cheap-host cadence is a feature: "that $3/mo host … can still support multiple concurrent edit sessions polling … once every ten seconds" | Polling interval scales to the host's comfort; presence is separate from content | Measured fairly now: the `save-sync-session` scenario runs every engine at the vision's cadence — where de-rtc escalates nothing and intent-log becomes the escalation-heavy engine (its stale-observation residual), inverting the per-second ranking | **Measured** (TODO-19 done); operating cadence itself is TODO-12 |
 
 The pattern across the corrupted rows is one pattern: wherever DE-RTC's
@@ -351,7 +351,7 @@ bytes here).
   last-writer-wins, silently (P3 violation — a port artifact, not the
   upstream design: the vision resolves this moment through pending-edit
   adoption, which our auto-incorporation replaced — TODO-12 for the
-  model, TODO-2 for merge quality). Only when both proposals are in flight from
+  model, TODO-2b — per-block base honesty — for merge quality). Only when both proposals are in flight from
   the same stale base with overlapping ranges does the server's merge
   refuse (`de_rtc_rebase_failed`) — and since TODO-3 it parks at BLOCK
   grain: the clean blocks of the proposal land, exactly the conflicted
@@ -505,7 +505,7 @@ and the scorecard put in question, each with the change we would scope.
    and awareness plumbing. That bought porting speed at the price of
    two fidelity losses: local-snapshot undo (TODO-16) and a CRDT
    dependency the vision says clients don't need. Revisit together with
-   TODO-2 — the descriptor builder is the natural moment to couple
+   TODO-2a/2b — the descriptor work is the natural moment to couple
    de-rtc's client to the editor's semantic actions instead of a shadow
    CRDT.
 6. **Benchmarking every engine at RTC cadence.** The session-shaped
@@ -549,18 +549,41 @@ the engine Dennis designed; the rest change polish and confidence.
   see the fidelity audit); **intent-log** gets a Core-style advisory
   lock (atomic CAS + TTL + retryable contention response). Principles:
   P5; DE-RTC fidelity.
-- **TODO-2 — Port the DE-RTC client descriptor lane (`clientUpdate`) —
-  timeboxed.** Restores Dennis's intended semantics for same-block
-  concurrency and retires the silent client-side keep-local LWW
-  (scenario C). The server side already ships: the block-native
-  retry-save path validates descriptors, transforms rich-text splices,
-  merges non-overlapping same-block edits, and escalates true overlaps.
-  Unported: the client-side descriptor builder, its cross-language
-  fingerprint vectors, and a per-block-base rework of the incorporation
-  policy. **Timebox the initial investigation and bail if the solution
-  spirals in complexity** — the fallback is the cheap policy swap (park
-  the losing block text for review instead of keeping it), which honors
-  P3 at the cost of review noise. Principles: P3, P7.
+- **TODO-2 — Port the DE-RTC client descriptor lane (`clientUpdate`).
+  INVESTIGATED (2026-08-18, timeboxed) — premise corrected, split into
+  2a/2b.** The investigation falsified this entry's original premise:
+  the descriptor does NOT improve merge quality. The merge core's
+  descriptor-less lane derives *exactly* the update a client would have
+  sent (`wp_de_rtc_create_automerge_update_for_content_change(base,
+  proposed, 'client')`) and routes to the *same* block-native merge;
+  when a client DOES send a descriptor, the server re-derives the
+  expected one anyway and fingerprint-compares — rejecting on mismatch
+  (`de_rtc_sync_meta_tampered`). Merge outcomes are byte-identical
+  either way. The descriptor's sole contribution is **tamper evidence**
+  (hash-pinned base/proposed + operation fingerprints), which is a P1
+  integrity property, not the scenario-C fix. Split accordingly:
+  - **TODO-2a — Descriptor builder for tamper evidence.** Re-implement
+    the update derivation in TypeScript with fingerprint parity (block
+    records split, the rich-text model, splice derivation, operation
+    fingerprints) plus cross-language vectors — the intent-log core's
+    vector discipline, NOT the 22k-line upstream editor store (which is
+    mostly other machinery). Bounded; restores proof-carrying proposals
+    and activates the server's tamper rejection.
+  - **TODO-2b — Per-block base honesty (the actual scenario-C fix).**
+    The silent LWW lives in the client incorporation policy: when it
+    keeps a locally-edited block and advances the whole-document base,
+    the server sees a clean sole-writer change. Fix: remember each
+    kept block's TRUE base version at incorporation and carry an
+    optional per-block base map on the next proposal; the engine
+    merges a mapped block from ITS OWN base — landing in the existing
+    TODO-3 salvage machinery, where non-overlapping same-block edits
+    merge and true overlaps park for review. Client work in the
+    doc-bridge/session plus a small engine-layer extension; no merge
+    core changes. This retires the LWW without sacrificing canvas
+    liveness (the fallback policy swap — park the losing text — stays
+    available if 2b stalls).
+  Neither half spirals; 2b is the fidelity-critical one. Principles:
+  P1 (2a), P3/P7 (2b).
 - **TODO-3 — Per-block parking for `manual-conflict-required`. DONE
   (2026-08-18):** `salvage_conflicting_blocks()` extends the
   sequestration pattern to merge conflicts: when the whole-document
@@ -667,9 +690,9 @@ each item restores):
   Replacing our auto-propose/auto-incorporate loop with this model
   dissolves the same-block LWW at its root (scenario C) rather than
   patching it. Depends on architecture item 1 — the room protocol has
-  no vocabulary for "pending, not yet adopted." TODO-2's descriptor
-  lane remains the merge-quality half of the same vision (its stage 3);
-  this is the interaction-model half.
+  no vocabulary for "pending, not yet adopted." TODO-2b's per-block
+  base honesty is the merge-quality half of the same fix; this is the
+  interaction-model half.
 
   Design sketch — the commit path and the transport separate into two
   channels with different jobs:
@@ -775,7 +798,7 @@ each item restores):
 - **TODO-18 — Per-edit authorship surface.** Attribution at range
   grain ("hover over a user's avatar and highlight the changes they
   applied"), not just `authorClientId` on whole-content rows. Becomes
-  tractable once proposals carry descriptors (TODO-2).
+  tractable once proposals carry descriptors (TODO-2a).
 - **TODO-19 — Benchmark DE-RTC at its native cadence. DONE
   (2026-08-18):** the `save-sync-session` scenario (rounds are
   wall-clock seconds; each client submits its typing burst only on
@@ -842,6 +865,6 @@ own:
 - **de-rtc clients do not author block-native update descriptors yet**
   (`clientUpdate: null`; the server's engine-unaware-writer lane derives
   operations). Tamper detection is active only for descriptor-carrying
-  clients. This is the client half of TODO-2.
+  clients. This is TODO-2a (tamper evidence); the merge behavior is unaffected.
 - **Genesis blocks must set `isValid: true`** or the editor renders
   them as invalid-content recovery blocks (has bitten).
