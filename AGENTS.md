@@ -138,8 +138,10 @@ The framework/plugin split is complete: the framework ships **neither** engines
   `bin/` the y-websocket sync-server daemon + the `rtc:ws`/`rtc:http` dev
   switcher for the real websocket transport; see Testing),
   `tests/benchmarks/` (the sync-engine benchmark harness, run via `wp
-  eval-file tests/benchmarks/benchmark.php`, plus the browser-driven
-  transport benchmark in `tests/benchmarks/transport/`; see their READMEs),
+  eval-file tests/benchmarks/benchmark.php`, the browser-driven
+  transport benchmark in `tests/benchmarks/transport/`, and the
+  capture→sanitize→replay session tools in `tests/benchmarks/replay/` —
+  community-harness fixture format; see their READMEs),
   `tests/fuzzer/` (the seeded browser fuzzer swept across every
   engine × transport combo — `npm run fuzz`; see its README for strategy,
   replay, and triage), and
@@ -376,6 +378,18 @@ they exist so a failure is observable without re-instrumenting:
   `GUTENBERG_SYNC_ENGINES_DIAGNOSTICS` constant — deliberately absent
   from the production path. It never creates storage posts (the storage
   API's own room lookup does — don't "just query storage" for diagnosis).
+- **Session capture + request log** (`includes/diagnostics/`, same
+  local/development-or-constant gate, but hooked on web requests too —
+  no-ops until used): `wp collaboration capture start|stop|list|export|drop`
+  records real `/wp-sync/` sessions and exports them in the community RTC
+  performance harness's fixture format (replay/sanitize via
+  `tests/benchmarks/replay/`); requests tagged `X-RTC-Test: 1` get
+  per-request server metrics (dispatch/CPU ms, db_queries, db_time with
+  SAVEQUERIES, memory, concurrency) logged with that harness's column
+  conventions — read via `wp collaboration bench-log report [--all]` or
+  the community-compatible `rtc-test/v1` REST routes
+  (`/log`, `/report`, `/report-all`, `/env`). The transport benchmark
+  tags its own traffic and folds these into its summary.
 - **Fuzzer triage** — every run writes `summary.md` with normalized
   failure signatures and ready replay commands; `--shrink` bisects a
   reproducible failure to a minimal `--steps`; `RTC_FUZZ_LOG_SYNC=1`

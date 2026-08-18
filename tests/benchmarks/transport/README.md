@@ -27,6 +27,24 @@ edit-to-visible latency as a user experiences it.
   requested transport. A mismatch usually means a
   `WP_COLLABORATION_TRANSPORT` constant/env override on the site, or a
   failed negotiation.
+- **Server-side per-request metrics** (community-harness conventions) —
+  every `/wp-sync/` request the windows make is tagged with the
+  [WordPress/distributed-rtc-performance-testing](https://github.com/WordPress/distributed-rtc-performance-testing)
+  harness's headers (`X-RTC-Test`, `X-RTC-Scenario: editing|idle`), so a
+  site with this plugin's diagnostics request log (local/development
+  wp-env, or the `GUTENBERG_SYNC_ENGINES_DIAGNOSTICS` constant) records
+  dispatch wall/CPU time, `db_queries`, `db_time_ms` (needs
+  `SAVEQUERIES`), peak memory, and concurrency per request. The benchmark
+  clears that log up front and folds per-scenario aggregates into the
+  summary (`serverSide`, using the community metric names), making runs
+  directly comparable with community-published report tables. Without the
+  diagnostics module the tags are inert and `serverSide` is null.
+- **Baseline** (community convention) — before the trials, N
+  unauthenticated `GET /wp/v2/types` round-trips (client-timed over a
+  kept-alive connection) plus N tagged empty RTC polls
+  (`scenario=baseline`, `approach=baseline`). The server-side report
+  normalizes every scenario against the baseline scenario's mean, which is
+  how community tables compare environments.
 
 ## Running it
 
@@ -52,8 +70,18 @@ Arguments are bare `key=value` tokens (the engine benchmark's convention):
 | `trials=`    | `30`      | Measured token round-trips.                         |
 | `warmup=`    | `3`       | Unmeasured leading trials.                          |
 | `idle=`      | `30`      | Idle-phase seconds (`0` skips the phase).           |
+| `baseline=`  | `10`      | Ambient-overhead samples (`0` skips the phase).     |
 | `json=`      | —         | Write full results (per-trial data included) here.  |
 | `headed=1`   | —         | Visible browser, for debugging.                     |
+
+Two caveats on the server-side lane. The scenario tagging intercepts
+`/wp-sync/` HTTP requests through Playwright routing, adding a small
+per-request overhead inside the measured latency — identical across
+phases, but latency comparisons against pre-tagging runs carry that delta
+(single-digit ms; negligible at polling cadence). And it covers the HTTP
+transports only: websocket data frames bypass both the tagging and the
+REST dispatch the request log measures, so under `transport=websocket`
+the `serverSide` aggregates hold just the baseline polls.
 
 Environment: `WP_BASE_URL` (default `http://localhost:8889`, the wp-env
 tests site), `WP_USERNAME`/`WP_PASSWORD` (default `admin`/`password`). The

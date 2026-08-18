@@ -29,8 +29,24 @@
  *   trials=     measured token round-trips (default 30)
  *   warmup=     unmeasured leading trials (default 3)
  *   idle=       seconds of idle-traffic measurement (default 30, 0 skips)
+ *   baseline=   ambient-overhead samples before the trials (default 10,
+ *               0 skips): unauthenticated GET /wp/v2/types round-trips
+ *               (client-timed, keep-alive) plus the same number of tagged
+ *               empty RTC polls (scenario=baseline, approach=baseline) —
+ *               the community harness's baseline convention, which its
+ *               report normalizes every scenario against
  *   json=       write full results as JSON to this path
  *   headed=1    run with a visible browser (debugging)
+ *
+ * Every /wp-sync/ request the two windows make is tagged with the
+ * community RTC performance harness's headers (X-RTC-Test,
+ * X-RTC-Scenario: editing|idle), so a site with this plugin's diagnostics
+ * enabled (local/development wp-env, or the
+ * GUTENBERG_SYNC_ENGINES_DIAGNOSTICS constant) records per-request
+ * server-side metrics — dispatch ms, CPU ms, db_queries, db_time (needs
+ * SAVEQUERIES), peak memory, concurrency — which this tool clears before
+ * the run and folds into the summary afterwards (`serverSide`). Without
+ * the diagnostics module the tags are inert and `serverSide` is null.
  *
  * Requires: a running env with the Gutenberg subtree + this plugin active,
  * and an admin login (WP_USERNAME/WP_PASSWORD, default admin/password).
@@ -65,6 +81,7 @@ const ENGINE = String( opts.engine ?? 'current' );
 const TRIALS = Number( opts.trials ?? 30 );
 const WARMUP = Number( opts.warmup ?? 3 );
 const IDLE_SECONDS = Number( opts.idle ?? 30 );
+const BASELINE_POLLS = Number( opts.baseline ?? 10 );
 const JSON_PATH = opts.json ? String( opts.json ) : null;
 const HEADED = Boolean( opts.headed );
 
@@ -347,6 +364,210 @@ async function installWatcher( page ) {
  */
 const kb = ( bytes ) => ( bytes / 1024 ).toFixed( 1 );
 
+/**
+ * A REST path as a rest_route URL (works under every permalink structure).
+ *
+ * @param {string} path REST route path (e.g. /wp-sync/v1/updates).
+ * @return {string} Absolute URL.
+ */
+const restUrl = ( path ) =>
+	`${ BASE }/index.php?rest_route=${ encodeURIComponent( path ) }`;
+
+/**
+ * Tags every /wp-sync/ request from the context with the community RTC
+ * performance harness's headers (X-RTC-Test, X-RTC-Scenario), so the
+ * plugin's diagnostics request log attributes rows to the current phase.
+ *
+ * @param {import('@playwright/test').BrowserContext} context Browser context.
+ * @param {{ value: string }}                         phase   Mutable phase label.
+ */
+async function installScenarioTagging( context, phase ) {
+	const isSync = ( url ) => {
+		try {
+			return decodeURIComponent( url ).includes( 'wp-sync/v1' );
+		} catch {
+			return url.includes( 'wp-sync/v1' );
+		}
+	};
+	await context.route(
+		( url ) => isSync( url.href ),
+		async ( route ) => {
+			await route.continue( {
+				headers: {
+					...route.request().headers(),
+					'x-rtc-test': '1',
+					'x-rtc-scenario': phase.value,
+				},
+			} );
+		}
+	);
+}
+
+/**
+ * Authenticated REST helper over a logged-in page's request context (shares
+ * its cookies; the nonce comes from the page's own wpApiSettings).
+ *
+ * @param {import('@playwright/test').Page} page Logged-in editor page.
+ * @return {Promise<Object|null>} { get, post, del } helpers, or null when no
+ *                                nonce is obtainable.
+ */
+async function makeRestClient( page ) {
+	let nonce = await page
+		.evaluate( () => window.wpApiSettings?.nonce )
+		.catch( () => null );
+	if ( ! nonce ) {
+		const response = await page.request.get(
+			`${ BASE }/wp-admin/admin-ajax.php?action=rest-nonce`
+		);
+		const text = ( await response.text() ).trim();
+		nonce = /^[a-f0-9]{10}$/.test( text ) ? text : null;
+	}
+	if ( ! nonce ) {
+		return null;
+	}
+	const call = async ( method, path, { body, headers } = {} ) => {
+		const response = await page.request.fetch( restUrl( path ), {
+			method,
+			headers: {
+				'content-type': 'application/json',
+				'x-wp-nonce': nonce,
+				...( headers ?? {} ),
+			},
+			data: body ? JSON.stringify( body ) : undefined,
+		} );
+		let data = null;
+		try {
+			data = await response.json();
+		} catch {
+			// Non-JSON body: leave data null.
+		}
+		return { status: response.status(), data };
+	};
+	return {
+		get: ( path, init ) => call( 'GET', path, init ),
+		post: ( path, init ) => call( 'POST', path, init ),
+		del: ( path, init ) => call( 'DELETE', path, init ),
+	};
+}
+
+/**
+ * The community harness's baseline convention: N unauthenticated
+ * GET /wp/v2/types round-trips (ambient REST overhead, client-timed over a
+ * kept-alive connection) plus N tagged empty RTC polls
+ * (scenario=baseline, approach=baseline) recorded by the server-side log.
+ *
+ * @param {Object} rest  REST client from makeRestClient (may be null).
+ * @param {string} room  Room to poll.
+ * @param {number} polls Sample count.
+ * @return {Promise<Object>} Client-side baseline stats.
+ */
+async function runBaseline( rest, room, polls ) {
+	const totals = [];
+	for ( let i = 0; i < polls; i++ ) {
+		const start = Date.now();
+		await fetch( restUrl( '/wp/v2/types' ) );
+		totals.push( Date.now() - start );
+	}
+	if ( rest ) {
+		for ( let i = 0; i < polls; i++ ) {
+			await rest.post( '/wp-sync/v1/updates', {
+				body: {
+					rooms: [
+						{
+							room,
+							client_id: 10001,
+							// null = publish no awareness state: a synthetic
+							// state (no user object) crashes the editor's
+							// collaborator-avatar UI in any open window.
+							awareness: null,
+							after: 0,
+							updates: [],
+						},
+					],
+				},
+				headers: {
+					'x-rtc-test': '1',
+					'x-rtc-scenario': 'baseline',
+					'x-rtc-approach': 'baseline',
+				},
+			} );
+		}
+	}
+	totals.sort( ( a, b ) => a - b );
+	const mean =
+		totals.reduce( ( sum, value ) => sum + value, 0 ) / totals.length;
+	return {
+		polls,
+		restTotalMs: {
+			min: totals[ 0 ],
+			p50: percentile( totals, 50 ),
+			mean: Math.round( mean * 10 ) / 10,
+			max: totals[ totals.length - 1 ],
+		},
+	};
+}
+
+/**
+ * Folds the plugin's server-side request log into per-scenario aggregates
+ * using the community harness's metric names. Returns null when the site
+ * has no diagnostics module (404) or the log is unreadable.
+ *
+ * @param {Object} rest REST client from makeRestClient (may be null).
+ * @return {Promise<Object|null>} Aggregates keyed by scenario.
+ */
+async function collectServerSide( rest ) {
+	if ( ! rest ) {
+		return null;
+	}
+	const response = await rest.get( '/rtc-test/v1/log' );
+	if ( 200 !== response.status || ! Array.isArray( response.data ) ) {
+		return null;
+	}
+	const byScenario = {};
+	for ( const row of response.data ) {
+		const scenario = row.scenario ?? 'unknown';
+		const agg = ( byScenario[ scenario ] ??= {
+			n: 0,
+			ms_sum: 0,
+			total_ms_sum: 0,
+			cpu_ms_sum: 0,
+			db_queries_sum: 0,
+			db_time_ms_sum: 0,
+			peak_memory_sum: 0,
+			updates_in: 0,
+			updates_out: 0,
+			max_concurrent: 0,
+		} );
+		agg.n += 1;
+		agg.ms_sum += row.ms;
+		agg.total_ms_sum += row.total_ms;
+		agg.cpu_ms_sum += row.cpu_ms;
+		agg.db_queries_sum += row.db_queries;
+		agg.db_time_ms_sum += row.db_time_ms;
+		agg.peak_memory_sum += row.peak_memory;
+		agg.updates_in += row.updates_in;
+		agg.updates_out += row.updates_out;
+		agg.max_concurrent = Math.max( agg.max_concurrent, row.concurrent );
+	}
+	const round1 = ( value ) => Math.round( value * 10 ) / 10;
+	const out = {};
+	for ( const [ scenario, agg ] of Object.entries( byScenario ) ) {
+		out[ scenario ] = {
+			n: agg.n,
+			ms_avg: round1( agg.ms_sum / agg.n ),
+			total_ms_avg: round1( agg.total_ms_sum / agg.n ),
+			cpu_ms_avg: round1( agg.cpu_ms_sum / agg.n ),
+			db_queries_avg: round1( agg.db_queries_sum / agg.n ),
+			db_time_ms_avg: round1( agg.db_time_ms_sum / agg.n ),
+			peak_memory_mb_avg: round1( agg.peak_memory_sum / agg.n / 1048576 ),
+			updates_in: agg.updates_in,
+			updates_out: agg.updates_out,
+			max_concurrent: agg.max_concurrent,
+		};
+	}
+	return out;
+}
+
 async function main() {
 	if ( ! Number.isFinite( TRIALS ) || TRIALS < 1 ) {
 		throw new Error( 'trials must be a positive number' );
@@ -358,6 +579,12 @@ async function main() {
 	const consoleErrors = { a: [], b: [] };
 	try {
 		const contextA = await browser.newContext();
+
+		// Tag all /wp-sync/ traffic with the current phase so the plugin's
+		// diagnostics request log (when present) attributes rows to it.
+		const phase = { value: 'setup' };
+		await installScenarioTagging( contextA, phase );
+
 		pageA = await login( contextA );
 
 		// Settings and collaboration are provisioned through window A's
@@ -592,6 +819,30 @@ async function main() {
 				`warmup=${ WARMUP } post=${ postId }`
 		);
 
+		// Server-side log + baseline (community-harness conventions). The
+		// REST client rides window A's session; a missing nonce or absent
+		// diagnostics module degrades to client-side numbers only.
+		const rest = await makeRestClient( pageA );
+		if ( rest ) {
+			// Isolate this run's server-side rows (404 when the site has no
+			// diagnostics module — ignored).
+			await rest.del( '/rtc-test/v1/log' );
+		}
+		let baseline = null;
+		if ( BASELINE_POLLS > 0 ) {
+			console.log( `baseline: ${ BASELINE_POLLS } ambient samples…` );
+			baseline = await runBaseline(
+				rest,
+				`postType/post:${ postId }`,
+				BASELINE_POLLS
+			);
+			console.log(
+				`  GET /wp/v2/types total ms: min ${ baseline.restTotalMs.min } ` +
+					`p50 ${ baseline.restTotalMs.p50 } mean ${ baseline.restTotalMs.mean } ` +
+					`max ${ baseline.restTotalMs.max }`
+			);
+		}
+
 		// The anchor paragraph, refocused before every insert: ambient
 		// focus does not reliably survive the anchor gate (theme/editor
 		// differences), and an unfocused insertText lands nowhere.
@@ -599,6 +850,7 @@ async function main() {
 			.locator( '[data-type="core/paragraph"]' )
 			.last();
 
+		phase.value = 'editing';
 		const trialStart = Date.now();
 		const startA = countersA.snapshot();
 		const startB = countersB.snapshot();
@@ -661,6 +913,7 @@ async function main() {
 		let idle = null;
 		if ( IDLE_SECONDS > 0 ) {
 			console.log( `idle phase: ${ IDLE_SECONDS }s…` );
+			phase.value = 'idle';
 			const idleStartA = countersA.snapshot();
 			const idleStartB = countersB.snapshot();
 			const idleStart = Date.now();
@@ -673,9 +926,15 @@ async function main() {
 			};
 		}
 
+		phase.value = 'post';
+
 		// Self-label the transport from the traffic actually observed
 		// (verified against the requested transport before trials above).
 		const observedTransport = observeTransport( countersA );
+
+		// Per-scenario server-side aggregates (community metric names) from
+		// the plugin's diagnostics request log, when the site has one.
+		const serverSide = await collectServerSide( rest );
 
 		latencies.sort( ( x, y ) => x - y );
 		const mean =
@@ -700,8 +959,10 @@ async function main() {
 				max: latencies[ latencies.length - 1 ],
 				mean: Math.round( mean * 10 ) / 10,
 			},
+			baseline,
 			activePhase: { durationMs: trialMs, ...active },
 			idlePhase: idle,
+			serverSide,
 			trials,
 		};
 
@@ -713,12 +974,12 @@ async function main() {
 				`mean ${ summary.latencyMs.mean }`
 		);
 		console.log( '── wire traffic (bodies only, per window) ──' );
-		for ( const [ label, phase ] of [
+		for ( const [ label, phaseCounters ] of [
 			[ 'editing', active ],
 			...( idle ? [ [ 'idle   ', idle ] ] : [] ),
 		] ) {
 			for ( const key of [ 'a', 'b' ] ) {
-				const t = phase[ key ];
+				const t = phaseCounters[ key ];
 				const line =
 					observedTransport === 'websocket'
 						? `${ t.wsFramesSent + t.wsFramesReceived } frames, ` +
@@ -736,6 +997,25 @@ async function main() {
 					`  ${ label }  window ${ key.toUpperCase() }: ${ line }`
 				);
 			}
+		}
+		if ( serverSide ) {
+			console.log(
+				'── server-side per-request metrics (per scenario) ──'
+			);
+			for ( const [ scenario, agg ] of Object.entries( serverSide ) ) {
+				console.log(
+					`  ${ scenario }: n=${ agg.n } disp_ms=${ agg.ms_avg } ` +
+						`cpu_ms=${ agg.cpu_ms_avg } db_q=${ agg.db_queries_avg } ` +
+						`db_t_ms=${ agg.db_time_ms_avg } mem_mb=${ agg.peak_memory_mb_avg } ` +
+						`conc=${ agg.max_concurrent }`
+				);
+			}
+		} else {
+			console.log(
+				'── no server-side metrics (site lacks the diagnostics request log; ' +
+					'run against a local/development env or define ' +
+					'GUTENBERG_SYNC_ENGINES_DIAGNOSTICS) ──'
+			);
 		}
 		console.log(
 			`── observed transport: ${ observedTransport } ` +
