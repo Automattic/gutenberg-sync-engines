@@ -343,7 +343,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					 * disposition — fetches are advisory, idempotent, and
 					 * carry nothing to accept or reject.
 					 */
-					$decoded = json_decode( (string) $update['data'], true );
+					$decoded                                       = json_decode( (string) $update['data'], true );
 					$this->content_requests[ $room ][ $client_id ] = is_array( $decoded ) && is_string( $decoded['haveVersion'] ?? null )
 						? $decoded['haveVersion']
 						: '';
@@ -639,9 +639,9 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				}
 
 				// Claimed: this request owns the advancement to the next
-				// version. (A crash between here and add_row() leaves an
+				// version. A crash between here and add_row() leaves an
 				// orphaned claim; claim_version() heals that by TTL
-				// takeover.)
+				// takeover.
 				$next_seq     = (int) $state['version_seq'] + 1;
 				$next_version = 'v' . $next_seq;
 				$merged       = (string) $result['merged_content'];
@@ -794,6 +794,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				$normalized
 			);
 			if ( is_wp_error( $valid ) && $this->is_hash_pinned_unsupported_fallback( $valid, $normalized ) ) {
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 				do_action( 'qm/debug', 'wp-sync: de-rtc accepted digest-only descriptor evidence in ' . $room . ' (client sent the unsupported-fallback op; hashes verified)' );
 				$valid = true;
 			}
@@ -848,6 +849,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			$reason = is_array( $data ) && is_string( $data['detail'] ?? null )
 				? $data['detail']
 				: $error->get_error_code();
+			// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 			do_action( 'qm/debug', 'wp-sync: de-rtc rejected a client descriptor in ' . $room . ' — ' . $reason );
 			return array(
 				'status' => 'voided',
@@ -1727,7 +1729,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			// In sync, or a stale copy of a version the room knows: stamp
 			// as seen so the check stays cheap, but never merge (rollback
 			// guard).
-			$known = $external_hash === wp_de_rtc_hash_content( (string) $state['content'] );
+			$known = wp_de_rtc_hash_content( (string) $state['content'] ) === $external_hash;
 			if ( ! $known && is_array( $state['sync_meta']['version_snapshots'] ?? null ) ) {
 				foreach ( $state['sync_meta']['version_snapshots'] as $snapshot ) {
 					if ( is_array( $snapshot ) && ( $snapshot['content_hash'] ?? null ) === $external_hash ) {
@@ -1752,6 +1754,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					// copy of it (co-location pays off): use theirs.
 					$carried = $embedded_meta['version_snapshots'][ $base_version ];
 					if ( 'base64' === ( $carried['encoding'] ?? null ) && is_string( $carried['content_base64'] ?? null ) ) {
+						// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- Strict-mode decode of a hash-verified content snapshot carried in sync meta.
 						$decoded = base64_decode( $carried['content_base64'], true );
 						if ( is_string( $decoded ) && wp_de_rtc_hash_content( $decoded ) === ( $carried['content_hash'] ?? null ) ) {
 							$base = $decoded;
@@ -1995,6 +1998,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 
 					$snapshot = $meta['version_snapshots'][ $base_version ] ?? null;
 					if ( is_array( $snapshot ) && 'base64' === ( $snapshot['encoding'] ?? null ) && is_string( $snapshot['content_base64'] ?? null ) ) {
+						// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- Strict-mode decode of a hash-verified content snapshot carried in a revision's sync meta.
 						$decoded = base64_decode( $snapshot['content_base64'], true );
 						if ( is_string( $decoded ) && wp_de_rtc_hash_content( $decoded ) === ( $snapshot['content_hash'] ?? null ) ) {
 							$resolved = $decoded;
@@ -2003,7 +2007,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					}
 
 					if (
-						$base_version === ( $meta['room_version'] ?? null ) &&
+						( $meta['room_version'] ?? null ) === $base_version &&
 						is_string( $parsed['content'] ?? null ) &&
 						wp_de_rtc_hash_content( $parsed['content'] ) === ( $meta['content_hash'] ?? null )
 					) {
@@ -2137,9 +2141,12 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
-		 * @param string $room  Room identifier.
-		 * @param array  $state Room state.
-		 * @return void
+		 * @param string $room    Room identifier.
+		 * @param array  $state   Room state.
+		 * @param bool   $advance Whether this write extends the canonical
+		 *                        chain to a newly claimed version (chained
+		 *                        CAS) rather than overwriting in place.
+		 * @return bool Whether the store now reflects at least this state.
 		 */
 		private function save_canonical( string $room, array $state, bool $advance = false ): bool {
 			$seq   = (int) $state['version_seq'];

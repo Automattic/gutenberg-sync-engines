@@ -308,7 +308,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 			$max_room_bytes = (int) apply_filters( 'wp_sync_yjs_server_max_room_bytes', 8 * MB_IN_BYTES, $room );
 			if ( $max_room_bytes > 0 && strlen( $before_bytes ) > $max_room_bytes ) {
 				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
-				do_action( 'qm/debug', "wp-sync: yjs-server room {$room} is over the room-size ceiling (" . strlen( $before_bytes ) . " bytes); rejecting writes" );
+				do_action( 'qm/debug', "wp-sync: yjs-server room {$room} is over the room-size ceiling (" . strlen( $before_bytes ) . ' bytes); rejecting writes' );
 				return new WP_Error(
 					'rest_sync_room_full',
 					__( 'This collaboration room has grown past its size ceiling; further updates are rejected. Save the post and start a fresh session.', 'gutenberg' ),

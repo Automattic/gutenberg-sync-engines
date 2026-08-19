@@ -163,7 +163,7 @@ class Tests_Collaboration_WpIntentLogBaseSeqPreflight extends WP_UnitTestCase {
 		);
 
 		// The writer restyles the SAME register from the old base.
-		$writer = str_replace(
+		$writer  = str_replace(
 			sprintf( '{"metadata":{"syncId":"%s"}}', $ids[0] ),
 			sprintf( '{"align":"left","metadata":{"syncId":"%s"}}', $ids[0] ),
 			$this->writer_content( $ids, 'unused', 'unused' )

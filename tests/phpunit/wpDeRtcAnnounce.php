@@ -161,7 +161,7 @@ class Tests_Collaboration_WpDeRtcAnnounce extends WP_UnitTestCase {
 		$result = $engine->handle_updates( $this->room(), 101, 0, array( $this->proposal( 'p-edit', 'v2', $edited ) ), array() );
 		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
 
-		$response = $this->engine()->get_updates_since( $this->room(), 202, 0, array() );
+		$response           = $this->engine()->get_updates_since( $this->room(), 202, 0, array() );
 		$max_announce_bytes = 0;
 		foreach ( $response['updates'] as $update ) {
 			if ( WP_De_RTC_Engine::UPDATE_TYPE_ANNOUNCE === $update['type'] ) {

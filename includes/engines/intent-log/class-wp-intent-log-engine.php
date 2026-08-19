@@ -1301,6 +1301,14 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 			return (int) ( $state['base_seq'] ?? 0 ) + count( $state['log'] );
 		}
 
+		/**
+		 * Materializes the room's document as serialized post content by
+		 * replaying the accepted log over the genesis snapshot.
+		 *
+		 * @param string $room Room identifier.
+		 * @return string|null Serialized block content, or null when the
+		 *                     room cannot be loaded.
+		 */
 		public function materialize( string $room ): ?string {
 			$state = $this->load_room( $room );
 			if ( is_wp_error( $state ) ) {
