@@ -14,7 +14,7 @@ import type {
 	EngineUpdate,
 } from '@wordpress/sync';
 import { applyServerAwarenessStates } from '../awareness-sync';
-import { buildDeRtcClientUpdate } from './descriptor';
+import { buildDeRtcClientUpdate, hashDeRtcContent } from './descriptor';
 import { DE_RTC_REMOTE_ORIGIN, type DeRtcDocBridge } from './doc-bridge';
 import type { DeRtcParkedProposal, DeRtcReviewState } from './review';
 
@@ -28,7 +28,7 @@ export const DE_RTC_ENGINE_SLUG = 'de-rtc';
  * Protocol version of the de-rtc engine. Must match
  * WP_De_RTC_Engine::PROTOCOL_VERSION on the PHP side.
  */
-export const DE_RTC_ENGINE_PROTOCOL = 1;
+export const DE_RTC_ENGINE_PROTOCOL = 2;
 
 /**
  * Client-sent row type: a whole-content proposal against a named base
@@ -39,8 +39,25 @@ export const DE_RTC_PROPOSAL_TYPE = 'proposal';
 /**
  * Server-emitted row type: accepted canonical content at a version.
  * Matches WP_De_RTC_Engine::UPDATE_TYPE_CONTENT. Receive-only.
+ * LEGACY (protocol 1): rooms written before the announce model still
+ * replay these; the server no longer writes them.
  */
 export const DE_RTC_CONTENT_TYPE = 'content';
+
+/**
+ * Server-emitted row type: a canonical version ANNOUNCEMENT — version,
+ * base version, content hash, author attribution, merged properties, NO
+ * content (the transport carries advisories, not documents; TODO-20).
+ * Matches WP_De_RTC_Engine::UPDATE_TYPE_ANNOUNCE. Receive-only.
+ */
+export const DE_RTC_ANNOUNCE_TYPE = 'announce';
+
+/**
+ * Client-sent row type: request the canonical content when behind
+ * (payload `haveVersion`); the server answers in the same poll with one
+ * synthesized snapshot row. Matches WP_De_RTC_Engine::UPDATE_TYPE_FETCH.
+ */
+export const DE_RTC_FETCH_TYPE = 'fetch';
 
 /**
  * Server-emitted row type: genesis/checkpoint snapshot. Matches
@@ -149,6 +166,51 @@ export function createDeRtcSessionCodec(
 			canonicalContents.delete( oldest );
 		}
 	};
+
+	/*
+	 * Announce-model catch-up state (TODO-20): announcements carry no
+	 * content, so the session tracks the highest announced version it
+	 * has not reflected yet and fetches canonical content EAGERLY — at
+	 * most one fetch in flight, so a busy room costs one canonical
+	 * download per poll cycle at worst, not one per version. The
+	 * existing deferral (pendingCanonical) holds a fetched snapshot
+	 * that arrives mid-burst until the local state settles, so eager
+	 * fetching never clobbers local edits — it just has the content
+	 * READY at settle instead of adding a round trip then.
+	 */
+	let behindSeq = 0;
+	// The behind-seq a sent fetch will cover; 0 when none is in flight.
+	// Cleared when any snapshot arrives (the fetch's answer is always a
+	// snapshot of the CURRENT canonical, which covers every announced
+	// version at fulfillment time).
+	let fetchInFlightSeq = 0;
+	// An own proposal the server merged with peers' work (announce hash
+	// mismatch): the fetched snapshot for it INCORPORATES (keeping
+	// locally-edited blocks, raising contests) instead of applying.
+	let pendingOwnMergeSeq = 0;
+
+	const versionSeq = ( version: string | null ): number =>
+		version ? parseInt( version.slice( 1 ), 10 ) || 0 : 0;
+	const currentSeq = () => versionSeq( bridge.lastVersion() );
+
+	function maybeFetch(): void {
+		if (
+			! localUpdateListener ||
+			behindSeq <= currentSeq() ||
+			// Single-flight, with a liveness backstop: a lost or unanswered
+			// fetch unsticks as soon as a NEWER version is announced (the
+			// wire-inspected soak caught a stuck in-flight fetch turning
+			// into an unknown-base-version death spiral).
+			fetchInFlightSeq >= behindSeq
+		) {
+			return;
+		}
+		fetchInFlightSeq = behindSeq;
+		const data = JSON.stringify( {
+			haveVersion: bridge.lastVersion() ?? '',
+		} );
+		localUpdateListener( { data, type: DE_RTC_FETCH_TYPE }, data.length );
+	}
 
 	function buildProposal(): EngineUpdate {
 		proposalCounter += 1;
@@ -266,7 +328,9 @@ export function createDeRtcSessionCodec(
 
 		if (
 			'string' !== typeof decoded?.version ||
-			'string' !== typeof decoded?.content
+			( 'string' !== typeof decoded?.content &&
+				// Announce rows carry a hash, never content (TODO-20).
+				DE_RTC_ANNOUNCE_TYPE !== update.type )
 		) {
 			return;
 		}
@@ -309,13 +373,129 @@ export function createDeRtcSessionCodec(
 		}
 
 		switch ( update.type ) {
-			case DE_RTC_SNAPSHOT_TYPE:
+			case DE_RTC_ANNOUNCE_TYPE: {
+				if ( 'string' !== typeof decoded.version ) {
+					return;
+				}
+				const announcedSeq = versionSeq( decoded.version );
+				if (
+					decoded.authorClientId === doc.clientID &&
+					decoded.proposalId === inFlightProposalId
+				) {
+					// The announcement for OUR CURRENT proposal: the slot
+					// frees either way.
+					inFlight = false;
+					inFlightProposalId = null;
+					if (
+						null !== lastProposedContent &&
+						'string' === typeof decoded.contentHash &&
+						hashDeRtcContent( lastProposedContent ) ===
+							decoded.contentHash
+					) {
+						// Round-tripped unchanged (canonicalized-hash
+						// equality — the wire-safe twin of the old byte
+						// compare; every server-side comparison
+						// canonicalizes the same way): advance without any
+						// content download — the announce model's core win
+						// for the active typist. Properties the server
+						// merged from peers still incorporate (they ride
+						// the announce).
+						pendingCanonical = null;
+						recordCanonicalContent(
+							decoded.version,
+							lastProposedContent
+						);
+						if ( rowProperties ) {
+							bridge.incorporateProperties(
+								rowProperties,
+								lastProposedProperties
+							);
+						}
+						options.undoFeed?.noteRow( {
+							version: decoded.version,
+							baseVersion:
+								'string' === typeof decoded.baseVersion
+									? decoded.baseVersion
+									: null,
+							content: lastProposedContent,
+							own: true,
+							...( 'number' === typeof decoded.author
+								? { author: decoded.author }
+								: {} ),
+							authorClientId: doc.clientID,
+						} );
+						bridge.advanceVersion( decoded.version );
+						if ( announcedSeq >= behindSeq ) {
+							behindSeq = 0;
+						}
+						settleQueued();
+						return;
+					}
+					// The server merged peers' work into our proposal: the
+					// fetched snapshot for it must INCORPORATE (keep
+					// locally-edited blocks, raise contests) rather than
+					// apply wholesale.
+					pendingOwnMergeSeq = announcedSeq;
+				}
+				if ( announcedSeq > currentSeq() && announcedSeq > behindSeq ) {
+					behindSeq = announcedSeq;
+				}
+				// Eager: the fetched content defers if we're mid-burst; it
+				// must be READY at settle, not a round trip away.
+				maybeFetch();
+				return;
+			}
+
+			case DE_RTC_SNAPSHOT_TYPE: {
+				const snapshotSeq = versionSeq( decoded.version );
+				// The in-flight fetch is answered; anything announced since
+				// re-fetches below (via settleQueued's maybeFetch tail).
+				fetchInFlightSeq = 0;
+				if ( snapshotSeq >= behindSeq ) {
+					behindSeq = 0;
+				}
+				if (
+					pendingOwnMergeSeq > 0 &&
+					snapshotSeq >= pendingOwnMergeSeq &&
+					null !== lastProposedContent &&
+					bridge.incorporateCanonicalPreservingLocalEdits(
+						decoded.version,
+						decoded.content,
+						lastProposedContent
+					)
+				) {
+					// The catch-up for our merged proposal: adopt the
+					// blocks we did not touch since proposing, keep the
+					// ones we did (contested items raise per TODO-12).
+					pendingOwnMergeSeq = 0;
+					pendingCanonical = null;
+					if ( rowProperties ) {
+						bridge.incorporateProperties(
+							rowProperties,
+							lastProposedProperties
+						);
+					}
+					settleQueued();
+					return;
+				}
+				if ( snapshotSeq >= pendingOwnMergeSeq ) {
+					// The snapshot supersedes the pending merge (or the
+					// incorporation could not align structurally); the
+					// wholesale apply below resolves the room state either
+					// way. An OLDER snapshot (a replayed genesis) keeps the
+					// marker for the real catch-up.
+					pendingOwnMergeSeq = 0;
+				}
 				applyOrDeferCanonical(
 					decoded.version,
 					decoded.content,
 					rowProperties
 				);
+				if ( ! inFlight ) {
+					settleQueued();
+				}
 				return;
+			}
 
 			case DE_RTC_CONTENT_TYPE:
 				if (
@@ -398,6 +578,11 @@ export function createDeRtcSessionCodec(
 			pendingCanonical = null;
 			bridge.applyCanonical( version, content, properties );
 		}
+		if ( ! inFlight ) {
+			// Announce model: settled and still behind an announced
+			// version whose content never arrived — fetch it now.
+			maybeFetch();
+		}
 	}
 
 	return {
@@ -446,6 +631,20 @@ export function createDeRtcSessionCodec(
 		},
 		receiveUpdate: ( update ) => processRow( update ),
 		receiveDispositions( dispositions: EngineDisposition[] ) {
+			/*
+			 * A voided proposal (a base that aged out of the snapshot
+			 * window, a rejected descriptor) means our base is no longer
+			 * mergeable: catch up NOW. Clear any stuck fetch marker and
+			 * mark ourselves behind — a void frequently follows exactly
+			 * the starvation that lost a fetch.
+			 */
+			const voided = dispositions.some(
+				( disposition ) => 'voided' === disposition.status
+			);
+			if ( voided ) {
+				fetchInFlightSeq = 0;
+				behindSeq = Math.max( behindSeq, currentSeq() + 1 );
+			}
 			// ONLY the disposition for the CURRENT in-flight proposal
 			// settles the slot: a previous proposal's disposition arrives in
 			// the response that follows the one whose rows already settled
@@ -457,6 +656,9 @@ export function createDeRtcSessionCodec(
 				( disposition ) => disposition.intentId === inFlightProposalId
 			);
 			if ( ! settlesCurrent ) {
+				if ( voided ) {
+					maybeFetch();
+				}
 				return;
 			}
 			inFlight = false;

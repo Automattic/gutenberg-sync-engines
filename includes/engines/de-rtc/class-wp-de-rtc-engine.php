@@ -43,11 +43,14 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 
 		/**
 		 * Engine protocol version (bump on breaking payload changes).
+		 * Version 2: accepted proposals broadcast ANNOUNCE rows (version +
+		 * content hash, no content); clients fetch canonical content on
+		 * demand (TODO-20 in docs/engine-comparison.md).
 		 *
 		 * @since 0.3.0
 		 * @var int
 		 */
-		const PROTOCOL_VERSION = 1;
+		const PROTOCOL_VERSION = 2;
 
 		/**
 		 * Client-sent update type: a content proposal against a base version.
@@ -60,10 +63,39 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		/**
 		 * Server-emitted update type: accepted canonical content at a version.
 		 *
+		 * LEGACY (protocol 1): still understood on replay so rooms written
+		 * before the announce model catch clients up, but no longer written.
+		 *
 		 * @since 0.3.0
 		 * @var string
 		 */
 		const UPDATE_TYPE_CONTENT = 'content';
+
+		/**
+		 * Server-emitted update type: a canonical version ANNOUNCEMENT —
+		 * version, base version, content hash, author attribution, and the
+		 * merged property registers, but NO content. The transport carries
+		 * advisories, not documents (the DE-RTC vision's Sync channel):
+		 * canonical content lives once in room meta (plus checkpoint
+		 * snapshots and the post/revision write-through), and a client that
+		 * needs it sends a `fetch` row. Row bytes stop scaling with document
+		 * size — the TODO-20 cliff.
+		 *
+		 * @since 0.6.0
+		 * @var string
+		 */
+		const UPDATE_TYPE_ANNOUNCE = 'announce';
+
+		/**
+		 * Client-sent update type: request the canonical content when the
+		 * client's version is behind. Payload: `haveVersion`. Answered in
+		 * the same poll's read half with ONE synthesized (never stored)
+		 * snapshot row of the CURRENT canonical state.
+		 *
+		 * @since 0.6.0
+		 * @var string
+		 */
+		const UPDATE_TYPE_FETCH = 'fetch';
 
 		/**
 		 * Server-emitted update type: genesis/checkpoint snapshot.
@@ -175,6 +207,17 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		private $revision_base_cache = array();
 
 		/**
+		 * Pending content fetches for this request, room => client_id =>
+		 * haveVersion. Written by the ingest half (a `fetch` row), consumed
+		 * by the read half (one synthesized snapshot when the client is
+		 * behind). Per-request state, like the debug stash.
+		 *
+		 * @since 0.6.0
+		 * @var array
+		 */
+		private $content_requests = array();
+
+		/**
 		 * Constructor.
 		 *
 		 * @since 0.3.0
@@ -221,6 +264,8 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			return array(
 				self::UPDATE_TYPE_PROPOSAL,
 				self::UPDATE_TYPE_CONTENT,
+				self::UPDATE_TYPE_ANNOUNCE,
+				self::UPDATE_TYPE_FETCH,
 				self::UPDATE_TYPE_SNAPSHOT,
 				self::UPDATE_TYPE_PROPOSAL_PARKED,
 				self::UPDATE_TYPE_RESOLVED,
@@ -255,10 +300,10 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			}
 
 			foreach ( $updates as $update ) {
-				if ( ! in_array( $update['type'], array( self::UPDATE_TYPE_PROPOSAL, self::UPDATE_TYPE_RESOLVED ), true ) ) {
+				if ( ! in_array( $update['type'], array( self::UPDATE_TYPE_PROPOSAL, self::UPDATE_TYPE_RESOLVED, self::UPDATE_TYPE_FETCH ), true ) ) {
 					return new WP_Error(
 						'rest_invalid_update_type',
-						__( 'Clients may only send proposal or resolution updates to a de-rtc room.', 'gutenberg' ),
+						__( 'Clients may only send proposal, resolution, or fetch updates to a de-rtc room.', 'gutenberg' ),
 						array( 'status' => 400 )
 					);
 				}
@@ -289,6 +334,21 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			$resolutions = array();
 			$proposals   = array();
 			foreach ( $updates as $update ) {
+				if ( self::UPDATE_TYPE_FETCH === $update['type'] ) {
+					/*
+					 * A content fetch (the announce model's on-demand lane):
+					 * note the client's version; the read half of this same
+					 * request answers with ONE synthesized snapshot of the
+					 * current canonical when the client is behind. No
+					 * disposition — fetches are advisory, idempotent, and
+					 * carry nothing to accept or reject.
+					 */
+					$decoded = json_decode( (string) $update['data'], true );
+					$this->content_requests[ $room ][ $client_id ] = is_array( $decoded ) && is_string( $decoded['haveVersion'] ?? null )
+						? $decoded['haveVersion']
+						: '';
+					continue;
+				}
 				if ( self::UPDATE_TYPE_RESOLVED === $update['type'] ) {
 					$resolution = json_decode( (string) $update['data'], true );
 					if (
@@ -601,15 +661,39 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					$merged
 				);
 
+				/*
+				 * Announce model (TODO-20): canonical truth writes FIRST
+				 * (room meta), the row second — the row is an ADVISORY
+				 * notification, not the document. A lost row is benign
+				 * (the next fetch/poll converges from meta); the reverse
+				 * order could strand an announced version whose content
+				 * nothing holds.
+				 */
+				$prev_version         = $state['version'];
+				$state['version']     = $next_version;
+				$state['version_seq'] = $next_seq;
+				$state['content']     = $merged;
+				$this->record_properties_snapshot( $state, $next_version );
+				if ( ! $this->save_canonical( $room, $state, true ) ) {
+					// The chained canonical write could not land (a crashed
+					// predecessor, healed by the claim TTL). Retryable, and
+					// nothing was announced or acked for this version.
+					return new WP_Error(
+						'rest_sync_room_busy',
+						__( 'The room is busy processing another request. Retry shortly.', 'gutenberg' ),
+						array( 'status' => 503 )
+					);
+				}
+
 				$stored = $this->add_row(
 					$room,
 					self::SERVER_CLIENT_ID,
-					self::UPDATE_TYPE_CONTENT,
+					self::UPDATE_TYPE_ANNOUNCE,
 					wp_json_encode(
 						array(
 							'version'        => $next_version,
-							'baseVersion'    => $state['version'],
-							'content'        => $merged,
+							'baseVersion'    => $prev_version,
+							'contentHash'    => wp_de_rtc_hash_content( $merged ),
 							'properties'     => $state['properties'] ?? array(),
 							'authorClientId' => $client_id,
 							'author'         => get_current_user_id(),
@@ -618,17 +702,12 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					)
 				);
 				if ( ! $stored ) {
-					return array(
-						'status' => 'voided',
-						'reason' => 'storage-error',
-					);
+					// Canonical already advanced; peers converge via fetch.
+					// The proposer still needs its disposition — report the
+					// applied version, not a void.
+					// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+					do_action( 'qm/debug', "wp-sync: de-rtc announce row write failed in {$room} (canonical advanced; clients converge via fetch)" );
 				}
-
-				$state['version']     = $next_version;
-				$state['version_seq'] = $next_seq;
-				$state['content']     = $merged;
-				$this->record_properties_snapshot( $state, $next_version );
-				$this->save_canonical( $room, $state );
 
 				$disposition = array(
 					'status'  => 'applied',
@@ -802,6 +881,19 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			$proposed_props = $proposal['proposedProperties'] ?? null;
 			if ( ! is_array( $proposed_props ) ) {
 				return;
+			}
+
+			/*
+			 * One representation: content travels as content (the proposal
+			 * body / canonical state), never as a property register. A
+			 * `content` register would re-carry the ENTIRE document on
+			 * every announce (the TODO-20 double-carry). Stripped here
+			 * defensively for legacy clients; also scrubbed from any
+			 * previously-persisted canonical map.
+			 */
+			unset( $proposed_props['content'] );
+			if ( is_array( $state['properties'] ?? null ) ) {
+				unset( $state['properties']['content'] );
 			}
 
 			$base_props      = $this->resolve_base_properties( $state, (string) $proposal['baseVersion'] );
@@ -1350,7 +1442,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * @param array  $context   Transport context.
 		 * @return array Response envelope.
 		 */
-		public function get_updates_since( string $room, int $client_id, int $cursor, array $context ): array { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable -- $client_id is part of the WP_Sync_Engine contract.
+		public function get_updates_since( string $room, int $client_id, int $cursor, array $context ): array {
 			if ( $cursor > 0 && method_exists( $this->storage, 'get_room_meta' ) ) {
 				$floor = $this->storage->get_room_meta( $room, self::META_FLOOR );
 				if ( is_numeric( $floor ) && $cursor < (int) $floor ) {
@@ -1371,13 +1463,43 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 
 			$typed_updates = array();
 			foreach ( $rows as $row ) {
-				// All stored rows are server-authored (content/snapshot) and
+				// All stored rows are server-authored (announce/snapshot) and
 				// relevant to every client, including the proposal's author —
-				// an accepted content row is the authoritative confirmation.
+				// an accepted announce row is the authoritative confirmation.
 				$typed_updates[] = array(
 					'data' => $row['data'],
 					'type' => $row['type'],
 				);
+			}
+
+			/*
+			 * Content-on-demand (the announce model, TODO-20): a `fetch` row
+			 * in this request's ingest half asked for canonical content. When
+			 * the client is behind, append ONE synthesized snapshot of the
+			 * CURRENT canonical state — never stored, never counted in
+			 * cursors, always the latest (a fetch for an announced version
+			 * that has since advanced gets the newer state; strictly better).
+			 */
+			$have_version = $this->content_requests[ $room ][ $client_id ] ?? null;
+			if ( null !== $have_version ) {
+				unset( $this->content_requests[ $room ][ $client_id ] );
+				$state = $this->load_room( $room );
+				if ( ! is_wp_error( $state ) ) {
+					$have_seq = '' === $have_version ? -1 : (int) ltrim( (string) $have_version, 'v' );
+					if ( (int) $state['version_seq'] > $have_seq ) {
+						$typed_updates[] = array(
+							'data' => wp_json_encode(
+								array(
+									'version'    => $state['version'],
+									'content'    => $state['content'],
+									'properties' => $state['properties'] ?? array(),
+									'ephemeral'  => true,
+								)
+							),
+							'type' => self::UPDATE_TYPE_SNAPSHOT,
+						);
+					}
+				}
 			}
 
 			$response = array(
@@ -1443,8 +1565,16 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				return $this->room_states[ $room ];
 			}
 
-			$has_meta = method_exists( $this->storage, 'get_room_meta' );
-			$meta     = $has_meta ? $this->storage->get_room_meta( $room, self::META_DOC ) : null;
+			// Canonical truth: the chained options row (the announce model's
+			// single content store). Legacy rooms fall back to the old
+			// de_rtc_doc room meta once; the next advance seeds the chain.
+			$meta = self::decode_canonical(
+				WP_Sync_Atomic_Option::read( $this->canonical_option_name( $room ) )
+			);
+			if ( null === $meta && method_exists( $this->storage, 'get_room_meta' ) ) {
+				$legacy = $this->storage->get_room_meta( $room, self::META_DOC );
+				$meta   = is_array( $legacy ) ? $legacy : null;
+			}
 
 			$state       = null;
 			$meta_cursor = 0;
@@ -1508,6 +1638,13 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					$state['properties'] = $decoded['properties'];
 				}
 				$this->record_properties_snapshot( $state, $decoded['version'] );
+			}
+
+			// One-representation scrub: a legacy `content` property register
+			// persisted by older clients must not re-carry the document on
+			// every announce (see merge_proposed_properties).
+			if ( is_array( $state['properties'] ?? null ) ) {
+				unset( $state['properties']['content'] );
 			}
 
 			// Self-healing: fold in an out-of-band post_content write before
@@ -1691,15 +1828,31 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					$merged
 				);
 
-				$stored = $this->add_row(
+				// Meta first, row second (the announce model's write order;
+				// see ingest_proposal).
+				$pre_heal             = $state;
+				$prev_version         = $state['version'];
+				$state['version']     = $next_version;
+				$state['version_seq'] = $next_seq;
+				$state['content']     = $merged;
+				$state['healed_hash'] = $external_hash;
+				$this->record_properties_snapshot( $state, $next_version );
+				if ( ! $this->save_canonical( $room, $state, true ) ) {
+					// The chained write could not land: skip healing this
+					// pass (idempotent — healed_hash was not stamped, so a
+					// later room load retries from clean state).
+					return $pre_heal;
+				}
+
+				$this->add_row(
 					$room,
 					self::SERVER_CLIENT_ID,
-					self::UPDATE_TYPE_CONTENT,
+					self::UPDATE_TYPE_ANNOUNCE,
 					wp_json_encode(
 						array(
 							'version'        => $next_version,
-							'baseVersion'    => $state['version'],
-							'content'        => $merged,
+							'baseVersion'    => $prev_version,
+							'contentHash'    => wp_de_rtc_hash_content( $merged ),
 							'properties'     => $state['properties'] ?? array(),
 							'authorClientId' => self::SERVER_CLIENT_ID,
 							'author'         => get_current_user_id(),
@@ -1708,16 +1861,6 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 						)
 					)
 				);
-				if ( ! $stored ) {
-					return $state;
-				}
-
-				$state['version']     = $next_version;
-				$state['version_seq'] = $next_seq;
-				$state['content']     = $merged;
-				$state['healed_hash'] = $external_hash;
-				$this->record_properties_snapshot( $state, $next_version );
-				$this->save_canonical( $room, $state );
 
 				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 				do_action( 'qm/debug', "wp-sync: de-rtc healed an external save into {$room} as {$next_version}" );
@@ -1980,7 +2123,9 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			 */
 			WP_Sync_Atomic_Option::reset( $this->version_claim_name( $room ), $version_seq . ':' . sprintf( '%.6F', microtime( true ) ) );
 
-			$this->save_canonical( $room, $state );
+			// Genesis re-seeds the canonical chain unconditionally, like the
+			// claim: a stale chain row must not outlive a room reset.
+			$this->canonical_reset( $room, $state );
 
 			return $state;
 		}
@@ -1996,30 +2141,157 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * @param array  $state Room state.
 		 * @return void
 		 */
-		private function save_canonical( string $room, array $state ): void {
-			$this->room_states[ $room ] = $state;
-			if ( ! method_exists( $this->storage, 'set_room_meta' ) ) {
-				return;
+		private function save_canonical( string $room, array $state, bool $advance = false ): bool {
+			$seq   = (int) $state['version_seq'];
+			$value = $seq . '|' . wp_json_encode( $this->canonical_payload( $room, $state ) );
+
+			if ( ! $advance ) {
+				/*
+				 * Maintenance write (checkpoint cursor bump, healed-hash
+				 * stamp): same-sequence overwrite. A newer canonical having
+				 * landed makes this write obsolete, not failed.
+				 */
+				if ( WP_Sync_Atomic_Option::swap_prefixed( $this->canonical_option_name( $room ), $seq . '|', $value ) ) {
+					$this->room_states[ $room ] = $state;
+					return true;
+				}
+				$current = self::canonical_seq_of( WP_Sync_Atomic_Option::read( $this->canonical_option_name( $room ) ) );
+				return null !== $current && $current > $seq;
 			}
+
+			/*
+			 * Advance write: the CHAINED CAS that makes canonical
+			 * persistence ordered (TODO-20). The version claim allocates
+			 * sequence numbers, but claims cannot order the persistence
+			 * itself — writer N's meta landing AFTER writer N+1's would
+			 * silently regress canonical, and under the announce model rows
+			 * carry no content to repair from (the wire-inspected soak
+			 * caught exactly this as unknown-base-version death spirals).
+			 * Each writer expects its PREDECESSOR's sequence prefix, so a
+			 * write can only ever extend the chain; a writer whose
+			 * predecessor has not persisted yet spins briefly (that write
+			 * is another request's in-flight UPDATE, milliseconds away) and
+			 * gives up retryably if it never lands (a crashed predecessor —
+			 * the claim TTL then heals the room, and this writer's version
+			 * was never announced or acked).
+			 */
+			$expected = ( $seq - 1 ) . '|';
+			for ( $attempt = 0; $attempt < 40; $attempt++ ) {
+				if ( WP_Sync_Atomic_Option::swap_prefixed( $this->canonical_option_name( $room ), $expected, $value ) ) {
+					$this->room_states[ $room ] = $state;
+					return true;
+				}
+				$current = self::canonical_seq_of( WP_Sync_Atomic_Option::read( $this->canonical_option_name( $room ) ) );
+				if ( null !== $current && $current >= $seq ) {
+					// The chain moved past us without us: impossible unless
+					// state was rebuilt (reset) — never overwrite forward.
+					return false;
+				}
+				usleep( 25000 );
+			}
+
+			return false;
+		}
+
+		/**
+		 * The canonical payload persisted per room (the announce model's
+		 * single content store).
+		 *
+		 * @since 0.6.0
+		 *
+		 * @param string $room  Room identifier.
+		 * @param array  $state Room state.
+		 * @return array Payload.
+		 */
+		private function canonical_payload( string $room, array $state ): array {
 			global $wpdb;
 			$cursor = isset( $wpdb ) ? (int) $wpdb->insert_id : 0;
 			if ( $cursor <= 0 ) {
 				$cursor = $this->storage->get_cursor( $room );
 			}
-			$this->storage->set_room_meta(
-				$room,
-				self::META_DOC,
-				array(
-					'version'               => $state['version'],
-					'version_seq'           => (int) $state['version_seq'],
-					'content'               => $state['content'],
-					'sync_meta'             => $state['sync_meta'],
-					'properties'            => $state['properties'] ?? array(),
-					'properties_by_version' => $state['properties_by_version'] ?? array(),
-					'healed_hash'           => is_string( $state['healed_hash'] ?? null ) ? $state['healed_hash'] : null,
-					'cursor'                => $cursor,
-				)
+			return array(
+				'version'               => $state['version'],
+				'version_seq'           => (int) $state['version_seq'],
+				'content'               => $state['content'],
+				'sync_meta'             => $state['sync_meta'],
+				'properties'            => $state['properties'] ?? array(),
+				'properties_by_version' => $state['properties_by_version'] ?? array(),
+				'healed_hash'           => is_string( $state['healed_hash'] ?? null ) ? $state['healed_hash'] : null,
+				'cursor'                => $cursor,
 			);
+		}
+
+		/**
+		 * Unconditionally re-seeds the canonical row (room genesis after a
+		 * reset — the claim-reset counterpart).
+		 *
+		 * @since 0.6.0
+		 *
+		 * @param string $room  Room identifier.
+		 * @param array  $state Genesis state.
+		 * @return void
+		 */
+		private function canonical_reset( string $room, array $state ): void {
+			$this->room_states[ $room ] = $state;
+			WP_Sync_Atomic_Option::reset(
+				$this->canonical_option_name( $room ),
+				(int) $state['version_seq'] . '|' . wp_json_encode( $this->canonical_payload( $room, $state ) )
+			);
+		}
+
+		/**
+		 * The canonical-state option row for a room.
+		 *
+		 * @since 0.6.0
+		 *
+		 * @global wpdb $wpdb WordPress database abstraction object.
+		 *
+		 * @param string $room Room identifier.
+		 * @return string Option name.
+		 */
+		private function canonical_option_name( string $room ): string {
+			global $wpdb;
+
+			return $wpdb->prefix . 'sync_de_rtc_canonical_' . md5( $room );
+		}
+
+		/**
+		 * Parses the sequence prefix of a stored canonical value.
+		 *
+		 * @since 0.6.0
+		 *
+		 * @param string|null $value Stored `<seq>|<json>` value.
+		 * @return int|null Sequence, or null when unparseable.
+		 */
+		private static function canonical_seq_of( ?string $value ): ?int {
+			if ( ! is_string( $value ) ) {
+				return null;
+			}
+			$separator = strpos( $value, '|' );
+			if ( false === $separator ) {
+				return null;
+			}
+			return (int) substr( $value, 0, $separator );
+		}
+
+		/**
+		 * Decodes a stored canonical value into room state (+ cursor).
+		 *
+		 * @since 0.6.0
+		 *
+		 * @param string|null $value Stored `<seq>|<json>` value.
+		 * @return array|null array( state..., 'cursor' ) or null.
+		 */
+		private static function decode_canonical( ?string $value ): ?array {
+			if ( ! is_string( $value ) ) {
+				return null;
+			}
+			$separator = strpos( $value, '|' );
+			if ( false === $separator ) {
+				return null;
+			}
+			$decoded = json_decode( substr( $value, $separator + 1 ), true );
+			return is_array( $decoded ) ? $decoded : null;
 		}
 
 		/**

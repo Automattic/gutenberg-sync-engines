@@ -200,7 +200,7 @@ the protocol won. The fidelity program reverses that default.
 | Per-ingest CPU | Replay from checkpoint + transform planning — the cheapest of the three | Load + merge + re-encode the canonical y-php doc — the dominant cost of the three, scales with document size | Parse + three-way merge of three content strings (pure PHP over `parse_blocks` trees) — cheap at benchmark sizes, scales with document size |
 | Locking | Per-room Core-style options-row lock (`WP_Sync_Room_Lock`, the upgrader pattern: atomic INSERT IGNORE + TTL; 5 s wait budget, contenders get a retryable 503). One claim/release pair of DB writes inside every timed request — the engine benchmark's `calibration` block exists to subtract it. Topology-safe by construction (TODO-1, done) | None — CRDT merge needs no total order; the update log is the source of truth and a lost canonical-save race is repaired from it on the next load | None — lock-free optimistic version claims (`WP_Sync_Atomic_Option` CAS): an accepted proposal atomically claims v(n+1), a lost claim reloads + re-merges, exhaustion returns the retryable 503. Upstream's validate-and-retry model, restored (TODO-1, done) |
 | Idle reads | Cheap by design (rows after cursor; no reconstruction) | Cheap (the canonical doc is never touched on the read path) | Cheap (rows after cursor; canonical untouched) |
-| Storage growth | Bounded: checkpoint + trim every 100 rows | Bounded: server checkpoint + trim every 100 rows, no client needed | Bounded: server checkpoint + trim every 100 rows — but every accepted proposal stores a FULL content row, so row bytes scale with document size — at 1 s cadence on hour-scale documents the read path exhausts a default 128 MB PHP (TODO-10 soak; TODO-20) |
+| Storage growth | Bounded: checkpoint + trim every 100 rows | Bounded: server checkpoint + trim every 100 rows, no client needed | Bounded: server checkpoint + trim every 100 rows, and since TODO-20 stage 1 accepted proposals store ~200-byte ANNOUNCE rows (version + content hash; canonical content lives once per room, fetched on demand) — row bytes no longer scale with document size, closing the TODO-10 soak's PHP-memory cliff |
 | Row contents | Small JSON intents + periodic full-document checkpoint rows | Base64 V2 diffs (server strips what it already had) + full-state snapshot rows, plus the canonical doc in room meta | Full-content JSON rows (content + version + attribution) + snapshot rows, plus canonical content and version snapshots in room meta |
 
 In plain terms, the locking row is a pro/con set. intent-log: one edit
@@ -806,17 +806,74 @@ the engine Dennis designed; the rest change polish and confidence.
   (SCRIPT_DEBUG on; debug envelopes inactive without a client
   opt-in, so bytes are unbiased), Chromium headless, same-machine
   loopback.
-- **TODO-20 — Bound de-rtc's row-read amplification (from the
-  TODO-10 soak).** Two compounding causes: content rows scale with
-  document size (engine), and the framework storage decodes every
-  row since a cursor in one pass (framework). Candidate fixes, in
-  rising order of fidelity to the vision: batch/stream the storage
-  read; checkpoint far more aggressively for de-rtc rooms;
-  engine-side announcement rows (version + hash, content fetched on
-  demand) — which is TODO-12's deeper Save/Sync inversion arriving
-  as a measured necessity rather than a design preference. Until
-  one lands, de-rtc at 1 s cadence on long sessions is bounded by
-  PHP memory, not by correctness.
+- **TODO-20 — Bound de-rtc's row-read amplification. STAGE 1 DONE
+  (2026-08-19): the announce model — the transport carries
+  advisories, not documents.** Protocol 2. Accepted proposals (and
+  healed external saves) store ~200-byte ANNOUNCE rows — version,
+  base version, canonicalized content hash, author attribution,
+  merged property registers — never content. Canonical content lives
+  ONCE per room, and a behind client sends a `fetch` row answered in
+  the same poll's read half by ONE synthesized (never stored)
+  snapshot of the current canonical. The session advances by HASH
+  for its own unchanged round-trips (`hashDeRtcContent`, the
+  TODO-2a parity twin — the active typist downloads nothing),
+  fetches eagerly with a single-flight-until-progress guard, and
+  incorporates the fetched snapshot for merged own proposals
+  (contested items raise per TODO-12, unchanged). Deferral holds a
+  mid-burst snapshot until settle exactly as before. Voided
+  dispositions force a catch-up fetch (stale-base recovery).
+
+  Three defects found and fixed BY the wire-inspected soak runs
+  while building this (each now pinned by tests):
+
+  1. **The content-property double-carry**: core-data mirrors the
+     serialized `content` string into the record map, and de-rtc's
+     flat property lane was re-carrying the ENTIRE document as a
+     property register on every proposal, every content row, and
+     every announce — silently, since the old wire was
+     document-sized anyway. Excluded client-side (one
+     representation: content travels as content) and stripped
+     server-side for legacy clients and persisted maps. This also
+     killed a latent canvas-regression class (a stale content
+     register incorporated post-settle makes
+     `getEditedPostContent()` return the stale string).
+  2. **Canonical-persistence ordering**: version claims allocate
+     sequence numbers but cannot order the PERSISTENCE of canonical
+     state; writer N's meta landing after writer N+1's silently
+     regressed canonical, and with rows content-less the replay
+     could no longer repair it (observed as unknown-base-version
+     death spirals wedging a window for 40+ seconds). Canonical now
+     lives in an engine-owned CHAINED options row
+     (`<seq>|<payload>`, `WP_Sync_Atomic_Option::swap_prefixed`):
+     each writer CASes against its predecessor's sequence prefix,
+     so a write can only extend the chain; an unpersisted
+     predecessor spins briefly then fails RETRYABLY (503) — that
+     version was never announced or acked, so version reuse after
+     claim-TTL healing is consistent. Write order is meta-first,
+     row-second: the row is the advisory, the chain is the truth,
+     and a lost row heals via the next conditional fetch.
+  3. **Fetch starvation**: a strict single-flight fetch guard let
+     one lost fetch freeze catch-up forever; the guard now unsticks
+     on announced progress, and voids force a fetch.
+
+  Measured (3-minute 3-window instrumented soaks, same workload):
+  download per user-hour dropped ~3× immediately and no longer
+  scales with document size (the hour-run cliff class is gone
+  structurally — stored rows are constant-size, so the storage read
+  path decodes kilobytes, not megabytes); probe latency p50 ~2 s,
+  p90 ~3 s with the outliers eliminated; convergence clean. Covered
+  by `tests/phpunit/wpDeRtcAnnounce.php` (announce shape, fetch
+  semantics, ephemeral snapshots, row-size bound, convergence
+  round-trip), `tests/js/engines/de-rtc/announce.test.ts`, and the
+  adapted bench profile (which now pays the fetch cost the way real
+  clients do). Legacy `content` rows still replay (old rooms catch
+  clients up); the server no longer writes them.
+
+  STAGE 2 (open): move the COMMIT lane to Save/autosave (the full
+  Save/Sync inversion — proposals leave the transport entirely; the
+  de-rtc autosaves controller routes pseudo-realtime commits through
+  the room without publishing). The announce lane built here is that
+  design's Sync channel, unchanged.
 - **TODO-11 — Round-trip complex sourced attributes through
   materialization. INTENT-LOG HALF DONE (2026-08-18); the yjs-server
   half needs framework changes (design recorded).** The Phase-2a

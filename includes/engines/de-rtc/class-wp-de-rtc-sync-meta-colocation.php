@@ -146,14 +146,31 @@ if ( ! class_exists( 'WP_De_RTC_Sync_Meta_Colocation' ) ) {
 				return null;
 			}
 
-			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-			$doc_json = $wpdb->get_var(
-				$wpdb->prepare(
-					"SELECT meta_value FROM $wpdb->postmeta WHERE post_id = %d AND meta_key = %s ORDER BY meta_id DESC LIMIT 1",
-					$storage_id,
-					'wp_sync_room_meta_' . WP_De_RTC_Engine::META_DOC
-				)
-			);
+			/*
+			 * Canonical truth lives in the engine's chained options row
+			 * (`<seq>|<json>`; the announce model's ordered store), with the
+			 * legacy `de_rtc_doc` room meta as the pre-chain fallback.
+			 */
+			$doc_json = null;
+			if ( class_exists( 'WP_Sync_Atomic_Option' ) ) {
+				$chained = WP_Sync_Atomic_Option::read( $wpdb->prefix . 'sync_de_rtc_canonical_' . md5( $room ) );
+				if ( is_string( $chained ) ) {
+					$separator = strpos( $chained, '|' );
+					if ( false !== $separator ) {
+						$doc_json = substr( $chained, $separator + 1 );
+					}
+				}
+			}
+			if ( null === $doc_json ) {
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+				$doc_json = $wpdb->get_var(
+					$wpdb->prepare(
+						"SELECT meta_value FROM $wpdb->postmeta WHERE post_id = %d AND meta_key = %s ORDER BY meta_id DESC LIMIT 1",
+						$storage_id,
+						'wp_sync_room_meta_' . WP_De_RTC_Engine::META_DOC
+					)
+				);
+			}
 			if ( ! is_string( $doc_json ) || '' === $doc_json ) {
 				return null;
 			}

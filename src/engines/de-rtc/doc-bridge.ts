@@ -351,7 +351,16 @@ export function createDeRtcDocBridge(
 		const flat: Record< string, unknown > = {};
 		doc.getMap( CRDT_RECORD_MAP_KEY ).forEach(
 			( stored: any, name: string ) => {
-				if ( 'blocks' === name ) {
+				/*
+				 * `blocks` IS the content model; a `content` record-map
+				 * entry (core-data mirrors the serialized string into the
+				 * doc) would duplicate the ENTIRE document as a property
+				 * register on every proposal and every announce — the
+				 * double-carry the TODO-20 wire inspection caught. One
+				 * representation: content travels as content, never as a
+				 * property.
+				 */
+				if ( 'blocks' === name || 'content' === name ) {
 					return;
 				}
 				const value =

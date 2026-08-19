@@ -72,6 +72,10 @@ const PROBE_SECONDS = Number( opts.probe ?? 30 );
 const SAVE_SECONDS = Number( opts.save ?? 120 );
 const JSON_PATH = opts.json ? String( opts.json ) : null;
 const HEADED = Boolean( opts.headed );
+// inspect=1: enable the wire inspector (window.wpSync) in every window and
+// export each ring buffer into the JSON output — for diagnosing session
+// state-machine stalls the aggregate counters cannot explain.
+const INSPECT = Boolean( opts.inspect );
 
 /**
  * Deterministic jitter (no wall-clock randomness: reruns pace the same).
@@ -198,6 +202,11 @@ async function main() {
 		for ( const win of wins ) {
 			win.canvas = await canvasOf( win.page );
 			await installWatcher( win.page );
+			if ( INSPECT ) {
+				await win.page.evaluate( () => {
+					window.wpSync?.enable?.();
+				} );
+			}
 		}
 		await adminPage.waitForTimeout( 3000 );
 
@@ -412,6 +421,19 @@ async function main() {
 		phase.value = 'post';
 		const serverSide = await collectServerSide( rest );
 
+		// Wire-inspector ring buffers (inspect=1): the per-window decoded
+		// poll history, for diagnosing session state-machine stalls.
+		let wireLogs = null;
+		if ( INSPECT ) {
+			wireLogs = {};
+			for ( const win of wins ) {
+				const dump = await win.page
+					.evaluate( () => window.wpSync?.export?.() ?? null )
+					.catch( () => null );
+				wireLogs[ win.index ] = dump ? JSON.parse( dump ) : null;
+			}
+		}
+
 		// Per-user-hour composition: mean across windows, scaled to one
 		// hour — the units the cost cards project in.
 		const hours = soakMs / 3600000;
@@ -515,6 +537,7 @@ async function main() {
 			probes,
 			saves,
 			minuteSamples,
+			wireLogs,
 			serverSide,
 			consoleErrors,
 		};

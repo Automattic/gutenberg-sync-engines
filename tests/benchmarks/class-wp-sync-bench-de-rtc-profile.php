@@ -390,7 +390,8 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 		 * @param array $response get_updates_since() response.
 		 */
 		public function observe( int $client, array $response ): void {
-			$latest = null;
+			$latest       = null;
+			$announced    = null;
 			foreach ( (array) ( $response['updates'] ?? array() ) as $row ) {
 				$decoded = json_decode( (string) $row['data'], true );
 				if ( ! is_array( $decoded ) ) {
@@ -413,15 +414,16 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 					continue;
 				}
 
-				if ( ! is_string( $decoded['version'] ?? null ) || ! is_string( $decoded['content'] ?? null ) ) {
+				$is_announce = WP_De_RTC_Engine::UPDATE_TYPE_ANNOUNCE === ( $row['type'] ?? '' );
+				if ( ! is_string( $decoded['version'] ?? null ) || ( ! $is_announce && ! is_string( $decoded['content'] ?? null ) ) ) {
 					continue;
 				}
-				if ( 'content' === ( $row['type'] ?? '' ) && is_string( $decoded['baseVersion'] ?? null ) ) {
+				if ( in_array( $row['type'] ?? '', array( 'content', WP_De_RTC_Engine::UPDATE_TYPE_ANNOUNCE ), true ) && is_string( $decoded['baseVersion'] ?? null ) ) {
 					$version = $decoded['version'];
 					if ( isset( $this->row_lineage[ $version ] ) && $this->row_lineage[ $version ] !== $decoded['baseVersion'] ) {
 						$this->observe_failures[] = array(
 							'check'  => 'lineage',
-							'detail' => sprintf( "content row '%s' was delivered with two different base versions ('%s', '%s')", $version, $this->row_lineage[ $version ], $decoded['baseVersion'] ),
+							'detail' => sprintf( "broadcast row '%s' was delivered with two different base versions ('%s', '%s')", $version, $this->row_lineage[ $version ], $decoded['baseVersion'] ),
 						);
 					}
 					$this->row_lineage[ $version ] = $decoded['baseVersion'];
@@ -439,8 +441,21 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 				) {
 					$this->observe_failures[] = array(
 						'check'  => 'prop-lineage',
-						'detail' => sprintf( "content row '%s' carries a property map that does not match the per-property three-way model", $decoded['version'] ),
+						'detail' => sprintf( "broadcast row '%s' carries a property map that does not match the per-property three-way model", $decoded['version'] ),
 					);
+				}
+
+				if ( $is_announce ) {
+					// Announce model (TODO-20): version + hash + properties,
+					// no content — the newest one drives a fetch below.
+					$seq = (int) ltrim( $decoded['version'], 'v' );
+					if ( null === $announced || $seq > $announced['seq'] ) {
+						$announced = array(
+							'seq'     => $seq,
+							'version' => $decoded['version'],
+						);
+					}
+					continue;
 				}
 
 				$latest = $decoded;
@@ -454,6 +469,45 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 					);
 				}
 			}
+
+			/*
+			 * Announce model catch-up: behind an announced version with no
+			 * content in the batch — fetch canonical exactly as the real
+			 * session codec does (a `fetch` row answered by one synthesized
+			 * snapshot). The fetch cost is deliberately part of the profile:
+			 * it is what real clients now pay.
+			 */
+			$base_seq = (int) ltrim( (string) $this->base_version[ $client ], 'v' );
+			if ( null !== $announced && $announced['seq'] > $base_seq && null !== $this->engine && ( null === $latest || (int) ltrim( (string) $latest['version'], 'v' ) < $announced['seq'] ) ) {
+				$this->engine->handle_updates(
+					$this->room,
+					$client,
+					0,
+					array(
+						array(
+							'type' => WP_De_RTC_Engine::UPDATE_TYPE_FETCH,
+							'data' => (string) wp_json_encode( array( 'haveVersion' => (string) $this->base_version[ $client ] ) ),
+						),
+					),
+					array()
+				);
+				$fetch_response = $this->engine->get_updates_since( $this->room, $client, PHP_INT_MAX, array() );
+				foreach ( (array) ( $fetch_response['updates'] ?? array() ) as $row ) {
+					$decoded = json_decode( (string) $row['data'], true );
+					if ( is_array( $decoded ) && is_string( $decoded['version'] ?? null ) && is_string( $decoded['content'] ?? null ) ) {
+						$latest = $decoded;
+						$seq    = (int) ltrim( $decoded['version'], 'v' );
+						if ( null === $this->latest_row || $seq > $this->latest_row['seq'] ) {
+							$this->latest_row = array(
+								'seq'        => $seq,
+								'content'    => $decoded['content'],
+								'properties' => is_array( $decoded['properties'] ?? null ) ? $decoded['properties'] : array(),
+							);
+						}
+					}
+				}
+			}
+
 			if ( is_array( $latest ) ) {
 				$this->content[ $client ]      = (string) $latest['content'];
 				$this->base_version[ $client ] = (string) $latest['version'];

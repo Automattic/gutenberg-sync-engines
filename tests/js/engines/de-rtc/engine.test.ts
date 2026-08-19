@@ -95,11 +95,11 @@ describe( 'createDeRtcEngine', () => {
 	it( 'announces the identity the server negotiates against', () => {
 		const engine = createDeRtcEngine();
 		expect( engine.slug ).toBe( 'de-rtc' );
-		expect( engine.protocolVersion ).toBe( 1 );
+		expect( engine.protocolVersion ).toBe( 2 );
 
 		const session = makeEntity().createSession();
 		expect( session.engineSlug ).toBe( 'de-rtc' );
-		expect( session.engineProtocol ).toBe( 1 );
+		expect( session.engineProtocol ).toBe( 2 );
 	} );
 
 	it( 'does NOT seed the document on hydrate; genesis bootstraps it', () => {

@@ -549,11 +549,19 @@ they exist so a failure is observable without re-instrumenting:
   lock-free — each accepted
   proposal atomically claims its version advancement (options-row CAS,
   `WP_Sync_Atomic_Option`) and a lost claim reloads + re-merges, the
-  upstream optimistic model — and every accepted proposal broadcasts FULL
-  content rows (storage bounded by checkpoints, but row bytes scale with
-  document size — the TODO-10 hour soak measured this as an operational
-  CLIFF at 1 s cadence: PHP memory exhaustion in the storage read path;
-  see TODO-20).
+  upstream optimistic model. Since TODO-20 stage 1 (protocol 2) the
+  transport carries ADVISORIES, not documents: accepted proposals
+  broadcast ~200-byte `announce` rows (version + canonicalized content
+  hash + merged property registers); canonical content lives once per
+  room in a CHAINED options row (`swap_prefixed` — writers CAS against
+  their predecessor's sequence prefix, so canonical persistence can
+  never regress), and a behind client's `fetch` row is answered with
+  one synthesized, never-stored snapshot. The active typist advances
+  by hash and downloads nothing; row bytes no longer scale with
+  document size (the TODO-10 hour soak's PHP-memory cliff, closed).
+  Do NOT reintroduce a `content` entry into de-rtc's property lane —
+  it silently re-carries the whole document per announce (found by
+  wire inspection; stripped on both sides).
 - **Intent-log observed-baseline residuals** (the echo race is FIXED — capture
   now diffs the editor tree against the document state that tree reflects and
   authors at its seq; see the "THE OBSERVED BASELINE" note in
