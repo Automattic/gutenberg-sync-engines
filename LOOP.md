@@ -19,7 +19,8 @@ a merge.
 | Item | Lane | Status | Attempts | Branch | Notes |
 | --- | --- | --- | --- | --- | --- |
 | A7 websocket fencing coverage audit | A | done | 1 | loop/a7 | verifier PASS (cycle 1) |
-| A6 phpcs burn-down | A | queued | 0 | — | one directory/sniff-family batch per cycle |
+| A6 phpcs burn-down | A | done | 1 | loop/a6 | verifier PASS (cycle 2); debt was 17E+26W at base, not ~275E |
+| A9 stale phpcs-debt note in AGENTS.md | A | queued | 0 | — | filed cycle 2: AGENTS.md "Known issues" still claims ~275 errors; false once loop/a6 merges. Doc-only |
 | A1 intent-log empty-genesis reload stall | A | queued | 0 | — | open bug; replay command in V1.md |
 | A4 yjs genesis rich-text defect | A | queued | 0 | — | plugin-side |
 | A5 announce-inversion verification debt | A | queued | 0 | — | 3 sub-items; hour soak is wall-clock long |
@@ -45,6 +46,27 @@ None.
 None.
 
 ## Cycle log
+
+### Cycle 2 — 2026-08-19 — A6 phpcs burn-down
+- Did: the whole item in one cycle — the "~275 errors" figure in
+  V1.md/AGENTS.md was stale; real debt at base was 17 errors +
+  26 warnings in 17 files. `composer format` auto-fixed 28 violations
+  (alignment, array formatting, quotes); hand fixes for the rest:
+  docblocks (intent-log `materialize()`, de-rtc `save_canonical()`
+  `$advance`/bool return, rooms-CLI `$room`), Yoda flips in the de-rtc
+  engine, websocket handshake ternary hoisted to named variables,
+  `qm/debug` + hash-verified `base64_decode` phpcs:ignores matching
+  existing repo convention, `$parent` → `$parent_id` in the base-seq
+  preflight. No behavior changes; excludes untouched.
+- Acceptance: `composer lint` exit 0 (0E/0W); `npm run test:php`
+  OK (310 tests, 2142 assertions); `npm run test:js` 38 suites /
+  526 tests passed.
+- Verifier: PASS — confirmed base had exactly 17E/26W in the 17
+  touched files, diff is style/docs-only, ignores are targeted
+  suppressions not exclude-widening.
+- Ledger changes: A6 queued → done (branch loop/a6, 1 commit). Filed
+  A9 (stale phpcs-debt note in AGENTS.md, from the verifier's
+  follow-up note).
 
 ### Cycle 1 — 2026-08-19 — A7 websocket fencing coverage audit
 - Did: fresh-worktree setup (plugin bundle + subtree build, tests env
