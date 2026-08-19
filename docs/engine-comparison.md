@@ -902,9 +902,44 @@ the engine Dennis designed; the rest change polish and confidence.
   "advisory"); the commit CADENCE is the session's settle cycle
   (~one commit per round trip while typing) rather than an exposed
   10-second dial — the dial is a setting away, not an architecture
-  away; collections and unsupported post types keep the transport
+  away; commit POSTs roughly double the per-typist request rate at
+  pseudo-realtime cadence (bytes collapsed; requests did not);
+  collections and unsupported post types keep the transport
   proposal lane as fallback (the server still accepts proposal rows
   for them, the bench harness, and any legacy client).
+
+  Verification debt at time of writing: (1) the HOUR-scale re-run of
+  the exact TODO-10 scenario that OOM'd is the at-scale proof of the
+  cliff fix — a 3-window hour soak was in flight when this branch
+  paused (short soaks and the storage math both say it holds; the
+  hour run is the measurement); (2) de-rtc over the WEBSOCKET
+  transport is unverified post-inversion (everything was fuzzed and
+  soaked over http-polling; the WS lane shares process_room_request,
+  so it should hold — fuzz `de-rtc/websocket` to confirm); (3) some
+  scenario narratives (A–G) still describe the pre-announce wire
+  (content rows carrying documents) and need a consistency pass.
+
+**Open items roll-up (2026-08-19, for whoever picks this up next)** —
+each has its full context in the entry it cites:
+
+1. TODO-20 verification debt above: hour-soak verdict, the
+   `de-rtc/websocket` fuzz combo, the scenario-narrative pass.
+2. OPEN BUG: intent-log empty-genesis reload stall (pre-existing,
+   fuzzer-found; replay command in AGENTS.md's intent-log residuals).
+3. yjs-server genesis defect (plugin-fixable, found scoping TODO-11):
+   stripped inner markup lands in the first rich-text attribute —
+   image `caption` receives the `<img>` markup.
+4. TODO-12 UI phase: inline block cards for pending edits; the review
+   panel goes summary-only (the validated prototype's decision — the
+   panel actions are a deliberate interim).
+5. Commit-cadence dial: expose the 10-second operating point as a
+   setting (product decision on the default).
+6. Review resolutions over REST (the last mutating transport row).
+7. Framework-blocked: the yjs TODO-11 twin (core-data owns the Yjs
+   block writer); upstreaming the y-php StringDecoder delta.
+8. Parked: yjs post-genesis room growth (three-tier design recorded
+   in the project memory); the websocket-only e2e `test.fixme`;
+   phpcs debt (~275 pre-existing errors).
 - **TODO-11 — Round-trip complex sourced attributes through
   materialization. INTENT-LOG HALF DONE (2026-08-18); the yjs-server
   half needs framework changes (design recorded).** The Phase-2a
