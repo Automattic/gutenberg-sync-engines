@@ -26,7 +26,7 @@ a merge.
 | A4 yjs genesis rich-text defect | A | done | 1 | loop/a4 | verifier PASS (cycle 6); selector-sourced rich text split |
 | A5 announce-inversion verification debt | A | done | 1 | loop/a5 | verifier PASS (cycle 10); WS fuzz 0/5 → 5/5 via daemon room scan + engine cache flush |
 | A11 de-rtc session request-rate runaway | A | parked | 1 | — | CLOSED-INVALID (cycle 9): the soak's minuteSamples are CUMULATIVE counters; the deltas are a flat ~75 req/min/window all hour. No runaway exists — cycle 8 misread the data. Server capture confirms flat sync-frame rate. Full diagnosis in the cycle-9 log |
-| A2 e2e flake stabilization | A | in-progress | 1 | loop/a2 | login flake fixed (plugin-local fixture); NEW 4th signature: intent-log table-cell edit lost under load (run 2). Counted-green runs so far: 0 |
+| A2 e2e flake stabilization | A | in-progress | 1 | loop/a2 | login fix in; run 3 = 55/55 GREEN (counted 1/3); table-cell flake 1-in-3 so far |
 | A3 websocket fixme re-enable | A | queued | 0 | — | prefer the real-daemon lane |
 | A8 full fuzzer matrix soak | A | blocked | 0 | — | exit gate; runs after A1–A7 |
 | B1 yjs materialization (framework) | B | queued | 0 | — | proposal only; subtree edits |
@@ -57,6 +57,14 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
 None.
 
 ## Cycle log
+
+### Cycle 14 — 2026-08-19 — A2 (first green run banked)
+- Did: run 3 of the retry-free full suite: 55/55 GREEN in 13.1 min —
+  counted green run 1 of 3 (runs count from the login fix onward).
+  The table-cell signature did not recur (1 occurrence in 3 full
+  runs). Launched counted run 2.
+- Verifier: not yet requested.
+- Ledger changes: none beyond status note.
 
 ### Cycles 12–13 — 2026-08-19 — A2 (login flake fixed; new signature found)
 - Cycle 12: run 1 (retry-free full suite) came back 54/55 — the one
