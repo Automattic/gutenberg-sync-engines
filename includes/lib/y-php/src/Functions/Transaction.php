@@ -154,10 +154,12 @@ function cleanupTransactions( array &$transactionCleanups, int $i ): void {
 			$doc->clientID = generateNewClientId();
 		}
 		$doc->emit( 'afterTransactionCleanup', array( $transaction, $doc ) );
-		$encoder    = new Utils\UpdateEncoderV1();
-		$hasContent = writeUpdateMessageFromTransaction( $encoder, $transaction );
-		if ( $hasContent ) {
-			$doc->emit( 'update', array( $encoder->toUint8Array(), $transaction->origin, $doc, $transaction ) );
+		if ( $doc->hasObservers( 'update' ) ) {
+			$encoder    = new Utils\UpdateEncoderV1();
+			$hasContent = writeUpdateMessageFromTransaction( $encoder, $transaction );
+			if ( $hasContent ) {
+				$doc->emit( 'update', array( $encoder->toUint8Array(), $transaction->origin, $doc, $transaction ) );
+			}
 		}
 		if ( $doc->hasObservers( 'updateV2' ) ) {
 			$v2Encoder = new Utils\UpdateEncoderV2();

@@ -1,11 +1,10 @@
 <?php
 /**
- * StringDecoder tests.
+ * StringDecoder round-trip tests.
  *
- * DELTA (gutenberg-sync-engines): added alongside the StringDecoder cursor
- * rewrite (see src/Lib0/StringDecoder.php) to pin the sequential-read
- * contract the rewrite relies on — many small strings, multibyte and astral
- * chars across read boundaries, zero-length reads. Candidate for upstream.
+ * These pin the sequential-read contract the forward-cursor implementation
+ * relies on (see src/Lib0/StringDecoder.php): many small strings, multibyte
+ * and astral chars across read boundaries, zero-length reads.
  *
  * @package Yjs
  */
@@ -33,6 +32,7 @@ final class StringDecoderTest extends TestCase {
 		foreach ( $strings as $string ) {
 			$encoder->write( $string );
 		}
+
 		$decoder = new StringDecoder( $encoder->toUint8Array() );
 		foreach ( $strings as $i => $string ) {
 			$this->assertSame( $string, $decoder->read(), "string {$i} did not round-trip" );
@@ -72,12 +72,19 @@ final class StringDecoderTest extends TestCase {
 	public function testRoundTripManySmallStrings(): void {
 		// The V2 update format concatenates every item string into one shared
 		// buffer; a real multi-client document decodes hundreds of small
-		// strings from it sequentially. (This shape is also the performance
-		// case the cursor rewrite exists for.)
+		// strings from it sequentially. This shape is also the performance
+		// case the forward cursor exists for.
 		$strings = array();
 		for ( $i = 0; $i < 500; $i++ ) {
-			$strings[] = sprintf( 'tok%03d-%s ', $i, 0 === $i % 7 ? '🙂' : 'a' );
+			if ( 0 === $i % 7 ) {
+				$suffix = '🙂';
+			} else {
+				$suffix = 'a';
+			}
+
+			$strings[] = sprintf( 'tok%03d-%s ', $i, $suffix );
 		}
+
 		$this->assertRoundTrip( $strings );
 	}
 
@@ -86,5 +93,46 @@ final class StringDecoderTest extends TestCase {
 	 */
 	public function testZeroLengthReadsInterleaved(): void {
 		$this->assertRoundTrip( array( 'a', '', '', '🎉', '', 'b' ) );
+	}
+
+	/**
+	 * A buffer that is multibyte but astral-free (every char one UTF-16
+	 * unit), which takes the single-unit fast path, distinct from both the
+	 * ASCII fast path and the per-char walk.
+	 *
+	 * @return void
+	 */
+	public function testRoundTripBmpMultibyteOnly(): void {
+		$strings = array( 'héllo', 'wörld', '日本語のテキスト', '', 'çãé', 'русский текст' );
+		for ( $i = 0; $i < 200; $i++ ) {
+			$strings[] = sprintf( 'tökén%03d ', $i );
+		}
+
+		$this->assertRoundTrip( $strings );
+	}
+
+	/**
+	 * Invalid UTF-8 counts one unit per byte consistently in the length
+	 * stream (utf16Length) and the read cursor, so even garbage bytes
+	 * round-trip when sharing a buffer with ASCII strings.
+	 *
+	 * @return void
+	 */
+	public function testRoundTripInvalidUtf8(): void {
+		$this->assertRoundTrip( array( "\xF1", 'ab', "\xFF\xFE", 'tail' ) );
+	}
+
+	/**
+	 * ASCII-only buffers at volume (the byte-cursor fast path).
+	 *
+	 * @return void
+	 */
+	public function testRoundTripAsciiOnlyManyStrings(): void {
+		$strings = array();
+		for ( $i = 0; $i < 300; $i++ ) {
+			$strings[] = sprintf( 'plain-token-%04d ', $i );
+		}
+
+		$this->assertRoundTrip( $strings );
 	}
 }

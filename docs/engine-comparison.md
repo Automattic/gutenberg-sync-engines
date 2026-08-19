@@ -217,9 +217,7 @@ latency queueing; re-merge CPU; duplicate CPU plus occasional resync.
 
 This guide deliberately carries NO measured numbers: they vary by
 machine, PHP build, and code revision, and stale numbers mislead harder
-than no numbers (the yjs-server figures an earlier revision printed here
-predated the vendored y-php StringDecoder fix and overstated that
-engine's ingest cost by an order of magnitude). Run `npm run bench` for
+than no numbers. Run `npm run bench` for
 current numbers on your hardware — every claim below is a shape the
 tables it prints make concrete. The stable shape: intent-log is the
 cheapest per ingest; de-rtc costs a small multiple of it (the content
