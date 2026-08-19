@@ -23,6 +23,13 @@ export interface DeRtcParkedProposal {
 	/** A conflicting entity-property register (property-conflict rows). */
 	property?: { name: string; value: unknown };
 	excerpt?: string;
+	/**
+	 * Merge-not-stack (TODO-12): how many parked revisions this ONE
+	 * review task has folded (the fields above always show the latest).
+	 */
+	revisions?: number;
+	/** proposalIds of superseded revisions — resolved with this task. */
+	supersededIds?: string[];
 }
 
 /**
@@ -73,6 +80,25 @@ export function createDeRtcReviewState(): DeRtcReviewState {
 		listeners.forEach( ( listener ) => listener() );
 	};
 
+	/**
+	 * Merge-not-stack key (TODO-12): one review task per author per
+	 * target — a property register, or a block index set. A revised
+	 * parked proposal from the same author over the same target FOLDS
+	 * into the open task instead of raising a second one.
+	 *
+	 * @param parked Parked proposal.
+	 * @return Fold key.
+	 */
+	const foldKey = ( parked: DeRtcParkedProposal ): string =>
+		parked.property?.name
+			? `prop:${ parked.authorClientId }:${ parked.property.name }`
+			: `blocks:${ parked.authorClientId }:${ (
+					parked.changedBlocks ?? []
+			  )
+					.map( ( block ) => Number( block.index ) )
+					.sort( ( a, b ) => a - b )
+					.join( ',' ) }`;
+
 	return {
 		noteParked( parked ) {
 			if (
@@ -81,7 +107,26 @@ export function createDeRtcReviewState(): DeRtcReviewState {
 			) {
 				return; // Redelivery (or resolved before this replica saw it).
 			}
-			open.set( parked.proposalId, parked );
+			const key = foldKey( parked );
+			for ( const [ openId, existing ] of open ) {
+				if ( foldKey( existing ) !== key ) {
+					continue;
+				}
+				// Supersede: the SAME task, refreshed to the latest
+				// revision; earlier revisions resolve with it.
+				open.delete( openId );
+				open.set( parked.proposalId, {
+					...parked,
+					revisions: ( existing.revisions ?? 1 ) + 1,
+					supersededIds: [
+						...( existing.supersededIds ?? [] ),
+						existing.proposalId,
+					],
+				} );
+				notify();
+				return;
+			}
+			open.set( parked.proposalId, { ...parked, revisions: 1 } );
 			notify();
 		},
 
@@ -109,14 +154,24 @@ export function createDeRtcReviewState(): DeRtcReviewState {
 		resolve( proposalId, resolution ) {
 			// Optimistic: the server's resolved row (and disposition) confirm
 			// idempotently; an unknown id still acks as resolved server-side.
-			resolvedIds.add( proposalId );
+			// A folded task resolves EVERY revision it superseded with it
+			// (merge-not-stack: one decision closes the whole lineage).
+			const item = open.get( proposalId );
+			const ids = [ proposalId, ...( item?.supersededIds ?? [] ) ];
+			ids.forEach( ( id ) => resolvedIds.add( id ) );
 			if ( open.delete( proposalId ) ) {
 				notify();
 			}
-			emitter?.( {
-				data: JSON.stringify( { proposalId, resolution } ),
-				type: DE_RTC_RESOLVED_TYPE,
-			} );
+			ids.forEach(
+				( id ) =>
+					emitter?.( {
+						data: JSON.stringify( {
+							proposalId: id,
+							resolution,
+						} ),
+						type: DE_RTC_RESOLVED_TYPE,
+					} )
+			);
 		},
 	};
 }

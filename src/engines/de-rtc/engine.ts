@@ -24,7 +24,14 @@ import type {
 import { CRDT_RECORD_MAP_KEY } from '../yjs/constants';
 import { createYjsDoc, serializeCrdtDoc } from '../yjs/doc';
 import { docContainsSnapshot, encodeDocSnapshot } from '../yjs/snapshot';
-import { createUndoManager } from '../yjs/undo';
+import { createDeRtcAuthorship, type DeRtcBlockAuthorship } from './authorship';
+import {
+	createDeRtcRevertUndoManager,
+	createDeRtcUndoFeed,
+	type DeRtcRevertUndoManager,
+} from './revert-undo';
+import { createDeRtcCommitAdapter } from './commit';
+import { registerSaveBaseVersion } from './save-base-version';
 import { applyServerAwarenessStates } from '../awareness-sync';
 import type { EngineReviewSource } from '../review-manager-decorator';
 import {
@@ -98,6 +105,8 @@ function createInertDeRtcCollectionCodec(
 		getLocalAwareness: () => awareness?.getLocalState() ?? {},
 		onLocalUpdate() {},
 		receiveUpdate() {},
+		// Collections never commit; nothing to settle or hold.
+		prepareForSave: async () => () => {},
 	};
 }
 
@@ -120,9 +129,10 @@ function createInertDeRtcCollectionCodec(
  *   pre-sync document can never be dispatched into the editor as a
  *   mass deletion.
  *
- * Undo is the shared per-peer Yjs undo manager: undo is client-local
- * machinery, and an undo transaction marks the doc dirty like any other
- * local edit, so undone state propagates as an ordinary proposal.
+ * Undo is DE-RTC's revert-edit model (see revert-undo.ts): undo never
+ * undoes — it derives a revert from the client's own accepted canonical
+ * rows and applies it as an ordinary dirty edit, so the revert travels
+ * as an ordinary proposal in the shared history.
  *
  * Conflict review: a proposal the server escalates parks as a durable
  * `proposal-parked` row; the entity's review registry presents it
@@ -140,13 +150,39 @@ function createInertDeRtcCollectionCodec(
  */
 export function createDeRtcEngine(): SyncEngine & {
 	review: EngineReviewSource;
+	authorship: {
+		getBlockAuthorship: (
+			objectType: string,
+			objectId: unknown
+		) => Array< DeRtcBlockAuthorship | null >;
+	};
 } {
 	interface EntityReviewHandle {
 		review: DeRtcReviewState;
 		getItems: () => ReturnType< EngineReviewSource[ 'getOpenItems' ] >;
-		restore: ( proposalId: string ) => void;
+		restore: (
+			proposalId: string,
+			modifiedBlocks?: Array< { index: number; html: string } >
+		) => void;
+		/** Adopt a contested block's latest canonical form (TODO-12). */
+		adoptContested: ( index: number ) => boolean;
+		/** Reject a contest, keeping the local block (TODO-12). */
+		rejectContested: ( index: number ) => boolean;
 	}
+
+	/** The contested-item id convention on the review surface. */
+	const CONTESTED_PREFIX = 'contested-';
+	const contestedIndexOf = ( proposalId: string ): number | null =>
+		proposalId.startsWith( CONTESTED_PREFIX )
+			? Number( proposalId.slice( CONTESTED_PREFIX.length ) )
+			: null;
 	const entityReviews = new Map< string, EntityReviewHandle >();
+	// Per-entity authorship trackers (TODO-18): block-grain "who last
+	// touched this", derived from the canonical row feed.
+	const entityAuthorship = new Map<
+		string,
+		() => Array< DeRtcBlockAuthorship | null >
+	>();
 	const reviewKey = ( objectType: string, objectId: unknown ) =>
 		`${ objectType }:${ String( objectId ) }`;
 
@@ -176,27 +212,77 @@ export function createDeRtcEngine(): SyncEngine & {
 			keyListeners.get( key )!.add( listener );
 			return () => keyListeners.get( key )?.delete( listener );
 		},
-		resolveProposal: ( objectType, objectId, proposalId, resolution ) =>
-			entityReviews
-				.get( reviewKey( objectType, objectId ) )
-				?.review.resolve( proposalId, resolution ),
-		restoreProposal: ( objectType, objectId, proposalId ) =>
-			entityReviews
-				.get( reviewKey( objectType, objectId ) )
-				?.restore( proposalId ),
+		resolveProposal: ( objectType, objectId, proposalId, resolution ) => {
+			const handle = entityReviews.get(
+				reviewKey( objectType, objectId )
+			);
+			const index = contestedIndexOf( proposalId );
+			if ( null !== index ) {
+				// Any resolution of a contested item that is not an
+				// adoption is a REJECT: keep the local block.
+				handle?.rejectContested( index );
+				return;
+			}
+			handle?.review.resolve( proposalId, resolution );
+		},
+		restoreProposal: (
+			objectType,
+			objectId,
+			proposalId,
+			modifiedBlocks
+		) => {
+			const handle = entityReviews.get(
+				reviewKey( objectType, objectId )
+			);
+			const index = contestedIndexOf( proposalId );
+			if ( null !== index ) {
+				// Restore of a contested item is the ADOPT verb.
+				handle?.adoptContested( index );
+				return;
+			}
+			handle?.restore( proposalId, modifiedBlocks );
+		},
 	};
 
 	return {
 		slug: DE_RTC_ENGINE_SLUG,
 		protocolVersion: DE_RTC_ENGINE_PROTOCOL,
-		createUndoManager,
+		// The revert-edit undo (TODO-16): undo never undoes, it applies
+		// revert edits derived from the client's own accepted canonical
+		// rows, proposed like any other change.
+		createUndoManager: createDeRtcRevertUndoManager,
 		review: reviewSource,
+		authorship: {
+			getBlockAuthorship: ( objectType, objectId ) =>
+				entityAuthorship.get( reviewKey( objectType, objectId ) )?.() ??
+				[],
+		},
 		createEntity( { syncConfig, objectType, objectId } ): EngineEntity {
 			const ydoc = createYjsDoc( { objectType } );
 			const recordMap = ydoc.getMap( CRDT_RECORD_MAP_KEY );
 			const awareness = syncConfig.createAwareness?.( ydoc );
 			const bridge = createDeRtcDocBridge( ydoc, syncConfig );
 			const review = createDeRtcReviewState();
+			const undoFeed = createDeRtcUndoFeed();
+			const authorship = createDeRtcAuthorship( undoFeed );
+			// Save-through-the-room (TODO-12): this post's REST saves carry
+			// base_version while the session lives. `prepareForSave` is
+			// attached when the session comes up (TODO-20 stage 2: the
+			// save settles + holds the commit lane so it cannot
+			// self-conflict with the session's own in-flight commit).
+			const saveControl: import('./save-base-version').DeRtcSaveControl =
+				{
+					lastVersion: bridge.lastVersion,
+				};
+			const unregisterSaveBaseVersion = registerSaveBaseVersion(
+				objectType,
+				objectId,
+				saveControl
+			);
+			entityAuthorship.set(
+				reviewKey( objectType, objectId ),
+				authorship.getBlockAuthorship
+			);
 
 			// Edits made before the server snapshot arrives, replayed in
 			// order once it does.
@@ -243,9 +329,20 @@ export function createDeRtcEngine(): SyncEngine & {
 			 * origin reaches the editor like a remote change AND marks the
 			 * doc dirty so the restored state re-proposes.
 			 *
-			 * @param parked The parked proposal.
+			 * Modify-before-adopt (TODO-17, upstream's
+			 * `reviewed_block_source`): `modifiedBlocks` supplies the
+			 * reviewer's edited replacement for specific parked blocks,
+			 * keyed by the parked block's index — what the reviewer
+			 * supplies is exactly what applies, so approval and content
+			 * stay pinned together by construction.
+			 *
+			 * @param parked         The parked proposal.
+			 * @param modifiedBlocks Reviewer-edited replacements by index.
 			 */
-			const overlayParkedBlocks = ( parked: DeRtcParkedProposal ) => {
+			const overlayParkedBlocks = (
+				parked: DeRtcParkedProposal,
+				modifiedBlocks?: Array< { index: number; html: string } >
+			) => {
 				// A parked PROPERTY register restores by re-applying the
 				// losing value as a local edit — the next proposal carries
 				// it and wins the three-way merge (canonical now agrees
@@ -259,10 +356,18 @@ export function createDeRtcEngine(): SyncEngine & {
 					);
 					return;
 				}
+				const replacements = new Map< number, string >();
+				for ( const modified of modifiedBlocks ?? [] ) {
+					replacements.set(
+						Number( modified.index ),
+						String( modified.html )
+					);
+				}
 				const next = localBlocks().slice();
 				for ( const changed of parked.changedBlocks ?? [] ) {
 					const parsed = parseCanonicalBlocks(
-						String( changed?.html ?? '' )
+						replacements.get( Number( changed.index ) ) ??
+							String( changed?.html ?? '' )
 					);
 					parsed.forEach( ( block, offset ) => {
 						const index = Number( changed.index ) + offset;
@@ -281,10 +386,54 @@ export function createDeRtcEngine(): SyncEngine & {
 
 			const key = reviewKey( objectType, objectId );
 			review.onChange( () => notifyKey( key ) );
+
+			/*
+			 * Contested-block pending items (TODO-12): one item per block,
+			 * refreshed in place by the bridge's merge-not-stack contest
+			 * events. Presented through the same review surface as parked
+			 * conflicts; the verbs route by the `contested-` id prefix
+			 * (Adopt = restore, Reject = dismiss).
+			 */
+			const contested = new Map<
+				number,
+				{ version: string; html: string; edits: number }
+			>();
+			bridge.onContested( ( event ) => {
+				const existing = contested.get( event.index );
+				contested.set( event.index, {
+					version: event.version,
+					html: event.html,
+					edits: ( existing?.edits ?? 0 ) + 1,
+				} );
+				notifyKey( key );
+			} );
+			bridge.onContestResolved( ( index ) => {
+				if ( contested.delete( index ) ) {
+					notifyKey( key );
+				}
+			} );
+			const contestedExcerpt = ( item: {
+				html: string;
+				edits: number;
+			} ): string => {
+				const text = item.html
+					.replace( /<[^>]*>/g, ' ' )
+					.replace( /\s+/g, ' ' )
+					.trim()
+					.slice( 0, 80 );
+				return 1 < item.edits
+					? `${ text } (${ item.edits } edits)`
+					: text;
+			};
+
 			entityReviews.set( key, {
 				review,
-				getItems: () =>
-					review.getOpen().map( ( parked ) => ( {
+				adoptContested: ( index ) =>
+					bridge.adoptContestedBlock( index ),
+				rejectContested: ( index ) =>
+					bridge.rejectContestedBlock( index ),
+				getItems: () => [
+					...review.getOpen().map( ( parked ) => ( {
 						id: parked.proposalId,
 						unitId: parked.proposalId,
 						isLocal: parked.authorClientId === ydoc.clientID,
@@ -294,9 +443,25 @@ export function createDeRtcEngine(): SyncEngine & {
 						reason:
 							REVIEW_REASON_MAP[ parked.reason ] ?? parked.reason,
 						intentType: 'proposal',
-						summary: parked.excerpt || undefined,
+						summary:
+							( parked.excerpt || undefined ) &&
+							( parked.revisions ?? 1 ) > 1
+								? `${ parked.excerpt } (${ parked.revisions } revisions)`
+								: parked.excerpt || undefined,
 					} ) ),
-				restore: ( proposalId ) => {
+					...Array.from( contested.entries() ).map(
+						( [ index, item ] ) => ( {
+							id: `contested-${ index }`,
+							unitId: `contested-${ index }`,
+							isLocal: false,
+							actorId: '',
+							reason: 'frame-conflict',
+							intentType: 'proposal',
+							summary: contestedExcerpt( item ),
+						} )
+					),
+				],
+				restore: ( proposalId, modifiedBlocks ) => {
 					const parked = review
 						.getOpen()
 						.find(
@@ -306,7 +471,7 @@ export function createDeRtcEngine(): SyncEngine & {
 						return;
 					}
 					if ( bridge.isBootstrapped() ) {
-						overlayParkedBlocks( parked );
+						overlayParkedBlocks( parked, modifiedBlocks );
 					}
 					review.resolve( proposalId, 'restored' );
 				},
@@ -323,8 +488,26 @@ export function createDeRtcEngine(): SyncEngine & {
 			return {
 				awareness,
 
-				createSession: () =>
-					createDeRtcSessionCodec( { awareness, bridge, review } ),
+				createSession: () => {
+					const codec = createDeRtcSessionCodec( {
+						awareness,
+						bridge,
+						review,
+						undoFeed,
+						// The Save/Sync inversion (TODO-20 stage 2):
+						// commits ride the autosave endpoint; the
+						// transport stays advisory. Null for types
+						// without a commit route (transport fallback).
+						commit:
+							createDeRtcCommitAdapter(
+								objectType,
+								objectId,
+								bridge.doc.clientID
+							) ?? undefined,
+					} );
+					saveControl.prepareForSave = codec.prepareForSave;
+					return codec;
+				},
 
 				hydrate() {
 					// Deliberately empty: the server's genesis snapshot is
@@ -372,6 +555,20 @@ export function createDeRtcEngine(): SyncEngine & {
 				},
 
 				addToUndoScope( undoManager, meta ) {
+					// The revert-edit manager needs the entity context —
+					// bridge (current content), row feed, and the apply
+					// lane — before the meta handlers scope in. The restore
+					// origin both reaches the editor like a remote change
+					// and marks the doc dirty, so a revert re-proposes.
+					(
+						undoManager as unknown as DeRtcRevertUndoManager
+					 ).attachEntity?.( {
+						key: recordMap as Y.Map< unknown >,
+						bridge,
+						feed: undoFeed,
+						applyRevert: ( blocks ) =>
+							applyChanges( { blocks }, DE_RTC_RESTORE_ORIGIN ),
+					} );
 					undoManager.addToScope( recordMap, meta );
 				},
 
@@ -382,6 +579,7 @@ export function createDeRtcEngine(): SyncEngine & {
 					if ( entityReviews.get( key )?.review === review ) {
 						entityReviews.delete( key );
 					}
+					unregisterSaveBaseVersion();
 					ydoc.destroy();
 				},
 			};

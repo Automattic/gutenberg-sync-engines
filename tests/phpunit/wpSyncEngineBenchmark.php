@@ -341,6 +341,37 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 		}
 	}
 
+	public function test_save_sync_session_converges_on_every_engine() {
+		// DE-RTC's native cadence (TODO-19), applied to every engine:
+		// staggered ~10s save beats, 10s sync reads. The fair measurement
+		// for the save-centric design; every engine must still converge
+		// with zero loss at this cadence.
+		$workload = WP_Sync_Bench_Workload::build( 'save-sync-session', 7, 60, 3, 6 );
+
+		// The cadence shape itself: no client writes on two consecutive
+		// rounds, and every client's reads are 10 rounds apart.
+		foreach ( $workload['rounds'] as $round ) {
+			$writers = array_unique( array_column( is_array( $round['edits'] ?? null ) ? $round['edits'] : $round, 'client' ) );
+			$this->assertLessThanOrEqual( 1, count( $writers ), 'Save beats are staggered: at most one client saves per second.' );
+		}
+		$this->assertSame( array( 10, 10, 10 ), $workload['read_every'] );
+
+		foreach ( array( 'WP_Intent_Log_Engine', 'WP_Yjs_Server_Engine', 'WP_De_RTC_Engine' ) as $engine_class ) {
+			$post_id = self::factory()->post->create(
+				array( 'post_content' => $workload['post_content'] )
+			);
+			$storage = new WP_Sync_Bench_Memory_Storage();
+			$engine  = new $engine_class( $storage );
+
+			$report = WP_Sync_Bench_Runner::run( $engine, $storage, $post_id, $workload );
+
+			$this->assertSame( 0, $report['quality']['lost_work'], $engine_class . ' lost work at save-sync cadence' );
+			$this->assertSame( array(), $report['quality']['convergence_failures'], $engine_class . ' failed convergence at save-sync cadence' );
+			$this->assertTrue( $report['quality']['converged'], $engine_class . ' did not converge at save-sync cadence' );
+			wp_delete_post( $post_id, true );
+		}
+	}
+
 	public function test_remove_contention_generates_cross_client_edit_vs_remove() {
 		$workload = WP_Sync_Bench_Workload::build( 'remove-contention', 7, 30, 3, 4 );
 
@@ -646,13 +677,28 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 		$this->assertGreaterThan( 0, $report['storage']['bytes'] );
 	}
 
-	public function test_de_rtc_contended_paragraph_escalates_but_loses_nothing() {
-		$report = $this->run_de_rtc( 'contended-paragraph' );
+	public function test_de_rtc_contended_paragraph_salvages_conflicts_and_loses_nothing() {
+		$workload = WP_Sync_Bench_Workload::build( 'contended-paragraph', 7, 8, 3, 4 );
+		$post_id  = self::factory()->post->create(
+			array( 'post_content' => $workload['post_content'] )
+		);
+		$storage  = new WP_Sync_Bench_Memory_Storage();
+		$engine   = new WP_De_RTC_Engine( $storage );
+		$report   = WP_Sync_Bench_Runner::run( $engine, $storage, $post_id, $workload );
 
 		// Concurrent restyles of the same block from the same base are a
-		// genuine conflict: DE-RTC policy is a human decision, not a silent
-		// merge — and escalation preserves, never drops.
-		$this->assertGreaterThan( 0, $report['quality']['dispositions']['escalated'] );
+		// genuine conflict. Since per-block salvage (TODO-3) the clean
+		// remainder of each proposal lands while exactly the conflicted
+		// blocks park for a human decision — surfaced as durable review
+		// rows, never silently merged, never dropped.
+		$response = $engine->get_updates_since( 'postType/post:' . $post_id, 999, 0, array() );
+		$parked   = array_filter(
+			$response['updates'],
+			static function ( $update ) {
+				return WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED === $update['type'];
+			}
+		);
+		$this->assertGreaterThan( 0, count( $parked ), 'Conflicts must surface as parked review rows.' );
 		$this->assertSame( 0, $report['quality']['lost_work'] );
 		$this->assertSame( array(), $report['quality']['convergence_failures'] );
 		$this->assertTrue( $report['quality']['converged'] );
@@ -674,20 +720,32 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 	}
 
 	public function test_de_rtc_stale_base_voids_retry_after_deep_read_gap() {
-		// The reconnect shape: a contended register writer with a DEEP read
-		// gap. With ONE paragraph, every round restyles the same register
-		// with per-client distinct values, so the gapped client's proposals
-		// conflict every single round (escalations never advance its base;
-		// the applied-settle fast-forward/adopt lane never fires) while the
-		// winning peers advance the canonical — its base ages out of the
-		// engine's bounded version-snapshot window (20) structurally, not
-		// by seed luck: stale-base voids occur and the profile's
-		// retry-at-fresh-base lane must re-propose them after the gap ends.
-		// (More paragraphs would rotate the contended target and the gapped
-		// client would eventually land a clean apply, re-anchoring its base
-		// the way the shipping codec's row-driven advance does.)
-		$workload                  = WP_Sync_Bench_Workload::build( 'contended-paragraph', 7, 30, 3, 1 );
+		// The reconnect shape. Since per-block salvage (TODO-3), a
+		// PRESENT client can barely age out anymore — even its conflicts
+		// partially apply and advance its base. What still produces
+		// stale-base voids is genuine ABSENCE: a client that goes silent
+		// (offline tab) while peers advance the canonical past the
+		// engine's bounded version-snapshot window (20; no aware saves
+		// happen in this workload, so no revision carries the base
+		// either), then writes from its ancient base before its first
+		// read back. Those proposals void `unknown-base-version` and the
+		// profile's retry-at-fresh-base lane re-proposes them after the
+		// reconnect read.
+		$workload                  = WP_Sync_Bench_Workload::build( 'contended-paragraph', 7, 30, 3, 4 );
 		$workload['read_every'][2] = 25;
+		foreach ( $workload['rounds'] as $i => $round ) {
+			// Client 2 falls silent for rounds 2..24 (0-based 1..23).
+			if ( $i >= 1 && $i < 24 && is_array( $round ) && ! isset( $round['edits'] ) ) {
+				$workload['rounds'][ $i ] = array_values(
+					array_filter(
+						$round,
+						static function ( $edit ) {
+							return 2 !== (int) ( $edit['client'] ?? -1 );
+						}
+					)
+				);
+			}
+		}
 		$post_id                   = self::factory()->post->create(
 			array( 'post_content' => $workload['post_content'] )
 		);

@@ -131,6 +131,40 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 		$this->assertSame( array( 'update', 'snapshot' ), $engine->get_update_types() );
 	}
 
+	public function test_room_size_ceiling_rejects_writes_but_not_reads() {
+		// Bootstrap the room, author a valid client update.
+		$response = $this->engine()->get_updates_since( $this->room(), 101, 0, array() );
+		$doc      = $this->client_doc_from_response( $response );
+		$update   = $this->encode_edit(
+			$doc,
+			function ( $client_doc ) {
+				$this->first_block_content( $client_doc )->insert( 11, ' grown' );
+			}
+		);
+		$row      = array(
+			'type' => WP_Yjs_Server_Engine::UPDATE_TYPE_UPDATE,
+			'data' => $update,
+		);
+
+		// TODO-8 tier 2: past the ceiling, writes 413 and reads continue.
+		$ceiling = static function () {
+			return 10;
+		};
+		add_filter( 'wp_sync_yjs_server_max_room_bytes', $ceiling );
+		$result = $this->engine()->handle_updates( $this->room(), 101, 0, array( $row ), array() );
+		$this->assertWPError( $result );
+		$this->assertSame( 'rest_sync_room_full', $result->get_error_code() );
+		$this->assertSame( 413, $result->get_error_data()['status'] );
+		$read = $this->engine()->get_updates_since( $this->room(), 102, 0, array() );
+		$this->assertNotEmpty( $read['updates'], 'Reads must survive a full room.' );
+		remove_filter( 'wp_sync_yjs_server_max_room_bytes', $ceiling );
+
+		// Below the ceiling the same update applies normally.
+		$result = $this->engine()->handle_updates( $this->room(), 101, 0, array( $row ), array() );
+		$this->assertNotWPError( $result );
+		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
+	}
+
 	public function test_genesis_snapshot_on_first_read() {
 		$engine   = $this->engine();
 		$response = $engine->get_updates_since( $this->room(), 101, 0, array() );

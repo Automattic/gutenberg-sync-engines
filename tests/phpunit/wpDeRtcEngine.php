@@ -80,14 +80,54 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 	 * @return array{version: string, content: string}|null Latest state.
 	 */
 	private function latest_from_response( array $response ): ?array {
-		$latest = null;
+		$latest        = null;
+		$announced_seq = 0;
 		foreach ( $response['updates'] as $update ) {
 			$decoded = json_decode( $update['data'], true );
-			if ( is_array( $decoded ) && is_string( $decoded['version'] ?? null ) && is_string( $decoded['content'] ?? null ) ) {
+			if ( ! is_array( $decoded ) || ! is_string( $decoded['version'] ?? null ) ) {
+				continue;
+			}
+			if ( WP_De_RTC_Engine::UPDATE_TYPE_ANNOUNCE === ( $update['type'] ?? '' ) ) {
+				$announced_seq = max( $announced_seq, (int) ltrim( $decoded['version'], 'v' ) );
+				continue;
+			}
+			if ( is_string( $decoded['content'] ?? null ) ) {
 				$latest = array(
 					'version' => $decoded['version'],
 					'content' => $decoded['content'],
 				);
+			}
+		}
+
+		/*
+		 * Announce model (TODO-20): a newer version was announced without
+		 * content — fetch it the way the session codec does (a `fetch` row
+		 * answered by one synthesized snapshot).
+		 */
+		$latest_seq = null !== $latest ? (int) ltrim( (string) $latest['version'], 'v' ) : 0;
+		if ( $announced_seq > $latest_seq ) {
+			$engine = $this->engine();
+			$engine->handle_updates(
+				$this->room(),
+				999,
+				0,
+				array(
+					array(
+						'type' => WP_De_RTC_Engine::UPDATE_TYPE_FETCH,
+						'data' => wp_json_encode( array( 'haveVersion' => null !== $latest ? $latest['version'] : '' ) ),
+					),
+				),
+				array()
+			);
+			$fetched = $engine->get_updates_since( $this->room(), 999, PHP_INT_MAX, array() );
+			foreach ( $fetched['updates'] as $update ) {
+				$decoded = json_decode( $update['data'], true );
+				if ( is_array( $decoded ) && is_string( $decoded['version'] ?? null ) && is_string( $decoded['content'] ?? null ) ) {
+					$latest = array(
+						'version' => $decoded['version'],
+						'content' => $decoded['content'],
+					);
+				}
 			}
 		}
 		return $latest;
@@ -122,8 +162,8 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 	public function test_identity() {
 		$engine = $this->engine();
 		$this->assertSame( 'de-rtc', $engine->get_slug() );
-		$this->assertSame( 1, $engine->get_protocol_version() );
-		$this->assertSame( array( 'proposal', 'content', 'snapshot', 'proposal-parked', 'resolved' ), $engine->get_update_types() );
+		$this->assertSame( 2, $engine->get_protocol_version() );
+		$this->assertSame( array( 'proposal', 'content', 'announce', 'fetch', 'snapshot', 'proposal-parked', 'resolved' ), $engine->get_update_types() );
 	}
 
 	public function test_genesis_snapshot_and_lineage() {
@@ -230,10 +270,13 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 			array()
 		);
 
-		$this->assertSame( 'escalated', $b_result['dispositions'][0]['status'] );
-		$this->assertSame( 'manual-conflict-required', $b_result['dispositions'][0]['reason'] );
+		// TODO-2a: the descriptor is validated once and dropped, so the
+		// per-block salvage lane runs even for descriptor-carrying
+		// proposals — the conflicted block parks, the (empty) remainder
+		// lands, and canonical keeps A's accepted state.
+		$this->assertSame( 'applied', $b_result['dispositions'][0]['status'] );
+		$this->assertSame( 1, $b_result['dispositions'][0]['parkedBlocks'] ?? null );
 
-		// Canonical keeps A's accepted state.
 		$this->assertStringContainsString( 'Alpha block A-REWRITE', $this->engine()->materialize( $this->room() ) );
 		$this->assertStringNotContainsString( 'B-REWRITE', $this->engine()->materialize( $this->room() ) );
 	}
@@ -337,9 +380,18 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 			array()
 		);
 
-		$this->assertSame( 'escalated', $result['dispositions'][0]['status'] );
-		$this->assertSame( 'requires-unfiltered-html', $result['dispositions'][0]['reason'] );
+		// TODO-2a: the descriptor is validated once and dropped, so the
+		// kses sequestration lane runs even for descriptor-carrying
+		// proposals: the risky new block drops from the laundered
+		// content, the proposal applies, and the risky block parks.
+		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
 		$this->assertStringNotContainsString( '<script>', $this->engine()->materialize( $this->room() ) );
+		$parked = $this->rows_of_type(
+			$this->engine()->get_updates_since( $this->room(), 4, 0, array() ),
+			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+		);
+		$this->assertCount( 1, $parked );
+		$this->assertSame( 'requires-unfiltered-html', $parked[0]['reason'] );
 	}
 
 	public function test_canonical_state_survives_engine_instances() {
@@ -437,7 +489,9 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Drives the standard two-client conflict so p-b escalates and parks.
+	 * Drives the standard two-client conflict so p-b's conflicted block
+	 * parks (per-block salvage; since TODO-2a the descriptor validates
+	 * once and drops, so salvage runs for descriptor proposals too).
 	 *
 	 * @return array Genesis state the proposals were authored against.
 	 */
@@ -463,7 +517,8 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 			array( $this->proposal( 'p-b', $genesis['version'], $genesis['content'], $b_proposed ) ),
 			array()
 		);
-		$this->assertSame( 'escalated', $b_result['dispositions'][0]['status'] );
+		$this->assertSame( 'applied', $b_result['dispositions'][0]['status'] );
+		$this->assertSame( 1, $b_result['dispositions'][0]['parkedBlocks'] ?? null );
 
 		return $genesis;
 	}

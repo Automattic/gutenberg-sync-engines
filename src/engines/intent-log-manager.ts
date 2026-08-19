@@ -12,7 +12,7 @@ import type { Awareness } from 'y-protocols/awareness';
 import apiFetch from '@wordpress/api-fetch';
 import { parse as parseBlockDelimiters } from '@wordpress/block-serialization-default-parser';
 // eslint-disable-next-line import/no-unresolved -- Provided by the editor runtime.
-import { getBlockType } from '@wordpress/blocks';
+import { getBlockType, getSaveContent } from '@wordpress/blocks';
 
 /**
  * Internal dependencies
@@ -623,6 +623,32 @@ function withBlockDefaults(
 		merged[ key ] = schema.default;
 	}
 	return merged ?? attributes;
+}
+
+/**
+ * Renders a block's save markup with EMPTY inner blocks — the wrapper plus
+ * the block's own static inner HTML — for save-accurate `_wrapper` and
+ * `content` authoring (TODO-11; see the bridge's SaveMarkupAdapter).
+ * Returns null when the type is unregistered or its save() throws; capture
+ * then leaves the document's existing wrapper/content untouched.
+ *
+ * @param block Bridge block (editor shape).
+ * @return Save markup or null.
+ */
+function saveMarkupAdapter( block: BridgeBlock ): string | null {
+	try {
+		const blockType = getBlockType( block.name );
+		if ( ! blockType ) {
+			return null;
+		}
+		return getSaveContent(
+			blockType as Parameters< typeof getSaveContent >[ 0 ],
+			block.attributes,
+			[]
+		);
+	} catch {
+		return null;
+	}
 }
 
 function toEditorBlocks(
@@ -1795,6 +1821,8 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				excludeIds: state.docTombstones,
 				richTextFields: state.fieldsResolver,
 				rawContent: state.rawContent,
+				// Save-accurate wrapper/content authoring (TODO-11).
+				saveMarkup: saveMarkupAdapter,
 			} );
 
 			if ( derived ) {

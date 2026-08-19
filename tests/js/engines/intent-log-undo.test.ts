@@ -47,27 +47,87 @@ function makeWireServer() {
 		},
 	];
 
+	// Ids the server has settled — the engine-class cancel lane's
+	// too-late test (mirrors WP_Intent_Log_Engine, not the frozen core).
+	const settledIds = new Set< string >();
+
 	return {
 		ingest( sent: EngineUpdate[] ) {
-			const intents = sent
+			const cancelDispositions: Array< {
+				intentId: string;
+				status: string;
+				reason?: string;
+			} > = [];
+			const canceledIds = new Set< string >();
+			for ( const update of sent ) {
+				if ( INTENT_LOG_UPDATE_TYPES.CANCEL !== update.type ) {
+					continue;
+				}
+				const cancel = JSON.parse( update.data );
+				const tooLate = cancel.intentIds.some( ( id: string ) =>
+					settledIds.has( id )
+				);
+				if ( tooLate ) {
+					cancelDispositions.push( {
+						intentId: cancel.cancelId,
+						status: 'voided',
+						reason: 'cancel-too-late',
+					} );
+					continue;
+				}
+				for ( const id of cancel.intentIds ) {
+					canceledIds.add( id );
+					settledIds.add( id );
+					rows.push( {
+						data: JSON.stringify( {
+							intentId: id,
+							reason: 'canceled',
+						} ),
+						type: INTENT_LOG_UPDATE_TYPES.VOIDED,
+					} );
+				}
+				cancelDispositions.push( {
+					intentId: cancel.cancelId,
+					status: 'applied',
+				} );
+			}
+
+			const parsed = sent
 				.filter(
 					( update ) => INTENT_LOG_UPDATE_TYPES.INTENT === update.type
 				)
 				.map( ( update ) => JSON.parse( update.data ) );
+			const dropped = parsed.filter( ( intent ) =>
+				canceledIds.has( intent.intentId )
+			);
+			const intents = parsed.filter(
+				( intent ) => ! canceledIds.has( intent.intentId )
+			);
 			const logBefore = server.log.length;
 			const results = serverIngestBatch( server, intents );
+			for ( const intent of intents ) {
+				settledIds.add( intent.intentId );
+			}
 			for ( const entry of server.log.slice( logBefore ) ) {
 				rows.push( {
 					data: JSON.stringify( entry ),
 					type: INTENT_LOG_UPDATE_TYPES.INTENT,
 				} );
 			}
-			return intents.map(
-				( intent: { intentId: string }, index: number ) => ( {
+			return [
+				...intents.map(
+					( intent: { intentId: string }, index: number ) => ( {
+						intentId: intent.intentId,
+						...results[ index ],
+					} )
+				),
+				...dropped.map( ( intent: { intentId: string } ) => ( {
 					intentId: intent.intentId,
-					...results[ index ],
-				} )
-			);
+					status: 'voided',
+					reason: 'canceled',
+				} ) ),
+				...cancelDispositions,
+			];
 		},
 		rowsAfter: ( cursor: number ) => rows.slice( cursor ),
 		rowCount: () => rows.length,
@@ -149,8 +209,10 @@ describe( 'intent-log collaborative undo', () => {
 				},
 			},
 		] );
-		// Not yet settled: the unit is pending until rows + acks land.
-		expect( undo.hasUndo() ).toBe( false );
+		// Not yet settled — but undoable anyway: a fully-pending unit is
+		// CANCELABLE (TODO-5), so hasUndo no longer waits for the settle
+		// round trip.
+		expect( undo.hasUndo() ).toBe( true );
 		link.poll();
 		expect( undo.hasUndo() ).toBe( true );
 		expect( serverText( 'p1' ) ).toBe( 'Hello world EDIT' );
@@ -166,6 +228,102 @@ describe( 'intent-log collaborative undo', () => {
 		expect( serverText( 'p1' ) ).toBe( 'Hello world EDIT' );
 		expect( undo.hasUndo() ).toBe( true );
 		expect( undo.hasRedo() ).toBe( false );
+	} );
+
+	it( 'undo inside the settle window CANCELS the pending unit (TODO-5)', () => {
+		const { session, link, undo, edit, serverText } = harness();
+
+		edit( [
+			{
+				type: 'insert_text',
+				payload: {
+					syncId: 'p1',
+					field: 'content',
+					offset: 11,
+					text: ' EDIT',
+				},
+			},
+		] );
+		expect( undo.hasUndo() ).toBe( true );
+		expect( session.getPendingCount() ).toBe( 1 );
+
+		// Undo BEFORE any poll: the intent cancels instead of no-oping.
+		expect( undo.undo() ).toEqual( [] );
+		expect( session.getPendingCount() ).toBe( 0 );
+		expect( undo.hasUndo() ).toBe( false );
+
+		// The queued intent and its cancel travel in the SAME batch: the
+		// server drops the pair and the edit never lands.
+		link.poll();
+		expect( serverText( 'p1' ) ).toBe( 'Hello world' );
+		expect( undo.hasUndo() ).toBe( false );
+		expect( undo.hasRedo() ).toBe( false );
+	} );
+
+	it( 'a cancel that lost the race resurrects the unit as a settled undo candidate', () => {
+		const { wire, session, link, undo, edit, serverText } = harness();
+
+		const envelopes = edit( [
+			{
+				type: 'insert_text',
+				payload: {
+					syncId: 'p1',
+					field: 'content',
+					offset: 11,
+					text: ' EDIT',
+				},
+			},
+		] );
+
+		// The intent reaches the server out-of-band (its POST was already
+		// in flight when the user pressed undo).
+		wire.ingest( [
+			{
+				data: JSON.stringify( envelopes[ 0 ] ),
+				type: INTENT_LOG_UPDATE_TYPES.INTENT,
+			},
+		] );
+
+		// Local cancel still succeeds (no ack processed yet)…
+		expect( undo.undo() ).toEqual( [] );
+		expect( session.getPendingCount() ).toBe( 0 );
+
+		// …but the wire copy was ingested: the poll redelivers the intent
+		// (idempotent), the cancel acks too-late, the accepted row
+		// resurrects the effect, and the unit returns to the stack as a
+		// normal settled candidate.
+		link.poll();
+		expect( serverText( 'p1' ) ).toBe( 'Hello world EDIT' );
+		expect( undo.hasUndo() ).toBe( true );
+
+		// The second undo inverts it the ordinary way.
+		undo.undo();
+		link.poll();
+		expect( serverText( 'p1' ) ).toBe( 'Hello world' );
+	} );
+
+	it( 'cancellation is all-or-nothing: a settled unit does not cancel', () => {
+		const { session, link, undo, edit } = harness();
+
+		const envelopes = edit( [
+			{
+				type: 'insert_text',
+				payload: {
+					syncId: 'p1',
+					field: 'content',
+					offset: 11,
+					text: ' EDIT',
+				},
+			},
+		] );
+		link.poll(); // Settles: outbox empty.
+
+		expect(
+			session.cancelPendingIntents(
+				envelopes.map( ( envelope ) => envelope.intentId )
+			)
+		).toBe( false );
+		expect( undo.hasUndo() ).toBe( true ); // Settled: inverse path.
 	} );
 
 	it( 'undo reverts only this client, transformed over a peer row that shifted the text', () => {

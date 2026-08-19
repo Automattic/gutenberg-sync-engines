@@ -258,13 +258,23 @@ if ( ! class_exists( 'WP_WebSocket_Connection' ) ) {
 		 *
 		 * @since 7.4.0
 		 *
-		 * @param string $key Client-provided Sec-WebSocket-Key.
+		 * @param string $key         Client-provided Sec-WebSocket-Key.
+		 * @param string $subprotocol Accepted subprotocol to echo, or '' for
+		 *                            none. RFC 6455 requires the server to
+		 *                            select one of the client's offers when
+		 *                            it accepts a subprotocol — the auth
+		 *                            token rides the offer list, and the
+		 *                            server echoes only the base protocol.
 		 */
-		public function accept_handshake( string $key ): void {
+		public function accept_handshake( string $key, string $subprotocol = '' ): void {
 			$response = "HTTP/1.1 101 Switching Protocols\r\n"
 				. "Upgrade: websocket\r\n"
 				. "Connection: Upgrade\r\n"
-				. 'Sec-WebSocket-Accept: ' . self::compute_accept_key( $key ) . "\r\n\r\n";
+				. 'Sec-WebSocket-Accept: ' . self::compute_accept_key( $key ) . "\r\n";
+			if ( '' !== $subprotocol ) {
+				$response .= 'Sec-WebSocket-Protocol: ' . $subprotocol . "\r\n";
+			}
+			$response .= "\r\n";
 
 			$this->queue_write( $response );
 			$this->is_open = true;

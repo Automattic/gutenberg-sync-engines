@@ -294,6 +294,32 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 
 			$before_bytes = \Yjs\encodeStateAsUpdateV2( $doc )->toBinaryString();
 
+			/*
+			 * Post-genesis growth policing (TODO-8, tiers 1+2). The genesis
+			 * size gate refuses to INITIALIZE an oversized room; this is the
+			 * terminal backstop for a room that GROWS past reason afterward:
+			 * further writes 413 (reads and saves continue — nothing already
+			 * merged is lost, the room just stops accumulating). A soft
+			 * warning narrates via qm/debug from 75% so operators see the
+			 * growth before the ceiling bites. Tier 3 (epoch compaction that
+			 * SHRINKS the canonical) stays parked with incremental canonical
+			 * maintenance.
+			 */
+			$max_room_bytes = (int) apply_filters( 'wp_sync_yjs_server_max_room_bytes', 8 * MB_IN_BYTES, $room );
+			if ( $max_room_bytes > 0 && strlen( $before_bytes ) > $max_room_bytes ) {
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+				do_action( 'qm/debug', "wp-sync: yjs-server room {$room} is over the room-size ceiling (" . strlen( $before_bytes ) . " bytes); rejecting writes" );
+				return new WP_Error(
+					'rest_sync_room_full',
+					__( 'This collaboration room has grown past its size ceiling; further updates are rejected. Save the post and start a fresh session.', 'gutenberg' ),
+					array( 'status' => 413 )
+				);
+			}
+			if ( $max_room_bytes > 0 && strlen( $before_bytes ) > (int) ( 0.75 * $max_room_bytes ) ) {
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+				do_action( 'qm/debug', "wp-sync: yjs-server room {$room} at " . strlen( $before_bytes ) . ' of ' . $max_room_bytes . ' ceiling bytes' );
+			}
+
 			$dispositions = array();
 			$diffs        = array();
 			$replayed     = false;

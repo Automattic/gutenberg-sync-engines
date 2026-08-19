@@ -82,7 +82,9 @@ describe( 'de-rtc review lane (client)', () => {
 	function makeEntity() {
 		const entity = engine.createEntity( {
 			syncConfig,
-			objectType: 'postType/post',
+			// A type WITHOUT a commit route: these suites pin the transport
+			// proposal lane (collections/unsupported types still use it).
+			objectType: 'postType/book',
 			objectId: '1',
 		} as any );
 		const session = entity.createSession();
@@ -94,7 +96,7 @@ describe( 'de-rtc review lane (client)', () => {
 	it( 'presents a parked row as a review item with normalized reasons', () => {
 		const { session } = makeEntity();
 		const changed = jest.fn();
-		engine.review.subscribe( 'postType/post', '1', changed );
+		engine.review.subscribe( 'postType/book', '1', changed );
 
 		session.receiveUpdate(
 			parkedRow( 'p-9-1', 'manual-conflict-required', 9, [
@@ -103,7 +105,7 @@ describe( 'de-rtc review lane (client)', () => {
 		);
 
 		expect( changed ).toHaveBeenCalled();
-		const items = engine.review.getOpenItems( 'postType/post', '1' );
+		const items = engine.review.getOpenItems( 'postType/book', '1' );
 		expect( items ).toHaveLength( 1 );
 		expect( items[ 0 ] ).toMatchObject( {
 			id: 'p-9-1',
@@ -118,7 +120,7 @@ describe( 'de-rtc review lane (client)', () => {
 		session.receiveUpdate(
 			parkedRow( 'p-9-2', 'requires-unfiltered-html', 9, [] )
 		);
-		const updated = engine.review.getOpenItems( 'postType/post', '1' );
+		const updated = engine.review.getOpenItems( 'postType/book', '1' );
 		expect( updated.find( ( item ) => 'p-9-2' === item.id )?.reason ).toBe(
 			'requires-approval'
 		);
@@ -135,7 +137,7 @@ describe( 'de-rtc review lane (client)', () => {
 			)
 		);
 		expect(
-			engine.review.getOpenItems( 'postType/post', '1' )[ 0 ].isLocal
+			engine.review.getOpenItems( 'postType/book', '1' )[ 0 ].isLocal
 		).toBe( true );
 	} );
 
@@ -145,7 +147,7 @@ describe( 'de-rtc review lane (client)', () => {
 		session.receiveUpdate( row );
 		session.receiveUpdate( row );
 		expect(
-			engine.review.getOpenItems( 'postType/post', '1' )
+			engine.review.getOpenItems( 'postType/book', '1' )
 		).toHaveLength( 1 );
 
 		session.receiveUpdate( {
@@ -156,14 +158,14 @@ describe( 'de-rtc review lane (client)', () => {
 			} ),
 		} );
 		expect(
-			engine.review.getOpenItems( 'postType/post', '1' )
+			engine.review.getOpenItems( 'postType/book', '1' )
 		).toHaveLength( 0 );
 
 		// A parked row replayed AFTER its resolution stays closed (bootstrap
 		// replays deliver both rows).
 		session.receiveUpdate( row );
 		expect(
-			engine.review.getOpenItems( 'postType/post', '1' )
+			engine.review.getOpenItems( 'postType/book', '1' )
 		).toHaveLength( 0 );
 	} );
 
@@ -175,14 +177,14 @@ describe( 'de-rtc review lane (client)', () => {
 		);
 
 		engine.review.resolveProposal(
-			'postType/post',
+			'postType/book',
 			'1',
 			'p-9-1',
 			'dismissed'
 		);
 
 		expect(
-			engine.review.getOpenItems( 'postType/post', '1' )
+			engine.review.getOpenItems( 'postType/book', '1' )
 		).toHaveLength( 0 );
 		const resolvedRows = sent.filter(
 			( update ) => DE_RTC_RESOLVED_TYPE === update.type
@@ -209,7 +211,7 @@ describe( 'de-rtc review lane (client)', () => {
 		);
 		onRemoteChange.mockClear();
 
-		engine.review.restoreProposal( 'postType/post', '1', 'p-9-1' );
+		engine.review.restoreProposal( 'postType/book', '1', 'p-9-1' );
 
 		// The overlay replaced the block at the recorded index…
 		const changes = entity.getEditorChanges( { blocks: [] } as any ) as any;
@@ -233,7 +235,41 @@ describe( 'de-rtc review lane (client)', () => {
 			resolution: 'restored',
 		} );
 		expect(
-			engine.review.getOpenItems( 'postType/post', '1' )
+			engine.review.getOpenItems( 'postType/book', '1' )
+		).toHaveLength( 0 );
+	} );
+
+	it( 'modify-before-adopt: a reviewer-edited block replaces the parked original (TODO-17)', () => {
+		const { entity, session, sent } = makeEntity();
+		session.receiveUpdate(
+			snapshotRow( 'v1', contentOf( BLOCK_A, BLOCK_B ) )
+		);
+		session.receiveUpdate(
+			parkedRow( 'p-9-1', 'manual-conflict-required', 9, [
+				{ index: 1, html: contentOf( BLOCK_C ) },
+			] )
+		);
+
+		const reviewed = {
+			name: 'core/paragraph',
+			attributes: { content: 'Gamma, softened by the reviewer' },
+		};
+		engine.review.restoreProposal( 'postType/book', '1', 'p-9-1', [
+			{ index: 1, html: contentOf( reviewed ) },
+		] );
+
+		// The reviewer's version — not the parked original — is what lands
+		// and what re-proposes (approval and content pinned together).
+		const changes = entity.getEditorChanges( { blocks: [] } as any ) as any;
+		expect( changes.blocks ).toEqual( [ BLOCK_A, reviewed ] );
+		const proposals = sent.filter(
+			( update ) => DE_RTC_PROPOSAL_TYPE === update.type
+		);
+		expect(
+			JSON.parse( JSON.parse( proposals[ 0 ].data ).proposedContent )
+		).toEqual( [ BLOCK_A, reviewed ] );
+		expect(
+			engine.review.getOpenItems( 'postType/book', '1' )
 		).toHaveLength( 0 );
 	} );
 
@@ -249,7 +285,7 @@ describe( 'de-rtc review lane (client)', () => {
 			] )
 		);
 
-		engine.review.restoreProposal( 'postType/post', '1', 'p-9-1' );
+		engine.review.restoreProposal( 'postType/book', '1', 'p-9-1' );
 
 		const changes = entity.getEditorChanges( { blocks: [] } as any ) as any;
 		expect( changes.blocks ).toEqual( [ BLOCK_A, BLOCK_C ] );
@@ -257,7 +293,7 @@ describe( 'de-rtc review lane (client)', () => {
 
 	it( 'a subscription made BEFORE the entity exists still fires (the decorator subscribes during load)', () => {
 		const changed = jest.fn();
-		engine.review.subscribe( 'postType/post', '1', changed );
+		engine.review.subscribe( 'postType/book', '1', changed );
 
 		// The entity is created only after the subscription — the real
 		// ordering: decorateManagerWithReview captures handlers and
@@ -269,17 +305,17 @@ describe( 'de-rtc review lane (client)', () => {
 
 		expect( changed ).toHaveBeenCalled();
 		expect(
-			engine.review.getOpenItems( 'postType/post', '1' )
+			engine.review.getOpenItems( 'postType/book', '1' )
 		).toHaveLength( 1 );
 	} );
 
 	it( 'an unknown entity yields an empty review surface', () => {
-		expect( engine.review.getOpenItems( 'postType/post', '999' ) ).toEqual(
+		expect( engine.review.getOpenItems( 'postType/book', '999' ) ).toEqual(
 			[]
 		);
 		expect( () =>
 			engine.review.resolveProposal(
-				'postType/post',
+				'postType/book',
 				'999',
 				'p-x',
 				'dismissed'

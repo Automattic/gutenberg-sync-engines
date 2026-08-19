@@ -439,9 +439,25 @@ export function createIntentLogUndoManager(
 				member.status && ( 'applied' !== member.status || member.entry )
 		);
 
+	/**
+	 * Every member still unacked: the whole unit is cancelable — undo
+	 * inside the settle window cancels the pending intents instead of
+	 * being a silent no-op (TODO-5).
+	 */
+	const isFullyPending = ( unit: UndoUnit ): boolean =>
+		unit.members.every(
+			( member ) =>
+				undefined === member.status && undefined === member.seq
+		);
+
+	/** Units canceled pre-settle, awaiting server confirmation. */
+	const canceledUnits = new Set< UndoUnit >();
+
 	const topUndoable = (): UndoUnit | null => {
 		const top = undoStack.at( -1 );
-		return top && isSettled( top ) ? top : null;
+		return top && ( isSettled( top ) || isFullyPending( top ) )
+			? top
+			: null;
 	};
 	const topRedoable = (): UndoUnit | null => {
 		const top = redoStack.at( -1 );
@@ -511,7 +527,32 @@ export function createIntentLogUndoManager(
 	 */
 	const step = ( from: UndoUnit[], to: UndoUnit[] ): boolean => {
 		const unit = from.at( -1 );
-		if ( ! unit || ! isSettled( unit ) ) {
+		if ( ! unit ) {
+			return false;
+		}
+		if ( ! isSettled( unit ) ) {
+			/*
+			 * Pre-settle undo (TODO-5): a unit whose members are ALL still
+			 * unacked cancels in place — the intents leave the outbox (a
+			 * cancel row chases any copies already queued on the wire), the
+			 * optimistic document replans, and the canvas reverts. No
+			 * inverse is authored; nothing accepted exists to invert.
+			 * Members stay registered so a too-late ack (the cancel lost
+			 * the race) resurrects the unit as a normal settled candidate.
+			 * Undo direction only: redo units are settled inverses.
+			 */
+			if (
+				from === undoStack &&
+				isFullyPending( unit ) &&
+				unit.session.cancelPendingIntents(
+					unit.members.map( ( member ) => member.intentId )
+				)
+			) {
+				from.pop();
+				canceledUnits.add( unit );
+				notify();
+				return true;
+			}
 			return false;
 		}
 		from.pop();
@@ -612,6 +653,30 @@ export function createIntentLogUndoManager(
 					tracked.member.status = 'voided';
 				} else if ( ! tracked.member.status ) {
 					tracked.member.status = 'applied';
+				}
+				if ( canceledUnits.has( tracked.unit ) ) {
+					if (
+						'voided' === settled.status &&
+						'canceled' === ( settled as any ).reason
+					) {
+						// The server confirmed the cancellation; once every
+						// member is confirmed the unit is gone for good.
+						if (
+							tracked.unit.members.every(
+								( member ) => 'voided' === member.status
+							)
+						) {
+							canceledUnits.delete( tracked.unit );
+							dropUnit( tracked.unit );
+						}
+					} else {
+						// The cancel lost the race to the wire: the intent
+						// was ingested and its effect will resurrect on the
+						// canvas via the accepted row. Restore the unit so
+						// a second undo inverts it once settled.
+						canceledUnits.delete( tracked.unit );
+						undoStack.push( tracked.unit );
+					}
 				}
 				notify();
 			} );

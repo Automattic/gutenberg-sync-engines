@@ -48,9 +48,11 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 	 * checkpoint snapshot, and unresolved proposals below the trim are
 	 * re-appended so review work survives (see maybe_checkpoint()).
 	 *
-	 * Remaining prototype simplification (Phase 2a): genesis/materialization
-	 * map a block's inner HTML opaquely onto the engine's `content` field —
-	 * rich-text-coordinate capture is the client bridge's job.
+	 * Genesis/materialization map a block's inner HTML onto the engine's
+	 * `content` field plus the `_wrapper` internal attr (the Phase 2a
+	 * model); since TODO-11 the client bridge keeps BOTH save-accurate
+	 * (wrapper refresh + save-derived content for non-rich-text blocks),
+	 * so sourced-attribute edits survive materialization.
 	 *
 	 * @since 7.2.0
 	 * @access private
@@ -113,6 +115,17 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 		 * @var string
 		 */
 		const UPDATE_TYPE_RESOLVED = 'resolved';
+
+		/**
+		 * Client-sent only, never stored: cancels intents that are still
+		 * queued (the pre-settle undo lane — TODO-5 in
+		 * docs/engine-comparison.md). All-or-nothing per cancel row: if
+		 * ANY target already settled, nothing cancels and the cancel acks
+		 * `cancel-too-late` (the client resurrects the unit from the
+		 * accepted rows). Confirmed cancellations settle each target as a
+		 * `voided`/`canceled` marker row, so redeliveries stay idempotent.
+		 */
+		const UPDATE_TYPE_CANCEL = 'cancel';
 
 		/**
 		 * Escalation reason for intents whose payload carries markup the
@@ -202,6 +215,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 				self::UPDATE_TYPE_PROPOSAL,
 				self::UPDATE_TYPE_VOIDED,
 				self::UPDATE_TYPE_RESOLVED,
+				self::UPDATE_TYPE_CANCEL,
 			);
 		}
 
@@ -218,37 +232,34 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 		}
 
 		/**
-		 * Acquires the per-room ingest lock (MySQL GET_LOCK, held by this
-		 * request's database connection).
+		 * Tokens for locks this instance currently holds, by room.
+		 *
+		 * @since 0.5.0
+		 *
+		 * @var array<string, string>
+		 */
+		private $room_lock_tokens = array();
+
+		/**
+		 * Acquires the per-room ingest lock (Core-style options-row lock;
+		 * see WP_Sync_Room_Lock for why not GET_LOCK).
 		 *
 		 * @since 7.2.0
-		 *
-		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
 		 * @param string $room Room identifier.
 		 * @return true|WP_Error True when held, retryable error otherwise.
 		 */
 		private function acquire_room_lock( string $room ) {
-			global $wpdb;
-
-			$acquired = $wpdb->get_var(
-				$wpdb->prepare(
-					'SELECT GET_LOCK(%s, %d)',
-					$this->room_lock_name( $room ),
-					5 // Seconds; a plan is milliseconds, so contention clears fast.
-				)
-			);
-			if ( '1' === (string) $acquired ) {
-				return true;
+			// 5s budget; a plan is milliseconds, so contention clears fast.
+			$token = WP_Sync_Room_Lock::acquire( $this->room_lock_name( $room ), 5.0 );
+			if ( is_wp_error( $token ) ) {
+				// Budget exhausted: the client retries on its normal poll
+				// cadence.
+				return $token;
 			}
+			$this->room_lock_tokens[ $room ] = $token;
 
-			// Timeout or connection error: the client retries on its normal
-			// poll cadence.
-			return new WP_Error(
-				'rest_sync_room_busy',
-				__( 'The room is busy processing another request. Retry shortly.', 'gutenberg' ),
-				array( 'status' => 503 )
-			);
+			return true;
 		}
 
 		/**
@@ -256,21 +267,19 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 		 *
 		 * @since 7.2.0
 		 *
-		 * @global wpdb $wpdb WordPress database abstraction object.
-		 *
 		 * @param string $room Room identifier.
 		 */
 		private function release_room_lock( string $room ): void {
-			global $wpdb;
-
-			$wpdb->query(
-				$wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $this->room_lock_name( $room ) )
+			WP_Sync_Room_Lock::release(
+				$this->room_lock_name( $room ),
+				(string) ( $this->room_lock_tokens[ $room ] ?? '' )
 			);
+			unset( $this->room_lock_tokens[ $room ] );
 		}
 
 		/**
-		 * The MySQL user-lock name for a room, prefixed for multisite/table
-		 * isolation and hashed to stay under the 64-character lock-name cap.
+		 * The lock option name for a room, table-prefixed for isolation and
+		 * hashed to a bounded length.
 		 *
 		 * @since 7.2.0
 		 *
@@ -349,6 +358,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 			$head_seq      = $base_seq + count( $state['log'] );
 			$intents       = array();
 			$resolutions   = array();
+			$cancels       = array();
 			$invalid       = array();
 			$submitted_ids = array();
 			foreach ( $updates as $update ) {
@@ -368,10 +378,26 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 					$resolutions[] = $resolution;
 					continue;
 				}
+				if ( self::UPDATE_TYPE_CANCEL === $update['type'] ) {
+					$cancel = json_decode( $update['data'], true );
+					if (
+						! is_array( $cancel ) ||
+						! is_string( $cancel['cancelId'] ?? null ) || '' === $cancel['cancelId'] ||
+						! is_array( $cancel['intentIds'] ?? null ) || array() === $cancel['intentIds']
+					) {
+						return new WP_Error(
+							'rest_sync_invalid_intent',
+							__( 'Malformed intent cancellation.', 'gutenberg' ),
+							array( 'status' => 400 )
+						);
+					}
+					$cancels[] = $cancel;
+					continue;
+				}
 				if ( self::UPDATE_TYPE_INTENT !== $update['type'] ) {
 					return new WP_Error(
 						'rest_invalid_update_type',
-						__( 'Clients may only send intent or resolution updates to an intent-log room.', 'gutenberg' ),
+						__( 'Clients may only send intent, cancel, or resolution updates to an intent-log room.', 'gutenberg' ),
 						array( 'status' => 400 )
 					);
 				}
@@ -417,6 +443,68 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 			if ( count( $invalid ) > 0 ) {
 				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 				do_action( 'qm/debug', 'wp-sync: ' . count( $invalid ) . " invalid intent(s) voided in {$room}" );
+			}
+
+			/*
+			 * Intent cancellations (the pre-settle undo lane, TODO-5).
+			 * All-or-nothing per cancel row: if ANY target already settled
+			 * (other than as canceled), nothing cancels and the cancel acks
+			 * `cancel-too-late` — the client resurrects the unit from the
+			 * accepted rows. Confirmed targets settle as voided/`canceled`
+			 * marker rows: idempotent against redelivery, dead against a
+			 * late-arriving copy of the intent, and same-batch copies drop
+			 * in the settled filter below.
+			 */
+			$cancel_dispositions = array();
+			foreach ( $cancels as $cancel ) {
+				$targets  = array_values( array_filter( $cancel['intentIds'], 'is_string' ) );
+				$too_late = false;
+				foreach ( $targets as $target_id ) {
+					$prior = $state['settled'][ $target_id ] ?? null;
+					if ( null !== $prior && 'canceled' !== ( $prior['reason'] ?? null ) ) {
+						$too_late = true;
+						break;
+					}
+				}
+				if ( $too_late ) {
+					$cancel_dispositions[] = array(
+						'intentId' => $cancel['cancelId'],
+						'status'   => 'voided',
+						'reason'   => 'cancel-too-late',
+					);
+					continue;
+				}
+				foreach ( $targets as $target_id ) {
+					if ( isset( $state['settled'][ $target_id ] ) ) {
+						continue; // Redelivered cancel: already confirmed.
+					}
+					$stored = $this->add_row(
+						$room,
+						$client_id,
+						self::UPDATE_TYPE_VOIDED,
+						array(
+							'intentId' => $target_id,
+							'reason'   => 'canceled',
+						)
+					);
+					if ( ! $stored ) {
+						return new WP_Error(
+							'rest_sync_storage_error',
+							__( 'Failed to store sync update.', 'gutenberg' ),
+							array( 'status' => 500 )
+						);
+					}
+					$state['settled'][ $target_id ] = array(
+						'status' => 'voided',
+						'reason' => 'canceled',
+					);
+				}
+				$cancel_dispositions[] = array(
+					'intentId' => $cancel['cancelId'],
+					'status'   => 'applied',
+				);
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+				do_action( 'qm/debug', 'wp-sync: canceled ' . count( $targets ) . " queued intent(s) in {$room}" );
 			}
 
 			// Group first, then drop already-settled intents within units, so
@@ -695,6 +783,9 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 					'intentId' => $resolution['proposalId'],
 					'status'   => 'resolved',
 				);
+			}
+			foreach ( $cancel_dispositions as $cancel_disposition ) {
+				$dispositions[] = $cancel_disposition;
 			}
 
 			return array( 'dispositions' => $dispositions );
@@ -1164,6 +1255,52 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 		 * @param string $room Room identifier.
 		 * @return string|null Serialized block content, or null on failure.
 		 */
+		/**
+		 * The engine document at an absolute log seq — the machine-writer
+		 * preflight's diff base (TODO-4b in docs/engine-comparison.md).
+		 *
+		 * @since 0.5.0
+		 *
+		 * @param string $room Room identifier.
+		 * @param int    $seq  Absolute log seq.
+		 * @return array|null Engine document, or null when the room is
+		 *                    uninitialized or the seq is outside the
+		 *                    retained window (below the floor / past head).
+		 */
+		public function document_at( string $room, int $seq ) {
+			$state = $this->load_room( $room );
+			if ( is_wp_error( $state ) || ! is_array( $state['genesis'] ?? null ) ) {
+				return null;
+			}
+			$base_seq = (int) ( $state['base_seq'] ?? 0 );
+			$head_seq = $base_seq + count( $state['log'] );
+			if ( $seq < $base_seq || $seq > $head_seq ) {
+				return null;
+			}
+
+			return WP_Intent_Log_Document::replay(
+				$state['genesis'],
+				array_slice( $state['log'], 0, $seq - $base_seq )
+			);
+		}
+
+		/**
+		 * The room's current head seq, or null pre-genesis.
+		 *
+		 * @since 0.5.0
+		 *
+		 * @param string $room Room identifier.
+		 * @return int|null Head seq.
+		 */
+		public function head_seq( string $room ): ?int {
+			$state = $this->load_room( $room );
+			if ( is_wp_error( $state ) || ! is_array( $state['genesis'] ?? null ) ) {
+				return null;
+			}
+
+			return (int) ( $state['base_seq'] ?? 0 ) + count( $state['log'] );
+		}
+
 		public function materialize( string $room ): ?string {
 			$state = $this->load_room( $room );
 			if ( is_wp_error( $state ) ) {
@@ -1358,7 +1495,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 		 * @param array $path    Block path within the post.
 		 * @return array Block specs for WP_Intent_Log_Document.
 		 */
-		private static function blocks_to_specs( array $blocks, int $post_id, array $path ): array {
+		public static function blocks_to_specs( array $blocks, int $post_id, array $path ): array {
 			$specs = array();
 			$index = 0;
 			foreach ( $blocks as $block ) {

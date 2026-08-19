@@ -98,12 +98,14 @@ instead.
   measured repetitions (warmup reps are excluded). Storage is swapped for an
   in-memory implementation, so this mostly isolates *engine* CPU (the
   intent-log planner and replay; the relay's append) from database I/O —
-  with one deliberate exception: the intent-log and de-rtc ingests hold a
-  per-room MySQL `GET_LOCK` for the length of each request (their merges
-  are order-dependent), so each of their samples includes one lock/release
-  pair of real DB round-trips (yjs-server and the relay pay none). The
-  reported `calibration` block times that lock pair and a bare `SELECT 1`
-  in the same environment so the number can be decomposed.
+  with one deliberate exception: the intent-log ingest holds a Core-style
+  options-row lock (`WP_Sync_Room_Lock`) for the length of each request
+  (its transform log is order-dependent), so each of its samples includes
+  one claim/release pair of real DB writes; de-rtc's optimistic version
+  claim adds one CAS write per accepted proposal (yjs-server and the
+  relay pay neither). The reported `calibration` block times the lock
+  pair and a bare `SELECT 1` in the same environment so the number can
+  be decomposed.
 - `read_us` / `idle_poll_us` — per-request time of `get_updates_since`,
   split into catch-up reads (during and after the session) and idle polls
   (nothing new to deliver). Idle polls dominate request volume in a live
@@ -580,8 +582,9 @@ The comparison the decision turns on:
   round-trip for reads/writes) but keeps the *engine* comparison clean;
   storage growth is exact. For end-to-end latency including MySQL, point
   the runner at `WP_Sync_Post_Meta_Storage` instead.
-- **The intent-log and de-rtc ingest locks ARE real DB I/O inside
-  `service_us`** (one `GET_LOCK`/`RELEASE_LOCK` pair per request), so their
+- **The intent-log lock and de-rtc version claim ARE real DB I/O inside
+  `service_us`** (a claim/release options-row pair per intent-log
+  request; one CAS write per accepted de-rtc proposal), so their
   absolute timings move with the environment's DB latency — a Docker MySQL
   and a local socket differ by an order of magnitude. Use the
   `calibration.lock_pair_p50_ms` figure to subtract it out, and never

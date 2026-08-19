@@ -105,6 +105,19 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 		const HANDSHAKE_TIMEOUT_S = 10;
 
 		/**
+		 * The base WebSocket subprotocol the client offers and the server
+		 * echoes on accept.
+		 */
+		const SUBPROTOCOL = 'wp-sync';
+
+		/**
+		 * Prefix of the subprotocol offer that carries the one-time auth
+		 * token (the only handshake header a browser page can set — see
+		 * authenticate_handshake()).
+		 */
+		const TOKEN_PROTOCOL_PREFIX = 'wp-sync-token.';
+
+		/**
 		 * Maximum number of sync messages allowed per socket within the
 		 * rolling MESSAGE_RATE_WINDOW_S window. Sockets exceeding the budget
 		 * are closed with policy-violation code 1008.
@@ -534,7 +547,12 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 
 			$this->clients[ $key ]['user_id'] = $auth['user_id'];
 			$this->clients[ $key ]['cookie']  = $auth['cookie'];
-			$conn->accept_handshake( $headers['sec-websocket-key'] );
+			// Echo the base subprotocol the client offered alongside its
+			// token entry (browsers enforce the echo matches an offer).
+			$conn->accept_handshake(
+				$headers['sec-websocket-key'],
+				false !== strpos( (string) ( $headers['sec-websocket-protocol'] ?? '' ), self::SUBPROTOCOL ) ? self::SUBPROTOCOL : ''
+			);
 		}
 
 		/**
@@ -601,10 +619,24 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 				return new WP_Error( 'websocket_invalid_cookie', 'Invalid auth cookie.' );
 			}
 
-			// 3. One-time token minted via the ws-token REST endpoint.
-			$token      = isset( $request['query']['token'] ) && is_string( $request['query']['token'] )
-				? $request['query']['token']
-				: '';
+			/*
+			 * 3. One-time token minted via the ws-token REST endpoint. The
+			 * token rides the Sec-WebSocket-Protocol offer list (the one
+			 * handshake header browsers let a page set), NOT the URL — a
+			 * query-string token leaks into server/proxy access logs and
+			 * referrer-adjacent tooling (TODO-9 in
+			 * docs/engine-comparison.md). The offer is
+			 * `<SUBPROTOCOL>, <TOKEN_PROTOCOL_PREFIX><token>`; the server
+			 * echoes only the base subprotocol.
+			 */
+			$token = '';
+			foreach ( explode( ',', (string) ( $headers['sec-websocket-protocol'] ?? '' ) ) as $offer ) {
+				$offer = trim( $offer );
+				if ( 0 === strpos( $offer, self::TOKEN_PROTOCOL_PREFIX ) ) {
+					$token = substr( $offer, strlen( self::TOKEN_PROTOCOL_PREFIX ) );
+					break;
+				}
+			}
 			$token_user = WP_WebSocket_Token_Controller::consume_token( $token );
 
 			if ( null === $token_user || $token_user !== (int) $cookie_user ) {

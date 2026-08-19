@@ -19,3 +19,7 @@
 
 # One-command benchmark runner output (npm run bench)
 /bench-results
+
+# Transport-tool failure screenshots (written to CWD on soak/bench failures)
+soak-fail-*.png
+bench-fail-*.png

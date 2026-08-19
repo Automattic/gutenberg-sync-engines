@@ -43,11 +43,14 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 
 		/**
 		 * Engine protocol version (bump on breaking payload changes).
+		 * Version 2: accepted proposals broadcast ANNOUNCE rows (version +
+		 * content hash, no content); clients fetch canonical content on
+		 * demand (TODO-20 in docs/engine-comparison.md).
 		 *
 		 * @since 0.3.0
 		 * @var int
 		 */
-		const PROTOCOL_VERSION = 1;
+		const PROTOCOL_VERSION = 2;
 
 		/**
 		 * Client-sent update type: a content proposal against a base version.
@@ -60,10 +63,39 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		/**
 		 * Server-emitted update type: accepted canonical content at a version.
 		 *
+		 * LEGACY (protocol 1): still understood on replay so rooms written
+		 * before the announce model catch clients up, but no longer written.
+		 *
 		 * @since 0.3.0
 		 * @var string
 		 */
 		const UPDATE_TYPE_CONTENT = 'content';
+
+		/**
+		 * Server-emitted update type: a canonical version ANNOUNCEMENT —
+		 * version, base version, content hash, author attribution, and the
+		 * merged property registers, but NO content. The transport carries
+		 * advisories, not documents (the DE-RTC vision's Sync channel):
+		 * canonical content lives once in room meta (plus checkpoint
+		 * snapshots and the post/revision write-through), and a client that
+		 * needs it sends a `fetch` row. Row bytes stop scaling with document
+		 * size — the TODO-20 cliff.
+		 *
+		 * @since 0.6.0
+		 * @var string
+		 */
+		const UPDATE_TYPE_ANNOUNCE = 'announce';
+
+		/**
+		 * Client-sent update type: request the canonical content when the
+		 * client's version is behind. Payload: `haveVersion`. Answered in
+		 * the same poll's read half with ONE synthesized (never stored)
+		 * snapshot row of the CURRENT canonical state.
+		 *
+		 * @since 0.6.0
+		 * @var string
+		 */
+		const UPDATE_TYPE_FETCH = 'fetch';
 
 		/**
 		 * Server-emitted update type: genesis/checkpoint snapshot.
@@ -155,6 +187,37 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		private $debug_stash = array();
 
 		/**
+		 * Version-claim retries performed during the current request
+		 * (optimistic-concurrency losses; surfaced in the debug envelope).
+		 *
+		 * @since 0.5.0
+		 *
+		 * @var int
+		 */
+		private $claim_retries = 0;
+
+		/**
+		 * Per-request cache of revision-mined base lookups, keyed
+		 * "room|version" (null = looked, not found).
+		 *
+		 * @since 0.5.0
+		 *
+		 * @var array<string, string|null>
+		 */
+		private $revision_base_cache = array();
+
+		/**
+		 * Pending content fetches for this request, room => client_id =>
+		 * haveVersion. Written by the ingest half (a `fetch` row), consumed
+		 * by the read half (one synthesized snapshot when the client is
+		 * behind). Per-request state, like the debug stash.
+		 *
+		 * @since 0.6.0
+		 * @var array
+		 */
+		private $content_requests = array();
+
+		/**
 		 * Constructor.
 		 *
 		 * @since 0.3.0
@@ -201,6 +264,8 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			return array(
 				self::UPDATE_TYPE_PROPOSAL,
 				self::UPDATE_TYPE_CONTENT,
+				self::UPDATE_TYPE_ANNOUNCE,
+				self::UPDATE_TYPE_FETCH,
 				self::UPDATE_TYPE_SNAPSHOT,
 				self::UPDATE_TYPE_PROPOSAL_PARKED,
 				self::UPDATE_TYPE_RESOLVED,
@@ -210,12 +275,15 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		/**
 		 * Ingests a batch of proposals from one client.
 		 *
-		 * Each proposal is merged against the canonical document under the
-		 * per-room ingest lock (three-way merges are order-dependent, unlike
-		 * CRDT merges, so ingest must serialize per room — same rationale as
-		 * the intent-log engine). Accepted proposals advance the canonical
-		 * version and append a server-authored `content` row; conflicts and
-		 * invalid proposals settle per-proposal as dispositions.
+		 * Lock-free, optimistic — upstream DE-RTC's own concurrency model
+		 * (validate the base, merge, retry when the world moved): an
+		 * accepted proposal atomically CLAIMS its version advancement
+		 * (see claim_version()); a lost claim reloads canonical and
+		 * re-merges. Rejection paths (escalations, voids) never advance
+		 * the version, and every other row type is idempotent, so no
+		 * exclusion is needed anywhere else. Accepted proposals append a
+		 * server-authored `content` row; conflicts and invalid proposals
+		 * settle per-proposal as dispositions.
 		 *
 		 * @since 0.3.0
 		 *
@@ -232,43 +300,32 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			}
 
 			foreach ( $updates as $update ) {
-				if ( ! in_array( $update['type'], array( self::UPDATE_TYPE_PROPOSAL, self::UPDATE_TYPE_RESOLVED ), true ) ) {
+				if ( ! in_array( $update['type'], array( self::UPDATE_TYPE_PROPOSAL, self::UPDATE_TYPE_RESOLVED, self::UPDATE_TYPE_FETCH ), true ) ) {
 					return new WP_Error(
 						'rest_invalid_update_type',
-						__( 'Clients may only send proposal or resolution updates to a de-rtc room.', 'gutenberg' ),
+						__( 'Clients may only send proposal, resolution, or fetch updates to a de-rtc room.', 'gutenberg' ),
 						array( 'status' => 400 )
 					);
 				}
 			}
 
-			$lock_started = microtime( true );
-			$lock         = $this->acquire_room_lock( $room );
-			$lock_wait_ms = (int) round( 1000 * ( microtime( true ) - $lock_started ) );
-			if ( is_wp_error( $lock ) ) {
-				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
-				do_action( 'qm/debug', "wp-sync: de-rtc ingest lock timeout for {$room} after {$lock_wait_ms}ms" );
-				return $lock;
-			}
-			try {
-				return $this->handle_updates_locked( $room, $client_id, $updates, $context, $lock_wait_ms );
-			} finally {
-				$this->release_room_lock( $room );
-			}
+			$this->claim_retries = 0;
+
+			return $this->process_updates( $room, $client_id, $updates, $context );
 		}
 
 		/**
-		 * The body of handle_updates(), run under the per-room ingest lock.
+		 * The body of handle_updates().
 		 *
 		 * @since 0.3.0
 		 *
-		 * @param string $room         Room identifier.
-		 * @param int    $client_id    Client identifier.
-		 * @param array  $updates      Proposal updates.
-		 * @param array  $context      Transport context.
-		 * @param int    $lock_wait_ms Milliseconds spent waiting for the lock.
+		 * @param string $room      Room identifier.
+		 * @param int    $client_id Client identifier.
+		 * @param array  $updates   Proposal updates.
+		 * @param array  $context   Transport context.
 		 * @return array|WP_Error array( 'dispositions' => array ) or error.
 		 */
-		private function handle_updates_locked( string $room, int $client_id, array $updates, array $context, int $lock_wait_ms ) {
+		private function process_updates( string $room, int $client_id, array $updates, array $context ) {
 			$state = $this->load_room( $room );
 			if ( is_wp_error( $state ) ) {
 				return $state;
@@ -277,6 +334,21 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			$resolutions = array();
 			$proposals   = array();
 			foreach ( $updates as $update ) {
+				if ( self::UPDATE_TYPE_FETCH === $update['type'] ) {
+					/*
+					 * A content fetch (the announce model's on-demand lane):
+					 * note the client's version; the read half of this same
+					 * request answers with ONE synthesized snapshot of the
+					 * current canonical when the client is behind. No
+					 * disposition — fetches are advisory, idempotent, and
+					 * carry nothing to accept or reject.
+					 */
+					$decoded = json_decode( (string) $update['data'], true );
+					$this->content_requests[ $room ][ $client_id ] = is_array( $decoded ) && is_string( $decoded['haveVersion'] ?? null )
+						? $decoded['haveVersion']
+						: '';
+					continue;
+				}
 				if ( self::UPDATE_TYPE_RESOLVED === $update['type'] ) {
 					$resolution = json_decode( (string) $update['data'], true );
 					if (
@@ -329,7 +401,13 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					continue;
 				}
 
-				$disposition    = $this->ingest_proposal( $room, $client_id, $state, $proposal, $review );
+				$disposition = $this->ingest_proposal( $room, $client_id, $state, $proposal, $review );
+				if ( is_wp_error( $disposition ) ) {
+					// Claim attempts exhausted under heavy contention: the
+					// whole request retries (503), the old lock-timeout
+					// contract — a re-sent proposal merges idempotently.
+					return $disposition;
+				}
 				$disposition    = array_merge( array( 'intentId' => $proposal_id ), $disposition );
 				$dispositions[] = $disposition;
 			}
@@ -389,7 +467,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 
 			if ( ! empty( $context['debug'] ) ) {
 				$this->debug_stash[ $room ] = array(
-					'lock_wait_ms'  => $lock_wait_ms,
+					'claim_retries' => $this->claim_retries,
 					'version'       => $state['version'],
 					'content_bytes' => strlen( (string) $state['content'] ),
 					'ingest'        => $counts,
@@ -410,15 +488,34 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * @param array  $state     Room state (by reference via room cache).
 		 * @param array  $proposal  Decoded proposal payload.
 		 * @param array  $review    Review ledger (lazily loaded, by reference).
-		 * @return array Disposition fields (status, reason?, version?).
+		 * @return array|WP_Error Disposition fields (status, reason?,
+		 *                        version?), or a retryable 503 when claim
+		 *                        attempts are exhausted under contention.
 		 */
 		private function ingest_proposal( string $room, int $client_id, array &$state, array $proposal, &$review ) {
-			$base_content = $this->resolve_base_content( $state, $proposal['baseVersion'] );
+			$base_content = $this->resolve_effective_base( $room, $state, $proposal );
 			if ( null === $base_content ) {
 				return array(
 					'status' => 'voided',
 					'reason' => 'unknown-base-version',
 				);
+			}
+
+			/*
+			 * Descriptor tamper evidence (TODO-2a), enforced: a proposal
+			 * carrying a block-native clientUpdate has it validated ONCE
+			 * against the PLAIN declared base — the state the client
+			 * actually built it from, never the TODO-2b composite — and
+			 * then DROPPED. Dropping matters twice over: kses laundering
+			 * and per-block salvage rewrite the proposed content
+			 * server-side, so a retained descriptor would false-positive
+			 * the merge core's own tamper check; and the drop is what
+			 * lets descriptor-carrying proposals use those
+			 * partial-acceptance lanes at all.
+			 */
+			$rejection = $this->validate_and_drop_client_update( $room, $state, $proposal );
+			if ( null !== $rejection ) {
+				return $rejection;
 			}
 
 			$proposed_content = $proposal['proposedContent'];
@@ -432,16 +529,14 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			 * for a privileged reviewer (restore re-proposes them under the
 			 * RESTORER's capability, so restore IS the approval). The whole
 			 * proposal escalates only when per-block extraction is
-			 * unavailable (freeform boundaries) or the proposal carries a
-			 * block-native descriptor laundering would invalidate.
+			 * unavailable (freeform boundaries). Descriptors were validated
+			 * and dropped above, so this lane's rewrite cannot invalidate
+			 * one.
 			 */
 			if ( ! current_user_can( 'unfiltered_html' ) ) {
 				$sanitized = wp_kses_post( $proposed_content );
 				if ( $sanitized !== $proposed_content ) {
-					$laundered = null;
-					if ( null === ( $proposal['clientUpdate'] ?? null ) ) {
-						$laundered = $this->sequester_unfiltered_blocks( $room, $client_id, $proposal, $base_content, $review );
-					}
+					$laundered = $this->sequester_unfiltered_blocks( $room, $client_id, $proposal, $base_content, $review );
 					if ( null === $laundered ) {
 						$this->park_proposal( $room, $client_id, $proposal, 'requires-unfiltered-html', $base_content, $review );
 						return array(
@@ -453,86 +548,310 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				}
 			}
 
-			$result = wp_de_rtc_get_automerge_retry_save_result(
-				$base_content,
-				$state['content'],
-				$proposed_content,
-				$proposal['clientUpdate'] ?? null
-			);
+			/*
+			 * Merge, claim, commit — optimistically. The claim is the commit
+			 * point: an atomic version-advancement swap (upstream DE-RTC's
+			 * validate-and-retry model, not a lock). Losing the claim means
+			 * another request advanced canonical between our load and our
+			 * commit: reload, re-merge against the fresh state, try again.
+			 * Rejection outcomes never advance the version, so they need no
+			 * claim.
+			 */
+			$salvage_parked = 0;
+			for ( $attempt = 0; $attempt < 10; $attempt++ ) {
+				if ( $attempt > 0 ) {
+					/*
+					 * Lost the optimistic race. Jittered backoff first —
+					 * under a thundering herd, immediate re-claims lose
+					 * repeatedly to whichever rival is mid-commit — THEN
+					 * reload, so the state we merge against is as fresh as
+					 * possible when we claim.
+					 */
+					usleep( 1000 * wp_rand( 2, 6 * $attempt ) );
+					unset( $this->room_states[ $room ] );
+					$reloaded = $this->load_room( $room );
+					if ( is_wp_error( $reloaded ) ) {
+						return array(
+							'status' => 'voided',
+							'reason' => 'storage-error',
+						);
+					}
+					$state        = $reloaded;
+					$base_content = $this->resolve_effective_base( $room, $state, $proposal );
+					if ( null === $base_content ) {
+						// The base aged out of the snapshot window mid-retry.
+						return array(
+							'status' => 'voided',
+							'reason' => 'unknown-base-version',
+						);
+					}
+				}
+				$result = wp_de_rtc_get_automerge_retry_save_result(
+					$base_content,
+					$state['content'],
+					$proposed_content,
+					$proposal['clientUpdate'] ?? null
+				);
 
-			if ( is_wp_error( $result ) ) {
-				if ( 'de_rtc_rebase_failed' === $result->get_error_code() ) {
-					// A genuine conflict: DE-RTC policy is a human decision,
-					// not a silent merge. The proposal parks for review; the
-					// canonical state wins locally once it applies, and a
-					// human restores or dismisses the parked work.
-					$this->park_proposal( $room, $client_id, $proposal, 'manual-conflict-required', $base_content, $review );
+				if ( is_wp_error( $result ) ) {
+					if ( 'de_rtc_rebase_failed' === $result->get_error_code() ) {
+						/*
+						 * A genuine conflict. Before parking the WHOLE
+						 * proposal, try per-block salvage (upstream's
+						 * partial-acceptance model, the same grain the kses
+						 * sequestration lane already uses): land the blocks
+						 * that merge, park exactly the conflicted ones.
+						 * Descriptors were validated and dropped at ingest,
+						 * so salvage's rewrite cannot invalidate one.
+						 */
+						$salvaged = $this->salvage_conflicting_blocks( $room, $client_id, $proposal, $base_content, (string) $state['content'], $proposed_content, $review, $salvage_parked );
+						if ( null !== $salvaged && $salvaged !== $proposed_content ) {
+							$proposed_content = $salvaged;
+							continue; // Re-merge the salvaged content.
+						}
+						// Per-block extraction unavailable (structural
+						// divergence, freeform boundaries): DE-RTC policy is
+						// a human decision, not a silent merge. The proposal
+						// parks for review; the canonical state wins locally
+						// once it applies, and a human restores or dismisses
+						// the parked work.
+						$this->park_proposal( $room, $client_id, $proposal, 'manual-conflict-required', $base_content, $review );
+						return array(
+							'status' => 'escalated',
+							'reason' => 'manual-conflict-required',
+						);
+					}
+
+					$data = $result->get_error_data();
 					return array(
-						'status' => 'escalated',
-						'reason' => 'manual-conflict-required',
+						'status' => 'voided',
+						'reason' => is_array( $data ) && is_string( $data['detail'] ?? null )
+							? $data['detail']
+							: $result->get_error_code(),
 					);
 				}
 
-				$data = $result->get_error_data();
-				return array(
-					'status' => 'voided',
-					'reason' => is_array( $data ) && is_string( $data['detail'] ?? null )
-						? $data['detail']
-						: $result->get_error_code(),
+				if ( ! $this->claim_version( $room, (int) $state['version_seq'] ) ) {
+					// Lost the optimistic race: back off, reload, re-merge
+					// (the loop-top retry block).
+					++$this->claim_retries;
+					continue;
+				}
+
+				// Claimed: this request owns the advancement to the next
+				// version. (A crash between here and add_row() leaves an
+				// orphaned claim; claim_version() heals that by TTL
+				// takeover.)
+				$next_seq     = (int) $state['version_seq'] + 1;
+				$next_version = 'v' . $next_seq;
+				$merged       = (string) $result['merged_content'];
+
+				// Entity-property registers ride the proposal beside the
+				// content: a per-property three-way merge against the same base
+				// version. Runs only on the accepted path — an escalated
+				// proposal parks whole, and the client re-carries its full
+				// property map on the next proposal, so nothing is lost.
+				$this->merge_proposed_properties( $room, $client_id, $state, $proposal, $review );
+
+				$state['sync_meta'] = wp_de_rtc_update_automerge_version_snapshots(
+					is_array( $state['sync_meta'] ) ? $state['sync_meta'] : array(),
+					$state['version'],
+					$state['content'],
+					$next_version,
+					$merged
 				);
-			}
 
-			// Accepted: advance the canonical version.
-			$next_seq     = (int) $state['version_seq'] + 1;
-			$next_version = 'v' . $next_seq;
-			$merged       = (string) $result['merged_content'];
+				/*
+				 * Announce model (TODO-20): canonical truth writes FIRST
+				 * (room meta), the row second — the row is an ADVISORY
+				 * notification, not the document. A lost row is benign
+				 * (the next fetch/poll converges from meta); the reverse
+				 * order could strand an announced version whose content
+				 * nothing holds.
+				 */
+				$prev_version         = $state['version'];
+				$state['version']     = $next_version;
+				$state['version_seq'] = $next_seq;
+				$state['content']     = $merged;
+				$this->record_properties_snapshot( $state, $next_version );
+				if ( ! $this->save_canonical( $room, $state, true ) ) {
+					// The chained canonical write could not land (a crashed
+					// predecessor, healed by the claim TTL). Retryable, and
+					// nothing was announced or acked for this version.
+					return new WP_Error(
+						'rest_sync_room_busy',
+						__( 'The room is busy processing another request. Retry shortly.', 'gutenberg' ),
+						array( 'status' => 503 )
+					);
+				}
 
-			// Entity-property registers ride the proposal beside the
-			// content: a per-property three-way merge against the same base
-			// version. Runs only on the accepted path — an escalated
-			// proposal parks whole, and the client re-carries its full
-			// property map on the next proposal, so nothing is lost.
-			$this->merge_proposed_properties( $room, $client_id, $state, $proposal, $review );
-
-			$state['sync_meta'] = wp_de_rtc_update_automerge_version_snapshots(
-				is_array( $state['sync_meta'] ) ? $state['sync_meta'] : array(),
-				$state['version'],
-				$state['content'],
-				$next_version,
-				$merged
-			);
-
-			$stored = $this->add_row(
-				$room,
-				self::SERVER_CLIENT_ID,
-				self::UPDATE_TYPE_CONTENT,
-				wp_json_encode(
-					array(
-						'version'        => $next_version,
-						'baseVersion'    => $state['version'],
-						'content'        => $merged,
-						'properties'     => $state['properties'] ?? array(),
-						'authorClientId' => $client_id,
-						'proposalId'     => $proposal['proposalId'],
+				$stored = $this->add_row(
+					$room,
+					self::SERVER_CLIENT_ID,
+					self::UPDATE_TYPE_ANNOUNCE,
+					wp_json_encode(
+						array(
+							'version'        => $next_version,
+							'baseVersion'    => $prev_version,
+							'contentHash'    => wp_de_rtc_hash_content( $merged ),
+							'properties'     => $state['properties'] ?? array(),
+							'authorClientId' => $client_id,
+							'author'         => get_current_user_id(),
+							'proposalId'     => $proposal['proposalId'],
+						)
 					)
-				)
+				);
+				if ( ! $stored ) {
+					// Canonical already advanced; peers converge via fetch.
+					// The proposer still needs its disposition — report the
+					// applied version, not a void.
+					// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+					do_action( 'qm/debug', "wp-sync: de-rtc announce row write failed in {$room} (canonical advanced; clients converge via fetch)" );
+				}
+
+				$disposition = array(
+					'status'  => 'applied',
+					'version' => $next_version,
+				);
+				if ( $salvage_parked > 0 ) {
+					// Partial acceptance: the clean remainder landed and
+					// this many conflicted blocks parked for review.
+					$disposition['parkedBlocks'] = $salvage_parked;
+				}
+
+				return $disposition;
+			}
+
+			// Claim attempts exhausted: heavy contention. Same retryable
+			// contract as the old lock timeout — the client re-sends on its
+			// normal cadence and the re-proposal merges idempotently.
+			return new WP_Error(
+				'rest_sync_room_busy',
+				__( 'The room is busy processing another request. Retry shortly.', 'gutenberg' ),
+				array( 'status' => 503 )
 			);
-			if ( ! $stored ) {
+		}
+
+		/**
+		 * Validates a proposal's block-native descriptor and drops it.
+		 *
+		 * TODO-2a (docs/engine-comparison.md), full enforcement: when a
+		 * proposal carries `clientUpdate`, the frozen merge core re-derives
+		 * the expected update from (plain declared base, proposed content)
+		 * and compares fingerprints — a mismatch is tamper evidence and
+		 * VOIDS the proposal. On success the descriptor is dropped from
+		 * the proposal (validate-once): the server's own rewrites (kses
+		 * sequestration, per-block salvage) must not re-trip the check,
+		 * and the descriptor-less lanes derive an identical update anyway.
+		 *
+		 * The validation base is deliberately the PLAIN base of the
+		 * declared `baseVersion` — never the TODO-2b composite — because
+		 * that is the exact state the client built its evidence from, so
+		 * descriptors and `blockBaseVersions` compose.
+		 *
+		 * One deliberate acceptance: a client that could not split blocks
+		 * (its parser twin refused where ours did not — e.g. PHP-authored
+		 * float attrs re-encode differently across languages) sends the
+		 * single `document.replace_unsupported` fallback op. When both
+		 * top-level hashes verified, that is legitimate DIGEST-ONLY
+		 * evidence, not tamper; rejecting it would turn a serializer
+		 * parity edge into a blocked save.
+		 *
+		 * @since 0.6.0
+		 *
+		 * @param string $room     Room identifier.
+		 * @param array  $state    Room state.
+		 * @param array  $proposal Decoded proposal payload (by reference:
+		 *                         the descriptor is dropped on success).
+		 * @return array|null A voided disposition on rejection, null to
+		 *                    proceed.
+		 */
+		private function validate_and_drop_client_update( string $room, array $state, array &$proposal ): ?array {
+			$client_update = $proposal['clientUpdate'] ?? null;
+			if ( null === $client_update ) {
+				return null;
+			}
+
+			$plain_base = $this->resolve_base_content( $state, (string) $proposal['baseVersion'] );
+			if ( null === $plain_base ) {
+				$plain_base = $this->resolve_base_from_revisions( $room, (string) $proposal['baseVersion'] );
+			}
+			if ( null === $plain_base ) {
 				return array(
 					'status' => 'voided',
-					'reason' => 'storage-error',
+					'reason' => 'unknown-base-version',
 				);
 			}
 
-			$state['version']     = $next_version;
-			$state['version_seq'] = $next_seq;
-			$state['content']     = $merged;
-			$this->record_properties_snapshot( $state, $next_version );
-			$this->save_canonical( $room, $state );
+			$normalized = wp_de_rtc_normalize_automerge_client_update( $client_update );
+			if ( is_wp_error( $normalized ) ) {
+				return $this->reject_client_update( $room, $normalized );
+			}
 
+			$valid = wp_de_rtc_validate_automerge_block_native_update_matches_content(
+				$plain_base,
+				(string) $proposal['proposedContent'],
+				$normalized
+			);
+			if ( is_wp_error( $valid ) && $this->is_hash_pinned_unsupported_fallback( $valid, $normalized ) ) {
+				do_action( 'qm/debug', 'wp-sync: de-rtc accepted digest-only descriptor evidence in ' . $room . ' (client sent the unsupported-fallback op; hashes verified)' );
+				$valid = true;
+			}
+			if ( is_wp_error( $valid ) ) {
+				return $this->reject_client_update( $room, $valid );
+			}
+
+			$proposal['clientUpdate'] = null;
+			return null;
+		}
+
+		/**
+		 * Returns whether a fingerprint mismatch is the acceptable
+		 * hash-pinned unsupported-fallback shape (see
+		 * validate_and_drop_client_update()).
+		 *
+		 * The merge core checks the top-level content hashes with
+		 * hash_equals() BEFORE comparing fingerprints, so reaching the
+		 * fingerprint mismatch with both hashes PRESENT means both
+		 * matched.
+		 *
+		 * @since 0.6.0
+		 *
+		 * @param WP_Error $error      Validation error.
+		 * @param array    $normalized Normalized client update.
+		 * @return bool Whether to accept as digest-only evidence.
+		 */
+		private function is_hash_pinned_unsupported_fallback( WP_Error $error, array $normalized ): bool {
+			$data = $error->get_error_data();
+			if ( ! is_array( $data ) || 'automerge_client_update_materialization_mismatch' !== ( $data['detail'] ?? null ) ) {
+				return false;
+			}
+			$operations = $normalized['operations'];
+			if ( 1 !== count( $operations ) || 'document.replace_unsupported' !== ( $operations[0]['type'] ?? null ) ) {
+				return false;
+			}
+			return is_string( $normalized['baseContentHash'] ?? null )
+				&& is_string( $normalized['proposedContentHash'] ?? null );
+		}
+
+		/**
+		 * Builds the voided disposition for a rejected descriptor.
+		 *
+		 * @since 0.6.0
+		 *
+		 * @param string   $room  Room identifier.
+		 * @param WP_Error $error Normalization/validation error.
+		 * @return array Voided disposition.
+		 */
+		private function reject_client_update( string $room, WP_Error $error ): array {
+			$data   = $error->get_error_data();
+			$reason = is_array( $data ) && is_string( $data['detail'] ?? null )
+				? $data['detail']
+				: $error->get_error_code();
+			do_action( 'qm/debug', 'wp-sync: de-rtc rejected a client descriptor in ' . $room . ' — ' . $reason );
 			return array(
-				'status'  => 'applied',
-				'version' => $next_version,
+				'status' => 'voided',
+				'reason' => $reason,
 			);
 		}
 
@@ -562,6 +881,19 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			$proposed_props = $proposal['proposedProperties'] ?? null;
 			if ( ! is_array( $proposed_props ) ) {
 				return;
+			}
+
+			/*
+			 * One representation: content travels as content (the proposal
+			 * body / canonical state), never as a property register. A
+			 * `content` register would re-carry the ENTIRE document on
+			 * every announce (the TODO-20 double-carry). Stripped here
+			 * defensively for legacy clients; also scrubbed from any
+			 * previously-persisted canonical map.
+			 */
+			unset( $proposed_props['content'] );
+			if ( is_array( $state['properties'] ?? null ) ) {
+				unset( $state['properties']['content'] );
 			}
 
 			$base_props      = $this->resolve_base_properties( $state, (string) $proposal['baseVersion'] );
@@ -932,6 +1264,92 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		}
 
 		/**
+		 * Per-block salvage of a proposal whose whole-document three-way
+		 * merge failed: the partial-acceptance grain (TODO-3 in
+		 * docs/engine-comparison.md), mirroring the kses sequestration
+		 * lane. Blocks only the client changed pass through; blocks only
+		 * canonical changed adopt canonical; blocks BOTH changed get their
+		 * own three-way merge — and when that conflicts too, canonical
+		 * wins the position while the client's block parks for review.
+		 *
+		 * Sound only when the block structure aligns positionally on all
+		 * three sides (equal top-level record counts): structural
+		 * divergence is exactly where positional alignment lies, so it
+		 * returns null and the caller keeps the whole-proposal fallback.
+		 *
+		 * @since 0.5.0
+		 *
+		 * @param string $room             Room identifier.
+		 * @param int    $client_id        Proposing client id.
+		 * @param array  $proposal         Decoded proposal payload.
+		 * @param string $base_content     Content of the proposal's base version.
+		 * @param string $current_content  Current canonical content.
+		 * @param string $proposed_content Proposed content (post-kses lane).
+		 * @param array  $review           Review ledger (lazily loaded, by reference).
+		 * @param int    $parked_count     Accumulates how many blocks parked (by reference).
+		 * @return string|null Salvaged proposed content, or null when
+		 *                     per-block extraction cannot apply.
+		 */
+		private function salvage_conflicting_blocks( string $room, int $client_id, array $proposal, string $base_content, string $current_content, string $proposed_content, &$review, &$parked_count ): ?string {
+			$base_records     = wp_de_rtc_get_top_level_serialized_block_records( $base_content );
+			$current_records  = wp_de_rtc_get_top_level_serialized_block_records( $current_content );
+			$proposed_records = wp_de_rtc_get_top_level_serialized_block_records( $proposed_content );
+			if ( is_wp_error( $base_records ) || is_wp_error( $current_records ) || is_wp_error( $proposed_records ) ) {
+				return null; // Freeform boundaries defeat per-block extraction.
+			}
+			if ( count( $base_records ) !== count( $proposed_records ) || count( $base_records ) !== count( $current_records ) ) {
+				return null; // Structural divergence: positional alignment lies.
+			}
+
+			$salvaged   = array();
+			$conflicted = array();
+			foreach ( $proposed_records as $index => $proposed_block ) {
+				$base_block    = (string) $base_records[ $index ];
+				$current_block = (string) $current_records[ $index ];
+
+				if ( $proposed_block === $base_block ) {
+					$salvaged[] = $current_block; // Client untouched: adopt canonical.
+					continue;
+				}
+				if ( $current_block === $base_block || $current_block === $proposed_block ) {
+					$salvaged[] = $proposed_block; // Sole writer (or agreement).
+					continue;
+				}
+
+				// Both sides changed this block: its own three-way merge.
+				$merged = wp_de_rtc_get_automerge_retry_save_result( $base_block, $current_block, $proposed_block, null );
+				if ( ! is_wp_error( $merged ) ) {
+					$salvaged[] = (string) $merged['merged_content'];
+					continue;
+				}
+				if ( 'de_rtc_rebase_failed' !== $merged->get_error_code() ) {
+					return null; // Unexpected failure: keep the whole-proposal path.
+				}
+				// True conflict: canonical wins the position, the client's
+				// block parks for review.
+				$conflicted[] = array(
+					'index' => (int) $index,
+					'html'  => $proposed_block,
+				);
+				$salvaged[]   = $current_block;
+			}
+
+			if ( array() === $conflicted ) {
+				// The whole-document merge failed for a reason per-block
+				// analysis cannot see; nothing to salvage differently.
+				return null;
+			}
+
+			$this->park_changed_blocks( $room, $client_id, (string) $proposal['proposalId'], 'manual-conflict-required', (string) $proposal['baseVersion'], $conflicted, $review, false );
+			$parked_count += count( $conflicted );
+
+			// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+			do_action( 'qm/debug', 'wp-sync: de-rtc salvaged a conflicting proposal in ' . $room . ' — ' . count( $conflicted ) . ' block(s) parked, the remainder lands' );
+
+			return implode( "\n\n", $salvaged );
+		}
+
+		/**
 		 * The block name of a serialized top-level block.
 		 *
 		 * @since 0.4.0
@@ -1024,7 +1442,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * @param array  $context   Transport context.
 		 * @return array Response envelope.
 		 */
-		public function get_updates_since( string $room, int $client_id, int $cursor, array $context ): array { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable -- $client_id is part of the WP_Sync_Engine contract.
+		public function get_updates_since( string $room, int $client_id, int $cursor, array $context ): array {
 			if ( $cursor > 0 && method_exists( $this->storage, 'get_room_meta' ) ) {
 				$floor = $this->storage->get_room_meta( $room, self::META_FLOOR );
 				if ( is_numeric( $floor ) && $cursor < (int) $floor ) {
@@ -1045,13 +1463,43 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 
 			$typed_updates = array();
 			foreach ( $rows as $row ) {
-				// All stored rows are server-authored (content/snapshot) and
+				// All stored rows are server-authored (announce/snapshot) and
 				// relevant to every client, including the proposal's author —
-				// an accepted content row is the authoritative confirmation.
+				// an accepted announce row is the authoritative confirmation.
 				$typed_updates[] = array(
 					'data' => $row['data'],
 					'type' => $row['type'],
 				);
+			}
+
+			/*
+			 * Content-on-demand (the announce model, TODO-20): a `fetch` row
+			 * in this request's ingest half asked for canonical content. When
+			 * the client is behind, append ONE synthesized snapshot of the
+			 * CURRENT canonical state — never stored, never counted in
+			 * cursors, always the latest (a fetch for an announced version
+			 * that has since advanced gets the newer state; strictly better).
+			 */
+			$have_version = $this->content_requests[ $room ][ $client_id ] ?? null;
+			if ( null !== $have_version ) {
+				unset( $this->content_requests[ $room ][ $client_id ] );
+				$state = $this->load_room( $room );
+				if ( ! is_wp_error( $state ) ) {
+					$have_seq = '' === $have_version ? -1 : (int) ltrim( (string) $have_version, 'v' );
+					if ( (int) $state['version_seq'] > $have_seq ) {
+						$typed_updates[] = array(
+							'data' => wp_json_encode(
+								array(
+									'version'    => $state['version'],
+									'content'    => $state['content'],
+									'properties' => $state['properties'] ?? array(),
+									'ephemeral'  => true,
+								)
+							),
+							'type' => self::UPDATE_TYPE_SNAPSHOT,
+						);
+					}
+				}
 			}
 
 			$response = array(
@@ -1117,8 +1565,16 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				return $this->room_states[ $room ];
 			}
 
-			$has_meta = method_exists( $this->storage, 'get_room_meta' );
-			$meta     = $has_meta ? $this->storage->get_room_meta( $room, self::META_DOC ) : null;
+			// Canonical truth: the chained options row (the announce model's
+			// single content store). Legacy rooms fall back to the old
+			// de_rtc_doc room meta once; the next advance seeds the chain.
+			$meta = self::decode_canonical(
+				WP_Sync_Atomic_Option::read( $this->canonical_option_name( $room ) )
+			);
+			if ( null === $meta && method_exists( $this->storage, 'get_room_meta' ) ) {
+				$legacy = $this->storage->get_room_meta( $room, self::META_DOC );
+				$meta   = is_array( $legacy ) ? $legacy : null;
+			}
 
 			$state       = null;
 			$meta_cursor = 0;
@@ -1130,6 +1586,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					'sync_meta'             => is_array( $meta['sync_meta'] ?? null ) ? $meta['sync_meta'] : array(),
 					'properties'            => is_array( $meta['properties'] ?? null ) ? $meta['properties'] : array(),
 					'properties_by_version' => is_array( $meta['properties_by_version'] ?? null ) ? $meta['properties_by_version'] : array(),
+					'healed_hash'           => is_string( $meta['healed_hash'] ?? null ) ? $meta['healed_hash'] : null,
 				);
 				$meta_cursor = (int) ( $meta['cursor'] ?? 0 );
 			}
@@ -1148,6 +1605,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					'sync_meta'             => array(),
 					'properties'            => array(),
 					'properties_by_version' => array(),
+					'healed_hash'           => null,
 				);
 			}
 
@@ -1182,9 +1640,387 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				$this->record_properties_snapshot( $state, $decoded['version'] );
 			}
 
+			// One-representation scrub: a legacy `content` property register
+			// persisted by older clients must not re-carry the document on
+			// every announce (see merge_proposed_properties).
+			if ( is_array( $state['properties'] ?? null ) ) {
+				unset( $state['properties']['content'] );
+			}
+
+			// Self-healing: fold in an out-of-band post_content write before
+			// anyone reads or merges against this state.
+			$state = $this->maybe_heal_external_save( $room, $state );
+
 			$this->room_states[ $room ] = $state;
 
 			return $state;
+		}
+
+		/**
+		 * Detects and heals an out-of-band write to the post's content.
+		 *
+		 * The vision's self-healing rule: unaware plugins, direct database
+		 * writes, and legacy flows will change post_content without telling
+		 * the room; the server notices, merges the external state in as an
+		 * ordinary collaborative update, and connected editors simply see
+		 * the change. Detection uses the co-location stamp
+		 * (WP_De_RTC_Sync_Meta_Colocation writes `content_hash` on every
+		 * aware save): a save whose stamp matches its own content came
+		 * through the filter; anything else is out-of-band.
+		 *
+		 * Healing policy, in order:
+		 * - Content matching canonical or ANY known version snapshot is a
+		 *   stale copy, not new work — stamped as seen, never merged (this
+		 *   is the guard against rolling the room back to an old copy).
+		 * - An embedded base version that resolves (room snapshots first,
+		 *   then the embed's own snapshots) gets a genuine three-way merge:
+		 *   concurrent session work is preserved, overlapping edits park
+		 *   for review like any conflicting proposal.
+		 * - Otherwise the external content is WordPress's accepted post
+		 *   state and the room converges TO it (fast-forward from
+		 *   canonical): "operations which would otherwise wipe-out a post
+		 *   appear as any other collaborative update" — prior canonical
+		 *   content stays in the row history.
+		 *
+		 * Idempotent via the persisted `healed_hash` stamp (each external
+		 * content is attempted once), and claim-guarded like every other
+		 * version advancement.
+		 *
+		 * @since 0.5.0
+		 *
+		 * @param string $room  Room identifier.
+		 * @param array  $state Loaded room state.
+		 * @return array Possibly-healed room state.
+		 */
+		private function maybe_heal_external_save( string $room, array $state ): array {
+			$parsed_room = class_exists( 'WP_Sync_Config' ) ? WP_Sync_Config::parse_room( $room ) : null;
+			if ( null === $parsed_room || 'postType' !== $parsed_room['entity_kind'] || empty( $parsed_room['object_id'] ) ) {
+				return $state;
+			}
+			$post = get_post( (int) $parsed_room['object_id'] );
+			if ( ! $post instanceof WP_Post || '' === (string) $post->post_content ) {
+				return $state;
+			}
+
+			$raw           = (string) $post->post_content;
+			$embedded_meta = array();
+			$stripped      = null;
+			$parsed        = wp_de_rtc_parse_post_content_sync_meta( $raw, array( 'allow_script_stripped_sync_meta' => true ) );
+			if ( is_array( $parsed ) && is_string( $parsed['content'] ?? null ) ) {
+				$stripped = $parsed['content'];
+				if ( is_array( $parsed['sync_meta'] ?? null ) ) {
+					$embedded_meta = $parsed['sync_meta'];
+				}
+			}
+			if ( null === $stripped ) {
+				$stripped = wp_de_rtc_canonicalize_post_content_core_block_names( $raw );
+			}
+
+			$external_hash = wp_de_rtc_hash_content( $stripped );
+
+			// An aware save (the co-location stamp matches its content), or
+			// an external content already attempted: nothing to do.
+			if ( ( $embedded_meta['content_hash'] ?? null ) === $external_hash || ( $state['healed_hash'] ?? null ) === $external_hash ) {
+				return $state;
+			}
+
+			// In sync, or a stale copy of a version the room knows: stamp
+			// as seen so the check stays cheap, but never merge (rollback
+			// guard).
+			$known = $external_hash === wp_de_rtc_hash_content( (string) $state['content'] );
+			if ( ! $known && is_array( $state['sync_meta']['version_snapshots'] ?? null ) ) {
+				foreach ( $state['sync_meta']['version_snapshots'] as $snapshot ) {
+					if ( is_array( $snapshot ) && ( $snapshot['content_hash'] ?? null ) === $external_hash ) {
+						$known = true;
+						break;
+					}
+				}
+			}
+			if ( $known ) {
+				$state['healed_hash'] = $external_hash;
+				$this->save_canonical( $room, $state );
+				return $state;
+			}
+
+			// Genuinely new out-of-band content. Resolve the best base.
+			$base         = null;
+			$base_version = is_string( $embedded_meta['room_version'] ?? null ) ? $embedded_meta['room_version'] : null;
+			if ( null !== $base_version ) {
+				$base = $this->resolve_base_content( $state, $base_version );
+				if ( null === $base && is_array( $embedded_meta['version_snapshots'][ $base_version ] ?? null ) ) {
+					// The room aged the base out, but the writer carried a
+					// copy of it (co-location pays off): use theirs.
+					$carried = $embedded_meta['version_snapshots'][ $base_version ];
+					if ( 'base64' === ( $carried['encoding'] ?? null ) && is_string( $carried['content_base64'] ?? null ) ) {
+						$decoded = base64_decode( $carried['content_base64'], true );
+						if ( is_string( $decoded ) && wp_de_rtc_hash_content( $decoded ) === ( $carried['content_hash'] ?? null ) ) {
+							$base = $decoded;
+						}
+					}
+				}
+			}
+			if ( null === $base && null !== $base_version ) {
+				// Last resort before replacement semantics: mine revisions
+				// (they carry embedded sync-meta since co-location).
+				$base = $this->resolve_base_from_revisions( $room, $base_version );
+			}
+			$replacement = null === $base;
+			if ( $replacement ) {
+				// No usable lineage: WordPress accepted this as post state,
+				// so the room converges to it (fast-forward).
+				$base = (string) $state['content'];
+			}
+
+			for ( $attempt = 0; $attempt < 3; $attempt++ ) {
+				$result = wp_de_rtc_get_automerge_retry_save_result( $base, (string) $state['content'], $stripped, null );
+
+				if ( is_wp_error( $result ) ) {
+					if ( 'de_rtc_rebase_failed' === $result->get_error_code() ) {
+						// The external edit collides with concurrent session
+						// work. Try per-block salvage first (the clean part
+						// of the external edit lands; only the collision
+						// parks) — then fall back to parking it whole.
+						$review              = $this->load_review_ledger( $room );
+						$external_proposal   = array(
+							'proposalId'      => 'external-' . substr( $external_hash, 0, 12 ),
+							'baseVersion'     => null !== $base_version ? $base_version : $state['version'],
+							'proposedContent' => $stripped,
+							'clientUpdate'    => null,
+						);
+						$heal_salvage_parked = 0;
+						$salvaged            = $this->salvage_conflicting_blocks( $room, self::SERVER_CLIENT_ID, $external_proposal, $base, (string) $state['content'], $stripped, $review, $heal_salvage_parked );
+						if ( null !== $salvaged && $salvaged !== $stripped ) {
+							$stripped = $salvaged;
+							continue; // Re-merge the salvaged external content.
+						}
+						$this->park_proposal(
+							$room,
+							self::SERVER_CLIENT_ID,
+							$external_proposal,
+							'manual-conflict-required',
+							$base,
+							$review
+						);
+						// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+						do_action( 'qm/debug', "wp-sync: de-rtc parked a conflicting external save for {$room}" );
+					}
+					$state['healed_hash'] = $external_hash;
+					$this->save_canonical( $room, $state );
+					return $state;
+				}
+
+				if ( ! $this->claim_version( $room, (int) $state['version_seq'] ) ) {
+					// Lost to a concurrent commit; a later request retries
+					// the healing (healed_hash is deliberately NOT stamped).
+					++$this->claim_retries;
+					continue;
+				}
+
+				$next_seq     = (int) $state['version_seq'] + 1;
+				$next_version = 'v' . $next_seq;
+				$merged       = (string) $result['merged_content'];
+
+				$state['sync_meta'] = wp_de_rtc_update_automerge_version_snapshots(
+					is_array( $state['sync_meta'] ) ? $state['sync_meta'] : array(),
+					$state['version'],
+					$state['content'],
+					$next_version,
+					$merged
+				);
+
+				// Meta first, row second (the announce model's write order;
+				// see ingest_proposal).
+				$pre_heal             = $state;
+				$prev_version         = $state['version'];
+				$state['version']     = $next_version;
+				$state['version_seq'] = $next_seq;
+				$state['content']     = $merged;
+				$state['healed_hash'] = $external_hash;
+				$this->record_properties_snapshot( $state, $next_version );
+				if ( ! $this->save_canonical( $room, $state, true ) ) {
+					// The chained write could not land: skip healing this
+					// pass (idempotent — healed_hash was not stamped, so a
+					// later room load retries from clean state).
+					return $pre_heal;
+				}
+
+				$this->add_row(
+					$room,
+					self::SERVER_CLIENT_ID,
+					self::UPDATE_TYPE_ANNOUNCE,
+					wp_json_encode(
+						array(
+							'version'        => $next_version,
+							'baseVersion'    => $prev_version,
+							'contentHash'    => wp_de_rtc_hash_content( $merged ),
+							'properties'     => $state['properties'] ?? array(),
+							'authorClientId' => self::SERVER_CLIENT_ID,
+							'author'         => get_current_user_id(),
+							'proposalId'     => 'external-' . substr( $external_hash, 0, 12 ),
+							'healedFrom'     => $replacement ? 'external-save' : 'external-save-merged',
+						)
+					)
+				);
+
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+				do_action( 'qm/debug', "wp-sync: de-rtc healed an external save into {$room} as {$next_version}" );
+
+				return $state;
+			}
+
+			return $state;
+		}
+
+		/**
+		 * Resolves a proposal's EFFECTIVE base: the whole-document base
+		 * (room snapshots, then revision mining), with per-block base
+		 * substitutions when the proposal declares them.
+		 *
+		 * Per-block base honesty (TODO-2b in docs/engine-comparison.md):
+		 * a client that kept a locally-edited block through a colliding
+		 * incorporation re-proposes from an ADVANCED whole-document base —
+		 * which used to present the kept block as a clean sole-writer
+		 * change and silently overwrite the peer (block-level LWW). The
+		 * `blockBaseVersions` map declares each kept block's TRUE base;
+		 * substituting that version's record into the base hands the
+		 * three-way merge real concurrency to resolve: non-overlapping
+		 * same-block edits merge, true overlaps park via salvage. A
+		 * substitution that cannot be made soundly (unknown version,
+		 * structural drift between the versions) is skipped — degrading to
+		 * exactly the pre-TODO-2b behavior, never worse.
+		 *
+		 * @since 0.5.0
+		 *
+		 * @param string $room     Room identifier.
+		 * @param array  $state    Room state.
+		 * @param array  $proposal Decoded proposal payload.
+		 * @return string|null Effective base content, or null when the
+		 *                     whole-document base is unresolvable.
+		 */
+		private function resolve_effective_base( string $room, array $state, array $proposal ): ?string {
+			$base_content = $this->resolve_base_content( $state, $proposal['baseVersion'] );
+			if ( null === $base_content ) {
+				$base_content = $this->resolve_base_from_revisions( $room, (string) $proposal['baseVersion'] );
+			}
+			if ( null === $base_content ) {
+				return null;
+			}
+
+			$block_bases = $proposal['blockBaseVersions'] ?? null;
+			if ( ! is_array( $block_bases ) || array() === $block_bases ) {
+				return $base_content;
+			}
+
+			$records = wp_de_rtc_get_top_level_serialized_block_records( $base_content );
+			if ( is_wp_error( $records ) ) {
+				return $base_content;
+			}
+
+			$changed = false;
+			foreach ( $block_bases as $index => $block_version ) {
+				$index = (int) $index;
+				if ( ! is_string( $block_version ) || '' === $block_version || ! isset( $records[ $index ] ) ) {
+					continue;
+				}
+				$block_base = $this->resolve_base_content( $state, $block_version );
+				if ( null === $block_base ) {
+					$block_base = $this->resolve_base_from_revisions( $room, $block_version );
+				}
+				if ( null === $block_base ) {
+					continue;
+				}
+				$block_records = wp_de_rtc_get_top_level_serialized_block_records( $block_base );
+				if ( is_wp_error( $block_records ) || count( $block_records ) !== count( $records ) || ! isset( $block_records[ $index ] ) ) {
+					continue; // Structural drift: positional substitution would lie.
+				}
+				if ( $block_records[ $index ] !== $records[ $index ] ) {
+					$records[ $index ] = $block_records[ $index ];
+					$changed           = true;
+				}
+			}
+
+			return $changed ? implode( "\n\n", $records ) : $base_content;
+		}
+
+		/**
+		 * Resolves an aged-out base version from the post's revisions.
+		 *
+		 * Revisions carry the embedded sync-meta every aware save writes
+		 * (WP_De_RTC_Sync_Meta_Colocation), and each embed holds its own
+		 * bounded snapshot window — so a base the ROOM trimmed is often
+		 * still recoverable from the revision written closest to it. This
+		 * is the vision's "look for recent copies … in post revisions"
+		 * lane, and what lets arbitrarily long offline editing recombine
+		 * (TODO-15 in docs/engine-comparison.md) instead of voiding
+		 * `unknown-base-version`.
+		 *
+		 * Two sources per revision, newest first: a snapshot of the wanted
+		 * version inside the embed (hash-verified), or the revision's own
+		 * stripped content when the embed says that IS the wanted version.
+		 *
+		 * @since 0.5.0
+		 *
+		 * @param string $room         Room identifier.
+		 * @param string $base_version Wanted version label.
+		 * @return string|null Base content, or null when no revision holds it.
+		 */
+		private function resolve_base_from_revisions( string $room, string $base_version ): ?string {
+			if ( '' === $base_version ) {
+				return null;
+			}
+			if ( array_key_exists( $room . '|' . $base_version, $this->revision_base_cache ) ) {
+				return $this->revision_base_cache[ $room . '|' . $base_version ];
+			}
+
+			$resolved    = null;
+			$parsed_room = class_exists( 'WP_Sync_Config' ) ? WP_Sync_Config::parse_room( $room ) : null;
+			if ( null !== $parsed_room && 'postType' === $parsed_room['entity_kind'] && ! empty( $parsed_room['object_id'] ) ) {
+				$revisions = wp_get_post_revisions(
+					(int) $parsed_room['object_id'],
+					array(
+						'posts_per_page' => 30,
+						'fields'         => 'ids',
+					)
+				);
+				foreach ( $revisions as $revision_id ) {
+					$revision = get_post( $revision_id );
+					if ( ! $revision instanceof WP_Post || false === strpos( (string) $revision->post_content, 'data-wp-sync-meta' ) ) {
+						continue;
+					}
+					$parsed = wp_de_rtc_parse_post_content_sync_meta( (string) $revision->post_content, array( 'allow_script_stripped_sync_meta' => true ) );
+					if ( ! is_array( $parsed ) || ! is_array( $parsed['sync_meta'] ?? null ) ) {
+						continue;
+					}
+					$meta = $parsed['sync_meta'];
+
+					$snapshot = $meta['version_snapshots'][ $base_version ] ?? null;
+					if ( is_array( $snapshot ) && 'base64' === ( $snapshot['encoding'] ?? null ) && is_string( $snapshot['content_base64'] ?? null ) ) {
+						$decoded = base64_decode( $snapshot['content_base64'], true );
+						if ( is_string( $decoded ) && wp_de_rtc_hash_content( $decoded ) === ( $snapshot['content_hash'] ?? null ) ) {
+							$resolved = $decoded;
+							break;
+						}
+					}
+
+					if (
+						$base_version === ( $meta['room_version'] ?? null ) &&
+						is_string( $parsed['content'] ?? null ) &&
+						wp_de_rtc_hash_content( $parsed['content'] ) === ( $meta['content_hash'] ?? null )
+					) {
+						$resolved = $parsed['content'];
+						break;
+					}
+				}
+			}
+
+			$this->revision_base_cache[ $room . '|' . $base_version ] = $resolved;
+
+			if ( null !== $resolved ) {
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+				do_action( 'qm/debug', "wp-sync: de-rtc resolved aged-out base {$base_version} for {$room} from a revision" );
+			}
+
+			return $resolved;
 		}
 
 		/**
@@ -1231,10 +2067,24 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				}
 			}
 
-			$version = 'v1';
-			$state   = array(
+			/*
+			 * Resume the version lineage when the adopted sync-meta carries
+			 * it (the co-location lane stamps room_version/room_version_seq
+			 * into every saved post — see WP_De_RTC_Sync_Meta_Colocation).
+			 * A room rebuilt after a reset then continues at the version its
+			 * clients and revisions already reference instead of restarting
+			 * at v1 with colliding labels.
+			 */
+			$version     = 'v1';
+			$version_seq = 1;
+			$adopted_seq = isset( $sync_meta['room_version_seq'] ) ? (int) $sync_meta['room_version_seq'] : 0;
+			if ( $adopted_seq >= 1 && ( 'v' . $adopted_seq ) === ( $sync_meta['room_version'] ?? null ) ) {
+				$version     = 'v' . $adopted_seq;
+				$version_seq = $adopted_seq;
+			}
+			$state = array(
 				'version'               => $version,
-				'version_seq'           => 1,
+				'version_seq'           => $version_seq,
 				'content'               => $content,
 				'sync_meta'             => wp_de_rtc_update_automerge_version_snapshots( $sync_meta, $version, $content ),
 				'properties'            => $properties,
@@ -1264,7 +2114,18 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			// The genesis row is the room's first stored row: stamp lineage.
 			$this->storage->set_room_engine( $room, $this->get_slug() );
 
-			$this->save_canonical( $room, $state );
+			/*
+			 * Re-seed the version claim to genesis. Genesis only runs when
+			 * the room is empty, which is exactly when a leftover claim row
+			 * (from a room reset / engine flip) must not outlive the state
+			 * it described. Racing initializers write the same seq —
+			 * idempotent, like the genesis row itself.
+			 */
+			WP_Sync_Atomic_Option::reset( $this->version_claim_name( $room ), $version_seq . ':' . sprintf( '%.6F', microtime( true ) ) );
+
+			// Genesis re-seeds the canonical chain unconditionally, like the
+			// claim: a stale chain row must not outlive a room reset.
+			$this->canonical_reset( $room, $state );
 
 			return $state;
 		}
@@ -1280,29 +2141,157 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * @param array  $state Room state.
 		 * @return void
 		 */
-		private function save_canonical( string $room, array $state ): void {
-			$this->room_states[ $room ] = $state;
-			if ( ! method_exists( $this->storage, 'set_room_meta' ) ) {
-				return;
+		private function save_canonical( string $room, array $state, bool $advance = false ): bool {
+			$seq   = (int) $state['version_seq'];
+			$value = $seq . '|' . wp_json_encode( $this->canonical_payload( $room, $state ) );
+
+			if ( ! $advance ) {
+				/*
+				 * Maintenance write (checkpoint cursor bump, healed-hash
+				 * stamp): same-sequence overwrite. A newer canonical having
+				 * landed makes this write obsolete, not failed.
+				 */
+				if ( WP_Sync_Atomic_Option::swap_prefixed( $this->canonical_option_name( $room ), $seq . '|', $value ) ) {
+					$this->room_states[ $room ] = $state;
+					return true;
+				}
+				$current = self::canonical_seq_of( WP_Sync_Atomic_Option::read( $this->canonical_option_name( $room ) ) );
+				return null !== $current && $current > $seq;
 			}
+
+			/*
+			 * Advance write: the CHAINED CAS that makes canonical
+			 * persistence ordered (TODO-20). The version claim allocates
+			 * sequence numbers, but claims cannot order the persistence
+			 * itself — writer N's meta landing AFTER writer N+1's would
+			 * silently regress canonical, and under the announce model rows
+			 * carry no content to repair from (the wire-inspected soak
+			 * caught exactly this as unknown-base-version death spirals).
+			 * Each writer expects its PREDECESSOR's sequence prefix, so a
+			 * write can only ever extend the chain; a writer whose
+			 * predecessor has not persisted yet spins briefly (that write
+			 * is another request's in-flight UPDATE, milliseconds away) and
+			 * gives up retryably if it never lands (a crashed predecessor —
+			 * the claim TTL then heals the room, and this writer's version
+			 * was never announced or acked).
+			 */
+			$expected = ( $seq - 1 ) . '|';
+			for ( $attempt = 0; $attempt < 40; $attempt++ ) {
+				if ( WP_Sync_Atomic_Option::swap_prefixed( $this->canonical_option_name( $room ), $expected, $value ) ) {
+					$this->room_states[ $room ] = $state;
+					return true;
+				}
+				$current = self::canonical_seq_of( WP_Sync_Atomic_Option::read( $this->canonical_option_name( $room ) ) );
+				if ( null !== $current && $current >= $seq ) {
+					// The chain moved past us without us: impossible unless
+					// state was rebuilt (reset) — never overwrite forward.
+					return false;
+				}
+				usleep( 25000 );
+			}
+
+			return false;
+		}
+
+		/**
+		 * The canonical payload persisted per room (the announce model's
+		 * single content store).
+		 *
+		 * @since 0.6.0
+		 *
+		 * @param string $room  Room identifier.
+		 * @param array  $state Room state.
+		 * @return array Payload.
+		 */
+		private function canonical_payload( string $room, array $state ): array {
 			global $wpdb;
 			$cursor = isset( $wpdb ) ? (int) $wpdb->insert_id : 0;
 			if ( $cursor <= 0 ) {
 				$cursor = $this->storage->get_cursor( $room );
 			}
-			$this->storage->set_room_meta(
-				$room,
-				self::META_DOC,
-				array(
-					'version'               => $state['version'],
-					'version_seq'           => (int) $state['version_seq'],
-					'content'               => $state['content'],
-					'sync_meta'             => $state['sync_meta'],
-					'properties'            => $state['properties'] ?? array(),
-					'properties_by_version' => $state['properties_by_version'] ?? array(),
-					'cursor'                => $cursor,
-				)
+			return array(
+				'version'               => $state['version'],
+				'version_seq'           => (int) $state['version_seq'],
+				'content'               => $state['content'],
+				'sync_meta'             => $state['sync_meta'],
+				'properties'            => $state['properties'] ?? array(),
+				'properties_by_version' => $state['properties_by_version'] ?? array(),
+				'healed_hash'           => is_string( $state['healed_hash'] ?? null ) ? $state['healed_hash'] : null,
+				'cursor'                => $cursor,
 			);
+		}
+
+		/**
+		 * Unconditionally re-seeds the canonical row (room genesis after a
+		 * reset — the claim-reset counterpart).
+		 *
+		 * @since 0.6.0
+		 *
+		 * @param string $room  Room identifier.
+		 * @param array  $state Genesis state.
+		 * @return void
+		 */
+		private function canonical_reset( string $room, array $state ): void {
+			$this->room_states[ $room ] = $state;
+			WP_Sync_Atomic_Option::reset(
+				$this->canonical_option_name( $room ),
+				(int) $state['version_seq'] . '|' . wp_json_encode( $this->canonical_payload( $room, $state ) )
+			);
+		}
+
+		/**
+		 * The canonical-state option row for a room.
+		 *
+		 * @since 0.6.0
+		 *
+		 * @global wpdb $wpdb WordPress database abstraction object.
+		 *
+		 * @param string $room Room identifier.
+		 * @return string Option name.
+		 */
+		private function canonical_option_name( string $room ): string {
+			global $wpdb;
+
+			return $wpdb->prefix . 'sync_de_rtc_canonical_' . md5( $room );
+		}
+
+		/**
+		 * Parses the sequence prefix of a stored canonical value.
+		 *
+		 * @since 0.6.0
+		 *
+		 * @param string|null $value Stored `<seq>|<json>` value.
+		 * @return int|null Sequence, or null when unparseable.
+		 */
+		private static function canonical_seq_of( ?string $value ): ?int {
+			if ( ! is_string( $value ) ) {
+				return null;
+			}
+			$separator = strpos( $value, '|' );
+			if ( false === $separator ) {
+				return null;
+			}
+			return (int) substr( $value, 0, $separator );
+		}
+
+		/**
+		 * Decodes a stored canonical value into room state (+ cursor).
+		 *
+		 * @since 0.6.0
+		 *
+		 * @param string|null $value Stored `<seq>|<json>` value.
+		 * @return array|null array( state..., 'cursor' ) or null.
+		 */
+		private static function decode_canonical( ?string $value ): ?array {
+			if ( ! is_string( $value ) ) {
+				return null;
+			}
+			$separator = strpos( $value, '|' );
+			if ( false === $separator ) {
+				return null;
+			}
+			$decoded = json_decode( substr( $value, $separator + 1 ), true );
+			return is_array( $decoded ) ? $decoded : null;
 		}
 
 		/**
@@ -1344,6 +2333,35 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				return false;
 			}
 
+			/*
+			 * Without an ingest lock, concurrent requests can both reach
+			 * here; a zero-wait try-lock elects one checkpointer and the
+			 * rest skip (best-effort — the next request past the interval
+			 * re-triggers).
+			 */
+			$lock_name  = $this->version_claim_name( $room ) . '_ckpt';
+			$lock_token = WP_Sync_Room_Lock::acquire( $lock_name, 0.0 );
+			if ( is_wp_error( $lock_token ) ) {
+				return false;
+			}
+			$checkpointed = $this->perform_checkpoint( $room, $state, $previous, $prev_cursor );
+			WP_Sync_Room_Lock::release( $lock_name, $lock_token );
+
+			return $checkpointed;
+		}
+
+		/**
+		 * The body of maybe_checkpoint(), run by the elected checkpointer.
+		 *
+		 * @since 0.5.0
+		 *
+		 * @param string $room        Room identifier.
+		 * @param array  $state       Room state at the head.
+		 * @param mixed  $previous    Previous checkpoint meta.
+		 * @param int    $prev_cursor Previous checkpoint cursor.
+		 * @return bool Whether a checkpoint was appended.
+		 */
+		private function perform_checkpoint( string $room, array $state, $previous, int $prev_cursor ): bool {
 			/*
 			 * UNRESOLVED parked proposals below the future trim floor survive
 			 * by re-appending them above the previous checkpoint; resolved
@@ -1444,69 +2462,76 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		}
 
 		/**
-		 * Acquires the per-room ingest lock (MySQL GET_LOCK).
-		 *
-		 * @since 0.3.0
-		 *
-		 * @global wpdb $wpdb WordPress database abstraction object.
-		 *
-		 * @param string $room Room identifier.
-		 * @return true|WP_Error True when held, retryable error otherwise.
+		 * Seconds after which an uncommitted version claim is treated as
+		 * orphaned (its writer died between claim and row append).
 		 */
-		private function acquire_room_lock( string $room ) {
-			global $wpdb;
+		const CLAIM_TTL_SECONDS = 15;
 
-			$acquired = $wpdb->get_var(
-				$wpdb->prepare(
-					'SELECT GET_LOCK(%s, %d)',
-					$this->room_lock_name( $room ),
-					5
-				)
-			);
-			if ( '1' === (string) $acquired ) {
-				return true;
+		/**
+		 * Atomically claims advancement of the canonical version.
+		 *
+		 * The claim row (an options-table compare-and-swap; see
+		 * WP_Sync_Atomic_Option) holds `<seq>:<time>`. A successful swap
+		 * from the seq this request merged against to seq+1 makes this
+		 * request the sole writer of version v(seq+1) — upstream DE-RTC's
+		 * optimistic validate-and-retry model, not a lock.
+		 *
+		 * Healing, both directions: a claim row BEHIND storage (restored
+		 * backup, lost row) is swapped forward from whatever it holds; a
+		 * claim row one AHEAD of storage whose writer never committed is
+		 * taken over once it is older than CLAIM_TTL_SECONDS. Both repairs
+		 * are CAS-guarded, so two rescuers cannot both win.
+		 *
+		 * @since 0.5.0
+		 *
+		 * @param string $room        Room identifier.
+		 * @param int    $current_seq Version seq this request merged against.
+		 * @return bool Whether this request now owns v(current_seq + 1).
+		 */
+		private function claim_version( string $room, int $current_seq ): bool {
+			$name = $this->version_claim_name( $room );
+			$next = ( $current_seq + 1 ) . ':' . sprintf( '%.6F', microtime( true ) );
+
+			$existing = WP_Sync_Atomic_Option::read( $name );
+			if ( null === $existing ) {
+				// Legacy room with no claim row: swap() seeds it at the
+				// current seq atomically, then performs the swap.
+				return WP_Sync_Atomic_Option::swap( $name, $current_seq . ':0', $next );
 			}
 
-			return new WP_Error(
-				'rest_sync_room_busy',
-				__( 'The room is busy processing another request. Retry shortly.', 'gutenberg' ),
-				array( 'status' => 503 )
-			);
+			$parts        = explode( ':', $existing, 2 );
+			$claimed_seq  = (int) $parts[0];
+			$claimed_time = isset( $parts[1] ) ? (float) $parts[1] : 0.0;
+
+			if ( $claimed_seq <= $current_seq ) {
+				// Normal claim (equal), or a claim row behind storage (heal
+				// forward from whatever it holds).
+				return WP_Sync_Atomic_Option::swap( $name, $existing, $next );
+			}
+
+			if ( $claimed_seq === $current_seq + 1 && microtime( true ) - $claimed_time > self::CLAIM_TTL_SECONDS ) {
+				// Orphaned claim: claimed, never committed a row, expired.
+				return WP_Sync_Atomic_Option::swap( $name, $existing, $next );
+			}
+
+			return false;
 		}
 
 		/**
-		 * Releases the per-room ingest lock.
+		 * The claim option name for a room, table-prefixed for isolation
+		 * and hashed to a bounded length.
 		 *
-		 * @since 0.3.0
+		 * @since 0.5.0
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
 		 * @param string $room Room identifier.
-		 * @return void
+		 * @return string Option name.
 		 */
-		private function release_room_lock( string $room ): void {
+		private function version_claim_name( string $room ): string {
 			global $wpdb;
 
-			$wpdb->query(
-				$wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $this->room_lock_name( $room ) )
-			);
-		}
-
-		/**
-		 * The MySQL user-lock name for a room (shared shape with the
-		 * intent-log engine, so the two engines cannot deadlock each other).
-		 *
-		 * @since 0.3.0
-		 *
-		 * @global wpdb $wpdb WordPress database abstraction object.
-		 *
-		 * @param string $room Room identifier.
-		 * @return string Lock name.
-		 */
-		private function room_lock_name( string $room ): string {
-			global $wpdb;
-
-			return $wpdb->prefix . 'sync_ingest_' . md5( $room );
+			return $wpdb->prefix . 'sync_de_rtc_claim_' . md5( $room );
 		}
 
 		/**

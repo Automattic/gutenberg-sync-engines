@@ -72,6 +72,9 @@ export const INTENT_LOG_UPDATE_TYPES = {
 	RESOLVED: 'resolved',
 	SNAPSHOT: 'snapshot',
 	VOIDED: 'voided',
+	// Client-sent only, never stored: cancels still-queued intents
+	// (TODO-5 — the pre-settle undo lane).
+	CANCEL: 'cancel',
 } as const;
 
 /**
@@ -240,6 +243,22 @@ export interface IntentLogSession extends EngineSessionCodec {
 
 	/** Number of authored intents not yet settled by the server. */
 	getPendingCount: () => number;
+
+	/**
+	 * Cancels a set of authored intents that are ALL still unacked —
+	 * all-or-nothing (canceling half a unit would strand half an edit).
+	 * The intents leave the outbox, the optimistic document replans (the
+	 * canvas reverts through the normal change pipeline), and a `cancel`
+	 * row chases any copies already queued on the wire: the server drops
+	 * intents canceled within the same batch, and acks
+	 * `cancel-too-late` when an intent was already ingested — in which
+	 * case its accepted row resurrects the effect (nothing is ever
+	 * half-lost). The pre-settle undo lane (TODO-5) is the caller.
+	 *
+	 * @return Whether the cancellation was accepted locally (every id
+	 *         was still pending).
+	 */
+	cancelPendingIntents: ( intentIds: string[] ) => boolean;
 
 	/** The engine log position this session has observed (intent rows). */
 	getSeq: () => number;
@@ -803,6 +822,37 @@ export function createIntentLogSession(
 			proposalsChangeListeners.add( listener );
 		},
 		getPendingCount: () => replica?.outbox.length ?? 0,
+
+		cancelPendingIntents: ( intentIds: string[] ) => {
+			if ( ! replica || 0 === intentIds.length ) {
+				return false;
+			}
+			const pending = new Set(
+				replica.outbox.map(
+					( intent: IntentEnvelope ) => intent.intentId
+				)
+			);
+			if ( ! intentIds.every( ( id ) => pending.has( id ) ) ) {
+				return false; // Partially acked: not cancelable, arm at settle.
+			}
+			const ids = new Set( intentIds );
+			replica.outbox = replica.outbox.filter(
+				( intent: IntentEnvelope ) => ! ids.has( intent.intentId )
+			);
+			replanClient( replica );
+			if ( localUpdateListener ) {
+				const data = JSON.stringify( {
+					cancelId: `cancel-${ intentIds[ 0 ] }`,
+					intentIds,
+				} );
+				localUpdateListener(
+					{ type: INTENT_LOG_UPDATE_TYPES.CANCEL, data },
+					data.length
+				);
+			}
+			notifyChange();
+			return true;
+		},
 		getSeq: () => replica?.cursor ?? 0,
 		isInitialized: () => null !== replica,
 		getBootstrapSeq: () => bootstrapSeq,

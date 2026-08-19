@@ -361,7 +361,7 @@ they exist so a failure is observable without re-instrumenting:
   `debug: true` on each room request; all THREE engines respond with an
   `_debug` envelope (intent-log: lock wait, window rows, head seq, plan
   counts, checkpoint; yjs-server: doc bytes, appended rows, replay-repair
-  flag, disposition counts; de-rtc: lock wait, version, content bytes,
+  flag, disposition counts; de-rtc: claim retries, version, content bytes,
   disposition counts, checkpoint) plus read-side row counts, printed as
   `⚙ server` in the tail. Gated server-side by `SCRIPT_DEBUG` (dev env:
   on; tests env: off) or the `wp_sync_debug_enabled` filter.
@@ -517,23 +517,49 @@ they exist so a failure is observable without re-instrumenting:
   (register conflicts LWW silently), kses is sanitize-and-compensate (no
   human review of stripped markup), the genesis size gate
   (`wp_sync_yjs_server_max_genesis_bytes`, default 1 MB) is genesis-only
-  (post-genesis room growth unpoliced), and materialization carries the
-  same Phase-2a wrapper simplification as intent-log. Genesis blocks must
-  set `isValid: true` or the editor renders them as invalid-content
-  recovery blocks (has bitten).
+  (post-genesis room growth unpoliced), and materialization still
+  carries the Phase-2a wrapper simplification (intent-log's was fixed
+  by TODO-11's client-authored save markup; the yjs twin needs
+  framework changes — core-data owns the Yjs block writer — and its
+  genesis wrongly stores stripped inner markup in the first
+  rich-text-source attribute, e.g. `<img>` in image `caption`). Genesis
+  blocks must set `isValid: true` or the editor renders them as
+  invalid-content recovery blocks (has bitten).
 - **de-rtc known gaps** (docs/engine-comparison.md has the full list):
-  truly concurrent SAME-block edits resolve block-level last-writer-wins
-  client-side (yjs-server's silent-register-LWW class, coarser grain);
-  the client sends `clientUpdate: null` and relies on the server's
-  engine-unaware-writer lane to derive block-native operations (the
-  client-side descriptor builder + cross-language fingerprint vectors are
-  unported); kses SEQUESTERS per block (risky blocks revert to base and
+  truly concurrent SAME-block edits merge from their TRUE base
+  (`blockBaseVersions`, TODO-2b) or raise a contested pending item
+  (Adopt/Reject, TODO-12) — the old silent client-side block LWW is
+  retired; sessions author the block-native `clientUpdate` descriptor
+  (TODO-2a: tamper evidence, byte-parity with the PHP derivation pinned
+  by PHP-generated vectors in
+  `tests/js/engines/de-rtc/test-vectors/`; the engine validates once
+  against the plain declared base, then drops it), while machine
+  writers stay descriptor-less via the server's engine-unaware-writer
+  lane; kses SEQUESTERS per block (risky blocks revert to base and
   park for review while the safe remainder lands; whole-proposal
-  escalation remains the fallback for freeform boundaries and
-  descriptor-carrying proposals); ingest serializes per room under the
-  intent-log-style GET_LOCK, and every accepted proposal broadcasts FULL
-  content rows (storage bounded by checkpoints, but row bytes scale with
-  document size).
+  escalation remains the fallback for freeform boundaries); ingest is
+  lock-free — each accepted
+  proposal atomically claims its version advancement (options-row CAS,
+  `WP_Sync_Atomic_Option`) and a lost claim reloads + re-merges, the
+  upstream optimistic model. Since TODO-20 stage 1 (protocol 2) the
+  transport carries ADVISORIES, not documents: accepted proposals
+  broadcast ~200-byte `announce` rows (version + canonicalized content
+  hash + merged property registers); canonical content lives once per
+  room in a CHAINED options row (`swap_prefixed` — writers CAS against
+  their predecessor's sequence prefix, so canonical persistence can
+  never regress), and a behind client's `fetch` row is answered with
+  one synthesized, never-stored snapshot. The active typist advances
+  by hash and downloads nothing; row bytes no longer scale with
+  document size (the TODO-10 hour soak's PHP-memory cliff, closed).
+  Stage 2 completes the Save/Sync inversion: sessions COMMIT through
+  the ordinary autosave endpoint (`WP_De_RTC_Autosave_Commits`
+  intercepts the commit shape; editor-native autosaves pass through),
+  the transport carries ZERO proposals, and editor saves settle-and-
+  hold the commit lane (`prepareForSave`) so a save can never
+  self-conflict with the session's own in-flight commit (fuzzer-found).
+  Do NOT reintroduce a `content` entry into de-rtc's property lane —
+  it silently re-carries the whole document per announce (found by
+  wire inspection; stripped on both sides).
 - **Intent-log observed-baseline residuals** (the echo race is FIXED — capture
   now diffs the editor tree against the document state that tree reflects and
   authors at its seq; see the "THE OBSERVED BASELINE" note in
@@ -559,13 +585,14 @@ they exist so a failure is observable without re-instrumenting:
     (`CAPTURE_SYNC_DELAY`, 1.2 s), so identity write-backs and merged views
     reach the canvas that late. This is forced by core-data (see the gotcha
     on pushes from inside `update()`), not by choice.
-  - Undo arms only after a unit SETTLES (capture delay + ack round trip,
-    ~1–2 s over polling): undo pressed inside that window is a silent
-    no-op. Measured parity gap (fuzzer undo profile, 2026-08-17): undo
-    0–900 ms after typing was armed 34/34 times on yjs-server/de-rtc,
-    1/12 on intent-log. Inverses derive from ACCEPTED rows by design, so
-    closing this means canceling pending outbox intents, not deriving
-    from originals.
+  - FIXED (2026-08-18): undo inside the settle window now CANCELS the
+    pending unit (outbox removal + optimistic replan + a `cancel` row
+    that drops still-queued intents server-side; a cancel that loses
+    the race to the wire acks `cancel-too-late` and the unit resurrects
+    as a settled undo candidate). Inverses still derive only from
+    ACCEPTED rows. The old behavior — silent no-op until rows + acks
+    landed, measured 1/12 armed vs 34/34 on the yjs engines — is gone;
+    re-run the fuzzer undo profile to re-measure parity.
   - An undo whose inverse intents are still unacked when that tab reloads
     loses them with the outbox: the undone edit (already accepted
     server-side) resurrects for everyone. The general unacked-edit-loss

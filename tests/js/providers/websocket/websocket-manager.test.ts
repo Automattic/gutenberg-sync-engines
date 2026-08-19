@@ -27,7 +27,10 @@ class FakeWebSocket {
 	public sent: string[] = [];
 	private listeners: Record< string, ( ( e: unknown ) => void )[] > = {};
 
-	public constructor( public url: string ) {
+	public constructor(
+		public url: string,
+		public protocols?: string[]
+	) {
 		FakeWebSocket.instances.push( this );
 	}
 	public addEventListener( type: string, cb: ( e: unknown ) => void ): void {
@@ -118,7 +121,10 @@ describe( 'websocket manager', () => {
 
 		const ws = FakeWebSocket.instances[ 0 ];
 		expect( ws ).toBeDefined();
-		expect( ws.url ).toContain( 'token=t0ken' );
+		// TODO-9: the token rides the subprotocol offer, never the URL
+		// (query strings land in server/proxy access logs).
+		expect( ws.url ).not.toContain( 't0ken' );
+		expect( ws.protocols ).toEqual( [ 'wp-sync', 'wp-sync-token.t0ken' ] );
 
 		ws.open();
 		expect( onStatusChange ).toHaveBeenCalledWith( {
