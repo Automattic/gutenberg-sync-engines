@@ -141,7 +141,7 @@ Three honest readings of that table:
   the same situations through explicit human adoption of pending edits
   and per-block partial acceptance. Restoring fidelity is a program,
   not a patch: TODO-2b and TODO-3 treat symptoms, and the fidelity audit
-  below (TODO-12 through TODO-19) treats causes.
+  below (TODO-12 through TODO-20) treats causes.
 
 ## Fidelity to the DE-RTC vision
 
@@ -200,7 +200,7 @@ the protocol won. The fidelity program reverses that default.
 | Per-ingest CPU | Replay from checkpoint + transform planning — the cheapest of the three | Load + merge + re-encode the canonical y-php doc — the dominant cost of the three, scales with document size | Parse + three-way merge of three content strings (pure PHP over `parse_blocks` trees) — cheap at benchmark sizes, scales with document size |
 | Locking | Per-room Core-style options-row lock (`WP_Sync_Room_Lock`, the upgrader pattern: atomic INSERT IGNORE + TTL; 5 s wait budget, contenders get a retryable 503). One claim/release pair of DB writes inside every timed request — the engine benchmark's `calibration` block exists to subtract it. Topology-safe by construction (TODO-1, done) | None — CRDT merge needs no total order; the update log is the source of truth and a lost canonical-save race is repaired from it on the next load | None — lock-free optimistic version claims (`WP_Sync_Atomic_Option` CAS): an accepted proposal atomically claims v(n+1), a lost claim reloads + re-merges, exhaustion returns the retryable 503. Upstream's validate-and-retry model, restored (TODO-1, done) |
 | Idle reads | Cheap by design (rows after cursor; no reconstruction) | Cheap (the canonical doc is never touched on the read path) | Cheap (rows after cursor; canonical untouched) |
-| Storage growth | Bounded: checkpoint + trim every 100 rows | Bounded: server checkpoint + trim every 100 rows, no client needed | Bounded: server checkpoint + trim every 100 rows — but every accepted proposal stores a FULL content row, so row bytes scale with document size |
+| Storage growth | Bounded: checkpoint + trim every 100 rows | Bounded: server checkpoint + trim every 100 rows, no client needed | Bounded: server checkpoint + trim every 100 rows — but every accepted proposal stores a FULL content row, so row bytes scale with document size — at 1 s cadence on hour-scale documents the read path exhausts a default 128 MB PHP (TODO-10 soak; TODO-20) |
 | Row contents | Small JSON intents + periodic full-document checkpoint rows | Base64 V2 diffs (server strips what it already had) + full-state snapshot rows, plus the canonical doc in room meta | Full-content JSON rows (content + version + attribution) + snapshot rows, plus canonical content and version snapshots in room meta |
 
 In plain terms, the locking row is a pro/con set. intent-log: one edit
@@ -529,7 +529,7 @@ The desired state is the principles, fully honored, by whichever engine
 wins the bake-off. The current state is close enough to compare engines
 honestly and far enough that pretending otherwise would corrupt the
 comparison. The enumerated TODOs below are the delta. TODO-1 through
-TODO-4 change engine *verdicts*; TODO-12 through TODO-19 are the DE-RTC
+TODO-4 change engine *verdicts*; TODO-12 through TODO-20 are the DE-RTC
 fidelity program — they change whether the engine we are comparing is
 the engine Dennis designed; the rest change polish and confidence.
 
@@ -754,21 +754,69 @@ the engine Dennis designed; the rest change polish and confidence.
   terminate TLS in front of the daemon. The transport remains
   experimental until a real-daemon e2e lane exists (the websocket-only
   suite exercises the TEST provider, not this daemon).
-- **TODO-10 — Validate the hosting cost cards end-to-end. SCOPED
-  (2026-08-18), run pending.** The per-user-hour projections compose
-  exactly-measured engine-seam costs, but no browser-driven
-  multi-client soak has confirmed the composed totals — treat the
-  cards as engine-seam floors until it exists. The scoped plan:
-  parameterize `tests/benchmarks/transport/benchmark-transport.mjs`
-  from its hardcoded two contexts to N windows; add a duration-based
-  soak mode (staggered typing bursts with think time, periodic saves,
-  per-minute sampling of request latency, payload bytes, and server
-  metrics via the `rtc-test/v1` request log); end with the convergence
-  check plus a composed-vs-measured comparison against the cost card
-  for the same engine/transport/user-count. The deliverable is a
-  one-command run (`soak=3600 windows=3`) per engine — an hour of
-  supervised wall clock each, which is why this is its own session,
-  not a batch item.
+- **TODO-10 — Validate the hosting cost cards end-to-end. DONE
+  (2026-08-19).** The harness:
+  `tests/benchmarks/transport/soak-transport.mjs` (shared plumbing in
+  `lib.mjs`) — N windows on one post, each owning one paragraph and
+  editing in deterministically-jittered bursts with think time,
+  periodic saves through window 0 (under de-rtc these carry
+  `base_version` through the room), latency probes every 30 s stamped
+  in-page by every window, per-minute wire sampling, server metrics
+  via the `rtc-test/v1` log, a hard convergence gate at the end, and a
+  per-user-hour report in the cost cards' units. Run:
+  `node tests/benchmarks/transport/soak-transport.mjs engine=<slug>
+  transport=http-polling windows=3 soak=3600 json=out.json`.
+
+  The measurement pass: one supervised hour per engine, 3 windows,
+  http-polling at the 1 s with-collaborators cadence, ~1,300 tokens
+  typed per window (numbers live in the run JSONs; shapes here, per
+  this document's convention):
+
+  - **intent-log**: the cheapest wire AND CPU by a wide margin —
+    per-user bytes stay flat as the document grows (intents don't
+    scale with document size); every save succeeded; converged
+    immediately. Its probe latency is the worst of the three by a
+    modest margin: the capture deferral (`CAPTURE_SYNC_DELAY`) is
+    visible end-to-end, as scenario/latency discussion predicts.
+  - **yjs-server**: converged clean with bounded bytes (roughly
+    double intent-log's — state-vector diffs, not doc-scaled), but
+    the highest server CPU by far (≈9× intent-log per user-hour) —
+    the per-request canonical decode/merge/re-encode cost, previously
+    measured only at the engine seam, now confirmed end-to-end.
+  - **de-rtc, the run's headline finding**: at RTC cadence the
+    full-content-row byte profile is not a "con", it is a CLIFF. With
+    the document at tens of KB after an hour, downloads ran more than
+    an order of magnitude past yjs-server (hundreds of MB per
+    user-hour), and in the final minutes the FRAMEWORK storage's read
+    path (`WP_Sync_Post_Meta_Storage::get_updates_after_cursor` —
+    every row since a cursor fetched and json_decoded in one pass)
+    exhausted a default 128 MB PHP repeatedly. Those OOM 500s failed
+    the four final saves and left one window permanently stale — the
+    convergence gate FAILED for an infrastructure reason, not a merge
+    bug (checkpoint trimming itself worked; the room ended bounded).
+    See TODO-20.
+
+  Verdict on the cards: the composed engine-seam floors held for
+  intent-log and yjs-server (measured cadence × per-request costs
+  compose to the same shapes), and the de-rtc card must present
+  byte growth as a hard operational ceiling at pseudo-realtime
+  cadence — while the vision's own operating point (10 s polls,
+  save-centric sync; TODO-19's `save-sync-session`) sits far below
+  the cliff. Conditions recorded for reproducibility: dev wp-env
+  (SCRIPT_DEBUG on; debug envelopes inactive without a client
+  opt-in, so bytes are unbiased), Chromium headless, same-machine
+  loopback.
+- **TODO-20 — Bound de-rtc's row-read amplification (from the
+  TODO-10 soak).** Two compounding causes: content rows scale with
+  document size (engine), and the framework storage decodes every
+  row since a cursor in one pass (framework). Candidate fixes, in
+  rising order of fidelity to the vision: batch/stream the storage
+  read; checkpoint far more aggressively for de-rtc rooms;
+  engine-side announcement rows (version + hash, content fetched on
+  demand) — which is TODO-12's deeper Save/Sync inversion arriving
+  as a measured necessity rather than a design preference. Until
+  one lands, de-rtc at 1 s cadence on long sessions is bounded by
+  PHP memory, not by correctness.
 - **TODO-11 — Round-trip complex sourced attributes through
   materialization. INTENT-LOG HALF DONE (2026-08-18); the yjs-server
   half needs framework changes (design recorded).** The Phase-2a

@@ -551,7 +551,9 @@ they exist so a failure is observable without re-instrumenting:
   `WP_Sync_Atomic_Option`) and a lost claim reloads + re-merges, the
   upstream optimistic model — and every accepted proposal broadcasts FULL
   content rows (storage bounded by checkpoints, but row bytes scale with
-  document size).
+  document size — the TODO-10 hour soak measured this as an operational
+  CLIFF at 1 s cadence: PHP memory exhaustion in the storage read path;
+  see TODO-20).
 - **Intent-log observed-baseline residuals** (the echo race is FIXED — capture
   now diffs the editor tree against the document state that tree reflects and
   authors at its seq; see the "THE OBSERVED BASELINE" note in
