@@ -21,7 +21,8 @@ a merge.
 | A7 websocket fencing coverage audit | A | done | 1 | loop/a7 | verifier PASS (cycle 1) |
 | A6 phpcs burn-down | A | done | 1 | loop/a6 | verifier PASS (cycle 2); debt was 17E+26W at base, not ~275E |
 | A9 stale phpcs-debt note in AGENTS.md | A | done | 1 | loop/a9 | verifier PASS (cycle 3); MERGE ORDER: loop/a6 must merge before or with loop/a9 |
-| A1 intent-log empty-genesis reload stall | A | queued | 0 | — | open bug; replay command in V1.md |
+| A1 intent-log empty-genesis reload stall | A | done | 1 | loop/a1 | verifier PASS (cycle 4); root cause: pre-init edits dropped |
+| A10 stale A1-OPEN note in AGENTS.md | A | queued | 0 | — | filed cycle 4: AGENTS.md "Known issues" still lists A1 as OPEN; false once loop/a1 merges. Doc-only, mirror of A9 |
 | A4 yjs genesis rich-text defect | A | queued | 0 | — | plugin-side |
 | A5 announce-inversion verification debt | A | queued | 0 | — | 3 sub-items; hour soak is wall-clock long |
 | A2 e2e flake stabilization | A | queued | 0 | — | 3x consecutive retry-free full runs |
@@ -39,13 +40,49 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
 
 ## Parked / escalated
 
-None.
+- **Foreign V1.md edit parked on `v1-m1-maybe` (cycle 4, for the
+  human).** While cycle 4 was mid-flight, another session (commit
+  co-authored "Claude Opus 5", `c117008153`, 2026-08-19 14:02) committed
+  an 80-line V1.md addition ("maybe item M1": the unused-Automerge
+  finding) directly onto this worktree's checked-out branch `loop/a1`.
+  V1.md scope changes are Lane B / human-owned, and the first A1
+  verification FAILED solely because that commit rode the item branch.
+  The commit was NOT discarded: it now sits alone on branch
+  `v1-m1-maybe`; `loop/a1` was rebased to contain only the A1 fix.
+  Human decides whether to adopt M1 into V1.md.
 
 ## Proposals awaiting human review
 
 None.
 
 ## Cycle log
+
+### Cycle 4 — 2026-08-19 — A1 intent-log empty-genesis reload stall
+- Did: reproduced with the V1.md replay command (deterministic on this
+  host), diagnosed via temporary console instrumentation through the
+  fuzzer's console capture: the reloaded participant inserts the block
+  BEFORE the room snapshot arrives; `update()` drops pre-init trees,
+  capture is edge-triggered, and the empty-genesis bootstrap skips the
+  reconciling push — the intent never exists. Fix in
+  `src/engines/intent-log-manager.ts` (non-frozen): buffer the latest
+  pre-init tree; an empty-genesis bootstrap schedules a DEFERRED
+  capture that runs only if the document is still empty after the
+  delivery burst. The deferral matters: the first (synchronous) version
+  of the fix made fuzz:quick fail with duplicated blocks on
+  rejoin-with-history (empty genesis + history rows replaying behind
+  it — capturing the buffered tree against the bare genesis fabricates
+  every saved block). Two Jest regression tests pin both sides.
+- Acceptance: seed-6 replay 1/1 pass; sweep all oracles green;
+  test:js 528 passed (526 at base + 2 new); fuzz:quick 2/2 per engine.
+- Verifier: FAIL then PASS. First FAIL was not about the fix: a
+  FOREIGN commit (another session editing V1.md) had landed on the
+  item branch — see Parked. After preserving it on `v1-m1-maybe` and
+  rebasing `loop/a1` to the single A1 commit, PASS — the verifier
+  independently re-ran all four acceptance commands and reproduced
+  red-on-base for both the new Jest test and the fuzzer replay.
+- Ledger changes: A1 queued → done (branch loop/a1, 1 commit). Filed
+  A10 (stale A1-OPEN note in AGENTS.md). Parked the foreign V1.md
+  edit for the human.
 
 ### Cycle 3 — 2026-08-19 — A9 stale phpcs-debt note in AGENTS.md
 - Did: replaced AGENTS.md's "~275 errors + ~29 warnings" Known-issues
@@ -129,3 +166,14 @@ the agent memory directory; keep repo-specific lessons here.
   first run (with a corrected filter) did not. When the contract's
   command is wrong, prefer making the code match the contract (here: a
   test-class rename) over amending read-only V1.md.
+- Check `git log <base>..<item-branch>` before requesting verification:
+  other sessions may commit onto this worktree's checked-out branch
+  mid-cycle (cycle 4: a foreign V1.md edit rode loop/a1 and failed
+  verification for the whole item). Preserve foreign commits on their
+  own branch, never discard them.
+- A bootstrap-time recovery that syncs buffered pre-init work must not
+  run synchronously on snapshot receipt: the genesis snapshot is only
+  the FIRST row of its response, and a rejoiner's history replays right
+  behind it. Defer past the delivery burst and re-check state (cycle 4:
+  the synchronous version duplicated every saved block under
+  fuzz:quick's rejoin schedule).
