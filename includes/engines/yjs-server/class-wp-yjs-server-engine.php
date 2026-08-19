@@ -1317,6 +1317,38 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 						'close' => '</' . $matches[1] . '>',
 					);
 					$text                   = $matches[3];
+
+					/*
+					 * Selector-sourced rich text (image `caption` ←
+					 * `figcaption`): the attribute holds only the named
+					 * sub-element's inner text, never the whole stripped
+					 * markup — seeding `<img …>` into `caption` was
+					 * self-consistent for byte round-trips but destroyed
+					 * the image the moment anyone edited the caption. The
+					 * surrounding markup (and the sub-element's own tags,
+					 * when present) move into the wrapper record instead,
+					 * so materialization rebuilds the exact bytes.
+					 * Wrapper-sourced attributes (paragraph `content`,
+					 * selector null or the wrapper's own tag) keep the
+					 * original mapping.
+					 */
+					$selector = self::rich_text_source( $block['blockName'] )['selector'] ?? null;
+					if (
+						is_string( $selector ) &&
+						preg_match( '/^[a-zA-Z][a-zA-Z0-9-]*$/', $selector ) &&
+						strtolower( $selector ) !== strtolower( $matches[1] )
+					) {
+						if ( preg_match( '/^(.*)(<' . $selector . '(?:\s[^>]*)?>)(.*)(<\/' . $selector . '>)(.*)$/s', $text, $sub ) ) {
+							$wrappers[ $client_id ]['pre']        = $sub[1];
+							$wrappers[ $client_id ]['text_open']  = $sub[2];
+							$wrappers[ $client_id ]['text_close'] = $sub[4];
+							$wrappers[ $client_id ]['post']       = $sub[5];
+							$text                                 = $sub[3];
+						} else {
+							$wrappers[ $client_id ]['pre'] = $text;
+							$text                          = '';
+						}
+					}
 				}
 
 				$children  = self::blocks_to_yblocks( $block['innerBlocks'], $client_id, $wrappers );
@@ -1379,15 +1411,40 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		 * @return string|null Attribute key, or null when the block has none.
 		 */
 		private static function rich_text_attribute( string $name ): ?string {
+			return self::rich_text_source( $name )['key'] ?? null;
+		}
+
+		/**
+		 * The markup-sourced rich-text attribute AND its source selector for
+		 * a block type. A null selector means the attribute sources from the
+		 * block's own wrapper (paragraph/heading `content`); a selector names
+		 * the sub-element it sources from (image `caption` ← `figcaption`).
+		 *
+		 * @since 0.3.0
+		 *
+		 * @param string $name Block name.
+		 * @return array|null array{key: string, selector: ?string}, or null
+		 *                    when the block has no rich-text attribute.
+		 */
+		private static function rich_text_source( string $name ): ?array {
 			$block_type = WP_Block_Type_Registry::get_instance()->get_registered( $name );
 			if ( null === $block_type || ! is_array( $block_type->attributes ) ) {
-				return 'content';
+				return array(
+					'key'      => 'content',
+					'selector' => null,
+				);
 			}
 			foreach ( $block_type->attributes as $key => $schema ) {
 				$source = is_array( $schema ) ? ( $schema['source'] ?? null ) : null;
 				$type   = is_array( $schema ) ? ( $schema['type'] ?? null ) : null;
 				if ( 'rich-text' === $source || 'html' === $source || 'rich-text' === $type ) {
-					return (string) $key;
+					$selector = is_array( $schema ) && is_string( $schema['selector'] ?? null )
+						? $schema['selector']
+						: null;
+					return array(
+						'key'      => (string) $key,
+						'selector' => $selector,
+					);
 				}
 			}
 			return null;
@@ -1427,7 +1484,33 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				);
 			}
 
-			$wrapper        = $wrappers[ $client_id ] ?? self::default_wrapper( $name, $attrs );
+			$wrapper = $wrappers[ $client_id ] ?? self::default_wrapper( $name, $attrs );
+
+			/*
+			 * Selector-sourced rich text (see blocks_to_yblocks): the
+			 * attribute held only the sub-element's inner text; the
+			 * surrounding markup was recorded on the wrapper. Rebuild the
+			 * full inner markup. A sub-element that existed at genesis
+			 * always re-emits with its recorded tags (byte parity); a value
+			 * added in-session gets the element's conventional tags.
+			 */
+			if ( is_array( $wrapper ) && ( isset( $wrapper['pre'] ) || isset( $wrapper['post'] ) || isset( $wrapper['text_open'] ) ) ) {
+				$sub = '';
+				if ( isset( $wrapper['text_open'], $wrapper['text_close'] ) ) {
+					$sub = $wrapper['text_open'] . $text . $wrapper['text_close'];
+				} elseif ( '' !== $text ) {
+					$selector = self::rich_text_source( $name )['selector'] ?? null;
+					if ( is_string( $selector ) && '' !== $selector ) {
+						$sub = 'figcaption' === $selector
+							? '<figcaption class="wp-element-caption">' . $text . '</figcaption>'
+							: '<' . $selector . '>' . $text . '</' . $selector . '>';
+					} else {
+						$sub = $text;
+					}
+				}
+				$text = ( $wrapper['pre'] ?? '' ) . $sub . ( $wrapper['post'] ?? '' );
+			}
+
 			$open_fragment  = $text;
 			$close_fragment = '';
 			if ( is_array( $wrapper ) ) {

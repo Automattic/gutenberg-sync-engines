@@ -324,6 +324,151 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 		wp_delete_post( $nested_post_id, true );
 	}
 
+	/**
+	 * REGRESSION (V1.md A4): genesis put a block's whole stripped inner
+	 * markup into its FIRST rich-text-source attribute — for core/image
+	 * the `<img …>` markup landed in `caption`. Self-consistent for byte
+	 * round-trips but semantically wrong the moment anyone edits the
+	 * caption. Selector-sourced attributes now seed only the named
+	 * sub-element's inner text.
+	 */
+	public function test_genesis_image_caption_seeds_the_caption_not_the_markup() {
+		$no_caption   = implode(
+			"\n",
+			array(
+				'<!-- wp:image {"id":42,"sizeSlug":"large","linkDestination":"none"} -->',
+				'<figure class="wp-block-image size-large"><img src="https://example.com/a.png" alt=""/></figure>',
+				'<!-- /wp:image -->',
+			)
+		);
+		$with_caption = implode(
+			"\n",
+			array(
+				'<!-- wp:image {"id":43,"sizeSlug":"large","linkDestination":"none"} -->',
+				'<figure class="wp-block-image size-large"><img src="https://example.com/b.png" alt=""/><figcaption class="wp-element-caption">A café view</figcaption></figure>',
+				'<!-- /wp:image -->',
+			)
+		);
+
+		foreach ( array(
+			array( $no_caption, '' ),
+			array( $with_caption, 'A café view' ),
+		) as list( $content, $expected_caption ) ) {
+			$post_id = self::factory()->post->create( array( 'post_content' => $content ) );
+			$room    = 'postType/post:' . $post_id;
+
+			$engine   = $this->engine();
+			$response = $engine->get_updates_since( $room, 101, 0, array() );
+			$doc      = $this->client_doc_from_response( $response );
+			$caption  = $doc->getMap( 'document' )->get( 'blocks' )->get( 0 )
+				->get( 'attributes' )->get( 'caption' )->toString();
+
+			$this->assertSame( $expected_caption, $caption );
+			$this->assertStringNotContainsString( '<img', $caption );
+
+			// The fix must not regress the byte round-trip.
+			$this->assertSame(
+				get_post( $post_id )->post_content,
+				$engine->materialize( $room ),
+				'image genesis content must roundtrip byte-identically'
+			);
+
+			wp_delete_post( $post_id, true );
+		}
+	}
+
+	public function test_editing_an_image_caption_keeps_the_image_markup() {
+		$content = implode(
+			"\n",
+			array(
+				'<!-- wp:image {"id":44,"sizeSlug":"large","linkDestination":"none"} -->',
+				'<figure class="wp-block-image size-large"><img src="https://example.com/c.png" alt=""/><figcaption class="wp-element-caption">Old caption</figcaption></figure>',
+				'<!-- /wp:image -->',
+			)
+		);
+		$post_id = self::factory()->post->create( array( 'post_content' => $content ) );
+		$room    = 'postType/post:' . $post_id;
+
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( $room, 101, 0, array() );
+		$doc      = $this->client_doc_from_response( $response );
+
+		// The client edits ONLY the caption. Before the fix this edit
+		// operated on the whole `<img …>` markup living in `caption`.
+		$update = $this->encode_edit(
+			$doc,
+			static function ( $client_doc ) {
+				$caption = $client_doc->getMap( 'document' )->get( 'blocks' )->get( 0 )
+					->get( 'attributes' )->get( 'caption' );
+				$caption->delete( 0, 3 );
+				$caption->insert( 0, 'New' );
+			}
+		);
+		$result = $engine->handle_updates(
+			$room,
+			101,
+			(int) $response['end_cursor'],
+			array(
+				array(
+					'type' => WP_Yjs_Server_Engine::UPDATE_TYPE_UPDATE,
+					'data' => $update,
+				),
+			),
+			array()
+		);
+		$this->assertNotWPError( $result );
+
+		$materialized = $engine->materialize( $room );
+		$this->assertStringContainsString( '<img src="https://example.com/c.png"', $materialized );
+		$this->assertStringContainsString( '<figcaption class="wp-element-caption">New caption</figcaption>', $materialized );
+
+		wp_delete_post( $post_id, true );
+	}
+
+	public function test_caption_added_in_session_materializes_with_conventional_tags() {
+		$content = implode(
+			"\n",
+			array(
+				'<!-- wp:image {"id":45,"sizeSlug":"large","linkDestination":"none"} -->',
+				'<figure class="wp-block-image size-large"><img src="https://example.com/d.png" alt=""/></figure>',
+				'<!-- /wp:image -->',
+			)
+		);
+		$post_id = self::factory()->post->create( array( 'post_content' => $content ) );
+		$room    = 'postType/post:' . $post_id;
+
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( $room, 101, 0, array() );
+		$doc      = $this->client_doc_from_response( $response );
+
+		$update = $this->encode_edit(
+			$doc,
+			static function ( $client_doc ) {
+				$client_doc->getMap( 'document' )->get( 'blocks' )->get( 0 )
+					->get( 'attributes' )->get( 'caption' )->insert( 0, 'Added later' );
+			}
+		);
+		$result = $engine->handle_updates(
+			$room,
+			101,
+			(int) $response['end_cursor'],
+			array(
+				array(
+					'type' => WP_Yjs_Server_Engine::UPDATE_TYPE_UPDATE,
+					'data' => $update,
+				),
+			),
+			array()
+		);
+		$this->assertNotWPError( $result );
+
+		$materialized = $engine->materialize( $room );
+		$this->assertStringContainsString( '<img src="https://example.com/d.png"', $materialized );
+		$this->assertStringContainsString( '<figcaption class="wp-element-caption">Added later</figcaption>', $materialized );
+
+		wp_delete_post( $post_id, true );
+	}
+
 	public function test_redelivered_update_settles_as_already_merged() {
 		$engine     = $this->engine();
 		$response_a = $engine->get_updates_since( $this->room(), 101, 0, array() );
