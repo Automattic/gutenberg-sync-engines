@@ -23,7 +23,7 @@ a merge.
 | A9 stale phpcs-debt note in AGENTS.md | A | done | 1 | loop/a9 | verifier PASS (cycle 3); MERGE ORDER: loop/a6 must merge before or with loop/a9 |
 | A1 intent-log empty-genesis reload stall | A | done | 1 | loop/a1 | verifier PASS (cycle 4); root cause: pre-init edits dropped |
 | A10 stale A1-OPEN note in AGENTS.md | A | done | 1 | loop/a10 | verifier PASS (cycle 5); MERGE ORDER: loop/a1 before or with loop/a10 |
-| A4 yjs genesis rich-text defect | A | queued | 0 | — | plugin-side |
+| A4 yjs genesis rich-text defect | A | done | 1 | loop/a4 | verifier PASS (cycle 6); selector-sourced rich text split |
 | A5 announce-inversion verification debt | A | queued | 0 | — | 3 sub-items; hour soak is wall-clock long |
 | A2 e2e flake stabilization | A | queued | 0 | — | 3x consecutive retry-free full runs |
 | A3 websocket fixme re-enable | A | queued | 0 | — | prefer the real-daemon lane |
@@ -56,6 +56,33 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
 None.
 
 ## Cycle log
+
+### Cycle 6 — 2026-08-19 — A4 yjs genesis rich-text defect
+- Did: fixed genesis mapping in
+  `includes/engines/yjs-server/class-wp-yjs-server-engine.php`. A
+  selector-sourced rich-text attribute (image `caption` ← `figcaption`)
+  now seeds only the sub-element's inner text; the surrounding markup
+  and the sub-element's tags are recorded on the server-only genesis
+  wrapper entry (additive keys), and materialization rebuilds exact
+  bytes. In-session-added captions emit core's conventional
+  `<figcaption class="wp-element-caption">`. Wrapper-sourced attributes
+  (paragraph `content`; selectors matching the wrapper's own tag, e.g.
+  quote `value` ← `blockquote`) keep the original mapping — deliberate,
+  to bound the change. Three PHPUnit regression tests, all red on base
+  (base failure output showed the live bug: a caption edit chewing into
+  the `<img>` tag).
+- Acceptance: yjs class filter OK (26 tests); full test:php OK (313);
+  test:js 526 passed; fuzz:quick 2/2 per engine; verifier additionally
+  ran the yjs e2e spec 7/7 retries=0 (save/reload convergence intact).
+- Verifier: PASS — confirmed the new wrapper keys never reach the wire
+  (server-only room meta) and pre-fix rooms keep their old
+  materialization path. Noted non-blocking edge: greedy regex picks the
+  LAST same-tag sub-element in a pathological multi-figcaption block.
+- Ledger changes: A4 queued → done (branch loop/a4, 1 commit).
+- Lesson applied the hard way: `git checkout <branch> -- <file>` to
+  "restore" an uncommitted file restores the COMMITTED version — it
+  wiped the in-progress engine edit mid-cycle (recovered from context).
+  Commit (or stash-keep) before borrowing base versions of files.
 
 ### Cycle 5 — 2026-08-19 — A10 stale A1-OPEN note in AGENTS.md
 - Did: preflight caught and fixed the worktree double-mount trap on the
