@@ -770,11 +770,52 @@ the engine Dennis designed; the rest change polish and confidence.
   supervised wall clock each, which is why this is its own session,
   not a batch item.
 - **TODO-11 — Round-trip complex sourced attributes through
-  materialization.** intent-log and yjs-server share the Phase-2a
-  simplification: rich-text content maps onto a block's single wrapper
-  element (genesis wrappers kept server-side; per-type defaults for
-  blocks born in-session). Sourced attributes beyond the content field
-  don't survive server materialization yet.
+  materialization. INTENT-LOG HALF DONE (2026-08-18); the yjs-server
+  half needs framework changes (design recorded).** The Phase-2a
+  simplification mapped rich-text content onto a block's single wrapper
+  element with genesis-frozen wrappers — so a paragraph's alignment
+  class, an image's url/alt (sourced attributes living in markup the
+  server cannot regenerate), and caption-class rich-text fields all
+  went stale or lost at server materialization.
+
+  *Intent-log fix — the client authors save-accurate state:* capture
+  now renders each block's SAVE markup (`getSaveContent` with empty
+  inner blocks) and (1) refreshes the `_wrapper` internal attr whenever
+  the wrapper element changes (alignment/class/style survive), and
+  (2) for block types whose resolver names no `content` field, authors
+  the whole save-derived inner HTML as the engine `content` field
+  through the rich-text codec (the img becomes an opaque object span;
+  figcaption-class markup keeps real text coordinates) — the markup the
+  server materializes is markup the client authored from the block's
+  current attributes, so sourced-attribute edits round-trip. Peers stay
+  attr-driven (engine-internal state never reaches editor trees); the
+  diff and its verification extend per-block to authored content
+  (adapter misses — unregistered types, save() throws — degrade to the
+  old model and can never read existing document content as a
+  deletion); kses judgment already covered every new surface (_wrapper
+  set_attr, object-format spans). No frozen-core or server PHP changes.
+  Covered by `tests/js/engines/intent-log-save-capture.test.ts` and
+  `tests/phpunit/wpIntentLogSourcedAttrs.php` (materialization
+  round-trip pins); simulator sweep + full suites green; fuzz-smoked.
+  Honest bounds: container blocks author wrapper + pre-child static
+  markup only (a block whose static markup FOLLOWS its children would
+  materialize it before them — no core block known to do this); genesis
+  content predating the current block save() gets a one-time
+  modernization diff on first capture (the same rewrite a manual editor
+  save would make).
+
+  *yjs-server half — blocked on the framework, design recorded:* the
+  Yjs block writer is core-data's `applyPostChangesToCRDTDoc` (the
+  FRAMEWORK, not this plugin), so the client cannot author
+  wrapper/save state without framework SPI work. Design: write
+  `_wrapper`/`_save` entries into each block's Y.Map from the same
+  save-markup adapter, and have the engine's `to_serializable_block`
+  prefer in-doc entries over the genesis wrapper map / per-type
+  defaults. DISCOVERED while scoping (record of defect): yjs-server's
+  genesis puts a block's whole stripped inner markup into its FIRST
+  rich-text-source attribute — for `core/image` the `<img …>` markup
+  lands in `caption` — self-consistent for byte round-trips but
+  semantically wrong the moment anyone edits the caption.
 
 The DE-RTC fidelity program (see the fidelity audit for the vision
 each item restores):

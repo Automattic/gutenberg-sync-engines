@@ -525,10 +525,14 @@ they exist so a failure is observable without re-instrumenting:
   (register conflicts LWW silently), kses is sanitize-and-compensate (no
   human review of stripped markup), the genesis size gate
   (`wp_sync_yjs_server_max_genesis_bytes`, default 1 MB) is genesis-only
-  (post-genesis room growth unpoliced), and materialization carries the
-  same Phase-2a wrapper simplification as intent-log. Genesis blocks must
-  set `isValid: true` or the editor renders them as invalid-content
-  recovery blocks (has bitten).
+  (post-genesis room growth unpoliced), and materialization still
+  carries the Phase-2a wrapper simplification (intent-log's was fixed
+  by TODO-11's client-authored save markup; the yjs twin needs
+  framework changes — core-data owns the Yjs block writer — and its
+  genesis wrongly stores stripped inner markup in the first
+  rich-text-source attribute, e.g. `<img>` in image `caption`). Genesis
+  blocks must set `isValid: true` or the editor renders them as
+  invalid-content recovery blocks (has bitten).
 - **de-rtc known gaps** (docs/engine-comparison.md has the full list):
   truly concurrent SAME-block edits merge from their TRUE base
   (`blockBaseVersions`, TODO-2b) or raise a contested pending item

@@ -48,9 +48,11 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 	 * checkpoint snapshot, and unresolved proposals below the trim are
 	 * re-appended so review work survives (see maybe_checkpoint()).
 	 *
-	 * Remaining prototype simplification (Phase 2a): genesis/materialization
-	 * map a block's inner HTML opaquely onto the engine's `content` field —
-	 * rich-text-coordinate capture is the client bridge's job.
+	 * Genesis/materialization map a block's inner HTML onto the engine's
+	 * `content` field plus the `_wrapper` internal attr (the Phase 2a
+	 * model); since TODO-11 the client bridge keeps BOTH save-accurate
+	 * (wrapper refresh + save-derived content for non-rich-text blocks),
+	 * so sourced-attribute edits survive materialization.
 	 *
 	 * @since 7.2.0
 	 * @access private

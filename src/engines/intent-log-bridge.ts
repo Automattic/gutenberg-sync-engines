@@ -62,6 +62,46 @@ export interface BridgeBlock {
  */
 export type RichTextFieldsResolver = ( blockName: string ) => string[];
 
+/**
+ * Renders a block's SAVE markup with empty inner blocks (wrapper plus the
+ * block's own static inner HTML), or null when unavailable (unregistered
+ * type, save() throw). The editor side supplies `getSaveContent`; with an
+ * adapter present, capture authors save-accurate materialization state
+ * (TODO-11 in docs/engine-comparison.md): the block's single wrapper
+ * element refreshes into the `_wrapper` internal attr (alignment/class
+ * changes survive server materialization), and for block types whose
+ * resolver names no `content` field the whole save-derived inner HTML is
+ * authored as the engine `content` field through the codec — sourced
+ * attributes (image url/alt, embeds) then round-trip materialization,
+ * because the markup the SERVER emits is markup the CLIENT authored from
+ * the block's current attributes.
+ */
+export type SaveMarkupAdapter = ( block: BridgeBlock ) => string | null;
+
+/**
+ * The server genesis wrapper split, client twin: a single wrapper element
+ * around the whole markup (matching `blocks_to_specs()`'s regex).
+ *
+ * @param markup Save markup (trimmed).
+ * @return Wrapper open/close and the inner HTML, or null when the markup
+ *         is not a single wrapped element.
+ */
+function splitSingleWrapper(
+	markup: string
+): { open: string; close: string; inner: string } | null {
+	const match = /^<([a-zA-Z][a-zA-Z0-9-]*)(\s[^>]*)?>([\s\S]*)<\/\1>$/.exec(
+		markup
+	);
+	if ( ! match ) {
+		return null;
+	}
+	return {
+		open: `<${ match[ 1 ] }${ match[ 2 ] ?? '' }>`,
+		close: `</${ match[ 1 ] }>`,
+		inner: match[ 3 ],
+	};
+}
+
 const defaultRichTextFields: RichTextFieldsResolver = () => [ 'content' ];
 
 /**
@@ -147,6 +187,13 @@ export interface DeriveOptions {
 
 	/** Raw-content block handling (core/html-style innerContent markup). */
 	rawContent?: RawContentAdapter;
+
+	/**
+	 * Save-markup renderer for save-accurate `_wrapper`/`content`
+	 * authoring (TODO-11). Optional: without it capture retains the
+	 * document's existing wrapper/content untouched.
+	 */
+	saveMarkup?: SaveMarkupAdapter;
 }
 
 /**
@@ -181,13 +228,14 @@ function serializeAttribute( value: unknown ): unknown {
  * spec, minting creation syncIds for blocks that lack one. Rich-text
  * attributes become codec fields (plain text + format spans).
  *
- * @param block    Bridge block.
- * @param resolver Rich-text attribute names per block type.
- * @param minted   Optional set collecting the ids minted here (so the caller
- *                 can distinguish minted ids from editor-authored ones).
- * @param seenIds  Optional set of ids already used in this tree; later
- *                 duplicates re-mint (the first occurrence keeps identity).
- * @param raw      Raw-content block handling (core/html-style markup).
+ * @param block      Bridge block.
+ * @param resolver   Rich-text attribute names per block type.
+ * @param minted     Optional set collecting the ids minted here (so the caller
+ *                   can distinguish minted ids from editor-authored ones).
+ * @param seenIds    Optional set of ids already used in this tree; later
+ *                   duplicates re-mint (the first occurrence keeps identity).
+ * @param raw        Raw-content block handling (core/html-style markup).
+ * @param saveMarkup
  * @return Engine block spec (makeBlock input shape).
  */
 export function blockToEngineSpec(
@@ -195,7 +243,8 @@ export function blockToEngineSpec(
 	resolver: RichTextFieldsResolver = defaultRichTextFields,
 	minted?: Set< string >,
 	seenIds?: Set< string >,
-	raw?: RawContentAdapter
+	raw?: RawContentAdapter,
+	saveMarkup?: SaveMarkupAdapter
 ): Record< string, unknown > {
 	const attributes = { ...block.attributes };
 	const metadata = {
@@ -247,13 +296,54 @@ export function blockToEngineSpec(
 			);
 		}
 		children = block.innerBlocks.map( ( child ) =>
-			blockToEngineSpec( child, resolver, minted, seenIds, raw )
+			blockToEngineSpec(
+				child,
+				resolver,
+				minted,
+				seenIds,
+				raw,
+				saveMarkup
+			)
 		);
 	}
 
 	const attrs: Record< string, unknown > = {};
 	for ( const [ key, value ] of Object.entries( attributes ) ) {
 		attrs[ key ] = serializeAttribute( value );
+	}
+
+	/*
+	 * Save-accurate materialization state (TODO-11): with an adapter, the
+	 * block's rendered save markup refreshes the `_wrapper` internal attr
+	 * (the server materializes wrapper VERBATIM, so alignment/class
+	 * changes must travel), and for block types with no resolver-named
+	 * `content` field the save-derived inner HTML becomes the engine
+	 * `content` field (sourced attributes live in that markup — image
+	 * url/alt — and the server cannot regenerate it). Types WITH a
+	 * content field keep the attribute-driven path (identical bytes: the
+	 * save renders the same content inside the wrapper). Adapter failures
+	 * degrade to the pre-TODO-11 model: nothing authored, the document's
+	 * existing wrapper/content stay put.
+	 */
+	if ( ! raw?.is( block.name ) && saveMarkup ) {
+		const markup = saveMarkup( block );
+		if ( 'string' === typeof markup && '' !== markup.trim() ) {
+			const split = splitSingleWrapper( markup.trim() );
+			const capturesContent = ! resolver( block.name ).includes(
+				'content'
+			);
+			if ( split ) {
+				attrs._wrapper = { open: split.open, close: split.close };
+				if ( capturesContent ) {
+					fields.content = htmlToField( split.inner );
+				}
+			} else if ( capturesContent ) {
+				// No single wrapper (void root like core/separator's <hr>):
+				// the whole markup is the content, wrapper-less — matching
+				// the server's genesis treatment of the same shape.
+				fields.content = htmlToField( markup.trim() );
+			}
+		}
 	}
 
 	return {
@@ -871,7 +961,14 @@ export function deriveIntents(
 	const minted = new Set< string >();
 	const seenIds = new Set< string >();
 	let specs = blocks.map( ( block ) =>
-		blockToEngineSpec( block, resolver, minted, seenIds, raw )
+		blockToEngineSpec(
+			block,
+			resolver,
+			minted,
+			seenIds,
+			raw,
+			options.saveMarkup
+		)
 	);
 	/*
 	 * Adoption eligibility: a spec may take over a document identity when
@@ -944,8 +1041,48 @@ export function deriveIntents(
 	const targetIds = collectSpecIds( specs, new Set() );
 	const fieldNames: RichTextFieldsResolver = ( name ) =>
 		fieldNamesFor( name, resolver, raw );
-	const targetJson = bridgeCanonical( target, fieldNames );
-	if ( targetJson === bridgeCanonical( doc, fieldNames, targetIds ) ) {
+	/*
+	 * Blocks whose specs carry a save-authored `content` field BEYOND the
+	 * resolver's schema (TODO-11): their content participates in the diff
+	 * and in verification. Blocks the adapter could not render keep the
+	 * resolver-only projection, so the document's existing content is
+	 * never read as a deletion.
+	 */
+	const authoredContentIds = new Set< string >();
+	const collectAuthoredContent = (
+		specList: Array< Record< string, unknown > >
+	) => {
+		for ( const spec of specList ) {
+			const specFields = ( spec.fields ?? {} ) as Record<
+				string,
+				unknown
+			>;
+			if (
+				'content' in specFields &&
+				! fieldNames( spec.blockType as string ).includes( 'content' )
+			) {
+				authoredContentIds.add( spec.syncId as string );
+			}
+			collectAuthoredContent(
+				( spec.children as Array< Record< string, unknown > > ) ?? []
+			);
+		}
+	};
+	collectAuthoredContent( specs );
+	const entryFieldNames = ( syncId: string, blockType: string ): string[] =>
+		authoredContentIds.has( syncId )
+			? [ ...fieldNames( blockType ), 'content' ]
+			: fieldNames( blockType );
+	const targetJson = bridgeCanonical(
+		target,
+		fieldNames,
+		undefined,
+		authoredContentIds
+	);
+	if (
+		targetJson ===
+		bridgeCanonical( doc, fieldNames, targetIds, authoredContentIds )
+	) {
 		/*
 		 * Equal up to blocks absent from the tree. Absent-but-REMOVABLE
 		 * blocks are deletions and need full derivation; when every absent
@@ -1109,7 +1246,7 @@ export function deriveIntents(
 			}
 		}
 
-		for ( const field of fieldNames( newType ) ) {
+		for ( const field of entryFieldNames( syncId, newType ) ) {
 			const textIntent = diffText(
 				blockField( oldBlock, field ).text,
 				specField( entry.spec, field ).text,
@@ -1137,7 +1274,10 @@ export function deriveIntents(
 		if ( ! scratchEntry ) {
 			continue;
 		}
-		for ( const field of fieldNames( entry.spec.blockType as string ) ) {
+		for ( const field of entryFieldNames(
+			syncId,
+			entry.spec.blockType as string
+		) ) {
 			intents.push(
 				...diffFormats(
 					blockField( scratchEntry.block, field ),
@@ -1151,7 +1291,16 @@ export function deriveIntents(
 
 	// Verify: the derived intents must reproduce the target tree (retained
 	// blocks excluded from the comparison — they are staleness, not target).
-	if ( verifiesTo( doc, intents, targetJson, fieldNames, targetIds ) ) {
+	if (
+		verifiesTo(
+			doc,
+			intents,
+			targetJson,
+			fieldNames,
+			targetIds,
+			authoredContentIds
+		)
+	) {
 		return { intents, coarseBlockCount: 0, retainedIds, specs };
 	}
 
@@ -1178,7 +1327,10 @@ export function deriveIntents(
 		if ( ! old ) {
 			continue;
 		}
-		for ( const field of fieldNames( entry.spec.blockType as string ) ) {
+		for ( const field of entryFieldNames(
+			syncId,
+			entry.spec.blockType as string
+		) ) {
 			const targetField = specField( entry.spec, field );
 			const docField = blockField( old.block, field );
 			if (
@@ -1215,7 +1367,16 @@ export function deriveIntents(
 			}
 		}
 	}
-	if ( ! verifiesTo( doc, coarse, targetJson, fieldNames, targetIds ) ) {
+	if (
+		! verifiesTo(
+			doc,
+			coarse,
+			targetJson,
+			fieldNames,
+			targetIds,
+			authoredContentIds
+		)
+	) {
 		throw new Error(
 			'Intent capture failed verification even after degrading to coarse replacement.'
 		);
@@ -1473,12 +1634,16 @@ function specsToDocument(
  * @param doc        Engine document.
  * @param resolver   Rich-text attribute names per block type.
  * @param restrictTo Optional id allowlist.
+ * @param contentIds Ids whose projection ALSO includes the `content`
+ *                   field beyond the resolver's schema (TODO-11
+ *                   save-authored content must verify).
  * @return Canonical JSON of the projection.
  */
 function bridgeCanonical(
 	doc: EngineDocument,
 	resolver: RichTextFieldsResolver,
-	restrictTo?: Set< string >
+	restrictTo?: Set< string >,
+	contentIds?: Set< string >
 ): string {
 	const canonicalField = ( field: EngineField ) => ( {
 		text: field.text,
@@ -1500,7 +1665,13 @@ function bridgeCanonical(
 				.sort( ( [ a ], [ b ] ) => ( a < b ? -1 : 1 ) )
 		),
 		fields: Object.fromEntries(
-			resolver( block.blockType )
+			[
+				...resolver( block.blockType ),
+				...( contentIds?.has( block.syncId ) &&
+				! resolver( block.blockType ).includes( 'content' )
+					? [ 'content' ]
+					: [] ),
+			]
 				.slice()
 				.sort()
 				.map( ( name ) => [
@@ -1528,6 +1699,7 @@ function bridgeCanonical(
  * @param targetJson Canonical target.
  * @param resolver   Rich-text attribute names per block type.
  * @param restrictTo Optional id allowlist for the comparison.
+ * @param contentIds
  * @return Whether the application reproduces the target.
  */
 function verifiesTo(
@@ -1535,11 +1707,15 @@ function verifiesTo(
 	intents: DerivedIntents[ 'intents' ],
 	targetJson: string,
 	resolver: RichTextFieldsResolver,
-	restrictTo?: Set< string >
+	restrictTo?: Set< string >,
+	contentIds?: Set< string >
 ): boolean {
 	let current = doc;
 	for ( const intent of intents ) {
 		current = applyScratch( current, intent );
 	}
-	return bridgeCanonical( current, resolver, restrictTo ) === targetJson;
+	return (
+		bridgeCanonical( current, resolver, restrictTo, contentIds ) ===
+		targetJson
+	);
 }
