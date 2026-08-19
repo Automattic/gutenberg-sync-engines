@@ -230,10 +230,13 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 			array()
 		);
 
-		$this->assertSame( 'escalated', $b_result['dispositions'][0]['status'] );
-		$this->assertSame( 'manual-conflict-required', $b_result['dispositions'][0]['reason'] );
+		// TODO-2a: the descriptor is validated once and dropped, so the
+		// per-block salvage lane runs even for descriptor-carrying
+		// proposals — the conflicted block parks, the (empty) remainder
+		// lands, and canonical keeps A's accepted state.
+		$this->assertSame( 'applied', $b_result['dispositions'][0]['status'] );
+		$this->assertSame( 1, $b_result['dispositions'][0]['parkedBlocks'] ?? null );
 
-		// Canonical keeps A's accepted state.
 		$this->assertStringContainsString( 'Alpha block A-REWRITE', $this->engine()->materialize( $this->room() ) );
 		$this->assertStringNotContainsString( 'B-REWRITE', $this->engine()->materialize( $this->room() ) );
 	}
@@ -337,9 +340,18 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 			array()
 		);
 
-		$this->assertSame( 'escalated', $result['dispositions'][0]['status'] );
-		$this->assertSame( 'requires-unfiltered-html', $result['dispositions'][0]['reason'] );
+		// TODO-2a: the descriptor is validated once and dropped, so the
+		// kses sequestration lane runs even for descriptor-carrying
+		// proposals: the risky new block drops from the laundered
+		// content, the proposal applies, and the risky block parks.
+		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
 		$this->assertStringNotContainsString( '<script>', $this->engine()->materialize( $this->room() ) );
+		$parked = $this->rows_of_type(
+			$this->engine()->get_updates_since( $this->room(), 4, 0, array() ),
+			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+		);
+		$this->assertCount( 1, $parked );
+		$this->assertSame( 'requires-unfiltered-html', $parked[0]['reason'] );
 	}
 
 	public function test_canonical_state_survives_engine_instances() {
@@ -437,7 +449,9 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Drives the standard two-client conflict so p-b escalates and parks.
+	 * Drives the standard two-client conflict so p-b's conflicted block
+	 * parks (per-block salvage; since TODO-2a the descriptor validates
+	 * once and drops, so salvage runs for descriptor proposals too).
 	 *
 	 * @return array Genesis state the proposals were authored against.
 	 */
@@ -463,7 +477,8 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 			array( $this->proposal( 'p-b', $genesis['version'], $genesis['content'], $b_proposed ) ),
 			array()
 		);
-		$this->assertSame( 'escalated', $b_result['dispositions'][0]['status'] );
+		$this->assertSame( 'applied', $b_result['dispositions'][0]['status'] );
+		$this->assertSame( 1, $b_result['dispositions'][0]['parkedBlocks'] ?? null );
 
 		return $genesis;
 	}

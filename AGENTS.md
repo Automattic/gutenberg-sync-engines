@@ -530,15 +530,19 @@ they exist so a failure is observable without re-instrumenting:
   set `isValid: true` or the editor renders them as invalid-content
   recovery blocks (has bitten).
 - **de-rtc known gaps** (docs/engine-comparison.md has the full list):
-  truly concurrent SAME-block edits resolve block-level last-writer-wins
-  client-side (yjs-server's silent-register-LWW class, coarser grain);
-  the client sends `clientUpdate: null` and relies on the server's
-  engine-unaware-writer lane to derive block-native operations (the
-  client-side descriptor builder + cross-language fingerprint vectors are
-  unported); kses SEQUESTERS per block (risky blocks revert to base and
+  truly concurrent SAME-block edits merge from their TRUE base
+  (`blockBaseVersions`, TODO-2b) or raise a contested pending item
+  (Adopt/Reject, TODO-12) — the old silent client-side block LWW is
+  retired; sessions author the block-native `clientUpdate` descriptor
+  (TODO-2a: tamper evidence, byte-parity with the PHP derivation pinned
+  by PHP-generated vectors in
+  `tests/js/engines/de-rtc/test-vectors/`; the engine validates once
+  against the plain declared base, then drops it), while machine
+  writers stay descriptor-less via the server's engine-unaware-writer
+  lane; kses SEQUESTERS per block (risky blocks revert to base and
   park for review while the safe remainder lands; whole-proposal
-  escalation remains the fallback for freeform boundaries and
-  descriptor-carrying proposals); ingest is lock-free — each accepted
+  escalation remains the fallback for freeform boundaries); ingest is
+  lock-free — each accepted
   proposal atomically claims its version advancement (options-row CAS,
   `WP_Sync_Atomic_Option`) and a lost claim reloads + re-merges, the
   upstream optimistic model — and every accepted proposal broadcasts FULL

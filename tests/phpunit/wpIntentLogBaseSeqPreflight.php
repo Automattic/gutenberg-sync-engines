@@ -135,7 +135,10 @@ class Tests_Collaboration_WpIntentLogBaseSeqPreflight extends WP_UnitTestCase {
 		$saved = get_post( $post_id )->post_content;
 		$this->assertStringContainsString( 'Hello world from the session', $saved, 'The session edit must survive the machine save.' );
 		$this->assertStringContainsString( 'updated by the integration', $saved, 'The writer edit must land.' );
-		$this->assertStringContainsString( $ids[0], $saved, 'The merged save carries block identity.' );
+		// Serialized attrs unicode-escape `--` (serialize_block_attributes),
+		// and base64url syncIds occasionally contain `--` — compare the
+		// escaped form so the assertion is not id-dependent.
+		$this->assertStringContainsString( str_replace( '--', '\\u002d\\u002d', $ids[0] ), $saved, 'The merged save carries block identity.' );
 
 		// The room converged to the same state (the writer merged THROUGH it).
 		$canonical = self::engine()->materialize( $room );

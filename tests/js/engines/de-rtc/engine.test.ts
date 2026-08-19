@@ -161,7 +161,14 @@ describe( 'createDeRtcEngine', () => {
 		expect( sent[ 0 ].type ).toBe( DE_RTC_PROPOSAL_TYPE );
 		const payload = JSON.parse( sent[ 0 ].data );
 		expect( payload.baseVersion ).toBe( 'v1' );
-		expect( payload.clientUpdate ).toBeNull();
+		// TODO-2a: the proposal carries the tamper-evidence descriptor,
+		// built from the base version's canonical content. (This suite
+		// mocks @wordpress/blocks, so content is not real block grammar
+		// and the builder emits the hash-pinned unsupported fallback.)
+		expect( payload.clientUpdate?.format ).toBe(
+			'native-automerge-blocks-v1'
+		);
+		expect( typeof payload.clientUpdate?.baseContentHash ).toBe( 'string' );
 		expect( typeof payload.proposalId ).toBe( 'string' );
 
 		// The disposition settles the slot; the coalesced newer edits go out

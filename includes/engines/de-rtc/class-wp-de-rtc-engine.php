@@ -441,6 +441,23 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				);
 			}
 
+			/*
+			 * Descriptor tamper evidence (TODO-2a), enforced: a proposal
+			 * carrying a block-native clientUpdate has it validated ONCE
+			 * against the PLAIN declared base — the state the client
+			 * actually built it from, never the TODO-2b composite — and
+			 * then DROPPED. Dropping matters twice over: kses laundering
+			 * and per-block salvage rewrite the proposed content
+			 * server-side, so a retained descriptor would false-positive
+			 * the merge core's own tamper check; and the drop is what
+			 * lets descriptor-carrying proposals use those
+			 * partial-acceptance lanes at all.
+			 */
+			$rejection = $this->validate_and_drop_client_update( $room, $state, $proposal );
+			if ( null !== $rejection ) {
+				return $rejection;
+			}
+
 			$proposed_content = $proposal['proposedContent'];
 
 			/*
@@ -452,16 +469,14 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			 * for a privileged reviewer (restore re-proposes them under the
 			 * RESTORER's capability, so restore IS the approval). The whole
 			 * proposal escalates only when per-block extraction is
-			 * unavailable (freeform boundaries) or the proposal carries a
-			 * block-native descriptor laundering would invalidate.
+			 * unavailable (freeform boundaries). Descriptors were validated
+			 * and dropped above, so this lane's rewrite cannot invalidate
+			 * one.
 			 */
 			if ( ! current_user_can( 'unfiltered_html' ) ) {
 				$sanitized = wp_kses_post( $proposed_content );
 				if ( $sanitized !== $proposed_content ) {
-					$laundered = null;
-					if ( null === ( $proposal['clientUpdate'] ?? null ) ) {
-						$laundered = $this->sequester_unfiltered_blocks( $room, $client_id, $proposal, $base_content, $review );
-					}
+					$laundered = $this->sequester_unfiltered_blocks( $room, $client_id, $proposal, $base_content, $review );
 					if ( null === $laundered ) {
 						$this->park_proposal( $room, $client_id, $proposal, 'requires-unfiltered-html', $base_content, $review );
 						return array(
@@ -526,20 +541,20 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 						 * partial-acceptance model, the same grain the kses
 						 * sequestration lane already uses): land the blocks
 						 * that merge, park exactly the conflicted ones.
+						 * Descriptors were validated and dropped at ingest,
+						 * so salvage's rewrite cannot invalidate one.
 						 */
-						if ( null === ( $proposal['clientUpdate'] ?? null ) ) {
-							$salvaged = $this->salvage_conflicting_blocks( $room, $client_id, $proposal, $base_content, (string) $state['content'], $proposed_content, $review, $salvage_parked );
-							if ( null !== $salvaged && $salvaged !== $proposed_content ) {
-								$proposed_content = $salvaged;
-								continue; // Re-merge the salvaged content.
-							}
+						$salvaged = $this->salvage_conflicting_blocks( $room, $client_id, $proposal, $base_content, (string) $state['content'], $proposed_content, $review, $salvage_parked );
+						if ( null !== $salvaged && $salvaged !== $proposed_content ) {
+							$proposed_content = $salvaged;
+							continue; // Re-merge the salvaged content.
 						}
 						// Per-block extraction unavailable (structural
-						// divergence, freeform boundaries, descriptor
-						// proposals): DE-RTC policy is a human decision, not
-						// a silent merge. The proposal parks for review; the
-						// canonical state wins locally once it applies, and a
-						// human restores or dismisses the parked work.
+						// divergence, freeform boundaries): DE-RTC policy is
+						// a human decision, not a silent merge. The proposal
+						// parks for review; the canonical state wins locally
+						// once it applies, and a human restores or dismisses
+						// the parked work.
 						$this->park_proposal( $room, $client_id, $proposal, 'manual-conflict-required', $base_content, $review );
 						return array(
 							'status' => 'escalated',
@@ -635,6 +650,129 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				'rest_sync_room_busy',
 				__( 'The room is busy processing another request. Retry shortly.', 'gutenberg' ),
 				array( 'status' => 503 )
+			);
+		}
+
+		/**
+		 * Validates a proposal's block-native descriptor and drops it.
+		 *
+		 * TODO-2a (docs/engine-comparison.md), full enforcement: when a
+		 * proposal carries `clientUpdate`, the frozen merge core re-derives
+		 * the expected update from (plain declared base, proposed content)
+		 * and compares fingerprints — a mismatch is tamper evidence and
+		 * VOIDS the proposal. On success the descriptor is dropped from
+		 * the proposal (validate-once): the server's own rewrites (kses
+		 * sequestration, per-block salvage) must not re-trip the check,
+		 * and the descriptor-less lanes derive an identical update anyway.
+		 *
+		 * The validation base is deliberately the PLAIN base of the
+		 * declared `baseVersion` — never the TODO-2b composite — because
+		 * that is the exact state the client built its evidence from, so
+		 * descriptors and `blockBaseVersions` compose.
+		 *
+		 * One deliberate acceptance: a client that could not split blocks
+		 * (its parser twin refused where ours did not — e.g. PHP-authored
+		 * float attrs re-encode differently across languages) sends the
+		 * single `document.replace_unsupported` fallback op. When both
+		 * top-level hashes verified, that is legitimate DIGEST-ONLY
+		 * evidence, not tamper; rejecting it would turn a serializer
+		 * parity edge into a blocked save.
+		 *
+		 * @since 0.6.0
+		 *
+		 * @param string $room     Room identifier.
+		 * @param array  $state    Room state.
+		 * @param array  $proposal Decoded proposal payload (by reference:
+		 *                         the descriptor is dropped on success).
+		 * @return array|null A voided disposition on rejection, null to
+		 *                    proceed.
+		 */
+		private function validate_and_drop_client_update( string $room, array $state, array &$proposal ): ?array {
+			$client_update = $proposal['clientUpdate'] ?? null;
+			if ( null === $client_update ) {
+				return null;
+			}
+
+			$plain_base = $this->resolve_base_content( $state, (string) $proposal['baseVersion'] );
+			if ( null === $plain_base ) {
+				$plain_base = $this->resolve_base_from_revisions( $room, (string) $proposal['baseVersion'] );
+			}
+			if ( null === $plain_base ) {
+				return array(
+					'status' => 'voided',
+					'reason' => 'unknown-base-version',
+				);
+			}
+
+			$normalized = wp_de_rtc_normalize_automerge_client_update( $client_update );
+			if ( is_wp_error( $normalized ) ) {
+				return $this->reject_client_update( $room, $normalized );
+			}
+
+			$valid = wp_de_rtc_validate_automerge_block_native_update_matches_content(
+				$plain_base,
+				(string) $proposal['proposedContent'],
+				$normalized
+			);
+			if ( is_wp_error( $valid ) && $this->is_hash_pinned_unsupported_fallback( $valid, $normalized ) ) {
+				do_action( 'qm/debug', 'wp-sync: de-rtc accepted digest-only descriptor evidence in ' . $room . ' (client sent the unsupported-fallback op; hashes verified)' );
+				$valid = true;
+			}
+			if ( is_wp_error( $valid ) ) {
+				return $this->reject_client_update( $room, $valid );
+			}
+
+			$proposal['clientUpdate'] = null;
+			return null;
+		}
+
+		/**
+		 * Returns whether a fingerprint mismatch is the acceptable
+		 * hash-pinned unsupported-fallback shape (see
+		 * validate_and_drop_client_update()).
+		 *
+		 * The merge core checks the top-level content hashes with
+		 * hash_equals() BEFORE comparing fingerprints, so reaching the
+		 * fingerprint mismatch with both hashes PRESENT means both
+		 * matched.
+		 *
+		 * @since 0.6.0
+		 *
+		 * @param WP_Error $error      Validation error.
+		 * @param array    $normalized Normalized client update.
+		 * @return bool Whether to accept as digest-only evidence.
+		 */
+		private function is_hash_pinned_unsupported_fallback( WP_Error $error, array $normalized ): bool {
+			$data = $error->get_error_data();
+			if ( ! is_array( $data ) || 'automerge_client_update_materialization_mismatch' !== ( $data['detail'] ?? null ) ) {
+				return false;
+			}
+			$operations = $normalized['operations'];
+			if ( 1 !== count( $operations ) || 'document.replace_unsupported' !== ( $operations[0]['type'] ?? null ) ) {
+				return false;
+			}
+			return is_string( $normalized['baseContentHash'] ?? null )
+				&& is_string( $normalized['proposedContentHash'] ?? null );
+		}
+
+		/**
+		 * Builds the voided disposition for a rejected descriptor.
+		 *
+		 * @since 0.6.0
+		 *
+		 * @param string   $room  Room identifier.
+		 * @param WP_Error $error Normalization/validation error.
+		 * @return array Voided disposition.
+		 */
+		private function reject_client_update( string $room, WP_Error $error ): array {
+			$data   = $error->get_error_data();
+			$reason = is_array( $data ) && is_string( $data['detail'] ?? null )
+				? $data['detail']
+				: $error->get_error_code();
+			do_action( 'qm/debug', 'wp-sync: de-rtc rejected a client descriptor in ' . $room . ' — ' . $reason );
+			return array(
+				'status' => 'voided',
+				'reason' => $reason,
 			);
 		}
 

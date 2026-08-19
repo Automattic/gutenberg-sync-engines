@@ -119,7 +119,7 @@ shows up.
 | P4 machine writers | **Met for read-modify-write.** `wp_update_post( …, 'intent_log_base_seq' => N )` (REST: `base_seq`) diffs the save against the declared base by persisted syncId and authors typed intents — transforms merge concurrent work, collisions park for review, the save lands as merged canonical (TODO-4b). Unaware writers still bypass the room (no detection stamp) | **Accepted limitation.** Ingest speaks binary CRDT updates; a diff-to-CRDT lane would be semantically worse, not just costly (TODO-4) | **Met.** Unaware writers heal in (TODO-14, scenario F) and cooperating writers merge through the room: `wp_update_post( …, 'base_version' => 'vN' )` — WP-CLI, plugins, REST (`base_version` param on posts/pages) — three-way-merges via the ingest lane with per-block salvage and review parking; conflicts reject the save with a rich 409 (TODO-4a) |
 | P5 cheap hosting | **Meets.** Cheapest per-ingest CPU; Core-style options-row lock, topology-safe (TODO-1 done) | **Partially.** No lock (good); heaviest per-ingest CPU, scaling with document size | **Partially.** Cheap CPU; lock-free optimistic claims, topology-safe (TODO-1 done); wire/storage bytes still scale with document size |
 | P6 measured economics | **Meets.** Real wire format in its benchmark profile | **Meets.** Real wire format; convergence oracle | **Meets.** Real wire format; disposition/lineage oracle |
-| P7 intent & identity | **Meets.** Typed intents end-to-end; syncIds persist in saved `post_content` and round-trip genesis | **Fails.** Snapshot-diff binding inherited from the relay; no semantic ops, no stable identity in the merge | **Designed for it, half-wired.** Block identity + rich-text ops live in the merge core, but clients send `clientUpdate: null`, so intent is server-derived from whole-content diffs — merge-equivalent, but tamper evidence is inactive (TODO-2a) |
+| P7 intent & identity | **Meets.** Typed intents end-to-end; syncIds persist in saved `post_content` and round-trip genesis | **Fails.** Snapshot-diff binding inherited from the relay; no semantic ops, no stable identity in the merge | **Designed for it, wired (since TODO-2a).** Block identity + rich-text ops live in the merge core, and sessions now author the block-native descriptor client-side (hash-pinned base/proposed + operation fingerprints, byte-parity with the PHP derivation enforced by 75 PHP-generated vectors); the server validates it once against the plain declared base and rejects mismatches (`de_rtc_sync_meta_tampered`). Merge outcomes remain server-derived and identical either way — the descriptor is a P1 integrity surface |
 
 Three honest readings of that table:
 
@@ -169,7 +169,7 @@ with something protocol-convenient.
 | Per-block kses sequestration — "accept partial edits, adopting the safe parts" | Prototype-proven | Restored as the shipping capability lane | **Faithful** |
 | The shipping merge is the hand-written block-aware three-way merge; Automerge backs only the legacy lane | Same | Same — ported verbatim as a frozen call-graph closure | **Faithful** |
 | Optimistic concurrency; no database lock | Base-version preflight, hash validation, merge-and-retry on the save path | Lock-free again: accepted proposals atomically claim their version advancement and a lost claim reloads + re-merges (`WP_Sync_Atomic_Option` CAS) | **Restored** (TODO-1 done) |
-| Clients need no CRDT library; Gutenberg couples via semantic Redux actions | Stage 3 of the development plan | The client rides a `Y.Doc` editor bridge (undo + awareness reuse) and sends `clientUpdate: null` | **Adaptation debt.** TODO-2a/2b plus architecture item 5 |
+| Clients need no CRDT library; Gutenberg couples via semantic Redux actions | Stage 3 of the development plan | The client rides a `Y.Doc` editor bridge (undo + awareness reuse); sessions author the block-native descriptor (TODO-2a done) but the doc bridge itself remains a CRDT editor adapter | **Adaptation debt narrowed.** TODO-2b/2a done; the Y.Doc bridge remains (architecture item 5) |
 | Cheap-host cadence is a feature: "that $3/mo host … can still support multiple concurrent edit sessions polling … once every ten seconds" | Polling interval scales to the host's comfort; presence is separate from content | Measured fairly now: the `save-sync-session` scenario runs every engine at the vision's cadence — where de-rtc escalates nothing and intent-log becomes the escalation-heavy engine (its stale-observation residual), inverting the per-second ranking | **Measured** (TODO-19 done); operating cadence itself is TODO-12 |
 
 The pattern across the corrupted rows is one pattern: wherever DE-RTC's
@@ -186,7 +186,7 @@ the protocol won. The fidelity program reverses that default.
 | Error recovery | Exact re-send; ingest is idempotent by intentId | Full-state recovery update, IDEMPOTENT server-side (the server diffs out what it already has — redelivery settles as a benign `already-merged` void); the server explicitly requests it with a `resync-required` void when an update's dependencies are missing from the room | Recovery re-proposes the doc's current state; if the lost send landed, the re-proposal merges as a no-op |
 | History compaction | Server checkpoints every 100 intent rows and trims | Server checkpoints every 100 rows and trims — abandoned rooms stay bounded | Server checkpoints every 100 rows and trims (same retention invariant) |
 | Genesis | Server, from post content | Server, from post content — deterministic build, so racing initializers merge idempotently | Server, from post content — deterministic, and ADOPTS an upstream DE-RTC sync-meta block if one is embedded (version lineage continues) |
-| Capability enforcement | At ingest (kses lane; escalation for `unfiltered_html`-gated content parks for approval — restore by a privileged reviewer IS the approval) | At ingest, sanitize-and-compensate: blocks a filtered author's batch touched that kses would rewrite are REPLACED with their sanitized form and the compensating delta broadcasts (filter-on-save semantics; nothing parks — coarser than intent-log by design) | At ingest, per-block SEQUESTRATION (upstream's model): risky blocks revert to their base form and park for review while the safe remainder of the proposal merges and lands; markup-bearing property values park per property; restore under a privileged reviewer approves. Whole-proposal escalation remains the fallback (freeform boundaries, descriptor-carrying proposals) |
+| Capability enforcement | At ingest (kses lane; escalation for `unfiltered_html`-gated content parks for approval — restore by a privileged reviewer IS the approval) | At ingest, sanitize-and-compensate: blocks a filtered author's batch touched that kses would rewrite are REPLACED with their sanitized form and the compensating delta broadcasts (filter-on-save semantics; nothing parks — coarser than intent-log by design) | At ingest, per-block SEQUESTRATION (upstream's model): risky blocks revert to their base form and park for review while the safe remainder of the proposal merges and lands; markup-bearing property values park per property; restore under a privileged reviewer approves. Whole-proposal escalation remains the fallback (freeform boundaries) |
 | Synced entity properties | The framework's full set as per-name registers: the scalar whitelist (title, excerpt, slug, status, comment_status, ping_status, format, sticky, author, featured_media, date, template), attached taxonomies (whole term-ID arrays by rest_base), and registered post meta (per-key `meta.<key>` registers, `_crdt_document` excluded). Collection rooms implement the framework's save-notification contract (per-client save registers), so a newly created term reaches every peer's term list by refetch | Whatever the sync config maps into the CRDT (the full framework set, including per-key post meta and taxonomies), and genesis seeds the same shared REST-shaped property map the other engines seed; collection rooms carry the savedAt state key for the same refetch contract | The full flattened register map rides every proposal beside the content (title, scalars, taxonomies, `meta.<key>`); the server three-way-merges per property against the base version — sole-writer changes and agreements apply, concurrent divergent writes park per property for review. Genesis seeds the shared property map |
 | Presence/awareness | Yes (shared Yjs-free awareness doc) | Yes (Yjs awareness, relayed opaquely — the server does not decode it) | Yes (Yjs awareness over the doc bridge, relayed opaquely) |
 | Server observability | Dispositions, debug envelope, benchmark quality metrics | Per-update dispositions, CRDT convergence oracle, materialization | Per-proposal dispositions (applied/escalated/voided with reasons), version lineage, materialization |
@@ -390,7 +390,7 @@ measures exactly this spread.
   safe remainder of the proposal merges and lands. Restore re-proposes
   them under the RESTORER's capability, so restore is the approval.
   Whole-proposal escalation remains the fallback for freeform
-  boundaries and descriptor-carrying proposals.
+  boundaries.
 
 ### F. An out-of-band machine write lands mid-session (P4 — de-rtc solves it; the others don't)
 
@@ -571,33 +571,45 @@ the engine Dennis designed; the rest change polish and confidence.
   either way. The descriptor's sole contribution is **tamper evidence**
   (hash-pinned base/proposed + operation fingerprints), which is a P1
   integrity property, not the scenario-C fix. Split accordingly:
-  - **TODO-2a — Descriptor builder for tamper evidence. INVESTIGATED
-    (2026-08-18); DECIDED: full enforcement from day one (no
-    report-only phase), which raises the bar on vector coverage — the
-    fixture matrix must be exhaustive before the enforcement lands,
-    since a parity bug rejects legitimate saves. Scheduled after
-    TODO-12.** The scoping
-    pass sharpened the estimate — and the risk. Fingerprint parity
-    covers `textSplice` and `changedTextIndexes`, so a client builder
-    must byte-match PHP's content canonicalization, top-level block
-    record splitting, and the UTF-8 rich-text splice/mark derivation.
-    The failure mode of a subtle mismatch is not graceful degradation
-    but a FALSE TAMPER REJECTION that blocks legitimate saves — the
-    worst shape for an integrity feature — so this port demands the
-    full vector discipline (fixtures generated from the PHP merge core
-    itself) done unhurried, not as a batch item. Two findings recorded
-    for the implementation session: (1) generate vectors via `wp
-    eval-file` against `wp_de_rtc_create_automerge_update_for_content_change`
-    + `..._operation_fingerprints` and test the TS builder against
-    them; (2) the ENGINE must validate a descriptor once against the
-    original proposal and then DROP it whenever kses laundering or
-    per-block salvage rewrites the proposed content — otherwise the
-    server's own modifications false-positive the tamper check — and
-    descriptor-carrying proposals currently bypass both those lanes,
-    so attaching descriptors without that engine change would REGRESS
-    partial acceptance. Sessions should also omit descriptors on
-    proposals carrying `blockBaseVersions` (the client cannot cheaply
-    reproduce the server's composite base).
+  - **TODO-2a — Descriptor builder for tamper evidence. DONE
+    (2026-08-18), full enforcement from day one as decided.**
+    `src/engines/de-rtc/descriptor.ts` is the client-side twin of
+    `wp_de_rtc_create_automerge_update_for_content_change` — content
+    canonicalization (core-name spelling, boundary whitespace),
+    top-level record splitting with the parse→serialize round-trip
+    check, sha256 content hashes, the full op lane (move / update /
+    rich-text splice / rich-text format / insert / delete / replace /
+    unsupported fallback), and the UTF-8 code-point text model with
+    PHP-exact HTML entity decoding (semicolon-only, HTML5 table via
+    isolated textarea decode). Byte-parity is enforced by 75
+    PHP-generated vectors (`tests/tools/
+    generate-de-rtc-descriptor-vectors.{php,mjs}` →
+    `tests/js/engines/de-rtc/descriptor-vectors.test.ts`): 51 targeted
+    cases (every op lane, canonicalization, escaping, emoji/ZWJ/
+    combining marks, entities incl. the no-semicolon probe, freeform
+    and malformed-delimiter boundaries, float-attr re-encode) plus a
+    24-seed deterministic combinatorial sweep. Sessions attach the
+    descriptor to EVERY proposal (built from the base version's exact
+    canonical string, tracked per session; omitted only when that
+    string is unknown). The engine validates ONCE against the PLAIN
+    declared base — deliberately not the TODO-2b composite, which is
+    what lets descriptors and `blockBaseVersions` compose (the
+    scoping-era "omit on blockBaseVersions" restriction dissolved) —
+    then DROPS the descriptor, so the kses-sequestration and
+    per-block-salvage lanes now run for descriptor-carrying proposals
+    too (previously they whole-parked; the old pins were updated).
+    Mismatches VOID with the merge core's tamper reasons. One
+    deliberate engine-level acceptance: a client whose parser twin
+    refused to split blocks sends the single
+    `document.replace_unsupported` fallback op — with both top-level
+    hashes verified that is legitimate digest-only evidence, not
+    tamper (this absorbs cross-language re-encode edges like
+    PHP-authored float attrs without weakening the hash pin). Covered
+    by `tests/phpunit/wpDeRtcDescriptorEnforcement.php` (accept /
+    tampered-hash / wrong-content / fallback accept+reject / kses and
+    salvage survival / 2a+2b composition / malformed) and fuzz-smoked
+    live (real editor content through the TS builder against the PHP
+    validator, rooms advancing normally under enforcement).
   - **TODO-2b — Per-block base honesty (the actual scenario-C fix).
     DONE (2026-08-18):** the doc bridge records the TRUE base of each
     block kept through a colliding incorporation (once — the oldest
@@ -624,8 +636,7 @@ the engine Dennis designed; the rest change polish and confidence.
   blocks park for review (canonical wins their positions; the applied
   disposition carries `parkedBlocks`). Whole-proposal parking remains
   the fallback for structural divergence (unequal block counts, where
-  positional alignment lies), freeform boundaries, and
-  descriptor-carrying proposals. Also wired into the self-healing lane
+  positional alignment lies) and freeform boundaries. Also wired into the self-healing lane
   (a conflicting external save salvages before parking whole).
   Engine-layer only; the frozen merge core is untouched. The de-rtc
   benchmark profile models partial acceptance (settle-time
@@ -995,8 +1006,9 @@ each item restores):
   Honest bounds, by design: attribution is block-grain and positional,
   and a structural change resets the map to unknown rather than
   attribute across a shift. The hover-highlight overlay is TODO-12-era
-  editor UX; range-grain (which characters) attribution needs the
-  descriptor lane (TODO-2a).
+  editor UX; range-grain (which characters) attribution could now draw
+  on the descriptor lane's `textSplice` evidence (TODO-2a done) but is
+  not built.
 - **TODO-19 — Benchmark DE-RTC at its native cadence. DONE
   (2026-08-18):** the `save-sync-session` scenario (rounds are
   wall-clock seconds; each client submits its typing burst only on
@@ -1064,9 +1076,11 @@ own:
   writes with 413 while reads/saves continue (TODO-8 tier 2). What the
   ceiling cannot do is shrink an over-limit room — epoch compaction is
   the parked tier 3.
-- **de-rtc clients do not author block-native update descriptors yet**
-  (`clientUpdate: null`; the server's engine-unaware-writer lane derives
-  operations). Tamper detection is active only for descriptor-carrying
-  clients. This is TODO-2a (tamper evidence); the merge behavior is unaffected.
+- **de-rtc sessions author block-native descriptors (TODO-2a done)**:
+  every session proposal carries hash-pinned tamper evidence the server
+  validates once against the plain declared base, then drops before the
+  kses/salvage lanes. Machine writers and the save lane stay
+  descriptor-less by design (the server's engine-unaware-writer lane
+  derives operations); merge behavior is identical either way.
 - **Genesis blocks must set `isValid: true`** or the editor renders
   them as invalid-content recovery blocks (has bitten).

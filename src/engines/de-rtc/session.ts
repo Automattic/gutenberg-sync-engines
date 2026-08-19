@@ -14,6 +14,7 @@ import type {
 	EngineUpdate,
 } from '@wordpress/sync';
 import { applyServerAwarenessStates } from '../awareness-sync';
+import { buildDeRtcClientUpdate } from './descriptor';
 import { DE_RTC_REMOTE_ORIGIN, type DeRtcDocBridge } from './doc-bridge';
 import type { DeRtcParkedProposal, DeRtcReviewState } from './review';
 
@@ -135,6 +136,19 @@ export function createDeRtcSessionCodec(
 		content: string;
 		properties?: Record< string, unknown >;
 	} | null = null;
+	// Canonical content BY VERSION, as the server sent it (the doc may
+	// hold kept local blocks, so its serialization is not the canonical
+	// string). The descriptor builder (TODO-2a) needs the exact content
+	// of the proposal's declared base version. Bounded: old versions can
+	// never become a proposal base again.
+	const canonicalContents = new Map< string, string >();
+	const recordCanonicalContent = ( version: string, content: string ) => {
+		canonicalContents.set( version, content );
+		while ( canonicalContents.size > 8 ) {
+			const oldest = canonicalContents.keys().next().value as string;
+			canonicalContents.delete( oldest );
+		}
+	};
 
 	function buildProposal(): EngineUpdate {
 		proposalCounter += 1;
@@ -146,9 +160,30 @@ export function createDeRtcSessionCodec(
 		// written against, so the server merges them from THEIR base
 		// instead of reading a clean sole-writer change.
 		const blockBaseVersions = bridge.blockBaseVersions();
+		const baseVersion = bridge.lastVersion() ?? '';
+		// The block-native descriptor (TODO-2a): TAMPER EVIDENCE the
+		// server validates against the PLAIN declared base and then
+		// drops (merge outcomes are identical either way — the server
+		// derives the same update itself). Built only when this session
+		// still holds the base version's exact canonical string; omitted
+		// otherwise (the server's engine-unaware-writer lane covers
+		// descriptor-less proposals).
+		const baseContent = canonicalContents.get( baseVersion );
+		let clientUpdate = null;
+		if ( undefined !== baseContent && null !== lastProposedContent ) {
+			try {
+				clientUpdate = buildDeRtcClientUpdate(
+					baseContent,
+					lastProposedContent,
+					`client-${ doc.clientID }`
+				);
+			} catch {
+				clientUpdate = null; // Evidence is optional; never block the save.
+			}
+		}
 		const payload = {
 			proposalId: inFlightProposalId,
-			baseVersion: bridge.lastVersion() ?? '',
+			baseVersion,
 			...( Object.keys( blockBaseVersions ).length > 0
 				? { blockBaseVersions }
 				: {} ),
@@ -158,11 +193,7 @@ export function createDeRtcSessionCodec(
 			// unchanged properties are no-ops and an abandoned escalation
 			// self-heals on the next proposal.
 			proposedProperties: lastProposedProperties,
-			// The block-native update descriptor is server-derivable; the
-			// engine's "engine-unaware writer" lane authors it on our
-			// behalf. Porting the client-side descriptor builder (and its
-			// cross-language fingerprint vectors) is a listed follow-up.
-			clientUpdate: null,
+			clientUpdate,
 		};
 		return { data: JSON.stringify( payload ), type: DE_RTC_PROPOSAL_TYPE };
 	}
@@ -251,6 +282,13 @@ export function createDeRtcSessionCodec(
 			DE_RTC_CONTENT_TYPE === update.type ||
 			DE_RTC_SNAPSHOT_TYPE === update.type
 		) {
+			if (
+				'string' === typeof decoded.version &&
+				'string' === typeof decoded.content
+			) {
+				// The descriptor builder's base-content ledger (TODO-2a).
+				recordCanonicalContent( decoded.version, decoded.content );
+			}
 			options.undoFeed?.noteRow( {
 				version: decoded.version,
 				baseVersion:
