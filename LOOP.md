@@ -5,8 +5,8 @@ Operational state for the v1 loop. `V1.md` is the frozen scope contract
 executor updates it every cycle and commits the update on the base
 branch. Newest cycle-log entries go on top.
 
-**Loop status:** NOT STARTED
-**Base branch:** chriszarate/try-loop
+**Loop status:** RUNNING
+**Base branch:** chriszarate/loop-v1
 **Current item:** none
 
 ## Queue
@@ -18,7 +18,7 @@ a merge.
 
 | Item | Lane | Status | Attempts | Branch | Notes |
 | --- | --- | --- | --- | --- | --- |
-| A7 websocket fencing coverage audit | A | queued | 0 | — | small; audit + missing regression tests |
+| A7 websocket fencing coverage audit | A | done | 1 | loop/a7 | verifier PASS (cycle 1) |
 | A6 phpcs burn-down | A | queued | 0 | — | one directory/sniff-family batch per cycle |
 | A1 intent-log empty-genesis reload stall | A | queued | 0 | — | open bug; replay command in V1.md |
 | A4 yjs genesis rich-text defect | A | queued | 0 | — | plugin-side |
@@ -46,7 +46,30 @@ None.
 
 ## Cycle log
 
-_No cycles yet._
+### Cycle 1 — 2026-08-19 — A7 websocket fencing coverage audit
+- Did: fresh-worktree setup (plugin bundle + subtree build, tests env
+  started; doctor clean). Audited `tests/phpunit/wpWebSocketSyncTransport.php`
+  against the three contracted behaviors: stamp forwarding and the basic
+  stale-tab fence were covered; the engine-switch behaviors were not.
+  Added three regression tests through the daemon's `validate_room_request()`
+  seam: new-engine stamp heals (resets + re-genesises) a switched global
+  collection room; a stale old-engine stamp fences without resetting;
+  per-post entity rooms stay fenced even for new-engine clients. Also
+  renamed the test class `Tests_Collaboration_WpWebSocketSyncTransport`
+  → `Test_WP_WebSocket_Sync_Transport`: V1.md's acceptance filter used
+  the latter name and selected ZERO tests (vacuous pass; nothing else
+  referenced the old name).
+- Acceptance: `npm run test:php -- --filter Test_WP_WebSocket_Sync_Transport`
+  → OK (12 tests, 34 assertions). phpcs clean on the touched file.
+- Verifier: FAIL then PASS. First verdict failed on the vacuous V1.md
+  filter (its suggested fix: rename the class or amend V1.md); after the
+  rename, PASS — the verifier also fault-injected the original
+  stamp-stripping bug and confirmed the new tests catch it (1 error +
+  2 failures), then reverted.
+- Ledger changes: A7 queued → done (branch loop/a7, 2 commits). Base
+  branch corrected to chriszarate/loop-v1 (ledger previously named
+  chriszarate/try-loop, where the scaffolding was authored). Loop status
+  NOT STARTED → RUNNING.
 
 Format per entry:
 
@@ -64,4 +87,10 @@ Durable operational lessons learned by the loop (what failed, why, the
 rule that prevents it next time). Distill anything cross-project into
 the agent memory directory; keep repo-specific lessons here.
 
-_None yet._
+- Run each item's V1.md acceptance commands LITERALLY before requesting
+  verification — a `--filter` that matches nothing exits 0 with "No
+  tests executed!" and reads as green. A7's contract filter named a
+  class that didn't exist; the verifier caught it, the executor's
+  first run (with a corrected filter) did not. When the contract's
+  command is wrong, prefer making the code match the contract (here: a
+  test-class rename) over amending read-only V1.md.
