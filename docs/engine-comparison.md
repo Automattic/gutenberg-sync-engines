@@ -568,7 +568,11 @@ the engine Dennis designed; the rest change polish and confidence.
   (hash-pinned base/proposed + operation fingerprints), which is a P1
   integrity property, not the scenario-C fix. Split accordingly:
   - **TODO-2a — Descriptor builder for tamper evidence. INVESTIGATED
-    (2026-08-18), implementation deliberately deferred.** The scoping
+    (2026-08-18); DECIDED: full enforcement from day one (no
+    report-only phase), which raises the bar on vector coverage — the
+    fixture matrix must be exhaustive before the enforcement lands,
+    since a parity bug rejects legitimate saves. Scheduled after
+    TODO-12.** The scoping
     pass sharpened the estimate — and the risk. Fingerprint parity
     covers `textSplice` and `changedTextIndexes`, so a client builder
     must byte-match PHP's content canonicalization, top-level block
@@ -760,11 +764,19 @@ the engine Dennis designed; the rest change polish and confidence.
 The DE-RTC fidelity program (see the fidelity audit for the vision
 each item restores):
 
-- **TODO-12 — Restore Save/Sync and pending edits.** The vision's
-  deepest structural element: editors confirm their own changes and
-  choose to adopt others'; pending edits are the reviewable, adoptable
-  unit; sync cadence is a host/user choice ("automated through polling,
-  replaced with a WebSocket, or manually run with long delays").
+- **TODO-12 — Restore Save/Sync and pending edits. DECISIONS SET
+  (2026-08-18): UX prototype first; the product shape is
+  CONTESTED-ONLY pending.** Clean merges keep flowing live (today's
+  behavior); only contested moments — a peer's edit landing on a block
+  you are actively editing, and the server's parked conflicts — become
+  pending edits requiring explicit adoption. The interaction model is
+  validated with a clickable prototype BEFORE plumbing; framework SPI
+  work follows the validated prototype, informed by it. Original
+  vision statement, for the record: editors confirm their own changes
+  and choose to adopt others'; pending edits are the reviewable,
+  adoptable unit; sync cadence is a host/user choice ("automated
+  through polling, replaced with a WebSocket, or manually run with
+  long delays").
   Replacing our auto-propose/auto-incorporate loop with this model
   dissolves the same-block LWW at its root (scenario C) rather than
   patching it. Depends on architecture item 1 — the room protocol has
