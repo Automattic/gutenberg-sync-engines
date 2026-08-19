@@ -26,7 +26,7 @@ a merge.
 | A4 yjs genesis rich-text defect | A | done | 1 | loop/a4 | verifier PASS (cycle 6); selector-sourced rich text split |
 | A5 announce-inversion verification debt | A | done | 1 | loop/a5 | verifier PASS (cycle 10); WS fuzz 0/5 → 5/5 via daemon room scan + engine cache flush |
 | A11 de-rtc session request-rate runaway | A | parked | 1 | — | CLOSED-INVALID (cycle 9): the soak's minuteSamples are CUMULATIVE counters; the deltas are a flat ~75 req/min/window all hour. No runaway exists — cycle 8 misread the data. Server capture confirms flat sync-frame rate. Full diagnosis in the cycle-9 log |
-| A2 e2e flake stabilization | A | in-progress | 1 | loop/a2 | run 1 of the retry-free full suite in flight (detached) |
+| A2 e2e flake stabilization | A | in-progress | 1 | loop/a2 | login flake fixed (plugin-local fixture); NEW 4th signature: intent-log table-cell edit lost under load (run 2). Counted-green runs so far: 0 |
 | A3 websocket fixme re-enable | A | queued | 0 | — | prefer the real-daemon lane |
 | A8 full fuzzer matrix soak | A | blocked | 0 | — | exit gate; runs after A1–A7 |
 | B1 yjs materialization (framework) | B | queued | 0 | — | proposal only; subtree edits |
@@ -57,6 +57,35 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
 None.
 
 ## Cycle log
+
+### Cycles 12–13 — 2026-08-19 — A2 (login flake fixed; new signature found)
+- Cycle 12: run 1 (retry-free full suite) came back 54/55 — the one
+  failure was the KNOWN "fixture login navigation" flake, and its
+  failure snapshot nailed the mechanism: wp-login's
+  `wp_attempt_focus()` steals focus (selecting the username field) on
+  a timer; under load it fires between the subtree fixture's two
+  fill() calls, the password lands in the still-selected username
+  field, the mangled form submits, and waitForURL times out on the
+  re-rendered login page. The fixture is SUBTREE code, so the fix is
+  plugin-local: `tests/e2e/config/collaboration-fixtures.ts`
+  replicates the subtree's fixture wiring around a
+  HardenedCollaborationUtils whose joinUser retries once from a fresh
+  context (harness plumbing; assertion surfaces untouched; root-cause
+  fixture fix filed as upstream/human-owned). All nine specs now
+  import the local module. Smoke: the failing test 3/3 green.
+  (Ledger entry deferred one cycle: run 2 was launched from loop/a2
+  and a branch switch mid-run would have changed spec files on disk.)
+- Cycle 13: run 2 came back 54/55 — login flake did NOT recur; a NEW
+  fourth signature appeared: intent-log multi-client "mix of block
+  types" — user B's table-CELL edit (" plus B") never reached user
+  A's canvas in 15 s while B's caption/list/quote edits all arrived.
+  Not yet classified (sync stall vs escalation vs register conflict).
+  Launching run 3; if the signature recurs, next cycle dedicates a
+  wire-instrumented diagnosis.
+- Acceptance: 0 of 3 consecutive green runs so far (both runs 54/55
+  with distinct single failures).
+- Verifier: not yet requested.
+- Ledger changes: A2 stays in-progress (1 commit on loop/a2).
 
 ### Cycle 11 — 2026-08-19 — A2 started (baseline run in flight)
 - Did: claimed A2 on loop/a2. The recorded two-suite reproduction
