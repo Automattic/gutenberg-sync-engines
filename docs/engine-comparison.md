@@ -776,13 +776,22 @@ each item restores):
   Keep-mine/Take-theirs verbs approved as prototyped; the pending
   panel is SUMMARY-ONLY (no actions — each row spotlights its inline
   card; all resolution happens at the block, parked conflicts
-  included, via their own inline card); modify-before-adopt MUST use
-  the block editor itself ("adopt for editing" applies the parked
-  content AND attributes to the canvas and hands over the caret —
-  conflicts can live in non-content attributes, so a side textarea is
-  ruled out; `restoreProposalWithChanges` is the underlying API); no
-  version chip in product UI (versions are operator/diagnostic
-  surface only). Original
+  included, via their own inline card); no version chip in product UI
+  (versions are operator/diagnostic surface only). Prototype v3
+  outcomes (2026-08-18): "adopt for editing" is DISCARDED — under
+  auto-propose, staged content would re-propose on the next poll
+  before any editing happened, breaking its promise (and, for
+  requires-approval parks, laundering unreviewed markup); the model is
+  TWO VERBS, Adopt / Reject, with modify expressed as adopt-then-edit
+  (the editor is always the editing surface; note that adopted
+  markup is room-canonical — session-visible but unpublished — until
+  edited and saved). Pending items MERGE INSTEAD OF STACKING: one
+  review task per block; each subsequent accepted edit (or revised
+  parked proposal) from a peer refreshes the same task's preview to
+  the latest version, superseding rather than raising new tasks —
+  Adopt takes the latest, Reject dismisses/keeps-yours and resolves
+  all superseded parked rows with it. `restoreProposalWithChanges`
+  remains an API (no longer surfaced in this flow). Original
   vision statement, for the record: editors confirm their own changes
   and choose to adopt others'; pending edits are the reviewable,
   adoptable unit; sync cadence is a host/user choice ("automated
