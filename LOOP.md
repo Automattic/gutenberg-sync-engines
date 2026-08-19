@@ -22,7 +22,7 @@ a merge.
 | A6 phpcs burn-down | A | done | 1 | loop/a6 | verifier PASS (cycle 2); debt was 17E+26W at base, not ~275E |
 | A9 stale phpcs-debt note in AGENTS.md | A | done | 1 | loop/a9 | verifier PASS (cycle 3); MERGE ORDER: loop/a6 must merge before or with loop/a9 |
 | A1 intent-log empty-genesis reload stall | A | done | 1 | loop/a1 | verifier PASS (cycle 4); root cause: pre-init edits dropped |
-| A10 stale A1-OPEN note in AGENTS.md | A | queued | 0 | — | filed cycle 4: AGENTS.md "Known issues" still lists A1 as OPEN; false once loop/a1 merges. Doc-only, mirror of A9 |
+| A10 stale A1-OPEN note in AGENTS.md | A | done | 1 | loop/a10 | verifier PASS (cycle 5); MERGE ORDER: loop/a1 before or with loop/a10 |
 | A4 yjs genesis rich-text defect | A | queued | 0 | — | plugin-side |
 | A5 announce-inversion verification debt | A | queued | 0 | — | 3 sub-items; hour soak is wall-clock long |
 | A2 e2e flake stabilization | A | queued | 0 | — | 3x consecutive retry-free full runs |
@@ -56,6 +56,22 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
 None.
 
 ## Cycle log
+
+### Cycle 5 — 2026-08-19 — A10 stale A1-OPEN note in AGENTS.md
+- Did: preflight caught and fixed the worktree double-mount trap on the
+  tests env (the fuzzer's global-setup activates the plugin by its
+  `gutenberg-sync-engines` slug, leaving the mapping copy active — the
+  arrangement that fatals the next wp-env start; swapped back to the
+  directory-name copy `loop-v1`). Then the item: replaced AGENTS.md's
+  "OPEN … V1.md A1" residual bullet with a FIXED entry describing the
+  loop/a1 fix and the remaining residual (pre-init edits on non-empty
+  bootstraps still clobbered by the reconciling push, as before).
+- Acceptance: doc-only ledger item. The verifier cross-checked every
+  claim in the new prose against loop/a1's diff, re-ran the manager
+  Jest suite (51 passed) and the seed-6 fuzzer replay (1/1) on loop/a1.
+- Verifier: PASS — merge-order constraint recorded (loop/a1 before or
+  with loop/a10).
+- Ledger changes: A10 queued → done (branch loop/a10, 1 commit).
 
 ### Cycle 4 — 2026-08-19 — A1 intent-log empty-genesis reload stall
 - Did: reproduced with the V1.md replay command (deterministic on this
