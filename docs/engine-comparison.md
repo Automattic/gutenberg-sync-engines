@@ -159,7 +159,7 @@ with something protocol-convenient.
 
 | Vision element | The vision / prototype | Our port | Verdict |
 | --- | --- | --- | --- |
-| Save and Sync are distinct, deliberate operations; "pending edits" are the unit of adoption | Editors confirm their own changes and *choose* to adopt others'; sync may be polled, socketed, or run manually with long delays | The client auto-proposes every poll cycle and auto-incorporates canonical rows; no adoption step, no pending-edit concept | **Corrupted** — and it is the root cause of the silent same-block LWW (scenario C). TODO-12 |
+| Save and Sync are distinct, deliberate operations; "pending edits" are the unit of adoption | Editors confirm their own changes and *choose* to adopt others'; sync may be polled, socketed, or run manually with long delays | Contested-only pending, v1 behavior layer: clean merges keep flowing live, but a peer's edit landing on a block you are editing raises ONE pending item (merge-not-stack — later peer edits refresh it) resolved by explicit Adopt (take the latest canonical) or Reject (keep yours; per-block base honesty makes the next merge honest). Editor saves carry `base_version` through the room. The deeper inversion — canonical advances only at saves, no auto-propose — remains open | **Partially restored** (TODO-12 v1 done; the same-block LWW of scenario C is dissolved — a contest, never a silent overwrite) |
 | Sync metadata co-located with saved `post_content` (a `wp/post-sync-meta` pseudo-block); revisions become a backup mechanism | The document's history travels with the post; any writer that round-trips content carries the lineage; recovery mines revisions and autosaves | Restored as write-through: every save of a de-rtc-roomed post embeds the room's sync-meta (upstream's exact grammar) at the content edge, revisions copy it, and genesis adopts it back — resuming the version lineage after a room reset. Room meta remains the *working* store; the full inversion (post as sole durable store) rides with TODO-12/architecture item 2 | **Restored (write-through)** (TODO-13 done) |
 | Self-healing when unaware writers mangle the document | The server detects CRDT/content divergence, recovers from revisions or autosaves, and appends a repairing edit so "operations which would otherwise wipe-out a post appear as any other collaborative update" | Restored: room load detects out-of-band `post_content` writes (the co-location `content_hash` stamp is the tell), three-way-merges meta-carrying external edits with concurrent session work, converges to meta-less replacements, refuses to roll back stale copies, and parks genuine conflicts for review. Revision *mining* for lost bases is TODO-15 | **Restored** (TODO-14 done; scenario F) |
 | Arbitrarily long offline editing still recombines | Old bases recoverable via the co-located history and revision copies | Restored: a base past the room's 20-version window resolves from post revisions (each aware save embeds its own snapshot window, hash-verified), so deep-lag proposals merge with intervening work intact; only a base no revision carries still voids | **Restored** (TODO-15 done) |
@@ -352,11 +352,15 @@ bytes here).
   non-overlapping concurrent edits to the same block merge (both texts
   land), true overlaps park for review at block grain (TODO-3) while
   the clean remainder lands. The silent block-level last-writer-wins
-  this moment used to cause is retired; what remains is the
-  interaction-model question (the vision resolves this moment through
-  explicit pending-edit adoption — TODO-12) and the residual that a
-  map-less legacy client still presents sole-writer changes. Structural
-  divergence still parks the proposal whole.
+  this moment used to cause is retired; and since TODO-12 v1 the
+  interaction model matches the vision's shape: the colliding
+  incorporation raises ONE pending item on the review surface (later
+  peer edits to the same block refresh it rather than stacking),
+  resolved by explicit Adopt (take the latest canonical form) or
+  Reject (keep yours — the recorded base keeps the next server merge
+  honest). The residual: a map-less legacy client still presents
+  sole-writer changes. Structural divergence still parks the proposal
+  whole.
 
 ### D. Edit versus remove (one client types into a block another removes)
 
@@ -766,7 +770,9 @@ each item restores):
 
 - **TODO-12 — Restore Save/Sync and pending edits. DECISIONS SET
   (2026-08-18): UX prototype first; the product shape is
-  CONTESTED-ONLY pending.** Clean merges keep flowing live (today's
+  CONTESTED-ONLY pending. v1 behavior layer DONE (2026-08-18, record
+  below); inline-card UI phase and the deeper Save/Sync inversion
+  remain open.** Clean merges keep flowing live (today's
   behavior); only contested moments — a peer's edit landing on a block
   you are actively editing, and the server's parked conflicts — become
   pending edits requiring explicit adoption. The interaction model is
@@ -849,6 +855,53 @@ each item restores):
     save-cadence-bounded rather than poll-bounded: a deliberate policy
     trade of the vision, to be presented as such rather than as a
     deficiency.
+
+  **v1 BEHAVIOR LAYER DONE (2026-08-18)** — the contested-only pending
+  model is implemented beneath the editor UI:
+
+  - *Contested lifecycle in the doc bridge:* each colliding
+    incorporation (a canonical row changing a block you have locally
+    edited — exactly the TODO-2b collision) raises a contest carrying
+    the latest canonical version and serialized form of the block.
+    Repeats for the same block REFRESH the one contest
+    (merge-not-stack); a wholesale apply, a version-only advance, or
+    the block's own settle resolves it naturally.
+  - *Two verbs:* `adoptContestedBlock` applies the contest's LATEST
+    canonical form under the remote origin (already canonical — never
+    re-proposes, never launders) and clears the recorded base;
+    `rejectContestedBlock` keeps the local block AND its true base, so
+    the next proposal still merges honestly server-side (compatible
+    edits merge, true overlaps park to the peer's review) — and a
+    later peer edit to the same block raises a fresh contest.
+  - *Parked tasks fold the same way:* one review task per author per
+    target (property register or block-index set); a revised parked
+    proposal supersedes the open task, refreshing it to the latest
+    revision, and ONE resolution closes the whole lineage (resolution
+    rows emitted for every superseded proposalId).
+  - *Save-through-the-room:* an apiFetch middleware injects
+    `base_version` (the session's last-applied version) into ordinary
+    editor saves of posts/pages while a de-rtc session is live, so the
+    TODO-4b preflight merges the save through the room — closing the
+    TODO-14 "stamped but neither merges nor heals" gap for editor
+    saves. Caller-supplied `base_version` wins; autosaves are excluded
+    (their REST route updates a revision object the preflight doesn't
+    cover).
+  - *Interim surface:* contested blocks appear on the framework review
+    panel as pending items (reason `frame-conflict`, an edit-count
+    excerpt per the validated prototype), with the panel's
+    restore/dismiss actions routed to Adopt/Reject. This contradicts
+    the prototype's summary-only-panel decision on purpose — the
+    inline block card is editor-component work that lands in the
+    follow-on UI phase; the panel keeps the behavior layer exercisable
+    until then.
+
+  Jest-covered (`tests/js/engines/de-rtc/pending.test.ts` plus the
+  existing bridge/review/engine suites). Honest residuals: the inline
+  card + panel-goes-summary-only UI phase; the autosave commit lane;
+  the deeper Save/Sync inversion (canonical advances only at saves,
+  rows demoted to gossip — architecture item 1/2) remains open, since
+  v1 keeps auto-propose for clean merges by design (contested-only
+  pending was the validated product shape, not full manual sync).
 - **TODO-13 — Co-locate de-rtc sync-meta with `post_content`. DONE
   (2026-08-18):** every save of a post whose room carries de-rtc
   lineage embeds the room's sync metadata at the content's trailing

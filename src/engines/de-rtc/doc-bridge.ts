@@ -121,6 +121,50 @@ export interface DeRtcDocBridge {
 	 */
 	blockBaseVersions: () => Record< string, string >;
 
+	/**
+	 * Contested-block lifecycle (TODO-12, the validated pending-edits
+	 * model): fired each time an incorporation keeps a locally-edited
+	 * block that the arriving canonical ALSO changed. Repeats for the
+	 * same block REFRESH the one contest (merge-not-stack) — the event
+	 * always carries the LATEST canonical version and serialized form
+	 * of the block.
+	 */
+	onContested: (
+		listener: ( event: {
+			index: number;
+			version: string;
+			html: string;
+		} ) => void
+	) => void;
+
+	/**
+	 * Fired when a contest resolves: the block adopted canonical (its
+	 * kept form finally merged, a wholesale apply or version-only
+	 * advance settled it), or an explicit Adopt/Reject verb ran.
+	 */
+	onContestResolved: ( listener: ( index: number ) => void ) => void;
+
+	/**
+	 * ADOPT: apply the contest's latest canonical block into the doc.
+	 * Applied under the remote origin — it already IS canonical, so it
+	 * must not mark the doc dirty or re-propose. Resolves the contest
+	 * and clears the block's recorded base.
+	 *
+	 * @return Whether a contest existed for the index.
+	 */
+	adoptContestedBlock: ( index: number ) => boolean;
+
+	/**
+	 * REJECT: resolve the contest, KEEPING the local block and its
+	 * recorded true base — the next proposal still declares it, so the
+	 * server merges honestly (compatible edits merge, true overlaps
+	 * park to the peer's review). A later peer edit to the same block
+	 * raises a fresh contest.
+	 *
+	 * @return Whether a contest existed for the index.
+	 */
+	rejectContestedBlock: ( index: number ) => boolean;
+
 	/** Serializes the doc's current blocks to proposal content. */
 	buildContent: () => string;
 
@@ -251,6 +295,42 @@ export function createDeRtcDocBridge(
 	// incorporations (TODO-2b): block index -> the version their local
 	// text was really written against.
 	const blockBases = new Map< number, string >();
+	// The latest canonical form of each contested block (TODO-12):
+	// refreshed on every colliding row (merge-not-stack), consumed by
+	// the Adopt verb, cleared whenever the contest resolves.
+	const contestedLatest = new Map<
+		number,
+		{ version: string; block: unknown }
+	>();
+	const contestedListeners = new Set<
+		( event: { index: number; version: string; html: string } ) => void
+	>();
+	const contestResolvedListeners = new Set< ( index: number ) => void >();
+
+	const emitContested = ( index: number ) => {
+		const entry = contestedLatest.get( index );
+		if ( ! entry ) {
+			return;
+		}
+		const html = __unstableSerializeAndClean( [
+			entry.block as any,
+		] ).trim();
+		contestedListeners.forEach( ( listener ) =>
+			listener( { index, version: entry.version, html } )
+		);
+	};
+	const resolveContest = ( index: number ) => {
+		if ( contestedLatest.delete( index ) ) {
+			contestResolvedListeners.forEach( ( listener ) =>
+				listener( index )
+			);
+		}
+	};
+	const resolveAllContests = () => {
+		for ( const index of Array.from( contestedLatest.keys() ) ) {
+			resolveContest( index );
+		}
+	};
 	let bootstrapListeners: Array< () => void > = [];
 
 	// Version labels are the server's monotonic 'v<seq>' scheme.
@@ -323,6 +403,7 @@ export function createDeRtcDocBridge(
 			}, DE_RTC_REMOTE_ORIGIN );
 			// Wholesale adoption: every pending collision resolved.
 			blockBases.clear();
+			resolveAllContests();
 			markVersion( nextVersion );
 		},
 
@@ -333,6 +414,7 @@ export function createDeRtcDocBridge(
 			// Our proposal round-tripped unchanged: every kept block's
 			// content IS canonical now.
 			blockBases.clear();
+			resolveAllContests();
 			markVersion( nextVersion );
 		},
 
@@ -375,6 +457,7 @@ export function createDeRtcDocBridge(
 				__unstableSerializeAndClean( [ block ] ).trim();
 
 			const priorVersion = version;
+			const collided: number[] = [];
 			const merged = proposedBlocks
 				.map( ( proposedBlock, index ) => {
 					const locallyEdited =
@@ -384,6 +467,7 @@ export function createDeRtcDocBridge(
 						// Adopting canonical resolves any pending
 						// collision on this block.
 						blockBases.delete( index );
+						resolveContest( index );
 						return canonicalBlocks[ index ];
 					}
 					// Kept. If canonical ALSO changed this block, that is
@@ -394,11 +478,22 @@ export function createDeRtcDocBridge(
 					// clean sole-writer change.
 					if (
 						serializeOne( canonicalBlocks[ index ] ) !==
-							serializeOne( proposedBlock ) &&
-						! blockBases.has( index ) &&
-						null !== priorVersion
+						serializeOne( proposedBlock )
 					) {
-						blockBases.set( index, priorVersion );
+						if (
+							! blockBases.has( index ) &&
+							null !== priorVersion
+						) {
+							blockBases.set( index, priorVersion );
+						}
+						// The contest tracks the LATEST canonical form:
+						// repeats refresh the one pending item, never a
+						// second one (merge-not-stack, TODO-12).
+						contestedLatest.set( index, {
+							version: nextVersion,
+							block: canonicalBlocks[ index ],
+						} );
+						collided.push( index );
 					}
 					return localBlocks[ index ];
 				} )
@@ -408,6 +503,7 @@ export function createDeRtcDocBridge(
 				syncConfig.applyChangesToCRDTDoc( doc, { blocks: merged } );
 			}, DE_RTC_REMOTE_ORIGIN );
 			markVersion( nextVersion );
+			collided.forEach( emitContested );
 
 			return true;
 		},
@@ -434,6 +530,49 @@ export function createDeRtcDocBridge(
 				map[ String( index ) ] = baseVersion;
 			}
 			return map;
+		},
+
+		onContested( listener ) {
+			contestedListeners.add( listener );
+		},
+
+		onContestResolved( listener ) {
+			contestResolvedListeners.add( listener );
+		},
+
+		adoptContestedBlock( index ) {
+			const entry = contestedLatest.get( index );
+			if ( ! entry ) {
+				return false;
+			}
+			const stored: any = doc
+				.getMap( CRDT_RECORD_MAP_KEY )
+				.get( 'blocks' );
+			const blocks: unknown[] = (
+				stored?.toJSON?.() ?? ( Array.isArray( stored ) ? stored : [] )
+			).slice();
+			if ( index < blocks.length ) {
+				blocks[ index ] = entry.block;
+			}
+			// Remote origin: this content already IS canonical — it must
+			// not mark the doc dirty or re-propose.
+			doc.transact( () => {
+				syncConfig.applyChangesToCRDTDoc( doc, { blocks } );
+			}, DE_RTC_REMOTE_ORIGIN );
+			blockBases.delete( index );
+			resolveContest( index );
+			return true;
+		},
+
+		rejectContestedBlock( index ) {
+			if ( ! contestedLatest.has( index ) ) {
+				return false;
+			}
+			// Keep the local block AND its recorded true base: the next
+			// proposal still declares it (TODO-2b honesty). Only the
+			// pending item resolves; a later peer edit raises a fresh one.
+			resolveContest( index );
+			return true;
 		},
 
 		incorporateProperties( properties, proposedProperties ) {

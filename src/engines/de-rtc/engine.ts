@@ -30,6 +30,7 @@ import {
 	createDeRtcUndoFeed,
 	type DeRtcRevertUndoManager,
 } from './revert-undo';
+import { registerSaveBaseVersion } from './save-base-version';
 import { applyServerAwarenessStates } from '../awareness-sync';
 import type { EngineReviewSource } from '../review-manager-decorator';
 import {
@@ -160,7 +161,18 @@ export function createDeRtcEngine(): SyncEngine & {
 			proposalId: string,
 			modifiedBlocks?: Array< { index: number; html: string } >
 		) => void;
+		/** Adopt a contested block's latest canonical form (TODO-12). */
+		adoptContested: ( index: number ) => boolean;
+		/** Reject a contest, keeping the local block (TODO-12). */
+		rejectContested: ( index: number ) => boolean;
 	}
+
+	/** The contested-item id convention on the review surface. */
+	const CONTESTED_PREFIX = 'contested-';
+	const contestedIndexOf = ( proposalId: string ): number | null =>
+		proposalId.startsWith( CONTESTED_PREFIX )
+			? Number( proposalId.slice( CONTESTED_PREFIX.length ) )
+			: null;
 	const entityReviews = new Map< string, EntityReviewHandle >();
 	// Per-entity authorship trackers (TODO-18): block-grain "who last
 	// touched this", derived from the canonical row feed.
@@ -197,14 +209,36 @@ export function createDeRtcEngine(): SyncEngine & {
 			keyListeners.get( key )!.add( listener );
 			return () => keyListeners.get( key )?.delete( listener );
 		},
-		resolveProposal: ( objectType, objectId, proposalId, resolution ) =>
-			entityReviews
-				.get( reviewKey( objectType, objectId ) )
-				?.review.resolve( proposalId, resolution ),
-		restoreProposal: ( objectType, objectId, proposalId, modifiedBlocks ) =>
-			entityReviews
-				.get( reviewKey( objectType, objectId ) )
-				?.restore( proposalId, modifiedBlocks ),
+		resolveProposal: ( objectType, objectId, proposalId, resolution ) => {
+			const handle = entityReviews.get(
+				reviewKey( objectType, objectId )
+			);
+			const index = contestedIndexOf( proposalId );
+			if ( null !== index ) {
+				// Any resolution of a contested item that is not an
+				// adoption is a REJECT: keep the local block.
+				handle?.rejectContested( index );
+				return;
+			}
+			handle?.review.resolve( proposalId, resolution );
+		},
+		restoreProposal: (
+			objectType,
+			objectId,
+			proposalId,
+			modifiedBlocks
+		) => {
+			const handle = entityReviews.get(
+				reviewKey( objectType, objectId )
+			);
+			const index = contestedIndexOf( proposalId );
+			if ( null !== index ) {
+				// Restore of a contested item is the ADOPT verb.
+				handle?.adoptContested( index );
+				return;
+			}
+			handle?.restore( proposalId, modifiedBlocks );
+		},
 	};
 
 	return {
@@ -228,6 +262,13 @@ export function createDeRtcEngine(): SyncEngine & {
 			const review = createDeRtcReviewState();
 			const undoFeed = createDeRtcUndoFeed();
 			const authorship = createDeRtcAuthorship( undoFeed );
+			// Save-through-the-room (TODO-12): this post's REST saves carry
+			// base_version while the session lives.
+			const unregisterSaveBaseVersion = registerSaveBaseVersion(
+				objectType,
+				objectId,
+				bridge.lastVersion
+			);
 			entityAuthorship.set(
 				reviewKey( objectType, objectId ),
 				authorship.getBlockAuthorship
@@ -335,10 +376,54 @@ export function createDeRtcEngine(): SyncEngine & {
 
 			const key = reviewKey( objectType, objectId );
 			review.onChange( () => notifyKey( key ) );
+
+			/*
+			 * Contested-block pending items (TODO-12): one item per block,
+			 * refreshed in place by the bridge's merge-not-stack contest
+			 * events. Presented through the same review surface as parked
+			 * conflicts; the verbs route by the `contested-` id prefix
+			 * (Adopt = restore, Reject = dismiss).
+			 */
+			const contested = new Map<
+				number,
+				{ version: string; html: string; edits: number }
+			>();
+			bridge.onContested( ( event ) => {
+				const existing = contested.get( event.index );
+				contested.set( event.index, {
+					version: event.version,
+					html: event.html,
+					edits: ( existing?.edits ?? 0 ) + 1,
+				} );
+				notifyKey( key );
+			} );
+			bridge.onContestResolved( ( index ) => {
+				if ( contested.delete( index ) ) {
+					notifyKey( key );
+				}
+			} );
+			const contestedExcerpt = ( item: {
+				html: string;
+				edits: number;
+			} ): string => {
+				const text = item.html
+					.replace( /<[^>]*>/g, ' ' )
+					.replace( /\s+/g, ' ' )
+					.trim()
+					.slice( 0, 80 );
+				return 1 < item.edits
+					? `${ text } (${ item.edits } edits)`
+					: text;
+			};
+
 			entityReviews.set( key, {
 				review,
-				getItems: () =>
-					review.getOpen().map( ( parked ) => ( {
+				adoptContested: ( index ) =>
+					bridge.adoptContestedBlock( index ),
+				rejectContested: ( index ) =>
+					bridge.rejectContestedBlock( index ),
+				getItems: () => [
+					...review.getOpen().map( ( parked ) => ( {
 						id: parked.proposalId,
 						unitId: parked.proposalId,
 						isLocal: parked.authorClientId === ydoc.clientID,
@@ -348,8 +433,24 @@ export function createDeRtcEngine(): SyncEngine & {
 						reason:
 							REVIEW_REASON_MAP[ parked.reason ] ?? parked.reason,
 						intentType: 'proposal',
-						summary: parked.excerpt || undefined,
+						summary:
+							( parked.excerpt || undefined ) &&
+							( parked.revisions ?? 1 ) > 1
+								? `${ parked.excerpt } (${ parked.revisions } revisions)`
+								: parked.excerpt || undefined,
 					} ) ),
+					...Array.from( contested.entries() ).map(
+						( [ index, item ] ) => ( {
+							id: `contested-${ index }`,
+							unitId: `contested-${ index }`,
+							isLocal: false,
+							actorId: '',
+							reason: 'frame-conflict',
+							intentType: 'proposal',
+							summary: contestedExcerpt( item ),
+						} )
+					),
+				],
 				restore: ( proposalId, modifiedBlocks ) => {
 					const parked = review
 						.getOpen()
@@ -455,6 +556,7 @@ export function createDeRtcEngine(): SyncEngine & {
 					if ( entityReviews.get( key )?.review === review ) {
 						entityReviews.delete( key );
 					}
+					unregisterSaveBaseVersion();
 					ydoc.destroy();
 				},
 			};
