@@ -20,7 +20,7 @@ a merge.
 | --- | --- | --- | --- | --- | --- |
 | A7 websocket fencing coverage audit | A | done | 1 | loop/a7 | verifier PASS (cycle 1) |
 | A6 phpcs burn-down | A | done | 1 | loop/a6 | verifier PASS (cycle 2); debt was 17E+26W at base, not ~275E |
-| A9 stale phpcs-debt note in AGENTS.md | A | queued | 0 | — | filed cycle 2: AGENTS.md "Known issues" still claims ~275 errors; false once loop/a6 merges. Doc-only |
+| A9 stale phpcs-debt note in AGENTS.md | A | done | 1 | loop/a9 | verifier PASS (cycle 3); MERGE ORDER: loop/a6 must merge before or with loop/a9 |
 | A1 intent-log empty-genesis reload stall | A | queued | 0 | — | open bug; replay command in V1.md |
 | A4 yjs genesis rich-text defect | A | queued | 0 | — | plugin-side |
 | A5 announce-inversion verification debt | A | queued | 0 | — | 3 sub-items; hour soak is wall-clock long |
@@ -46,6 +46,19 @@ None.
 None.
 
 ## Cycle log
+
+### Cycle 3 — 2026-08-19 — A9 stale phpcs-debt note in AGENTS.md
+- Did: replaced AGENTS.md's "~275 errors + ~29 warnings" Known-issues
+  bullet with the current contract (lint clean since A6; excludes stay
+  as designed). V1.md:148 carries the same stale figure but V1.md is
+  human-owned — flagged here for the human, not edited.
+- Acceptance: doc-only ledger item (no V1.md commands). `grep 275
+  AGENTS.md` empty; the verifier independently re-ran `composer lint`
+  on loop/a6 (exit 0) to confirm the new claim reproduces.
+- Verifier: PASS — one caveat for sign-off, recorded in the queue row:
+  loop/a9's claim is only true once loop/a6 is merged, so loop/a6 must
+  merge before or together with loop/a9.
+- Ledger changes: A9 queued → done (branch loop/a9, 1 commit).
 
 ### Cycle 2 — 2026-08-19 — A6 phpcs burn-down
 - Did: the whole item in one cycle — the "~275 errors" figure in
