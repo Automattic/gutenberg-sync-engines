@@ -25,7 +25,8 @@ a merge.
 | A1 intent-log empty-genesis reload stall | A | done | 1 | loop/a1 | verifier PASS (cycle 4); root cause: pre-init edits dropped |
 | A10 stale A1-OPEN note in AGENTS.md | A | done | 1 | loop/a10 | verifier PASS (cycle 5); MERGE ORDER: loop/a1 before or with loop/a10 |
 | A4 yjs genesis rich-text defect | A | done | 1 | loop/a4 | verifier PASS (cycle 6); selector-sourced rich text split |
-| A5 announce-inversion verification debt | A | in-progress | 1 | loop/a5 | sub-item 3 (docs pass) committed; sub-item 1 (hour soak) running; sub-item 2 (de-rtc/websocket fuzz) queued behind the soak |
+| A5 announce-inversion verification debt | A | in-progress | 1 | loop/a5 | sub-item 3 done; sub-item 1 soak ran — convergence/saves/memory green but FOUND A11 (request-rate runaway); soak re-run blocked on A11. Sub-item 2 (WS fuzz) still to run |
+| A11 de-rtc session request-rate runaway | A | queued | 0 | — | filed cycle 8 from the hour soak: sync request rate grows linearly with session age (85 → 4435 req/min/window; ~55 polls/s + ~19 commit POSTs/s by hour end, whole doc per commit). Per-request bytes stay flat (~5.7 KB) — the announce model itself holds. Suspect a leaked repoll/settle loop in the client. Repro: soak=300 shows the linear ramp in minuteSamples. Acceptance: re-run `soak-transport.mjs engine=de-rtc transport=http-polling windows=3 soak=3600` — request rate flat across the hour, plus the A5.1 gates |
 | A2 e2e flake stabilization | A | queued | 0 | — | 3x consecutive retry-free full runs |
 | A3 websocket fixme re-enable | A | queued | 0 | — | prefer the real-daemon lane |
 | A8 full fuzzer matrix soak | A | blocked | 0 | — | exit gate; runs after A1–A7 |
@@ -57,6 +58,32 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
 None.
 
 ## Cycle log
+
+### Cycle 8 — 2026-08-19 — A5 (soak collected; A11 filed)
+- Did: collected the hour soak. GREEN gates: convergence (CONVERGED in
+  3010 ms, 3 windows byte-identical at 28 298 content bytes), saves
+  29/29 ok, zero console errors in all windows, no OOM/5xx (server
+  per-request averages healthy: 18.8 ms dispatch, 3.4 ms CPU, 33 DB
+  queries, 9 MB peak memory; probe latency n=222 p50 1278 ms p90
+  1467 ms). Announce-model verification: per-request payload stays
+  ~5.7 KB FLAT while the document grows to 28 KB — stored rows and
+  poll responses no longer scale with document size (the old byte
+  cliff is structurally gone at the row level).
+- FAILED gate → new item: "download per user-hour" cannot be called
+  non-scaling — minuteSamples show the sync request RATE growing
+  linearly with session age: 85 → 4435 requests/min/window across the
+  hour (~55 polls/s + ~19 commit POSTs/s per window at the end; upload
+  ~24 MB/min/window ≈ whole-content commit bodies). Verified real sync
+  traffic: the harness counters match only `wp-sync/v1` routes and
+  proposal_id-tagged autosave commits. Filed as A11; A5.1's soak gate
+  re-runs after A11 is fixed. Full JSON in the session scratchpad
+  (`a5-soak-de-rtc.json`) — key numbers recorded here because the
+  scratchpad is ephemeral.
+- Acceptance: A5 remains in-progress (sub-item 2 WS fuzz not yet run;
+  soak re-run blocked on A11).
+- Verifier: not yet requested.
+- Ledger changes: filed A11 (queued, above A1's old slot priority-wise
+  — it blocks A5). A5 stays in-progress.
 
 ### Cycle 7 — 2026-08-19 — A5 announce-inversion verification debt (started)
 - Did: preflight re-fixed the double-mount arrangement (browser suites
