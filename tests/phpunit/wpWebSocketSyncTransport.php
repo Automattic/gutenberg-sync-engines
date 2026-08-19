@@ -8,7 +8,7 @@
  *
  * @group collaboration
  */
-class Tests_Collaboration_WpWebSocketSyncTransport extends WP_UnitTestCase {
+class Test_WP_WebSocket_Sync_Transport extends WP_UnitTestCase {
 	public function set_up() {
 		parent::set_up();
 		global $wp_rest_server;
