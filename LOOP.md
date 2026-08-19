@@ -7,8 +7,7 @@ branch. Newest cycle-log entries go on top.
 
 **Loop status:** RUNNING
 **Base branch:** chriszarate/loop-v1
-**Current item:** A5 (in-progress; hour soak running detached, PID on
-the executor's host — log at the session scratchpad `a5-soak.log`)
+**Current item:** none
 
 ## Queue
 
@@ -25,7 +24,7 @@ a merge.
 | A1 intent-log empty-genesis reload stall | A | done | 1 | loop/a1 | verifier PASS (cycle 4); root cause: pre-init edits dropped |
 | A10 stale A1-OPEN note in AGENTS.md | A | done | 1 | loop/a10 | verifier PASS (cycle 5); MERGE ORDER: loop/a1 before or with loop/a10 |
 | A4 yjs genesis rich-text defect | A | done | 1 | loop/a4 | verifier PASS (cycle 6); selector-sourced rich text split |
-| A5 announce-inversion verification debt | A | in-progress | 1 | loop/a5 | sub-items 1+3 done (soak gates pass — see cycle 9 correction; docs committed); sub-item 2 (de-rtc/websocket fuzz) remains, then verifier |
+| A5 announce-inversion verification debt | A | done | 1 | loop/a5 | verifier PASS (cycle 10); WS fuzz 0/5 → 5/5 via daemon room scan + engine cache flush |
 | A11 de-rtc session request-rate runaway | A | parked | 1 | — | CLOSED-INVALID (cycle 9): the soak's minuteSamples are CUMULATIVE counters; the deltas are a flat ~75 req/min/window all hour. No runaway exists — cycle 8 misread the data. Server capture confirms flat sync-frame rate. Full diagnosis in the cycle-9 log |
 | A2 e2e flake stabilization | A | queued | 0 | — | 3x consecutive retry-free full runs |
 | A3 websocket fixme re-enable | A | queued | 0 | — | prefer the real-daemon lane |
@@ -58,6 +57,39 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
 None.
 
 ## Cycle log
+
+### Cycle 10 — 2026-08-19 — A5 completed (verifier PASS)
+- Did: sub-item 2. First run: de-rtc/websocket fuzz 0/5 — every seed
+  non-convergent. Control (intent-log/websocket 2/2) proved the env
+  healthy, so the lane itself was broken. Root cause, two stacked
+  daemon gaps, both from the announce inversion moving de-rtc's whole
+  content flow OUT-OF-BAND (commits ride the autosave endpoint):
+  (1) the daemon only pushed rows in reaction to socket messages, so
+  stored announces never reached subscribers — fixed with a 1 Hz
+  out-of-band room scan in tick(); (2) the daemon's lifetime engine
+  instance served STALE cached canonical (fetch answers said "current",
+  returned nothing) — fixed with an additive
+  `flush_room_state_cache()` on the de-rtc engine, called by the
+  daemon before every message-driven process_room_request and every
+  broadcast read (restoring the web process's per-request boundary).
+  Regression test `Tests_Collaboration_WpWebSocketRoomScan` (new file
+  to avoid textual conflict with loop/a7's edits) pins push-on-scan,
+  cursor advance, and quiet-room silence; it cannot run on base.
+- Acceptance: de-rtc/websocket fuzz 5/5 (was 0/5); full test:php 311
+  OK; test:js 526; fuzz:quick green (one non-reproducible intent-log
+  flake — this branch predates loop/a1). Verifier independently re-ran
+  the WS fuzz (5/5), recomputed the soak JSON's deltas (confirming
+  cycle 9's flat-rate correction), and spot-checked every docs claim
+  against the announce tests and engine code.
+- Verifier: PASS — accepted cycle 9's gate ruling explicitly (cliff
+  surfaces closed; per-incorporation scaling disclosed in the docs;
+  B4 the lever). Noted the daemon scan's cost: one storage read per
+  subscribed room per second.
+- Ledger changes: A5 in-progress → done (branch loop/a5, 2 commits).
+- Operational note (recurring): every `npm run test:php` run wipes the
+  tests-site plugin activations — reactivate gutenberg + loop-v1
+  before any fuzzer/daemon run, or the daemon fails its health check
+  (`wp collaboration` unregistered).
 
 ### Cycle 9 — 2026-08-19 — A11 (closed invalid; cycle-8 correction)
 - Did: reproduced with a 5-minute soak while `wp collaboration
