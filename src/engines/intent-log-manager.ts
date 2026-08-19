@@ -169,6 +169,19 @@ interface EntityState {
 	 */
 	pendingPushes: ObservedState[];
 	/**
+	 * The latest block tree the editor handed to update() BEFORE the room
+	 * snapshot arrived. Pre-init edits cannot be authored (there is no
+	 * document yet) and the capture lane is edge-triggered, so without
+	 * this buffer an edit made during the join round trip stays local
+	 * forever — the fuzzer found it as a reload straddling a block insert
+	 * on an empty-genesis room, where the bootstrap push (which would at
+	 * least reconcile the trees) is skipped too. An empty-genesis
+	 * bootstrap schedules a deferred capture of it (see the bootstrap
+	 * branch for why deferred and why only-when-still-empty); a non-empty
+	 * bootstrap or any newer post-init editor tree discards it.
+	 */
+	preInitTree: BridgeBlock[] | null;
+	/**
 	 * Whether update() is currently authoring captured intents. The
 	 * session emits change events synchronously per authored intent;
 	 * those are the editor's own state and must not bounce back.
@@ -1082,6 +1095,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			unloaded: false,
 			observed: null,
 			pendingPushes: [],
+			preInitTree: null,
 			capturing: false,
 			// Record seeding (source 1 of the editorIds contract): the ids
 			// persisted in the content this editor loaded and rendered.
@@ -1258,11 +1272,53 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				 * Never push an EMPTY shared document over a live editor as
 				 * the first push (fresh post: the genesis is empty while the
 				 * user may already be typing). The first capture seeds the
-				 * document instead.
+				 * document instead — but that capture is edge-triggered, so
+				 * an edit made DURING the join round trip has already missed
+				 * it: update() buffered the tree, and it is recovered below.
+				 * Without that the edit stays local forever (the fuzzer's
+				 * reload-straddling-insert stall on an empty-genesis room).
+				 *
+				 * The recovery is DEFERRED past the current delivery burst
+				 * and runs only if the document is STILL empty then. The
+				 * genesis snapshot is just the first row of its response: a
+				 * rejoiner's room replays its whole history right behind it,
+				 * and capturing the buffered tree against the bare genesis
+				 * baseline would re-author every saved block as new work —
+				 * the history rows then land beside the fabrications and
+				 * every block duplicates (found by fuzz:quick when this
+				 * recovery ran synchronously). A still-empty document after
+				 * the burst means the room truly holds only its genesis —
+				 * exactly the stranded case. Any post-init editor tree
+				 * supersedes the buffer (update() clears it), and non-empty
+				 * bootstraps reconcile through pushDocument as before.
 				 */
 				if ( 0 === blocks.length ) {
+					if ( state.preInitTree?.length ) {
+						setTimeout( () => {
+							const buffered = state.preInitTree;
+							state.preInitTree = null;
+							if (
+								! buffered ||
+								state.unloaded ||
+								! state.session.isInitialized() ||
+								documentBlocks(
+									state,
+									state.session.getDocument()!
+								).length > 0
+							) {
+								return;
+							}
+							manager.update(
+								objectType,
+								objectId,
+								{ blocks: buffered },
+								'pre-init-capture'
+							);
+						}, 0 );
+					}
 					return;
 				}
+				state.preInitTree = null;
 				pushDocument( state, bootstrap, blocks );
 				return;
 			}
@@ -1640,7 +1696,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 		} );
 	}
 
-	return {
+	const manager: SyncManager = {
 		load: loadEntity,
 
 		loadCollection,
@@ -1662,7 +1718,20 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				return;
 			}
 			if ( ! state.session.isInitialized() ) {
-				return; // Snapshot not yet received; the editor still owns state.
+				/*
+				 * Snapshot not yet received; the editor still owns state and
+				 * there is no document to author against. Buffer the tree
+				 * (latest testimony wins) so the bootstrap change event can
+				 * capture edits made during the join round trip — otherwise
+				 * they stay local forever (the capture lane is edge-
+				 * triggered, and an empty-genesis bootstrap pushes nothing
+				 * that would reconcile the trees either).
+				 */
+				const preInit = changes.blocks as BridgeBlock[] | undefined;
+				if ( preInit ) {
+					state.preInitTree = preInit;
+				}
+				return;
 			}
 
 			// A deliberate undo-level boundary ends the current capture
@@ -1783,6 +1852,8 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			if ( ! blocks ) {
 				return; // Only whitelisted properties and blocks sync.
 			}
+			// This tree supersedes any buffered pre-init testimony.
+			state.preInitTree = null;
 
 			/*
 			 * The incoming tree is the editor's own testimony about what it
@@ -2154,4 +2225,5 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			}
 		},
 	};
+	return manager;
 }
