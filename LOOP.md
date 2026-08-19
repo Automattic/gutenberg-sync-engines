@@ -26,7 +26,7 @@ a merge.
 | A4 yjs genesis rich-text defect | A | done | 1 | loop/a4 | verifier PASS (cycle 6); selector-sourced rich text split |
 | A5 announce-inversion verification debt | A | done | 1 | loop/a5 | verifier PASS (cycle 10); WS fuzz 0/5 → 5/5 via daemon room scan + engine cache flush |
 | A11 de-rtc session request-rate runaway | A | parked | 1 | — | CLOSED-INVALID (cycle 9): the soak's minuteSamples are CUMULATIVE counters; the deltas are a flat ~75 req/min/window all hour. No runaway exists — cycle 8 misread the data. Server capture confirms flat sync-frame rate. Full diagnosis in the cycle-9 log |
-| A2 e2e flake stabilization | A | queued | 0 | — | 3x consecutive retry-free full runs |
+| A2 e2e flake stabilization | A | in-progress | 1 | loop/a2 | run 1 of the retry-free full suite in flight (detached) |
 | A3 websocket fixme re-enable | A | queued | 0 | — | prefer the real-daemon lane |
 | A8 full fuzzer matrix soak | A | blocked | 0 | — | exit gate; runs after A1–A7 |
 | B1 yjs materialization (framework) | B | queued | 0 | — | proposal only; subtree edits |
@@ -57,6 +57,18 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
 None.
 
 ## Cycle log
+
+### Cycle 11 — 2026-08-19 — A2 started (baseline run in flight)
+- Did: claimed A2 on loop/a2. The recorded two-suite reproduction
+  (yjs suite then http-only/collaboration-sync-body-size, retries=0,
+  1 worker) PASSES in isolation today — 8/8 — so the known flakes are
+  full-suite-load-dependent. Launched full default-suite run 1
+  (retries=0) detached against the tests env to observe what actually
+  fails under load; log at the session scratchpad `a2-full1.log`.
+- Acceptance: pending — needs 3 consecutive green retry-free full
+  runs, serialized, plus fixes for whatever run 1 surfaces.
+- Verifier: not yet requested.
+- Ledger changes: A2 queued → in-progress (attempt 1).
 
 ### Cycle 10 — 2026-08-19 — A5 completed (verifier PASS)
 - Did: sub-item 2. First run: de-rtc/websocket fuzz 0/5 — every seed
