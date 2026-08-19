@@ -26,7 +26,9 @@ a merge.
 | A4 yjs genesis rich-text defect | A | done | 1 | loop/a4 | verifier PASS (cycle 6); selector-sourced rich text split |
 | A5 announce-inversion verification debt | A | done | 1 | loop/a5 | verifier PASS (cycle 10); WS fuzz 0/5 → 5/5 via daemon room scan + engine cache flush |
 | A11 de-rtc session request-rate runaway | A | parked | 1 | — | CLOSED-INVALID (cycle 9): the soak's minuteSamples are CUMULATIVE counters; the deltas are a flat ~75 req/min/window all hour. No runaway exists — cycle 8 misread the data. Server capture confirms flat sync-frame rate. Full diagnosis in the cycle-9 log |
-| A2 e2e flake stabilization | A | in-progress | 1 | loop/a2 | login fix in; run 3 = 55/55 GREEN (counted 1/3); table-cell flake 1-in-3 so far |
+| A2 e2e flake stabilization | A | in-progress | 1 | loop/a2 | streak reset by run 4 (53/55). Blocked on A12 (the table-cell "flake" is a real engine-recovery bug) and A13 |
+| A12 intent-log stale-base voids lose live edits | A | queued | 0 | — | filed cycle 15, full diagnosis in the cycle log. Real P2 violation, surfaced by A2's runs, reproducible ~4/8 via `npm run test:e2e -- collaboration-multi-client-content --retries=0 --repeat-each=8 -g "intent-log engine.*mix of block types"`. Fix belongs in the non-frozen manager (recovery re-capture on stale-base voids) |
+| A13 de-rtc burst-eat recurrence under load | A | queued | 0 | — | filed cycle 15: "Second from two" → "Second " in full-suite run 4 — the signature the pendingOwnMergeSeq commit-hold was meant to close; 0-in-6 solo repetitions, so load-schedule-dependent. Needs a capture-instrumented hunt like A12's |
 | A3 websocket fixme re-enable | A | queued | 0 | — | prefer the real-daemon lane |
 | A8 full fuzzer matrix soak | A | blocked | 0 | — | exit gate; runs after A1–A7 |
 | B1 yjs materialization (framework) | B | queued | 0 | — | proposal only; subtree edits |
@@ -57,6 +59,34 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
 None.
 
 ## Cycle log
+
+### Cycle 15 — 2026-08-19 — A2 run 4 (streak reset); A12 diagnosed and filed
+- Did: run 4 came back 53/55 — the table-cell signature AGAIN plus a
+  de-rtc "Second from two" → "Second " collapse. Repetition probes:
+  de-rtc spec 6/6 solo (filed as A13, load-schedule-dependent); the
+  table-cell spec 4-in-8 solo — reproducible. Ran the failing spec
+  under `wp collaboration capture` and traced the lost edit end to
+  end. DIAGNOSIS (A12): user B's cell edit authors a per-keystroke
+  ladder of `set_attr(body)` intents at its observed seq (4). B's own
+  earlier caption edit had burst ~75 rows into the log, pushing the
+  room past the 100-row checkpoint+trim, so the retention horizon
+  moved above 4 — the server voids the whole ladder as `stale-base`
+  (engine line ~535). The engine's designed recovery ("the client
+  re-derives from its editor tree after its reset") never fires: B's
+  CURSOR was current, so no snapshot reset arrives — only voids. The
+  session settles them, the replan drops the optimistic effect, and
+  the manager pushes the REVERTED doc over B's canvas — the user
+  watches their text vanish; nothing re-authors. Silent loss (P2
+  violation) of edits made by a live, connected client. In passing
+  runs the identical ladder lands before the trim.
+- The fix direction (next cycle, non-frozen manager): on
+  `voided:stale-base` dispositions, re-capture the CURRENT editor
+  tree against the current document/seq (the A1 recovery pattern via
+  handlers.getEditedRecord), instead of replan-and-revert. The frozen
+  core needs no change (its contract already assumes a re-derive).
+- Ledger changes: filed A12 + A13; A2 blocked on both (its 3-green
+  streak cannot stand while a 4-in-8 loss bug fires). A2 stays
+  in-progress; attempts unchanged.
 
 ### Cycle 14 — 2026-08-19 — A2 (first green run banked)
 - Did: run 3 of the retry-free full suite: 55/55 GREEN in 13.1 min —
