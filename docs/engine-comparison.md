@@ -194,7 +194,7 @@ the protocol won. The fidelity program reverses that default.
 | Presence/awareness | Yes (shared Yjs-free awareness doc) | Yes (Yjs awareness, relayed opaquely — the server does not decode it) | Yes (Yjs awareness over the doc bridge, relayed opaquely) |
 | Server observability | Dispositions, debug envelope, benchmark quality metrics | Per-update dispositions, CRDT convergence oracle, materialization | Per-proposal dispositions (applied/escalated/voided with reasons), version lineage, materialization |
 | Materialize to post_content | Yes (server-side; block identity persists as `metadata.syncId` and round-trips genesis) | Yes (server-side, from the canonical doc) | Trivially — the canonical document IS post content |
-| Wire format | Small human-readable JSON intents | Opaque base64 binary (V2) + JSON snapshot rows | Human-readable JSON: whole-content proposals up, whole-content canonical rows down (bytes scale with document size) |
+| Wire format | Small human-readable JSON intents | Opaque base64 binary (V2) + JSON snapshot rows | Human-readable JSON: whole-content commits up (via the autosave endpoint), constant-size announce advisories down, with on-demand synthesized snapshots for behind clients (upload bytes scale with document size; rows do not) |
 
 ## Resource profile
 
@@ -204,7 +204,7 @@ the protocol won. The fidelity program reverses that default.
 | Locking | Per-room Core-style options-row lock (`WP_Sync_Room_Lock`, the upgrader pattern: atomic INSERT IGNORE + TTL; 5 s wait budget, contenders get a retryable 503). One claim/release pair of DB writes inside every timed request — the engine benchmark's `calibration` block exists to subtract it. Topology-safe by construction | None — CRDT merge needs no total order; the update log is the source of truth and a lost canonical-save race is repaired from it on the next load | None — lock-free optimistic version claims (`WP_Sync_Atomic_Option` CAS): an accepted proposal atomically claims v(n+1), a lost claim reloads + re-merges, exhaustion returns the retryable 503. Upstream's validate-and-retry model, restored |
 | Idle reads | Cheap by design (rows after cursor; no reconstruction) | Cheap (the canonical doc is never touched on the read path) | Cheap (rows after cursor; canonical untouched) |
 | Storage growth | Bounded: checkpoint + trim every 100 rows | Bounded: server checkpoint + trim every 100 rows, no client needed | Bounded: server checkpoint + trim every 100 rows, and accepted proposals store ~200-byte ANNOUNCE rows (version + content hash; canonical content lives once per room, fetched on demand) — row bytes no longer scale with document size, closing the PHP-memory cliff the hour-scale soak found under the old full-content rows |
-| Row contents | Small JSON intents + periodic full-document checkpoint rows | Base64 V2 diffs (server strips what it already had) + full-state snapshot rows, plus the canonical doc in room meta | Full-content JSON rows (content + version + attribution) + snapshot rows, plus canonical content and version snapshots in room meta |
+| Row contents | Small JSON intents + periodic full-document checkpoint rows | Base64 V2 diffs (server strips what it already had) + full-state snapshot rows, plus the canonical doc in room meta | Constant-size `announce` advisories (version + canonical content hash + merged property registers) and tiny `fetch` requests; canonical content lives ONCE per room in a chained options row, and a behind client's fetch is answered with one synthesized, never-stored snapshot. Version snapshots ride room meta |
 
 In plain terms, the locking row is a pro/con set. intent-log: one edit
 merges at a time per post — concurrent editors wait briefly, and under
@@ -229,12 +229,18 @@ canonical document is decoded, merged, and re-encoded in PHP on every
 request) and is the one whose service time grows with document size.
 For scale, the retired append-only relay sat at the timer floor — read
 it as "negligible", and as the price of observing nothing. Where de-rtc
-pays is bytes, not cycles: whole documents travel in every proposal and
-every accepted proposal stores a full content row, so its request and
-storage bytes dwarf the other engines' and scale with document size —
-with one fairness caveat: the session scenarios run at the harness's
-RTC poll cadence, which measures de-rtc as we adapted it, not as
-designed; the `save-sync-session` scenario measures the vision's
+pays is upload bytes and request count, not cycles: each commit still
+carries the session's whole content UP (through the ordinary autosave
+endpoint — the transport itself carries no session proposals), and
+commit POSTs roughly double the per-typist request rate at
+pseudo-realtime cadence. The broadcast and storage side no longer
+scales with document size: accepted work broadcasts a constant-size
+announce, canonical content is stored once per room, and only a client
+whose content hash disagrees downloads a document (one synthesized
+fetch answer) — the active typist advances by hash and downloads
+nothing. One fairness caveat stands: the session scenarios run at the
+harness's RTC poll cadence, which measures de-rtc as we adapted it, not
+as designed; the `save-sync-session` scenario measures the vision's
 save-and-sync cadence, where both profiles differ.
 All three engines' payload/storage bytes are REAL (each benchmark
 profile speaks its engine's actual wire format), all three converge
@@ -257,9 +263,11 @@ conflict class; `field-sync` separates the same policies at field grain
 (see the scenario narratives below for what actually happens on the
 wire). Under a ten-minute three-user `editorial-session` (joins, typing
 bursts, per-second polling, autosaves), intent-log's service time holds
-flat, de-rtc's holds nearly flat while its room tail (and therefore the
-next joiner's download) grows past a megabyte, and **yjs-server's
-ingest grows with the accumulating document**. Run `editorial-session
+flat, de-rtc's holds nearly flat (its room tail is constant-size
+advisories since the announce inversion — the megabyte-scale tail
+growth the old full-content rows showed here is structurally gone, and
+a joiner downloads one synthesized snapshot instead of that tail), and
+**yjs-server's ingest grows with the accumulating document**. Run `editorial-session
 rounds=3600` for the full hour before concluding about long sessions.
 And run `save-sync-session` before concluding about de-rtc at all: at
 the vision's ten-second save-and-sync cadence the escalation ranking
@@ -278,8 +286,11 @@ parked rows, which is what the fixture measures.
 Two costs live off the edit path and are easy to miss; the benchmark
 reports both. The **later-joiner read** (a cold read at cursor 0 — what
 a fresh visitor downloads to enter the room after a session): modest
-under intent-log and yjs-server, largest under de-rtc by a wide margin
-(the retained tail is full-content rows). The **save path**
+under all three engines since the announce inversion — de-rtc's
+retained tail is constant-size advisories, and the joiner's actual
+content arrives as ONE synthesized snapshot rather than the
+full-content row tail that used to make this read the largest by a
+wide margin. The **save path**
 (`materialize()` on a cold engine, as a real save request runs it):
 cheap under intent-log, near-zero under de-rtc (the canonical IS post
 content), and the most expensive under yjs-server — the whole canonical
@@ -311,13 +322,17 @@ situation through all three engines, and names the principle at stake.
   incremental binary update; the next poll delivers it; the server
   decodes the canonical doc, merges, re-encodes, and stores the diff
   row. No lock, no transform.
-- **de-rtc**: Keystrokes edit the doc and mark it dirty. On the next
-  poll, if no proposal is in flight, the client proposes its WHOLE
-  content against the version it last incorporated. The server
-  three-way-merges (a fast-forward solo), claims the version advance
-  (an uncontended CAS write), broadcasts a full canonical
-  content row, and the client advances its version without touching the
-  doc (its own content came back unchanged).
+- **de-rtc**: Keystrokes edit the doc and mark it dirty. When the burst
+  settles and no commit is in flight, the client COMMITS its WHOLE
+  content against the version it last incorporated — through the
+  ordinary autosave endpoint (`WP_De_RTC_Autosave_Commits` intercepts
+  the commit shape; the room transport carries no session proposals).
+  The server three-way-merges (a fast-forward solo), claims the version
+  advance (an uncontended CAS write), persists canonical once in the
+  room's chained options row, and stores a ~200-byte `announce`
+  (version + content hash + property registers). The next poll delivers
+  the announce; the hash matches the typist's own content, so it
+  advances its version downloading nothing.
 
 ### B. Two editors, different blocks (the common concurrent case)
 
@@ -325,10 +340,13 @@ All three merge losslessly; they differ in *how* and in *what travels*.
 intent-log transforms each editor's intents over the other's rows — the
 transforms are no-ops because the frames don't intersect. yjs-server's
 CRDT merges the updates commutatively. de-rtc three-way-merges each
-whole-content proposal against base and current: each editor's block
-change is a sole-writer change to its block, so both land — but both
-directions of the wire carry the entire document (P5/P6: de-rtc pays in
-bytes here).
+whole-content commit against base and current: each editor's block
+change is a sole-writer change to its block, so both land. The upload
+side carries each editor's entire document per commit; the download
+side is an announce whose hash doesn't match (the peer merged new
+work), so each editor fetches ONE synthesized snapshot of the merged
+canonical (P5/P6: de-rtc pays in upload bytes and in a
+document-per-incorporation download — no longer in stored rows).
 
 ### C. Two editors, the same paragraph (the policy separator)
 
@@ -344,13 +362,14 @@ bytes here).
   deterministically; block-attribute (register) collisions resolve by
   silent last-writer-wins. Nothing surfaces to a human (P3 violation,
   documented policy).
-- **de-rtc**: The peer's accepted proposal broadcasts a canonical row
-  that arrives mid-burst. The client cannot merge (clients never merge)
-  and cannot apply it verbatim (that would clobber unsent keystrokes),
-  so it *incorporates*: adopts canonical blocks it hasn't touched and
-  keeps its own version of the contested block — but it
+- **de-rtc**: The peer's accepted commit announces mid-burst; the
+  local hash disagrees, so the client fetches the canonical it names
+  (one synthesized snapshot). The client cannot merge (clients never
+  merge) and cannot apply it verbatim (that would clobber unsent
+  keystrokes), so it *incorporates*: adopts canonical blocks it hasn't
+  touched and keeps its own version of the contested block — but it
   also RECORDS the version that block's text was really written
-  against, and its next proposal declares it (`blockBaseVersions`).
+  against, and its next commit declares it (`blockBaseVersions`).
   The server merges the contested block from its TRUE base:
   non-overlapping concurrent edits to the same block merge (both texts
   land), true overlaps park for review at block grain while
@@ -361,8 +380,15 @@ bytes here).
   peer edits to the same block refresh it rather than stacking),
   resolved by explicit Adopt (take the latest canonical form) or
   Reject (keep yours — the recorded base keeps the next server merge
-  honest). The residual: a map-less legacy client still presents
-  sole-writer changes. Structural divergence still parks the proposal
+  honest). One timing rule guards the burst itself: while the server
+  has merged PEER work into this client's own accepted commit (a newer
+  version exists whose content the client does not hold yet), the
+  client holds its commit lane — committing against the dead pre-merge
+  base would have the server treat its own just-accepted keystrokes as
+  a foreign concurrent change and park them (the fuzzer found exactly
+  this eating the tail of bursts that straddled a commit round trip).
+  The residual: a map-less legacy client still presents
+  sole-writer changes. Structural divergence still parks the commit
   whole.
 
 ### D. Edit versus remove (one client types into a block another removes)
@@ -373,8 +399,8 @@ both apply and the token vanishes with the removed block. yjs-server
 escalates nothing — CRDT deletion dissolves the edit with the deleted
 block, deterministically and invisibly. de-rtc still escalates the
 most: the structural change shifts the base under the whole-content
-proposal, and structural divergence is exactly the class per-block
-salvage refuses — the trailing proposal parks whole (roughly one
+commit, and structural divergence is exactly the class per-block
+salvage refuses — the trailing commit parks whole (roughly one
 escalation per contended pair; per-block salvage removed the *collateral* from
 non-structural rounds). The benchmark's `remove-contention` scenario
 measures exactly this spread.
@@ -390,7 +416,7 @@ measures exactly this spread.
   design.
 - **de-rtc**: Per-block sequestration, upstream's model: exactly the
   risky blocks revert to their base form and park for review while the
-  safe remainder of the proposal merges and lands. Restore re-proposes
+  safe remainder of the commit merges and lands. Restore re-proposes
   them under the RESTORER's capability, so restore is the approval.
   Whole-proposal escalation remains the fallback for freeform
   boundaries.
@@ -442,15 +468,17 @@ back its modified copy while two editors are collaborating.
   diffs out what it already has. Under racing lock-free ingests a client
   can be asked to resync (`resync-required` void); it heals by the same
   full-state upload, one extra round trip, nothing lost.
-- **de-rtc**: The client re-proposes its doc's current state; if the
-  lost send actually landed, the re-proposal merges as a no-op. A stale
+- **de-rtc**: The client re-commits its doc's current state; if the
+  lost send actually landed, the re-commit merges as a no-op (and its
+  announce's hash confirms it). A stale
   base within the engine's 20-version snapshot window is fine — that's
   what the three-way merge is for (though cumulative staleness escalates
   more). Beyond the window the server first mines post revisions for
   the base (each aware save embeds its own snapshot window),
   so even arbitrarily old bases usually merge; only a base no revision
   carries voids as `unknown-base-version`, and the client retries
-  against a fresher base: fetch canonical, rebase, re-propose. The
+  against a fresher base: fetch canonical (one synthesized snapshot),
+  rebase, re-commit. The
   benchmark models one retry per edit; nothing is lost either way.
 
 ## Transports are a separate axis
@@ -538,13 +566,15 @@ its history lives in git.
 Residual facts that color conclusions but don't rise to work items of
 their own:
 
-- **de-rtc storage/wire bytes scale with document size.** A multiple of
-  intent-log's stored bytes over the same session even at a small
-  document, growing linearly — and the same tail is what a later joiner
-  downloads (several times the other engines' join payloads). Run
-  `long-form` at YOUR document sizes before concluding. NOTE: this
-  describes the pre-announce wire; stored rows are now constant-size
-  advisories and the hour-scale re-measurement is pending (V1.md A5).
+- **de-rtc's document-size costs live on the commit path, not in
+  storage.** Since the announce inversion, stored rows are
+  constant-size advisories and a later joiner downloads one
+  synthesized snapshot — the old linearly-growing full-content tail
+  (once a multiple of intent-log's stored bytes, and the largest join
+  payload) is structurally gone. What still scales with document size:
+  each commit's upload body (whole content up), the fetch answer a
+  behind client downloads, and per-ingest merge CPU/memory. Run
+  `long-form` at YOUR document sizes before concluding.
   Deep-lag behavior is distinct: rarely-reading clients escalate more,
   and past the 20-version snapshot window their proposals fall back to
   revision-mined bases — voiding and retrying only when no
