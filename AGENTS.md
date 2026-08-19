@@ -288,7 +288,8 @@ under full-suite load — a save notice, a fixture login navigation, or
 engine-flip suite [verified pre-existing: the yjs suite followed by
 body-size reproduces it without de-rtc involved]; each spec is green
 solo, and the e2e CI job leans on the base config's 2-retries-in-CI to
-absorb them. e2e:websocket carries one `test.fixme` skip (see below —
+absorb them (stabilization is V1.md A2). e2e:websocket carries one
+`test.fixme` skip (see below —
 the peer-relay WS fixture needs a client-merging engine and none
 remains). The vendored libraries' own conformance suites run separately:
 y-php (`composer --working-dir=includes/lib/y-php test`) and
@@ -310,7 +311,7 @@ remaining engines are server-authoritative (yjs-server clients wait for the
 server's genesis snapshot, so nothing syncs over a serverless relay).
 Re-enable by pointing the suite at the plugin's real websocket transport
 (the `wp collaboration sync-server` PHP daemon) or giving the fixture a
-server lane. `.wp-env.json` maps `tests/e2e/plugins` (this fixture) and
+server lane (V1.md A3). `.wp-env.json` maps `tests/e2e/plugins` (this fixture) and
 `gutenberg/packages/e2e-tests/plugins` (framework fixtures like
 sync-connection-error-filter) as plugin dirs. `@y/websocket-server` is pinned
 EXACTLY to 0.1.1 — 0.1.5 switched to the yjs-14 (`@y/y`) family and its daemon
@@ -492,13 +493,20 @@ they exist so a failure is observable without re-instrumenting:
 
 ## Known issues / out of scope
 
+Open work items live in `V1.md` at the repo root, each with acceptance
+criteria and a lane (autonomous vs human-review); this section carries
+the operational facts and cites V1.md items where one applies.
+
 - `composer lint` currently reports ~275 errors + ~29 warnings in the plugin's
-  own `includes/` and `tests/` PHP — pre-existing standards debt, not yet
-  addressed. `composer format` auto-fixes a handful.
+  own `includes/` and `tests/` PHP — pre-existing standards debt, in
+  scope for v1 (V1.md A6). `composer format` auto-fixes a handful.
 - All three engines have **collaborative undo**: intent-log via inverse
-  intents over the accepted log (`src/engines/intent-log-undo.ts` — arms
-  after the unit's settle round trip, ~a poll cycle after a burst quiets),
-  the yjs engines via the shared `src/engines/yjs/undo.ts`.
+  intents over the accepted log (`src/engines/intent-log-undo.ts` — a
+  still-pending unit CANCELS with an outbox removal plus a wire-chasing
+  `cancel` row, a settled unit inverts; inverses derive only from
+  ACCEPTED rows), yjs-server via the shared `src/engines/yjs/undo.ts`,
+  and de-rtc via revert-edit undo (reverts derived from the client's
+  own accepted canonical rows, proposed as ordinary new changes).
 - **Conflict review is cross-engine**: intent-log through its bespoke
   manager; de-rtc parks escalations as durable `proposal-parked` rows and
   presents them through the framework review panel via
@@ -515,22 +523,25 @@ they exist so a failure is observable without re-instrumenting:
   path of the three engines (run `npm run bench` for numbers), no
   review lane
   (register conflicts LWW silently), kses is sanitize-and-compensate (no
-  human review of stripped markup), the genesis size gate
-  (`wp_sync_yjs_server_max_genesis_bytes`, default 1 MB) is genesis-only
-  (post-genesis room growth unpoliced), and materialization still
-  carries the Phase-2a wrapper simplification (intent-log's was fixed
-  by TODO-11's client-authored save markup; the yjs twin needs
-  framework changes — core-data owns the Yjs block writer — and its
-  genesis wrongly stores stripped inner markup in the first
-  rich-text-source attribute, e.g. `<img>` in image `caption`). Genesis
+  human review of stripped markup), rooms are size-gated at both ends
+  (genesis refuses above `wp_sync_yjs_server_max_genesis_bytes`, 1 MB
+  default; a room grown past `wp_sync_yjs_server_max_room_bytes`, 8 MB
+  default, rejects further writes with 413 while reads/saves continue —
+  shrinking an over-limit room via epoch compaction stays post-v1), and
+  materialization still carries the Phase-2a wrapper simplification
+  (intent-log's was fixed by client-authored save markup; the yjs twin
+  needs framework changes — core-data owns the Yjs block writer —
+  V1.md B1; and its genesis wrongly stores stripped inner markup in the
+  first rich-text-source attribute, e.g. `<img>` in image `caption` —
+  V1.md A4). Genesis
   blocks must set `isValid: true` or the editor renders them as
   invalid-content recovery blocks (has bitten).
 - **de-rtc known gaps** (docs/engine-comparison.md has the full list):
   truly concurrent SAME-block edits merge from their TRUE base
-  (`blockBaseVersions`, TODO-2b) or raise a contested pending item
-  (Adopt/Reject, TODO-12) — the old silent client-side block LWW is
+  (`blockBaseVersions`) or raise a contested pending item
+  (Adopt/Reject) — the old silent client-side block LWW is
   retired; sessions author the block-native `clientUpdate` descriptor
-  (TODO-2a: tamper evidence, byte-parity with the PHP derivation pinned
+  (tamper evidence, byte-parity with the PHP derivation pinned
   by PHP-generated vectors in
   `tests/js/engines/de-rtc/test-vectors/`; the engine validates once
   against the plain declared base, then drops it), while machine
@@ -541,7 +552,7 @@ they exist so a failure is observable without re-instrumenting:
   lock-free — each accepted
   proposal atomically claims its version advancement (options-row CAS,
   `WP_Sync_Atomic_Option`) and a lost claim reloads + re-merges, the
-  upstream optimistic model. Since TODO-20 stage 1 (protocol 2) the
+  upstream optimistic model. Since protocol 2 the
   transport carries ADVISORIES, not documents: accepted proposals
   broadcast ~200-byte `announce` rows (version + canonicalized content
   hash + merged property registers); canonical content lives once per
@@ -550,7 +561,8 @@ they exist so a failure is observable without re-instrumenting:
   never regress), and a behind client's `fetch` row is answered with
   one synthesized, never-stored snapshot. The active typist advances
   by hash and downloads nothing; row bytes no longer scale with
-  document size (the TODO-10 hour soak's PHP-memory cliff, closed).
+  document size (the hour soak's PHP-memory cliff, closed structurally;
+  the hour-scale re-measurement is V1.md A5).
   Stage 2 completes the Save/Sync inversion: sessions COMMIT through
   the ordinary autosave endpoint (`WP_De_RTC_Autosave_Commits`
   intercepts the commit shape; editor-native autosaves pass through),
@@ -585,19 +597,11 @@ they exist so a failure is observable without re-instrumenting:
     (`CAPTURE_SYNC_DELAY`, 1.2 s), so identity write-backs and merged views
     reach the canvas that late. This is forced by core-data (see the gotcha
     on pushes from inside `update()`), not by choice.
-  - FIXED (2026-08-18): undo inside the settle window now CANCELS the
-    pending unit (outbox removal + optimistic replan + a `cancel` row
-    that drops still-queued intents server-side; a cancel that loses
-    the race to the wire acks `cancel-too-late` and the unit resurrects
-    as a settled undo candidate). Inverses still derive only from
-    ACCEPTED rows. The old behavior — silent no-op until rows + acks
-    landed, measured 1/12 armed vs 34/34 on the yjs engines — is gone;
-    re-run the fuzzer undo profile to re-measure parity.
   - An undo whose inverse intents are still unacked when that tab reloads
     loses them with the outbox: the undone edit (already accepted
     server-side) resurrects for everyone. The general unacked-edit-loss
     window, but undo makes it visible (the user watched the text vanish).
-  - OPEN (pre-existing, found 2026-08-17): after a mid-session reload of
+  - OPEN (pre-existing, found 2026-08-17; V1.md A1): after a mid-session reload of
     one participant on an EMPTY-genesis room, that participant's next
     block insert can stay local forever — the room log never receives the
     intent (the sending stalls; the room holds only the genesis snapshot).
