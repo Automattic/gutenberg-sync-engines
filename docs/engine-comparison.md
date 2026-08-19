@@ -159,7 +159,7 @@ with something protocol-convenient.
 
 | Vision element | The vision / prototype | Our port | Verdict |
 | --- | --- | --- | --- |
-| Save and Sync are distinct, deliberate operations; "pending edits" are the unit of adoption | Editors confirm their own changes and *choose* to adopt others'; sync may be polled, socketed, or run manually with long delays | Contested-only pending, v1 behavior layer: clean merges keep flowing live, but a peer's edit landing on a block you are editing raises ONE pending item (merge-not-stack — later peer edits refresh it) resolved by explicit Adopt (take the latest canonical) or Reject (keep yours; per-block base honesty makes the next merge honest). Editor saves carry `base_version` through the room. The deeper inversion — canonical advances only at saves, no auto-propose — remains open | **Partially restored** (TODO-12 v1 done; the same-block LWW of scenario C is dissolved — a contest, never a silent overwrite) |
+| Save and Sync are distinct, deliberate operations; "pending edits" are the unit of adoption | Editors confirm their own changes and *choose* to adopt others'; sync may be polled, socketed, or run manually with long delays | Contested-only pending (TODO-12 v1): a peer's edit landing on a block you are editing raises ONE merge-not-stack pending item resolved by explicit Adopt/Reject. And since TODO-20 stage 2 the commit lane IS the save lane: sessions commit through the autosave endpoint (real saves through the base-version preflight, settle-and-held), the transport carries no proposals at all — advisory announces, on-demand snapshots, review rows, presence. The commit cadence is the settle cycle (the 10 s dial is a setting away) | **Restored** (TODO-12 v1 + TODO-20; residuals: commit-cadence dial not yet exposed, review resolutions still ride transport rows) |
 | Sync metadata co-located with saved `post_content` (a `wp/post-sync-meta` pseudo-block); revisions become a backup mechanism | The document's history travels with the post; any writer that round-trips content carries the lineage; recovery mines revisions and autosaves | Restored as write-through: every save of a de-rtc-roomed post embeds the room's sync-meta (upstream's exact grammar) at the content edge, revisions copy it, and genesis adopts it back — resuming the version lineage after a room reset. Room meta remains the *working* store; the full inversion (post as sole durable store) rides with TODO-12/architecture item 2 | **Restored (write-through)** (TODO-13 done) |
 | Self-healing when unaware writers mangle the document | The server detects CRDT/content divergence, recovers from revisions or autosaves, and appends a repairing edit so "operations which would otherwise wipe-out a post appear as any other collaborative update" | Restored: room load detects out-of-band `post_content` writes (the co-location `content_hash` stamp is the tell), three-way-merges meta-carrying external edits with concurrent session work, converges to meta-less replacements, refuses to roll back stale copies, and parks genuine conflicts for review. Revision *mining* for lost bases is TODO-15 | **Restored** (TODO-14 done; scenario F) |
 | Arbitrarily long offline editing still recombines | Old bases recoverable via the co-located history and revision copies | Restored: a base past the room's 20-version window resolves from post revisions (each aware save embeds its own snapshot window, hash-verified), so deep-lag proposals merge with intervening work intact; only a base no revision carries still voids | **Restored** (TODO-15 done) |
@@ -869,11 +869,42 @@ the engine Dennis designed; the rest change polish and confidence.
   clients do). Legacy `content` rows still replay (old rooms catch
   clients up); the server no longer writes them.
 
-  STAGE 2 (open): move the COMMIT lane to Save/autosave (the full
-  Save/Sync inversion — proposals leave the transport entirely; the
-  de-rtc autosaves controller routes pseudo-realtime commits through
-  the room without publishing). The announce lane built here is that
-  design's Sync channel, unchanged.
+  **STAGE 2 DONE (2026-08-19): commits ride the autosave lane; the
+  transport is fully advisory for documents.** Sessions no longer send
+  `proposal` rows at all — a wire-inspected 3-window soak shows ZERO
+  transport proposals; the poll lane carries only announces, on-demand
+  snapshots, review rows, and presence. The commit is the SAME
+  proposal payload with a different carrier: a POST to the ordinary
+  `/wp/v2/(posts|pages)/<id>/autosaves` endpoint ("a save/autosave
+  cadence dial, not a second commit channel"), intercepted by
+  `WP_De_RTC_Autosave_Commits` when it carries the commit shape
+  (`proposal_id` + `base_version` + `proposed_content` + `client_id`)
+  and routed into the room's ingest — claims, kses sequestration,
+  salvage, review parking, announces, attribution, all identical. The
+  response returns the dispositions plus every room row the commit
+  appended (rows first, dispositions after — the provider's own
+  ordering contract), so the session settles through its unchanged
+  announce machinery; editor-native autosaves (no commit shape) pass
+  through to core untouched. Real saves keep merging via the
+  base-version preflight, now wrapped in settle-and-hold: the save
+  flushes the outstanding commit and holds new ones for its duration
+  (`prepareForSave`), because a save racing the session's OWN
+  in-flight commit three-way-merges into a self-conflict
+  (both-changed-same-block parks — the fuzzer caught this
+  deterministically the moment commits moved to REST). Soak: latency
+  p50 ~1.8 s / p90 2.2 s (idle receivers see sub-200 ms probes),
+  clean convergence, saves green, bytes unchanged from stage 1
+  (commit POSTs are counted as sync traffic by the transport tools).
+
+  Honest residuals: review RESOLUTIONS still ride transport rows
+  (small, idempotent, review-workflow rather than document mutation —
+  a REST review lane would complete the strictest reading of
+  "advisory"); the commit CADENCE is the session's settle cycle
+  (~one commit per round trip while typing) rather than an exposed
+  10-second dial — the dial is a setting away, not an architecture
+  away; collections and unsupported post types keep the transport
+  proposal lane as fallback (the server still accepts proposal rows
+  for them, the bench harness, and any legacy client).
 - **TODO-11 — Round-trip complex sourced attributes through
   materialization. INTENT-LOG HALF DONE (2026-08-18); the yjs-server
   half needs framework changes (design recorded).** The Phase-2a

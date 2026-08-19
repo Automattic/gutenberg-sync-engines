@@ -30,6 +30,7 @@ import {
 	createDeRtcUndoFeed,
 	type DeRtcRevertUndoManager,
 } from './revert-undo';
+import { createDeRtcCommitAdapter } from './commit';
 import { registerSaveBaseVersion } from './save-base-version';
 import { applyServerAwarenessStates } from '../awareness-sync';
 import type { EngineReviewSource } from '../review-manager-decorator';
@@ -104,6 +105,8 @@ function createInertDeRtcCollectionCodec(
 		getLocalAwareness: () => awareness?.getLocalState() ?? {},
 		onLocalUpdate() {},
 		receiveUpdate() {},
+		// Collections never commit; nothing to settle or hold.
+		prepareForSave: async () => () => {},
 	};
 }
 
@@ -263,11 +266,18 @@ export function createDeRtcEngine(): SyncEngine & {
 			const undoFeed = createDeRtcUndoFeed();
 			const authorship = createDeRtcAuthorship( undoFeed );
 			// Save-through-the-room (TODO-12): this post's REST saves carry
-			// base_version while the session lives.
+			// base_version while the session lives. `prepareForSave` is
+			// attached when the session comes up (TODO-20 stage 2: the
+			// save settles + holds the commit lane so it cannot
+			// self-conflict with the session's own in-flight commit).
+			const saveControl: import('./save-base-version').DeRtcSaveControl =
+				{
+					lastVersion: bridge.lastVersion,
+				};
 			const unregisterSaveBaseVersion = registerSaveBaseVersion(
 				objectType,
 				objectId,
-				bridge.lastVersion
+				saveControl
 			);
 			entityAuthorship.set(
 				reviewKey( objectType, objectId ),
@@ -478,13 +488,26 @@ export function createDeRtcEngine(): SyncEngine & {
 			return {
 				awareness,
 
-				createSession: () =>
-					createDeRtcSessionCodec( {
+				createSession: () => {
+					const codec = createDeRtcSessionCodec( {
 						awareness,
 						bridge,
 						review,
 						undoFeed,
-					} ),
+						// The Save/Sync inversion (TODO-20 stage 2):
+						// commits ride the autosave endpoint; the
+						// transport stays advisory. Null for types
+						// without a commit route (transport fallback).
+						commit:
+							createDeRtcCommitAdapter(
+								objectType,
+								objectId,
+								bridge.doc.clientID
+							) ?? undefined,
+					} );
+					saveControl.prepareForSave = codec.prepareForSave;
+					return codec;
+				},
 
 				hydrate() {
 					// Deliberately empty: the server's genesis snapshot is

@@ -14,6 +14,7 @@ import type {
 	EngineUpdate,
 } from '@wordpress/sync';
 import { applyServerAwarenessStates } from '../awareness-sync';
+import type { DeRtcCommitAdapter } from './commit';
 import { buildDeRtcClientUpdate, hashDeRtcContent } from './descriptor';
 import { DE_RTC_REMOTE_ORIGIN, type DeRtcDocBridge } from './doc-bridge';
 import type { DeRtcParkedProposal, DeRtcReviewState } from './review';
@@ -105,6 +106,15 @@ export interface DeRtcSessionOptions {
 	 * simply drop review rows.
 	 */
 	review?: DeRtcReviewState;
+
+	/**
+	 * The commit carrier (TODO-20 stage 2): when present, proposals go
+	 * through the autosave endpoint instead of transport rows — the
+	 * poll lane stays advisory. Absent (collections, unsupported post
+	 * types, tests of the transport lane), proposals ride the transport
+	 * as before.
+	 */
+	commit?: DeRtcCommitAdapter;
 }
 
 /**
@@ -135,7 +145,7 @@ export interface DeRtcSessionOptions {
  */
 export function createDeRtcSessionCodec(
 	options: DeRtcSessionOptions
-): EngineSessionCodec {
+): EngineSessionCodec & { prepareForSave: () => Promise< () => void > } {
 	const { bridge, review } = options;
 	const doc = bridge.doc;
 	const awareness = options.awareness ?? new Awareness( doc );
@@ -260,10 +270,17 @@ export function createDeRtcSessionCodec(
 		return { data: JSON.stringify( payload ), type: DE_RTC_PROPOSAL_TYPE };
 	}
 
+	// While > 0, commits stay queued (dirty accumulates): the save lane
+	// holds commits so an editor save can never race the session's own
+	// in-flight commit into a self-conflict (both-changed-same-block
+	// parks — found by the fuzzer the moment commits moved to REST).
+	let commitsHeld = 0;
+
 	function maybePropose(): void {
 		if (
 			! dirty ||
 			inFlight ||
+			commitsHeld > 0 ||
 			! localUpdateListener ||
 			! bridge.isBootstrapped()
 		) {
@@ -272,7 +289,49 @@ export function createDeRtcSessionCodec(
 		const update = buildProposal();
 		dirty = false;
 		inFlight = true;
+		if ( options.commit ) {
+			/*
+			 * The Save/Sync inversion (TODO-20 stage 2): the commit rides
+			 * the autosave endpoint, not the transport — the poll lane
+			 * stays advisory (announces, on-demand snapshots, review
+			 * rows, presence). The response returns the rows this commit
+			 * appended plus the dispositions, and the ordinary row
+			 * machinery settles them.
+			 */
+			void commitThroughSave( update );
+			return;
+		}
 		localUpdateListener( update, update.data.length );
+	}
+
+	let commitRetryTimer: ReturnType< typeof setTimeout > | null = null;
+	async function commitThroughSave( update: EngineUpdate ): Promise< void > {
+		try {
+			const response = await options.commit!( update );
+			for ( const row of response.updates ?? [] ) {
+				processRow( row );
+			}
+			if ( response.dispositions?.length ) {
+				handleDispositions( response.dispositions );
+			}
+		} catch {
+			/*
+			 * Transport failure or retryable contention (503): the edits
+			 * are still in the doc — free the slot and retry shortly. A
+			 * commit whose response was LOST after the server applied it
+			 * re-proposes idempotently (the server merges a re-send of
+			 * already-applied content as a no-op fast-forward).
+			 */
+			inFlight = false;
+			inFlightProposalId = null;
+			if ( null === commitRetryTimer ) {
+				commitRetryTimer = setTimeout( () => {
+					commitRetryTimer = null;
+					dirty = true;
+					maybePropose();
+				}, 2000 );
+			}
+		}
 	}
 
 	function applyOrDeferCanonical(
@@ -564,6 +623,48 @@ export function createDeRtcSessionCodec(
 		}
 	}
 
+	/**
+	 * Settles a disposition batch — shared by the transport lane and the
+	 * commit lane (both deliver rows FIRST, dispositions after).
+	 *
+	 * @param dispositions Disposition batch.
+	 */
+	function handleDispositions( dispositions: EngineDisposition[] ): void {
+		/*
+		 * A voided proposal (a base that aged out of the snapshot
+		 * window, a rejected descriptor) means our base is no longer
+		 * mergeable: catch up NOW. Clear any stuck fetch marker and
+		 * mark ourselves behind — a void frequently follows exactly
+		 * the starvation that lost a fetch.
+		 */
+		const voided = dispositions.some(
+			( disposition ) => 'voided' === disposition.status
+		);
+		if ( voided ) {
+			fetchInFlightSeq = 0;
+			behindSeq = Math.max( behindSeq, currentSeq() + 1 );
+		}
+		// ONLY the disposition for the CURRENT in-flight proposal
+		// settles the slot: a previous proposal's disposition arrives in
+		// the response that follows the one whose rows already settled
+		// it, after a NEWER proposal may have gone out. Applied rows
+		// have already been (or will be) received as content rows;
+		// escalated/voided proposals are abandoned — the canonical state
+		// wins locally when it applies.
+		const settlesCurrent = dispositions.some(
+			( disposition ) => disposition.intentId === inFlightProposalId
+		);
+		if ( ! settlesCurrent ) {
+			if ( voided ) {
+				maybeFetch();
+			}
+			return;
+		}
+		inFlight = false;
+		inFlightProposalId = null;
+		settleQueued();
+	}
+
 	// Newer local edits take priority when a slot frees: they must reach
 	// the server before the deferred canonical applies (their base
 	// predates it, and the server merges). Otherwise adopt the newest
@@ -608,6 +709,10 @@ export function createDeRtcSessionCodec(
 				doc.off( 'update', onDocUpdate );
 				isDocListenerAttached = false;
 			}
+			if ( null !== commitRetryTimer ) {
+				clearTimeout( commitRetryTimer );
+				commitRetryTimer = null;
+			}
 			review?.setEmitter( null );
 			localUpdateListener = null;
 		},
@@ -630,40 +735,40 @@ export function createDeRtcSessionCodec(
 			bridge.onBootstrap( () => maybePropose() );
 		},
 		receiveUpdate: ( update ) => processRow( update ),
-		receiveDispositions( dispositions: EngineDisposition[] ) {
-			/*
-			 * A voided proposal (a base that aged out of the snapshot
-			 * window, a rejected descriptor) means our base is no longer
-			 * mergeable: catch up NOW. Clear any stuck fetch marker and
-			 * mark ourselves behind — a void frequently follows exactly
-			 * the starvation that lost a fetch.
-			 */
-			const voided = dispositions.some(
-				( disposition ) => 'voided' === disposition.status
-			);
-			if ( voided ) {
-				fetchInFlightSeq = 0;
-				behindSeq = Math.max( behindSeq, currentSeq() + 1 );
+		receiveDispositions: ( dispositions: EngineDisposition[] ) =>
+			handleDispositions( dispositions ),
+		/**
+		 * Prepares an editor SAVE: holds new commits and waits for the
+		 * in-flight one to settle, so the save can never self-conflict
+		 * with the session's own commit. Returns the release; the save
+		 * lane calls it when its request finishes (either way).
+		 *
+		 * @return Release function.
+		 */
+		async prepareForSave(): Promise< () => void > {
+			// Flush FIRST (holding would block the very settling we wait
+			// for), then hold new commits for the save's duration.
+			const deadline = Date.now() + 4000;
+			while ( ( dirty || inFlight ) && Date.now() < deadline ) {
+				maybePropose();
+				await new Promise( ( resolve ) => setTimeout( resolve, 100 ) );
 			}
-			// ONLY the disposition for the CURRENT in-flight proposal
-			// settles the slot: a previous proposal's disposition arrives in
-			// the response that follows the one whose rows already settled
-			// it, after a NEWER proposal may have gone out. Applied rows
-			// have already been (or will be) received as content rows;
-			// escalated/voided proposals are abandoned — the canonical state
-			// wins locally when it applies.
-			const settlesCurrent = dispositions.some(
-				( disposition ) => disposition.intentId === inFlightProposalId
-			);
-			if ( ! settlesCurrent ) {
-				if ( voided ) {
-					maybeFetch();
+			commitsHeld++;
+			let released = false;
+			const release = () => {
+				if ( released ) {
+					return;
 				}
-				return;
+				released = true;
+				commitsHeld--;
+				maybePropose();
+			};
+			// A keystroke may have slipped a commit in between the last
+			// check and the hold: wait that one out too.
+			while ( inFlight && Date.now() < deadline ) {
+				await new Promise( ( resolve ) => setTimeout( resolve, 100 ) );
 			}
-			inFlight = false;
-			inFlightProposalId = null;
-			settleQueued();
+			return release;
 		},
 	};
 }

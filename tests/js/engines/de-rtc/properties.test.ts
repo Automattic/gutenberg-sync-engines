@@ -79,7 +79,9 @@ describe( 'de-rtc property sync (client)', () => {
 	function makeEntity() {
 		const entity = engine.createEntity( {
 			syncConfig,
-			objectType: 'postType/post',
+			// A type WITHOUT a commit route: these suites pin the transport
+			// proposal lane (collections/unsupported types still use it).
+			objectType: 'postType/book',
 			objectId: '1',
 		} as any );
 		const session = entity.createSession();
@@ -221,7 +223,7 @@ describe( 'de-rtc property sync (client)', () => {
 			} ),
 		} );
 
-		engine.review.restoreProposal( 'postType/post', '1', 'p-9-1:title' );
+		engine.review.restoreProposal( 'postType/book', '1', 'p-9-1:title' );
 
 		const changes = entity.getEditorChanges( {} as any ) as any;
 		expect( changes.title ).toBe( 'The losing title' );
@@ -233,7 +235,7 @@ describe( 'de-rtc property sync (client)', () => {
 				.proposedProperties.title
 		).toBe( 'The losing title' );
 		expect(
-			engine.review.getOpenItems( 'postType/post', '1' )
+			engine.review.getOpenItems( 'postType/book', '1' )
 		).toHaveLength( 0 );
 	} );
 

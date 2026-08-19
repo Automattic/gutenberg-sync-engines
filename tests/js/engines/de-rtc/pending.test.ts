@@ -198,13 +198,11 @@ describe( 'parked review tasks fold (merge-not-stack)', () => {
 } );
 
 describe( 'save-through-the-room middleware', () => {
-	it( 'injects base_version for live sessions, skips autosaves and foreign posts', () => {
+	it( 'injects base_version for live sessions, skips autosaves and foreign posts', async () => {
 		mockApiFetchUse.mockClear();
-		const unregister = registerSaveBaseVersion(
-			'postType/post',
-			'7',
-			() => 'v41'
-		);
+		const unregister = registerSaveBaseVersion( 'postType/post', '7', {
+			lastVersion: () => 'v41',
+		} );
 		expect( mockApiFetchUse ).toHaveBeenCalledTimes( 1 );
 		const middleware = mockApiFetchUse.mock.calls[ 0 ][ 0 ] as (
 			options: any,
@@ -213,47 +211,61 @@ describe( 'save-through-the-room middleware', () => {
 		const passThrough = ( options: any ) => options;
 
 		expect(
-			middleware(
-				{ path: '/wp/v2/posts/7', method: 'PUT', data: { title: 'x' } },
-				passThrough
+			(
+				await middleware(
+					{
+						path: '/wp/v2/posts/7',
+						method: 'PUT',
+						data: { title: 'x' },
+					},
+					passThrough
+				)
 			).data
 		).toEqual( { title: 'x', base_version: 'v41' } );
 
 		// A caller-supplied base_version wins.
 		expect(
-			middleware(
-				{
-					path: '/wp/v2/posts/7',
-					method: 'PUT',
-					data: { base_version: 'v2' },
-				},
-				passThrough
+			(
+				await middleware(
+					{
+						path: '/wp/v2/posts/7',
+						method: 'PUT',
+						data: { base_version: 'v2' },
+					},
+					passThrough
+				)
 			).data.base_version
 		).toBe( 'v2' );
 
 		// Autosaves and other posts pass through untouched.
 		expect(
-			middleware(
-				{
-					path: '/wp/v2/posts/7/autosaves',
-					method: 'POST',
-					data: {},
-				},
-				passThrough
+			(
+				await middleware(
+					{
+						path: '/wp/v2/posts/7/autosaves',
+						method: 'POST',
+						data: {},
+					},
+					passThrough
+				)
 			).data.base_version
 		).toBeUndefined();
 		expect(
-			middleware(
-				{ path: '/wp/v2/posts/8', method: 'PUT', data: {} },
-				passThrough
+			(
+				await middleware(
+					{ path: '/wp/v2/posts/8', method: 'PUT', data: {} },
+					passThrough
+				)
 			).data.base_version
 		).toBeUndefined();
 
 		unregister();
 		expect(
-			middleware(
-				{ path: '/wp/v2/posts/7', method: 'PUT', data: {} },
-				passThrough
+			(
+				await middleware(
+					{ path: '/wp/v2/posts/7', method: 'PUT', data: {} },
+					passThrough
+				)
 			).data.base_version
 		).toBeUndefined();
 	} );

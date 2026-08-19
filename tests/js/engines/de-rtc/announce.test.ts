@@ -77,7 +77,9 @@ describe( 'de-rtc announce model', () => {
 	function makeSession() {
 		const entity = createDeRtcEngine().createEntity( {
 			syncConfig,
-			objectType: 'postType/post',
+			// A type WITHOUT a commit route: these suites pin the transport
+			// proposal lane (collections/unsupported types still use it).
+			objectType: 'postType/book',
 			objectId: '1',
 		} as any );
 		const session = entity.createSession();

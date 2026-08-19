@@ -87,7 +87,9 @@ describe( 'createDeRtcEngine', () => {
 	function makeEntity() {
 		return createDeRtcEngine().createEntity( {
 			syncConfig,
-			objectType: 'postType/post',
+			// A type WITHOUT a commit route: these suites pin the transport
+			// proposal lane (collections/unsupported types still use it).
+			objectType: 'postType/book',
 			objectId: '1',
 		} as any );
 	}

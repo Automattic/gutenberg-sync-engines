@@ -62,9 +62,16 @@ export function attachCounters( page ) {
 		}
 	};
 	const isSync = ( url ) => decoded( url ).includes( 'wp-sync/v1' );
+	// De-rtc commits ride the autosave endpoint (TODO-20 stage 2) — count
+	// them as sync traffic (they replaced transport proposal rows). The
+	// commit shape is identified by its body, so editor-native autosaves
+	// stay out of the tally.
+	const isCommit = ( request ) =>
+		decoded( request.url() ).includes( '/autosaves' ) &&
+		( request.postDataBuffer()?.includes( 'proposal_id' ) ?? false );
 	page.on( 'request', ( request ) => {
 		const url = decoded( request.url() );
-		if ( ! url.includes( 'wp-sync/v1' ) ) {
+		if ( ! url.includes( 'wp-sync/v1' ) && ! isCommit( request ) ) {
 			return;
 		}
 		c.requests += 1;
@@ -78,7 +85,7 @@ export function attachCounters( page ) {
 		}
 	} );
 	page.on( 'response', async ( response ) => {
-		if ( ! isSync( response.url() ) ) {
+		if ( ! isSync( response.url() ) && ! isCommit( response.request() ) ) {
 			return;
 		}
 		try {

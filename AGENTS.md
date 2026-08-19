@@ -559,6 +559,12 @@ they exist so a failure is observable without re-instrumenting:
   one synthesized, never-stored snapshot. The active typist advances
   by hash and downloads nothing; row bytes no longer scale with
   document size (the TODO-10 hour soak's PHP-memory cliff, closed).
+  Stage 2 completes the Save/Sync inversion: sessions COMMIT through
+  the ordinary autosave endpoint (`WP_De_RTC_Autosave_Commits`
+  intercepts the commit shape; editor-native autosaves pass through),
+  the transport carries ZERO proposals, and editor saves settle-and-
+  hold the commit lane (`prepareForSave`) so a save can never
+  self-conflict with the session's own in-flight commit (fuzzer-found).
   Do NOT reintroduce a `content` entry into de-rtc's property lane —
   it silently re-carries the whole document per announce (found by
   wire inspection; stripped on both sides).
