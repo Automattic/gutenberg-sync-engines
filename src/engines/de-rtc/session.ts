@@ -281,6 +281,18 @@ export function createDeRtcSessionCodec(
 			! dirty ||
 			inFlight ||
 			commitsHeld > 0 ||
+			// The server merged peers' work into our last proposal and the
+			// catch-up snapshot has not landed: we know a newer version
+			// exists but not what it contains, so bridge.lastVersion() is
+			// already stale. Proposing now would declare that dead base,
+			// and the server would three-way-merge our OWN just-accepted
+			// keystroke as a foreign concurrent change — both sides
+			// changed the block, so it parks and canonical wins. The rest
+			// of a typing burst evaporated that way (e2e, slow CI hosts:
+			// " from two" collapsing to " "). Queue instead: dirty holds
+			// the burst until the snapshot settles it against the version
+			// it was really written on top of.
+			pendingOwnMergeSeq > 0 ||
 			! localUpdateListener ||
 			! bridge.isBootstrapped()
 		) {

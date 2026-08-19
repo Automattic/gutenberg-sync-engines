@@ -193,8 +193,19 @@ test.describe( 'Collaboration - de-rtc engine', () => {
 
 		// One proposal lands first; the other arrives with a stale base and
 		// the SERVER rebases it over the accepted edit.
-		await page1.keyboard.type( ' from one' );
-		await page2.keyboard.type( ' from two' );
+		//
+		// Type BOTH bursts at once, a keystroke at a time: typed instantly
+		// on a fast host, each burst is already complete before its first
+		// commit goes out, so a single proposal carries the whole thing
+		// and the interleaving this test is named for never happens. The
+		// delay makes each commit's response land mid-burst on every host
+		// — which is how a slow CI runner caught the rest of a burst
+		// evaporating (" from two" collapsing to " ", see the pending-own-
+		// merge commit hold in the de-rtc session).
+		await Promise.all( [
+			page1.keyboard.type( ' from one', { delay: 150 } ),
+			page2.keyboard.type( ' from two', { delay: 150 } ),
+		] );
 
 		for ( const currentEditor of [ editor, editor2 ] ) {
 			await expect( async () => {

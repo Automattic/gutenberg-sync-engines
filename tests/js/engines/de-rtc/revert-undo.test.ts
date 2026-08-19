@@ -132,7 +132,11 @@ describe( 'de-rtc revert-edit undo', () => {
 		manager.undo();
 		expect( manager.hasRedo() ).toBe( true );
 
-		ownRow( 'v4', 'v3', contentOf( A, { ...B, attributes: { content: 'Beta anew' } } ) );
+		ownRow(
+			'v4',
+			'v3',
+			contentOf( A, { ...B, attributes: { content: 'Beta anew' } } )
+		);
 		expect( manager.hasRedo() ).toBe( false );
 	} );
 

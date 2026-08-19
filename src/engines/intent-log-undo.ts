@@ -443,6 +443,9 @@ export function createIntentLogUndoManager(
 	 * Every member still unacked: the whole unit is cancelable — undo
 	 * inside the settle window cancels the pending intents instead of
 	 * being a silent no-op (TODO-5).
+	 *
+	 * @param unit The undo unit to test.
+	 * @return Whether none of the unit's members have reached the server.
 	 */
 	const isFullyPending = ( unit: UndoUnit ): boolean =>
 		unit.members.every(

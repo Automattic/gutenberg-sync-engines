@@ -231,6 +231,55 @@ describe( 'de-rtc announce model', () => {
 		).toHaveLength( 1 );
 	} );
 
+	it( 'holds commits after a merged own announcement so the rest of a typing burst never declares the stale base', () => {
+		const { entity, session, sent } = makeSession();
+		session.receiveUpdate( snapshotRow( 'v1', contentOf( BLOCK_A ) ) );
+
+		// Keystroke 1 commits immediately.
+		entity.applyLocalChanges(
+			{ blocks: [ BLOCK_B ] } as any,
+			'editor',
+			{}
+		);
+		const proposal = JSON.parse( sent[ 0 ].data );
+		const clientId = Number( proposal.proposalId.split( '-' )[ 1 ] );
+
+		// The server merged a peer's concurrent edit into it: hash differs,
+		// so we are told v2 exists but do not hold its content yet.
+		session.receiveUpdate(
+			announceRow( 'v2', 'merged-differs', clientId, proposal.proposalId )
+		);
+		const proposalsBefore = sent.filter(
+			( update ) => DE_RTC_PROPOSAL_TYPE === update.type
+		).length;
+
+		// The REST of the burst arrives during the catch-up round trip.
+		// Proposing now would declare v1 — a base whose canonical content
+		// already moved — and the server would read our OWN accepted
+		// keystroke as a foreign concurrent change and park the rest.
+		entity.applyLocalChanges(
+			{ blocks: [ BLOCK_C ] } as any,
+			'editor',
+			{}
+		);
+		expect(
+			sent.filter( ( update ) => DE_RTC_PROPOSAL_TYPE === update.type )
+		).toHaveLength( proposalsBefore );
+
+		// The catch-up snapshot releases the hold, and the queued burst
+		// goes out against the version it was really written on top of.
+		session.receiveUpdate(
+			snapshotRow( 'v2', contentOf( BLOCK_B, BLOCK_A ) )
+		);
+		const proposals = sent.filter(
+			( update ) => DE_RTC_PROPOSAL_TYPE === update.type
+		);
+		expect( proposals.length ).toBe( proposalsBefore + 1 );
+		expect(
+			JSON.parse( proposals[ proposals.length - 1 ].data ).baseVersion
+		).toBe( 'v2' );
+	} );
+
 	it( 'incorporates the fetched snapshot for a merged own proposal, keeping newer local edits', () => {
 		const { entity, session, sent } = makeSession();
 		session.receiveUpdate( snapshotRow( 'v1', contentOf( BLOCK_A ) ) );

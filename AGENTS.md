@@ -572,6 +572,20 @@ the operational facts and cites V1.md items where one applies.
   Do NOT reintroduce a `content` entry into de-rtc's property lane —
   it silently re-carries the whole document per announce (found by
   wire inspection; stripped on both sides).
+  A second commit hold matters just as much: while `pendingOwnMergeSeq`
+  is set — the server merged peers' work into our proposal, so a newer
+  version exists whose content we do not hold yet — `maybePropose`
+  must NOT build a proposal. Its base would be the dead pre-merge
+  version, and the server would three-way-merge our OWN just-accepted
+  keystroke as a foreign concurrent change: both sides changed the
+  block, so it parks and canonical wins. That silently ate the rest of
+  every typing burst that straddled a commit round trip (" from two"
+  collapsing to " "), and it only showed up on hosts slow enough to
+  split a burst across commits — fast machines finish the burst before
+  the first commit leaves. Regression-tested deterministically in
+  `tests/js/engines/de-rtc/announce.test.ts`; the de-rtc e2e
+  concurrency spec now types with a per-keystroke delay so the
+  interleaving happens on every host, not just slow ones.
 - **Intent-log observed-baseline residuals** (the echo race is FIXED — capture
   now diffs the editor tree against the document state that tree reflects and
   authors at its seq; see the "THE OBSERVED BASELINE" note in
