@@ -25,8 +25,8 @@ a merge.
 | A1 intent-log empty-genesis reload stall | A | done | 1 | loop/a1 | verifier PASS (cycle 4); root cause: pre-init edits dropped |
 | A10 stale A1-OPEN note in AGENTS.md | A | done | 1 | loop/a10 | verifier PASS (cycle 5); MERGE ORDER: loop/a1 before or with loop/a10 |
 | A4 yjs genesis rich-text defect | A | done | 1 | loop/a4 | verifier PASS (cycle 6); selector-sourced rich text split |
-| A5 announce-inversion verification debt | A | in-progress | 1 | loop/a5 | sub-item 3 done; sub-item 1 soak ran — convergence/saves/memory green but FOUND A11 (request-rate runaway); soak re-run blocked on A11. Sub-item 2 (WS fuzz) still to run |
-| A11 de-rtc session request-rate runaway | A | queued | 0 | — | filed cycle 8 from the hour soak: sync request rate grows linearly with session age (85 → 4435 req/min/window; ~55 polls/s + ~19 commit POSTs/s by hour end, whole doc per commit). Per-request bytes stay flat (~5.7 KB) — the announce model itself holds. Suspect a leaked repoll/settle loop in the client. Repro: soak=300 shows the linear ramp in minuteSamples. Acceptance: re-run `soak-transport.mjs engine=de-rtc transport=http-polling windows=3 soak=3600` — request rate flat across the hour, plus the A5.1 gates |
+| A5 announce-inversion verification debt | A | in-progress | 1 | loop/a5 | sub-items 1+3 done (soak gates pass — see cycle 9 correction; docs committed); sub-item 2 (de-rtc/websocket fuzz) remains, then verifier |
+| A11 de-rtc session request-rate runaway | A | parked | 1 | — | CLOSED-INVALID (cycle 9): the soak's minuteSamples are CUMULATIVE counters; the deltas are a flat ~75 req/min/window all hour. No runaway exists — cycle 8 misread the data. Server capture confirms flat sync-frame rate. Full diagnosis in the cycle-9 log |
 | A2 e2e flake stabilization | A | queued | 0 | — | 3x consecutive retry-free full runs |
 | A3 websocket fixme re-enable | A | queued | 0 | — | prefer the real-daemon lane |
 | A8 full fuzzer matrix soak | A | blocked | 0 | — | exit gate; runs after A1–A7 |
@@ -58,6 +58,35 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
 None.
 
 ## Cycle log
+
+### Cycle 9 — 2026-08-19 — A11 (closed invalid; cycle-8 correction)
+- Did: reproduced with a 5-minute soak while `wp collaboration
+  capture` recorded the full server-side request stream. VERDICT: the
+  "runaway" does not exist. The soak's minuteSamples snapshot
+  CUMULATIVE Playwright counters; cycle 8 read them as per-minute
+  rates. The deltas are constant ~73-75 requests/min/window across the
+  whole hour (≈55 polls + ~17 commits + auxiliary), and the capture's
+  server-side sync frames are flat (~165/min total, 3 windows).
+- What IS true at hour scale, correcting cycle 8's record: request
+  rate flat; poll responses 2.5-4 KB avg; storage rows constant-size;
+  peak PHP memory 9 MB (cliff closed). What grows with document size
+  is the DESIGNED per-incorporation cost: 279 accepted commits in
+  5.5 min carried whole content up (plus the autosave REST echo down),
+  and behind peers downloaded ~1.1 synthesized snapshots per commit
+  (554 fetch rows → 316 snapshot answers; hash matches suppress the
+  rest). Wire download therefore scales with doc size × incorporation
+  rate while actively co-editing — the announce model's intended
+  trade, already documented in the A5.3 docs pass; the commit-cadence
+  dial (B4) is the lever.
+- A5.1 gate ruling recorded for the verifier: the byte CLIFF the gate
+  targets (stored rows, join tail, PHP memory, poll payloads) is
+  structurally closed — PASS. Per-incorporation content transfer is
+  design, not the cliff.
+- Ledger changes: A11 parked as CLOSED-INVALID (no code change, branch
+  deleted). A5 sub-item 1 marked passed; sub-item 2 (WS fuzz) next.
+- Observation, not filed: a few synthesized snapshot versions were
+  delivered up to 5× (re-fetches during rapid incorporation) — minor
+  wire inefficiency, post-v1 material at most.
 
 ### Cycle 8 — 2026-08-19 — A5 (soak collected; A11 filed)
 - Did: collected the hour soak. GREEN gates: convergence (CONVERGED in
@@ -264,6 +293,11 @@ the agent memory directory; keep repo-specific lessons here.
   mid-cycle (cycle 4: a foreign V1.md edit rode loop/a1 and failed
   verification for the whole item). Preserve foreign commits on their
   own branch, never discard them.
+- The transport soak's `minuteSamples` snapshot CUMULATIVE counters —
+  compute deltas before reasoning about rates. Cycle 8 filed a
+  nonexistent "runaway" from reading them as per-minute rates; the
+  correction cost a full diagnosis cycle. When a curve looks alarming,
+  first ask whether the counter resets.
 - A bootstrap-time recovery that syncs buffered pre-init work must not
   run synchronously on snapshot receipt: the genesis snapshot is only
   the FIRST row of its response, and a rejoiner's history replays right
