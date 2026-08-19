@@ -7,7 +7,8 @@ branch. Newest cycle-log entries go on top.
 
 **Loop status:** RUNNING
 **Base branch:** chriszarate/loop-v1
-**Current item:** none
+**Current item:** A5 (in-progress; hour soak running detached, PID on
+the executor's host — log at the session scratchpad `a5-soak.log`)
 
 ## Queue
 
@@ -24,7 +25,7 @@ a merge.
 | A1 intent-log empty-genesis reload stall | A | done | 1 | loop/a1 | verifier PASS (cycle 4); root cause: pre-init edits dropped |
 | A10 stale A1-OPEN note in AGENTS.md | A | done | 1 | loop/a10 | verifier PASS (cycle 5); MERGE ORDER: loop/a1 before or with loop/a10 |
 | A4 yjs genesis rich-text defect | A | done | 1 | loop/a4 | verifier PASS (cycle 6); selector-sourced rich text split |
-| A5 announce-inversion verification debt | A | queued | 0 | — | 3 sub-items; hour soak is wall-clock long |
+| A5 announce-inversion verification debt | A | in-progress | 1 | loop/a5 | sub-item 3 (docs pass) committed; sub-item 1 (hour soak) running; sub-item 2 (de-rtc/websocket fuzz) queued behind the soak |
 | A2 e2e flake stabilization | A | queued | 0 | — | 3x consecutive retry-free full runs |
 | A3 websocket fixme re-enable | A | queued | 0 | — | prefer the real-daemon lane |
 | A8 full fuzzer matrix soak | A | blocked | 0 | — | exit gate; runs after A1–A7 |
@@ -56,6 +57,28 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
 None.
 
 ## Cycle log
+
+### Cycle 7 — 2026-08-19 — A5 announce-inversion verification debt (started)
+- Did: preflight re-fixed the double-mount arrangement (browser suites
+  re-activate the mapping copy every run — now a standing preflight
+  step). Launched sub-item 1, the hour-scale soak
+  (`soak-transport.mjs engine=de-rtc transport=http-polling windows=3
+  soak=3600`), detached against the tests env (WP_BASE_URL :8894);
+  startup healthy (probes ~1.3 s, first periodic save ok). While it
+  runs, completed sub-item 3: the wire-consistency pass in
+  `docs/engine-comparison.md` (scenarios A–G, resource-profile prose,
+  wire-format parity cell, first known-gaps bullet) rewritten to the
+  shipped announce/fetch/commit model, spot-checked against
+  `wpDeRtcAnnounce.php` row types and AGENTS.md's inversion notes;
+  Scenario C gained the commit-hold rule. Doc stays number-free.
+- Acceptance: pending — soak must finish (convergence gate, no
+  OOM/500s, saves green, download per user-hour independent of doc
+  size; JSON summary to be recorded here) and sub-item 2
+  (`npm run fuzz -- --combos=de-rtc/websocket`) runs after the soak
+  frees the tests env. Verifier not yet requested.
+- Verifier: not yet requested (item continues next cycle).
+- Ledger changes: A5 queued → in-progress (branch loop/a5, 1 commit,
+  attempt 1).
 
 ### Cycle 6 — 2026-08-19 — A4 yjs genesis rich-text defect
 - Did: fixed genesis mapping in
