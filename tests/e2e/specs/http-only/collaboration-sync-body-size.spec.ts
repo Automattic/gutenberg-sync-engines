@@ -6,10 +6,7 @@ import type { RequestUtils } from '@wordpress/e2e-test-utils-playwright';
 /**
  * Internal dependencies
  */
-import {
-	test,
-	expect,
-} from '../../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures';
+import { test, expect } from '../../config/collaboration-fixtures';
 import { SECOND_USER } from '../../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures/collaboration-utils';
 
 const EXTRA_POST_COUNT = 40;
