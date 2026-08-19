@@ -771,7 +771,18 @@ each item restores):
   you are actively editing, and the server's parked conflicts — become
   pending edits requiring explicit adoption. The interaction model is
   validated with a clickable prototype BEFORE plumbing; framework SPI
-  work follows the validated prototype, informed by it. Original
+  work follows the validated prototype, informed by it. Prototype v2
+  review outcomes (2026-08-18): interruption budget and the
+  Keep-mine/Take-theirs verbs approved as prototyped; the pending
+  panel is SUMMARY-ONLY (no actions — each row spotlights its inline
+  card; all resolution happens at the block, parked conflicts
+  included, via their own inline card); modify-before-adopt MUST use
+  the block editor itself ("adopt for editing" applies the parked
+  content AND attributes to the canvas and hands over the caret —
+  conflicts can live in non-content attributes, so a side textarea is
+  ruled out; `restoreProposalWithChanges` is the underlying API); no
+  version chip in product UI (versions are operator/diagnostic
+  surface only). Original
   vision statement, for the record: editors confirm their own changes
   and choose to adopt others'; pending edits are the reviewable,
   adoptable unit; sync cadence is a host/user choice ("automated
