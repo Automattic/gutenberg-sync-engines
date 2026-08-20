@@ -616,14 +616,23 @@ the operational facts and cites V1.md items where one applies.
     loses them with the outbox: the undone edit (already accepted
     server-side) resurrects for everyone. The general unacked-edit-loss
     window, but undo makes it visible (the user watched the text vanish).
-  - OPEN (pre-existing, found 2026-08-17; V1.md A1): after a mid-session reload of
-    one participant on an EMPTY-genesis room, that participant's next
-    block insert can stay local forever — the room log never receives the
-    intent (the sending stalls; the room holds only the genesis snapshot).
-    Replay: `npm run fuzz -- --combos=intent-log/http-polling
-    --seed-list=6 --steps=14 --profile=concurrency` (schedule-dependent:
-    the failing schedule needs the reload milestone to land at step 0 on
-    the empty template).
+  - FIXED (V1.md A1, branch `loop/a1`): an edit made DURING the join
+    round trip used to stay local forever on an empty-genesis room
+    (found 2026-08-17 as a reload straddling a block insert — update()
+    dropped pre-init trees and the empty-genesis bootstrap pushes
+    nothing that would reconcile). update() now buffers the latest
+    pre-init tree and an empty-genesis bootstrap captures it via a
+    DEFERRED recovery that runs only if the document is still empty
+    after the delivery burst — a rejoiner's history replays right
+    behind the genesis row, and capturing against the bare genesis
+    baseline would duplicate every saved block (fuzz:quick caught the
+    synchronous variant). Regression tests in
+    `tests/js/engines/intent-log-manager.test.ts`; the old replay
+    (`npm run fuzz -- --combos=intent-log/http-polling --seed-list=6
+    --steps=14 --profile=concurrency`) passes. Pre-init edits on
+    NON-empty bootstraps are still discarded (reconciled by the
+    bootstrap push, which clobbers them) — pre-existing behavior,
+    unchanged.
 
 ## Deep history
 
