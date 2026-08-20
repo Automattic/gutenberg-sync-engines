@@ -497,9 +497,10 @@ Open work items live in `V1.md` at the repo root, each with acceptance
 criteria and a lane (autonomous vs human-review); this section carries
 the operational facts and cites V1.md items where one applies.
 
-- `composer lint` currently reports ~275 errors + ~29 warnings in the plugin's
-  own `includes/` and `tests/` PHP — pre-existing standards debt, in
-  scope for v1 (V1.md A6). `composer format` auto-fixes a handful.
+- `composer lint` is clean (zero errors, zero warnings) since the v1
+  loop's A6 burn-down (branch `loop/a6`) — keep it that way; the
+  excludes (`gutenberg/`, frozen cores, vendored libraries) are by
+  design and must not widen.
 - All three engines have **collaborative undo**: intent-log via inverse
   intents over the accepted log (`src/engines/intent-log-undo.ts` — a
   still-pending unit CANCELS with an outbox removal plus a wire-chasing
