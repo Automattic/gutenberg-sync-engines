@@ -26,8 +26,8 @@ a merge.
 | A4 yjs genesis rich-text defect | A | done | 1 | loop/a4 | verifier PASS (cycle 6); selector-sourced rich text split |
 | A5 announce-inversion verification debt | A | done | 1 | loop/a5 | verifier PASS (cycle 10); WS fuzz 0/5 → 5/5 via daemon room scan + engine cache flush |
 | A11 de-rtc session request-rate runaway | A | parked | 1 | — | CLOSED-INVALID (cycle 9): the soak's minuteSamples are CUMULATIVE counters; the deltas are a flat ~75 req/min/window all hour. No runaway exists — cycle 8 misread the data. Server capture confirms flat sync-frame rate. Full diagnosis in the cycle-9 log |
-| A2 e2e flake stabilization | A | in-progress | 1 | loop/a2 | streak reset by run 4 (53/55). Blocked on A12 (the table-cell "flake" is a real engine-recovery bug) and A13 |
-| A12 intent-log stale-base voids lose live edits | A | in-progress | 2 | loop/a12 | attempts 1-2: recapture recovery (peers converge; server self-repairs) — but the mid-burst horizon-reset TEAR persists 4/8. Attempt 3 (final): defer resets while a burst is active |
+| A2 e2e flake stabilization | A | blocked | 1 | loop/a2 | login flake FIXED on the branch; acceptance unreachable while A12 (parked) fires ~25-50% of runs; A13 also pending |
+| A12 intent-log stale-base voids lose live edits | A | parked | 3 | loop/a12 | PARKED after 3 attempts (cycle 18) — see Parked section. Branch holds real, verified improvements worth merging |
 | A13 de-rtc burst-eat recurrence under load | A | queued | 0 | — | filed cycle 15: "Second from two" → "Second " in full-suite run 4 — the signature the pendingOwnMergeSeq commit-hold was meant to close; 0-in-6 solo repetitions, so load-schedule-dependent. Needs a capture-instrumented hunt like A12's |
 | A3 websocket fixme re-enable | A | queued | 0 | — | prefer the real-daemon lane |
 | A8 full fuzzer matrix soak | A | blocked | 0 | — | exit gate; runs after A1–A7 |
@@ -42,6 +42,26 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
 `blocked` (dependency not met).
 
 ## Parked / escalated
+
+- **A12 (3 attempts, cycle 18).** Intent-log loses/mangles a live
+  client's mid-burst edits when the room compacts UNDER the burst.
+  Chain: coarse table captures write 3 rows per keystroke → the room
+  crosses the 100-row checkpoint trim mid-burst → the client's
+  in-flight intents void as stale-base while the same burst's later
+  keystrokes land in a different frame → torn splices on the server
+  and a diverged author canvas. Three layered fixes on loop/a12 (all
+  Jest-pinned, suites green, each verified to help): (1) stale-void
+  recovery re-captures the last editor-fed tree — closes the PEER-side
+  silent loss and lets the server self-repair; (2) horizon resets with
+  local canvas work recapture instead of clobbering the canvas;
+  (3) the session DEFERS a horizon reset behind un-settled local work
+  so server-visible frames never mix. The repetition hammer
+  (`--repeat-each=8 -g "intent-log engine.*mix of block types"`) still
+  fails ~4/8 with the same splice family. For the human: the branch is
+  worth merging as-is (strictly better than base); the remaining
+  schedule needs fresh per-build wire evidence, or attack the TRIGGER
+  instead — batch coarse table captures (3 rows/keystroke is the row
+  explosion driving mid-burst trims) or pace the checkpoint trim.
 
 - **Foreign V1.md edit parked on `v1-m1-maybe` (cycle 4, for the
   human).** While cycle 4 was mid-flight, another session (commit
@@ -59,6 +79,20 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
 None.
 
 ## Cycle log
+
+### Cycle 18 — 2026-08-19 — A12 attempt 3; parked at 3 strikes
+- Did: implemented the reset deferral (session buffers a horizon-reset
+  snapshot and every row behind it while the outbox holds un-settled
+  work; releases when dispositions drain it; manager skips stale-void
+  recapture while deferred). Updated the session Jest test to pin the
+  new contract (defer -> settle -> reset). Full Jest 527, sweep green.
+  The 8x repetition still fails 4/8 with the same splice family —
+  three attempts spent; parked per the 3-strike rule with the full
+  diagnosis and a merge recommendation (the branch is strictly better
+  than base).
+- Ledger changes: A12 in-progress -> parked (3). A2 in-progress ->
+  blocked (acceptance unreachable while A12 fires; A13 still pending).
+  Next: A13.
 
 ### Cycle 17 — 2026-08-19 — A12 attempt 2 (tear root-caused; one attempt left)
 - Did: capture-traced the failing schedule end to end. The full chain:
