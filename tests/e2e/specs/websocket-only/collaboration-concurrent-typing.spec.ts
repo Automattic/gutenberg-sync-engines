@@ -34,17 +34,12 @@ async function getParagraphContents( page: Page ): Promise< string[] > {
 }
 
 test.describe( 'Collaboration - WebSocket Concurrent Typing', () => {
-	// SKIPPED since the yjs-relay engine was removed: the test WS provider
-	// (tests/e2e/plugins/rtc-websocket-provider) is a pure PEER relay — no
-	// WP server in the loop — which only demonstrates collaboration under a
-	// client-merging engine. Both remaining engines are server-authoritative
-	// (yjs-server clients wait for the server's genesis snapshot before
-	// applying or emitting changes, so nothing ever syncs over a serverless
-	// relay). Re-enable by either pointing this suite at the plugin's REAL
-	// websocket transport (the `wp collaboration sync-server` PHP daemon,
-	// which ingests through the engine seam) or giving the fixture a server
-	// lane.
-	test.fixme();
+	// Runs against the plugin's REAL websocket transport: the suite's
+	// config launches the `wp collaboration sync-server` PHP daemon (the
+	// engine seam and all) via tests/e2e/bin/rtc-real-ws-daemon.mjs and
+	// selects the websocket transport on the tests site for the run. The
+	// old PEER-relay fixture lane (the test WS provider plugin) only
+	// demonstrated client-merging engines and none remains.
 
 	test( 'does not lose characters when two users rapidly type in different paragraphs', async ( {
 		collaborationUtils,
