@@ -1413,6 +1413,16 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			) {
 				return;
 			}
+			if ( state.session.hasDeferredReset() ) {
+				/*
+				 * A horizon reset is queued behind this burst: these voids
+				 * are the coherent old-frame remainder, and the reset's own
+				 * recapture re-derives everything at the new frame once the
+				 * outbox drains. Recapturing now would author more
+				 * old-frame intents and starve the release.
+				 */
+				return;
+			}
 			// A whole authoring ladder voids together: one recovery per burst.
 			scheduleTreeRecapture( 'stale-void-recapture' );
 		} );
