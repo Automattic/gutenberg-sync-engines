@@ -254,6 +254,23 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		}
 
 		/**
+		 * Drops the per-room state cache. A web request constructs a fresh
+		 * engine, so the cache is naturally request-scoped there; a
+		 * LONG-LIVED consumer (the websocket daemon, whose engine registry
+		 * holds one instance for the process lifetime) must call this at
+		 * its message boundary, or it keeps serving canonical state that
+		 * other processes have long since advanced. Found by the
+		 * post-inversion websocket fuzz: fetch answers synthesized from a
+		 * stale cached canonical concluded the client was current and
+		 * never returned the committed content.
+		 *
+		 * @since 0.3.0
+		 */
+		public function flush_room_state_cache(): void {
+			$this->room_states = array();
+		}
+
+		/**
 		 * Update types this engine reads or writes.
 		 *
 		 * @since 0.3.0
