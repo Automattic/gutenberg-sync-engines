@@ -33,7 +33,7 @@ a merge.
 | A3 websocket fixme re-enable | A | done | 1 | loop/a3 | verifier PASS (cycle 23) — real-daemon lane, suite 3x green retries=0. STACKED: merge a2 → a3 → a15 |
 | A15 intent-log mid-burst remote pushes eat keystrokes | A | done | 1 | loop/a15 | verifier PASS (cycle 23): typing-quiet push gate + checkpoint interval 100→500 (live-authoring-sized). STACKED on loop/a3 |
 | A8 full fuzzer matrix soak | A | blocked | 0 | — | exit gate; runs after A1–A7 |
-| B1 yjs materialization (framework) | B | queued | 0 | — | proposal only; subtree edits |
+| B1 yjs materialization (framework) | B | in-progress | 1 | loop/b1 | _save mirror + engine preference built and unit-proven (yjs 27/27, php 314, jest 526). Remaining: e2e + fuzz + proposals/b1.md. STACKED on loop/a4 |
 | B3 pending-edit inline-card UI | B | queued | 0 | — | proposal only; build to prototype decisions |
 | B4 commit-cadence dial | B | awaiting-human | 1 | loop/b4 | proposal ready (proposals/b4.md, cycle 24): dial + soak A/B (−16% req, −29% up at dial 10). Default left 0 for the human. STACKED on loop/a14 |
 | B5 review resolutions over REST | B | queued | 0 | — | proposal only; wire-protocol change |
@@ -85,6 +85,26 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
   300 s cap.
 
 ## Cycle log
+
+### Cycle 25 — 2026-08-20 — B1 built and unit-proven (proposal next)
+- Did: the recorded design, both halves. SUBTREE (the one framework
+  surface, core-data crdt-blocks.ts): every Y.Block carries `_save` —
+  the block's registered save() output for its current attributes —
+  written at creation, refreshed on attribute merges, excluded from
+  block equality, stripped before blocks reach the editor. ENGINE:
+  genesis decomposition extracted into decompose_inner_markup()
+  (wrapper + A4's selector split, one source of truth) and
+  to_serializable_block prefers `_save` over genesis wrappers/defaults;
+  the mirror's embedded text is never read (live shared text wins —
+  pinned by a stale-text PHPUnit test).
+- Green: yjs suite 27/27 (round-trips intact through the refactor);
+  full test:php 314; Jest 526; subtree rebuilt, exactly one tracked
+  source file changed, no build side-effects.
+- Next cycle: full e2e + fuzz:quick, proposals/b1.md (incl. the
+  upstreaming note), mark awaiting-human.
+- Lesson (shell): backticks inside a double-quoted fish commit message
+  execute as command substitution and silently eat the quoted word —
+  amended; use heredocs for commit messages with backticks.
 
 ### Cycle 24 — 2026-08-20 — B4 proposal ready (awaiting human)
 - Did: implemented the commit-cadence dial end to end on loop/b4
