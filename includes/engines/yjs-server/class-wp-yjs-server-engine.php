@@ -1290,6 +1290,55 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		 * @param array  $wrappers Collects clientId => wrapper (by reference).
 		 * @return \Yjs\Types\YMap[] YBlock shared types.
 		 */
+		/**
+		 * Decomposes a block's inner markup (genesis innerHTML, or a
+		 * client-maintained `_save` mirror) into the wrapper record the
+		 * materializer rebuilds from, plus the rich-text inner value:
+		 * the outer wrapper tags, and — for selector-sourced rich text
+		 * (image `caption` ← `figcaption`) — the surrounding pre/post
+		 * markup and the sub-element's own tags.
+		 *
+		 * @since 0.3.0
+		 *
+		 * @param string $markup     Inner markup (single wrapper element).
+		 * @param string $block_name Block name (for the rich-text schema).
+		 * @return array|null array{wrapper: array, text: string}, or null
+		 *                    when no single wrapper element matches.
+		 */
+		private static function decompose_inner_markup( string $markup, string $block_name ): ?array {
+			if ( ! preg_match( '/^<([a-zA-Z][a-zA-Z0-9-]*)(\s[^>]*)?>(.*)<\/\1>$/s', $markup, $matches ) ) {
+				return null;
+			}
+			$wrapper = array(
+				'open'  => '<' . $matches[1] . ( $matches[2] ?? '' ) . '>',
+				'close' => '</' . $matches[1] . '>',
+			);
+			$text    = $matches[3];
+
+			$selector = self::rich_text_source( $block_name )['selector'] ?? null;
+			if (
+				is_string( $selector ) &&
+				preg_match( '/^[a-zA-Z][a-zA-Z0-9-]*$/', $selector ) &&
+				strtolower( $selector ) !== strtolower( $matches[1] )
+			) {
+				if ( preg_match( '/^(.*)(<' . $selector . '(?:\s[^>]*)?>)(.*)(<\/' . $selector . '>)(.*)$/s', $text, $sub ) ) {
+					$wrapper['pre']        = $sub[1];
+					$wrapper['text_open']  = $sub[2];
+					$wrapper['text_close'] = $sub[4];
+					$wrapper['post']       = $sub[5];
+					$text                  = $sub[3];
+				} else {
+					$wrapper['pre'] = $text;
+					$text           = '';
+				}
+			}
+
+			return array(
+				'wrapper' => $wrapper,
+				'text'    => $text,
+			);
+		}
+
 		private static function blocks_to_yblocks( array $blocks, string $id_base, array &$wrappers ): array {
 			$yblocks = array();
 			$index   = 0;
@@ -1309,46 +1358,12 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 					continue;
 				}
 
-				$attrs = is_array( $block['attrs'] ) ? $block['attrs'] : array();
-				$text  = trim( $block['innerHTML'] );
-				if ( preg_match( '/^<([a-zA-Z][a-zA-Z0-9-]*)(\s[^>]*)?>(.*)<\/\1>$/s', $text, $matches ) ) {
-					$wrappers[ $client_id ] = array(
-						'open'  => '<' . $matches[1] . ( $matches[2] ?? '' ) . '>',
-						'close' => '</' . $matches[1] . '>',
-					);
-					$text                   = $matches[3];
-
-					/*
-					 * Selector-sourced rich text (image `caption` ←
-					 * `figcaption`): the attribute holds only the named
-					 * sub-element's inner text, never the whole stripped
-					 * markup — seeding `<img …>` into `caption` was
-					 * self-consistent for byte round-trips but destroyed
-					 * the image the moment anyone edited the caption. The
-					 * surrounding markup (and the sub-element's own tags,
-					 * when present) move into the wrapper record instead,
-					 * so materialization rebuilds the exact bytes.
-					 * Wrapper-sourced attributes (paragraph `content`,
-					 * selector null or the wrapper's own tag) keep the
-					 * original mapping.
-					 */
-					$selector = self::rich_text_source( $block['blockName'] )['selector'] ?? null;
-					if (
-						is_string( $selector ) &&
-						preg_match( '/^[a-zA-Z][a-zA-Z0-9-]*$/', $selector ) &&
-						strtolower( $selector ) !== strtolower( $matches[1] )
-					) {
-						if ( preg_match( '/^(.*)(<' . $selector . '(?:\s[^>]*)?>)(.*)(<\/' . $selector . '>)(.*)$/s', $text, $sub ) ) {
-							$wrappers[ $client_id ]['pre']        = $sub[1];
-							$wrappers[ $client_id ]['text_open']  = $sub[2];
-							$wrappers[ $client_id ]['text_close'] = $sub[4];
-							$wrappers[ $client_id ]['post']       = $sub[5];
-							$text                                 = $sub[3];
-						} else {
-							$wrappers[ $client_id ]['pre'] = $text;
-							$text                          = '';
-						}
-					}
+				$attrs      = is_array( $block['attrs'] ) ? $block['attrs'] : array();
+				$text       = trim( $block['innerHTML'] );
+				$decomposed = self::decompose_inner_markup( $text, (string) $block['blockName'] );
+				if ( null !== $decomposed ) {
+					$wrappers[ $client_id ] = $decomposed['wrapper'];
+					$text                   = $decomposed['text'];
 				}
 
 				$children  = self::blocks_to_yblocks( $block['innerBlocks'], $client_id, $wrappers );
@@ -1485,6 +1500,22 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 			}
 
 			$wrapper = $wrappers[ $client_id ] ?? self::default_wrapper( $name, $attrs );
+
+			/*
+			 * Materialization fidelity (B1): a client-maintained `_save`
+			 * mirror — the block's registered save() output for its CURRENT
+			 * attributes — outranks the genesis wrapper record and the
+			 * static defaults. It carries wrapper classes, heading levels,
+			 * attribute-derived sub-elements (an image's <img>) as the
+			 * editor itself would save them; the rich-text value inside is
+			 * ignored (the live shared text below replaces it).
+			 */
+			if ( isset( $block['_save'] ) && is_string( $block['_save'] ) && '' !== trim( $block['_save'] ) ) {
+				$decomposed = self::decompose_inner_markup( trim( $block['_save'] ), $name );
+				if ( null !== $decomposed ) {
+					$wrapper = $decomposed['wrapper'];
+				}
+			}
 
 			/*
 			 * Selector-sourced rich text (see blocks_to_yblocks): the
