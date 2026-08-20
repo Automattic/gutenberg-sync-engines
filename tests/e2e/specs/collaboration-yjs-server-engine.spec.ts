@@ -6,10 +6,7 @@ import type { RequestUtils } from '@wordpress/e2e-test-utils-playwright';
 /**
  * Internal dependencies
  */
-import {
-	test,
-	expect,
-} from '../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures';
+import { test, expect } from '../config/collaboration-fixtures';
 
 /**
  * Two-client collaboration through the yjs-server sync engine: the same

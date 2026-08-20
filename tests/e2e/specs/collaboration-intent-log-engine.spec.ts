@@ -6,10 +6,7 @@ import type { RequestUtils } from '@wordpress/e2e-test-utils-playwright';
 /**
  * Internal dependencies
  */
-import {
-	test,
-	expect,
-} from '../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures';
+import { test, expect } from '../config/collaboration-fixtures';
 // The engine's deterministic genesis id function (vector-pinned against the
 // PHP twin) — imported directly so the spec asserts EXACT id agreement.
 import { genesisSyncId } from '../../../src/engines/intent-log/sync-id.js';

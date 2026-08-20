@@ -1001,6 +1001,24 @@ describe( 'intent-log manager', () => {
 			( session as IntentLogSession ).getDocument()!.root[ 0 ].fields
 				.content.text;
 
+		it( 'REGRESSION: remote work arriving mid-burst defers its push past the typing-quiet window', async () => {
+			// A push landing while the user types remounts the caret block
+			// and the next keystrokes die in a detached node (seen on the
+			// real-websocket lane, where rows arrive per keystroke). While
+			// the editor is typing-hot, remote application must ride the
+			// settled editor sync; a quiet editor still gets it pushed.
+			const { handlers, transport } = await loadTypedRoom();
+			const editsBefore = handlers.edits.length;
+			transport.captured.session!.receiveUpdate(
+				remoteAppend( ' there' )
+			);
+			// Hot: no immediate push.
+			expect( handlers.edits.length ).toBe( editsBefore );
+			// The burst settles: the deferred sync pushes the merged view.
+			flushEditorSync();
+			expect( lastPushedContent( handlers ) ).toBe( 'Hello there' );
+		} );
+
 		it( 'REGRESSION: a keystroke racing a push does not clobber the remote text', async () => {
 			/*
 			 * The push (remote text → editor) and a live keystroke cross: the
@@ -1016,6 +1034,10 @@ describe( 'intent-log manager', () => {
 			transport.captured.session!.receiveUpdate(
 				remoteAppend( ' there' )
 			);
+			// The typed room is still hot, so the push waits out the
+			// typing-quiet gate before dispatching (the websocket-lane
+			// keystroke-eating fix); flush it to set up the race.
+			flushEditorSync();
 			expect( lastPushedContent( handlers ) ).toBe( 'Hello there' );
 
 			// The editor never rendered that push: its tree is the old text
@@ -1055,6 +1077,8 @@ describe( 'intent-log manager', () => {
 			transport.captured.session!.receiveUpdate(
 				remoteAppend( ' there' )
 			);
+			// Flush the typing-quiet-deferred push (see the sibling test).
+			flushEditorSync();
 
 			transport.captured.sent.length = 0;
 			manager.update(

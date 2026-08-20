@@ -6,10 +6,7 @@ import type { Page } from '@playwright/test';
 /**
  * Internal dependencies
  */
-import {
-	test,
-	expect,
-} from '../../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures';
+import { test, expect } from '../../config/collaboration-fixtures';
 
 /**
  * Regression test for https://github.com/WordPress/gutenberg/issues/79907.
