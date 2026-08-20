@@ -216,6 +216,116 @@ describe( 'intent-log manager', () => {
 		expect( handlers.edits ).toHaveLength( 0 );
 	} );
 
+	it( 'REGRESSION: an edit made during the join round trip is captured at bootstrap (reload + insert on an empty-genesis room)', async () => {
+		// Fuzzer finding (intent-log/http-polling seed 6, concurrency
+		// profile): a participant reloads on an empty-genesis room and
+		// inserts a block before the room snapshot arrives. Pre-init
+		// edits cannot be authored (no document yet) and the capture lane
+		// is edge-triggered, so the insert stayed local forever — the
+		// empty-genesis bootstrap skips the reconciling push too.
+		const { manager, transport } = await loadManagedEntity();
+
+		manager.update(
+			'postType/post',
+			'1',
+			{
+				blocks: [
+					{
+						name: 'core/paragraph',
+						attributes: { content: 'typed during join' },
+						innerBlocks: [],
+					},
+				],
+			},
+			'gutenberg'
+		);
+		// Still pre-snapshot: nothing can be authored yet.
+		expect( transport.captured.sent ).toHaveLength( 0 );
+
+		// The empty-genesis snapshot lands: the buffered tree must be
+		// captured against the fresh baseline and reach the wire. The
+		// recovery is deferred past the delivery burst (a rejoiner's
+		// history replays right behind the genesis row), so advance the
+		// clock.
+		transport.captured.session!.receiveUpdate( snapshotRow( [] ) );
+		expect( transport.captured.sent ).toHaveLength( 0 );
+		jest.advanceTimersByTime( 1 );
+
+		expect( transport.captured.sent.length ).toBeGreaterThan( 0 );
+		const types = transport.captured.sent.map(
+			( update ) => JSON.parse( update.data ).type
+		);
+		expect( types ).toContain( 'insert_block' );
+		expect(
+			transport.captured.sent.some( ( update ) =>
+				update.data.includes( 'typed during join' )
+			)
+		).toBe( true );
+	} );
+
+	it( 'REGRESSION: a rejoin with history discards the buffered pre-init tree (no duplicated blocks)', async () => {
+		// The counterpart guard: a REJOINER's room also opens with the
+		// (empty) genesis snapshot, but its whole history replays in the
+		// same delivery burst. The buffered pre-init tree is an echo of
+		// the SAVED content the editor rendered — capturing it against
+		// the bare genesis baseline re-authors every saved block as new
+		// work, and the history rows landing beside those fabrications
+		// duplicate every block (found by fuzz:quick). A document that is
+		// non-empty after the burst must discard the buffer.
+		const { manager, transport } = await loadManagedEntity();
+
+		// Pre-init: the editor hands over its parsed saved content (one
+		// paragraph, with its persisted identity) plus early typing.
+		manager.update(
+			'postType/post',
+			'1',
+			{
+				blocks: [
+					{
+						name: 'core/paragraph',
+						attributes: {
+							content: 'saved marker',
+							metadata: { syncId: 'h1' },
+						},
+						innerBlocks: [],
+					},
+				],
+			},
+			'gutenberg'
+		);
+
+		// The join response: empty genesis, then history replays the
+		// same block — one synchronous burst.
+		transport.captured.session!.receiveUpdate( snapshotRow( [] ) );
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				intentId: 'hist-1',
+				actorId: 'u9c9',
+				baseSeq: 0,
+				txnId: null,
+				type: 'insert_block',
+				payload: {
+					block: {
+						syncId: 'h1',
+						blockType: 'core/paragraph',
+						text: 'saved marker',
+					},
+					parentId: null,
+					afterSiblingId: null,
+				},
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.INTENT,
+		} );
+		jest.advanceTimersByTime( 1 );
+
+		// The buffer was discarded: nothing was re-authored.
+		expect(
+			transport.captured.sent.filter(
+				( update ) => 'insert_block' === JSON.parse( update.data ).type
+			)
+		).toHaveLength( 0 );
+	} );
+
 	it( 'pushes the snapshot document into the editor, captures edits as intents, and suppresses the echo', async () => {
 		const { manager, handlers, transport } = await loadManagedEntity();
 
