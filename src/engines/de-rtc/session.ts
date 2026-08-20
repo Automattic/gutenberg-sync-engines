@@ -117,6 +117,22 @@ export interface DeRtcSessionOptions {
 	commit?: DeRtcCommitAdapter;
 }
 
+/*
+ * How long the doc must be free of LOCAL edits before a canonical
+ * snapshot may be applied to it (see the quiet gate inside the session).
+ * Module-level so tests can compress the window.
+ */
+let burstQuietMs = 500;
+
+/**
+ * Test-only override for the typing-burst quiet window.
+ *
+ * @param ms Quiet window in milliseconds (0 disables the deferral).
+ */
+export function setDeRtcBurstQuietMsForTesting( ms: number ): void {
+	burstQuietMs = ms;
+}
+
 /**
  * Creates the de-rtc engine's session codec for one entity/room.
  *
@@ -358,10 +374,49 @@ export function createDeRtcSessionCodec(
 		bridge.applyCanonical( version, content, properties );
 	}
 
+	/*
+	 * Typing-burst quiet gate: applying ANY canonical snapshot to the doc
+	 * mid-burst clobbers the canvas — the framework pushes the rewritten
+	 * blocks into the editor, the block under the caret remounts, and the
+	 * user's REMAINING keystrokes land in a detached node and vanish (the
+	 * "Second from two" -> "Second " e2e collapse; the dirty/inFlight
+	 * deferral has a hole exactly one inter-keystroke gap wide, where
+	 * dirty is momentarily false). Snapshots that arrive while the user
+	 * typed within the last BURST_QUIET_MS are stashed (newest wins) and
+	 * re-injected through processRow once the burst quiets — the same
+	 * reason intent-log defers its capture-driven pushes past the burst.
+	 */
+	let lastLocalEditAt = 0;
+	let deferredSnapshotRow: EngineUpdate | null = null;
+	let quietRetryTimer: ReturnType< typeof setTimeout > | null = null;
+
+	function typingQuiet(): boolean {
+		return Date.now() - lastLocalEditAt >= burstQuietMs;
+	}
+
+	function scheduleQuietRetry(): void {
+		if ( null !== quietRetryTimer ) {
+			return;
+		}
+		quietRetryTimer = setTimeout( () => {
+			quietRetryTimer = null;
+			if ( ! typingQuiet() ) {
+				scheduleQuietRetry();
+				return;
+			}
+			const row = deferredSnapshotRow;
+			deferredSnapshotRow = null;
+			if ( row ) {
+				processRow( row );
+			}
+		}, burstQuietMs );
+	}
+
 	function onDocUpdate( _update: Uint8Array, origin: unknown ): void {
 		if ( DE_RTC_REMOTE_ORIGIN === origin ) {
 			return;
 		}
+		lastLocalEditAt = Date.now();
 		dirty = true;
 		maybePropose();
 	}
@@ -518,6 +573,13 @@ export function createDeRtcSessionCodec(
 			}
 
 			case DE_RTC_SNAPSHOT_TYPE: {
+				if ( ! typingQuiet() ) {
+					// Mid-burst: stash (newest wins) and re-inject at quiet
+					// (see BURST_QUIET_MS above).
+					deferredSnapshotRow = update;
+					scheduleQuietRetry();
+					return;
+				}
 				const snapshotSeq = versionSeq( decoded.version );
 				// The in-flight fetch is answered; anything announced since
 				// re-fetches below (via settleQueued's maybeFetch tail).

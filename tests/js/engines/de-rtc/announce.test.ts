@@ -5,7 +5,14 @@
  * will actually use it, and incorporates fetched snapshots for merged
  * own proposals (preserving locally-edited blocks).
  */
-import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	jest,
+} from '@jest/globals';
 import * as Y from 'yjs';
 
 import { hashDeRtcContent } from '../../../../src/engines/de-rtc/descriptor';
@@ -15,6 +22,7 @@ import {
 	DE_RTC_FETCH_TYPE,
 	DE_RTC_PROPOSAL_TYPE,
 	DE_RTC_SNAPSHOT_TYPE,
+	setDeRtcBurstQuietMsForTesting,
 } from '../../../../src/engines/de-rtc/session';
 import { CRDT_RECORD_MAP_KEY } from '../../../../src/engines/yjs/constants';
 // eslint-disable-next-line import/no-unresolved -- Provided at runtime as wp.sync.
@@ -72,6 +80,14 @@ describe( 'de-rtc announce model', () => {
 
 	beforeEach( () => {
 		syncConfig = makeSyncConfig();
+		// These suites drive edits and snapshots in the same tick; the
+		// typing-burst quiet gate would defer every snapshot otherwise.
+		// The gate has its own dedicated test below.
+		setDeRtcBurstQuietMsForTesting( 0 );
+	} );
+
+	afterEach( () => {
+		setDeRtcBurstQuietMsForTesting( 500 );
 	} );
 
 	function makeSession() {
@@ -319,5 +335,58 @@ describe( 'de-rtc announce model', () => {
 			DE_RTC_PROPOSAL_TYPE
 		);
 		expect( next.baseVersion ).toBe( 'v2' );
+	} );
+
+	it( 'REGRESSION: a snapshot arriving mid-typing-burst is deferred until the burst quiets', async () => {
+		// The e2e gap: our own proposal settles by hash MID-BURST, so for
+		// one inter-keystroke window dirty and inFlight are both false —
+		// the old code applied an arriving canonical snapshot instantly,
+		// the framework pushed the rewritten blocks, the block under the
+		// caret remounted, and the user's remaining keystrokes vanished
+		// ("Second from two" -> "Second " on loaded hosts). The snapshot
+		// must wait out the typing-quiet window instead.
+		setDeRtcBurstQuietMsForTesting( 50 );
+		const { entity, session, sent } = makeSession();
+		session.receiveUpdate( snapshotRow( 'v1', contentOf( BLOCK_A ) ) );
+
+		// Typing: the edit proposes, and the proposal settles by hash —
+		// the commit slot is free while the fingers are still going.
+		entity.applyLocalChanges(
+			{ blocks: [ BLOCK_B ] } as any,
+			'editor',
+			{}
+		);
+		const proposal = JSON.parse(
+			sent.filter(
+				( update ) => DE_RTC_PROPOSAL_TYPE === update.type
+			)[ 0 ].data
+		);
+		session.receiveUpdate(
+			announceRow(
+				'v2',
+				hashDeRtcContent( proposal.proposedContent ),
+				Number( proposal.proposalId.split( '-' )[ 1 ] ),
+				proposal.proposalId
+			)
+		);
+
+		// A peer's canonical snapshot lands in that window: it must NOT
+		// apply yet (the burst is still hot).
+		session.receiveUpdate( snapshotRow( 'v5', contentOf( BLOCK_C ) ) );
+		expect(
+			JSON.stringify(
+				( entity.getEditorChanges( { blocks: [] } as any ) as any )
+					.blocks ?? []
+			)
+		).not.toContain( 'Gamma' );
+
+		// The burst quiets; the deferred snapshot applies on its own.
+		await new Promise( ( resolve ) => setTimeout( resolve, 140 ) );
+		expect(
+			JSON.stringify(
+				( entity.getEditorChanges( { blocks: [] } as any ) as any )
+					.blocks ?? []
+			)
+		).toContain( 'Gamma' );
 	} );
 } );
