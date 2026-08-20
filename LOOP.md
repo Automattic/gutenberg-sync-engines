@@ -27,7 +27,7 @@ a merge.
 | A5 announce-inversion verification debt | A | done | 1 | loop/a5 | verifier PASS (cycle 10); WS fuzz 0/5 → 5/5 via daemon room scan + engine cache flush |
 | A11 de-rtc session request-rate runaway | A | parked | 1 | — | CLOSED-INVALID (cycle 9): the soak's minuteSamples are CUMULATIVE counters; the deltas are a flat ~75 req/min/window all hour. No runaway exists — cycle 8 misread the data. Server capture confirms flat sync-frame rate. Full diagnosis in the cycle-9 log |
 | A2 e2e flake stabilization | A | in-progress | 1 | loop/a2 | streak reset by run 4 (53/55). Blocked on A12 (the table-cell "flake" is a real engine-recovery bug) and A13 |
-| A12 intent-log stale-base voids lose live edits | A | in-progress | 1 | loop/a12 | recovery implemented (wip): peers converge now, but the AUTHOR's canvas can diverge ~2/8 under repetition. Resume point in the wip commit message |
+| A12 intent-log stale-base voids lose live edits | A | in-progress | 2 | loop/a12 | attempts 1-2: recapture recovery (peers converge; server self-repairs) — but the mid-burst horizon-reset TEAR persists 4/8. Attempt 3 (final): defer resets while a burst is active |
 | A13 de-rtc burst-eat recurrence under load | A | queued | 0 | — | filed cycle 15: "Second from two" → "Second " in full-suite run 4 — the signature the pendingOwnMergeSeq commit-hold was meant to close; 0-in-6 solo repetitions, so load-schedule-dependent. Needs a capture-instrumented hunt like A12's |
 | A3 websocket fixme re-enable | A | queued | 0 | — | prefer the real-daemon lane |
 | A8 full fuzzer matrix soak | A | blocked | 0 | — | exit gate; runs after A1–A7 |
@@ -59,6 +59,27 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
 None.
 
 ## Cycle log
+
+### Cycle 17 — 2026-08-19 — A12 attempt 2 (tear root-caused; one attempt left)
+- Did: capture-traced the failing schedule end to end. The full chain:
+  the room compacts MID-BURST (the author's own coarse table captures
+  write 3 rows per keystroke, crossing the 100-row trim), the session
+  horizon-resets, the transport queue still carries pre-reset intents
+  (voided stale-base — harmless), but the POST-reset keystrokes of the
+  same burst capture incrementally against a baseline that does not
+  match the canvas — their offsets apply TORN on the server (e.g.
+  "Quoted texted by Bt") until the recapture repairs it; the author's
+  canvas then fights the repair and can stall diverged. Extended the
+  fix: onReset with local canvas work now recaptures the editor tree
+  (shared scheduleTreeRecapture) instead of pushing the checkpoint doc
+  over a live mid-burst canvas. Peers + server now always converge to
+  clean content in observed runs; full Jest 527 green. The author-side
+  tear persists 4/8 under the repetition hammer.
+- Next (attempt 3, FINAL before parking per the 3-strike rule): defer
+  applying a horizon-reset snapshot while the local typing burst is
+  active (session-level buffering, non-frozen), so resets land on
+  quiet clients and the existing re-derive contract holds.
+- Ledger changes: A12 attempts 1 → 2.
 
 ### Cycle 16 — 2026-08-19 — A12 (recovery implemented; author-side residual)
 - Did: manager now subscribes to session dispositions; on
