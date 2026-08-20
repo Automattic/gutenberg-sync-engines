@@ -436,37 +436,14 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			 * new row; only a currently-open proposal appends one.
 			 */
 			foreach ( $resolutions as $resolution ) {
-				$proposal_id = $resolution['proposalId'];
 				if ( null === $review ) {
 					$review = $this->load_review_ledger( $room );
 				}
-				if ( isset( $review['open'][ $proposal_id ] ) && ! isset( $review['resolved'][ $proposal_id ] ) ) {
-					$stored = $this->add_row(
-						$room,
-						$client_id,
-						self::UPDATE_TYPE_RESOLVED,
-						wp_json_encode(
-							array(
-								'proposalId' => $proposal_id,
-								'resolution' => $resolution['resolution'],
-								'resolvedBy' => get_current_user_id(),
-								'time'       => time(),
-							)
-						)
-					);
-					if ( ! $stored ) {
-						return new WP_Error(
-							'rest_sync_storage_error',
-							__( 'Failed to store sync update.', 'gutenberg' ),
-							array( 'status' => 500 )
-						);
-					}
-					$review['resolved'][ $proposal_id ] = true;
+				$disposition = $this->apply_resolution( $room, $resolution, $client_id, $review );
+				if ( is_wp_error( $disposition ) ) {
+					return $disposition;
 				}
-				$dispositions[] = array(
-					'intentId' => $proposal_id,
-					'status'   => 'resolved',
-				);
+				$dispositions[] = $disposition;
 			}
 
 			$counts = array();
@@ -1415,6 +1392,87 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			}
 
 			return $changed;
+		}
+
+		/**
+		 * Applies one proposal resolution against the room's review ledger:
+		 * an OPEN, un-resolved proposal gets a stamped `resolved` row (the
+		 * broadcastable advisory peers and late joiners replay); anything
+		 * else acks idempotently. Shared by the transport row path and the
+		 * REST review lane.
+		 *
+		 * @since 0.3.0
+		 *
+		 * @param string $room       Room identifier.
+		 * @param array  $resolution array{proposalId: string, resolution: string}.
+		 * @param int    $client_id  Resolving client id (0 = none declared).
+		 * @param array  $review     Review ledger (by reference; `resolved` updated).
+		 * @return array|WP_Error Disposition, or error on storage failure.
+		 */
+		private function apply_resolution( string $room, array $resolution, int $client_id, array &$review ) {
+			$proposal_id = $resolution['proposalId'];
+			if ( isset( $review['open'][ $proposal_id ] ) && ! isset( $review['resolved'][ $proposal_id ] ) ) {
+				$stored = $this->add_row(
+					$room,
+					$client_id,
+					self::UPDATE_TYPE_RESOLVED,
+					wp_json_encode(
+						array(
+							'proposalId' => $proposal_id,
+							'resolution' => $resolution['resolution'],
+							'resolvedBy' => get_current_user_id(),
+							'time'       => time(),
+						)
+					)
+				);
+				if ( ! $stored ) {
+					return new WP_Error(
+						'rest_sync_storage_error',
+						__( 'Failed to store sync update.', 'gutenberg' ),
+						array( 'status' => 500 )
+					);
+				}
+				$review['resolved'][ $proposal_id ] = true;
+			}
+			return array(
+				'intentId' => $proposal_id,
+				'status'   => 'resolved',
+			);
+		}
+
+		/**
+		 * Resolves one parked proposal outside the transport — the REST
+		 * review lane (B5): resolutions are MUTATIONS and belong on an
+		 * authenticated REST route; the transport stays advisory (the
+		 * stamped `resolved` row this appends still broadcasts through it).
+		 * The transport row path remains accepted for legacy clients.
+		 *
+		 * @since 0.3.0
+		 *
+		 * @param string $room        Room identifier.
+		 * @param string $proposal_id Parked proposal id.
+		 * @param string $resolution  'restored' or 'dismissed'.
+		 * @param int    $client_id   Resolving client id (0 = none declared).
+		 * @return array|WP_Error Disposition, or error.
+		 */
+		public function resolve_proposal( string $room, string $proposal_id, string $resolution, int $client_id = 0 ) {
+			if ( '' === $proposal_id || ! in_array( $resolution, array( 'restored', 'dismissed' ), true ) ) {
+				return new WP_Error(
+					'rest_sync_invalid_intent',
+					__( 'Malformed proposal resolution.', 'gutenberg' ),
+					array( 'status' => 400 )
+				);
+			}
+			$review = $this->load_review_ledger( $room );
+			return $this->apply_resolution(
+				$room,
+				array(
+					'proposalId' => $proposal_id,
+					'resolution' => $resolution,
+				),
+				$client_id,
+				$review
+			);
 		}
 
 		/**
