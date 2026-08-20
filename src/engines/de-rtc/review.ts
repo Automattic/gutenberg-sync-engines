@@ -55,6 +55,20 @@ export interface DeRtcReviewState {
 		emitter: ( ( update: EngineUpdate ) => void ) | null
 	) => void;
 	/**
+	 * Registers the REST resolution lane (B5, last one wins). When set,
+	 * resolutions POST here first — resolutions are MUTATIONS and belong
+	 * on an authenticated REST route, not the advisory transport — and
+	 * fall back to the transport row only when the POST rejects.
+	 */
+	setRestResolver: (
+		resolver:
+			| ( (
+					proposalId: string,
+					resolution: 'restored' | 'dismissed'
+			  ) => Promise< unknown > )
+			| null
+	) => void;
+	/**
 	 * Optimistically closes a parked proposal and emits the `resolved` row.
 	 * The `restored` resolution is sent AFTER the caller re-applied the
 	 * parked content as ordinary local edits.
@@ -75,6 +89,12 @@ export function createDeRtcReviewState(): DeRtcReviewState {
 	const resolvedIds = new Set< string >();
 	const listeners = new Set< () => void >();
 	let emitter: ( ( update: EngineUpdate ) => void ) | null = null;
+	let restResolver:
+		| ( (
+				proposalId: string,
+				resolution: 'restored' | 'dismissed'
+		  ) => Promise< unknown > )
+		| null = null;
 
 	const notify = () => {
 		listeners.forEach( ( listener ) => listener() );
@@ -151,6 +171,10 @@ export function createDeRtcReviewState(): DeRtcReviewState {
 			emitter = nextEmitter;
 		},
 
+		setRestResolver( nextResolver ) {
+			restResolver = nextResolver;
+		},
+
 		resolve( proposalId, resolution ) {
 			// Optimistic: the server's resolved row (and disposition) confirm
 			// idempotently; an unknown id still acks as resolved server-side.
@@ -162,16 +186,24 @@ export function createDeRtcReviewState(): DeRtcReviewState {
 			if ( open.delete( proposalId ) ) {
 				notify();
 			}
-			ids.forEach(
-				( id ) =>
-					emitter?.( {
-						data: JSON.stringify( {
-							proposalId: id,
-							resolution,
-						} ),
-						type: DE_RTC_RESOLVED_TYPE,
-					} )
-			);
+			const emitRow = ( id: string ) =>
+				emitter?.( {
+					data: JSON.stringify( {
+						proposalId: id,
+						resolution,
+					} ),
+					type: DE_RTC_RESOLVED_TYPE,
+				} );
+			ids.forEach( ( id ) => {
+				if ( restResolver ) {
+					// REST first (B5); the transport row is the fallback so
+					// a transient POST failure never strands the resolution
+					// (both lanes ack idempotently server-side).
+					restResolver( id, resolution ).catch( () => emitRow( id ) );
+				} else {
+					emitRow( id );
+				}
+			} );
 		},
 	};
 }

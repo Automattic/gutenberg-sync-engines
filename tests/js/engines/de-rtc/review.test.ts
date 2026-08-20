@@ -25,6 +25,17 @@ jest.mock( '@wordpress/blocks', () => ( {
 		JSON.stringify( blocks ),
 } ) );
 
+// The REST review lane (B5) POSTs resolutions through apiFetch. The
+// mock also carries `use` (a no-op) — commit-route entities register the
+// save-base-version middleware on creation.
+jest.mock( '@wordpress/api-fetch', () => ( {
+	__esModule: true,
+	default: Object.assign( jest.fn(), { use: jest.fn() } ),
+} ) );
+// eslint-disable-next-line import/first, import/order -- After the mock.
+import apiFetch from '@wordpress/api-fetch';
+const apiFetchMock = apiFetch as jest.MockedFunction< any >;
+
 function makeSyncConfig(): jest.MockedObject< SyncConfig > {
 	return {
 		applyChangesToCRDTDoc: jest.fn( ( doc: Y.Doc, changes: any ) => {
@@ -307,6 +318,92 @@ describe( 'de-rtc review lane (client)', () => {
 		expect(
 			engine.review.getOpenItems( 'postType/book', '1' )
 		).toHaveLength( 1 );
+	} );
+
+	describe( 'REST resolution lane (B5, commit-route types)', () => {
+		function makePostEntity() {
+			const entity = engine.createEntity( {
+				syncConfig,
+				// postType/post HAS a commit route, so resolutions POST to
+				// the REST review route instead of riding the transport.
+				objectType: 'postType/post',
+				objectId: '1',
+			} as any );
+			const session = entity.createSession();
+			const sent: any[] = [];
+			session.onLocalUpdate( ( update: any ) => sent.push( update ) );
+			return { entity, session, sent };
+		}
+
+		beforeEach( () => {
+			apiFetchMock.mockReset();
+		} );
+
+		it( 'dismiss POSTs the resolution and sends NO transport row', async () => {
+			apiFetchMock.mockResolvedValue( {
+				disposition: { intentId: 'p-9-1', status: 'resolved' },
+			} );
+			const { session, sent } = makePostEntity();
+			session.receiveUpdate(
+				parkedRow( 'p-9-1', 'manual-conflict-required', 9, [] )
+			);
+
+			engine.review.resolveProposal(
+				'postType/post',
+				'1',
+				'p-9-1',
+				'dismissed'
+			);
+			// Optimistic close is synchronous either way.
+			expect(
+				engine.review.getOpenItems( 'postType/post', '1' )
+			).toHaveLength( 0 );
+			await Promise.resolve();
+
+			expect( apiFetchMock ).toHaveBeenCalledTimes( 1 );
+			expect( apiFetchMock ).toHaveBeenCalledWith( {
+				data: {
+					client_id: session.clientId,
+					proposalId: 'p-9-1',
+					resolution: 'dismissed',
+					room: 'postType/post:1',
+				},
+				method: 'POST',
+				path: '/wp-sync/v1/de-rtc/resolve',
+			} );
+			expect(
+				sent.filter(
+					( update ) => DE_RTC_RESOLVED_TYPE === update.type
+				)
+			).toHaveLength( 0 );
+		} );
+
+		it( 'falls back to the transport row when the POST rejects', async () => {
+			apiFetchMock.mockRejectedValue( new Error( 'offline' ) );
+			const { session, sent } = makePostEntity();
+			session.receiveUpdate(
+				parkedRow( 'p-9-1', 'manual-conflict-required', 9, [] )
+			);
+
+			engine.review.resolveProposal(
+				'postType/post',
+				'1',
+				'p-9-1',
+				'dismissed'
+			);
+			// Let the rejection settle and the fallback fire.
+			await Promise.resolve();
+			await Promise.resolve();
+
+			const resolvedRows = sent.filter(
+				( update ) => DE_RTC_RESOLVED_TYPE === update.type
+			);
+			expect( resolvedRows ).toHaveLength( 1 );
+			expect( JSON.parse( resolvedRows[ 0 ].data ) ).toEqual( {
+				proposalId: 'p-9-1',
+				resolution: 'dismissed',
+			} );
+		} );
 	} );
 
 	it( 'an unknown entity yields an empty review surface', () => {
