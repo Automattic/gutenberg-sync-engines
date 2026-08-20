@@ -41,7 +41,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 	 * authoring model. Client-sent actorId values are ignored.
 	 *
 	 * Compaction: a checkpoint snapshot row is appended once
-	 * `wp_sync_intent_log_checkpoint_interval` intent rows (default 100)
+	 * `wp_sync_intent_log_checkpoint_interval` intent rows (default 500)
 	 * accumulate since the previous checkpoint; history below the previous
 	 * checkpoint is then trimmed and recorded as the room floor. Clients
 	 * whose cursor falls below the floor bootstrap again from the retained
@@ -1074,12 +1074,25 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 			 * checkpoint is appended once this many intent rows accumulate
 			 * since the previous one.
 			 *
+			 * The default is sized for LIVE authoring frames, not just
+			 * storage: the one-sided transform needs the priors between a
+			 * client's observed frame and the head, and the trim keeps only
+			 * rows from the PREVIOUS checkpoint onward. Two collaborators
+			 * typing concurrently burn ~2 rows per keystroke (per-keystroke
+			 * transports deliver them as fast), and an observed frame only
+			 * advances past a peer's rows when the editor renders a push —
+			 * which waits out the typing burst. At 100, two typists crossed
+			 * the floor after ~48 keystrokes each and the burst tails voided
+			 * as stale-base (found by the real-websocket e2e lane). Intent
+			 * rows are small JSON, so a 500-row interval (≤1000 retained
+			 * rows) stays a modest, bounded tail.
+			 *
 			 * @since 7.2.0
 			 *
 			 * @param int    $interval Interval in intent rows.
 			 * @param string $room     Room identifier.
 			 */
-			$interval = (int) apply_filters( 'wp_sync_intent_log_checkpoint_interval', 100, $room );
+			$interval = (int) apply_filters( 'wp_sync_intent_log_checkpoint_interval', 500, $room );
 			if ( $interval < 1 || $window_intent_rows < $interval ) {
 				return false;
 			}
