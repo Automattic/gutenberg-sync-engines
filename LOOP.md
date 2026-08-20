@@ -36,7 +36,7 @@ a merge.
 | B1 yjs materialization (framework) | B | awaiting-human | 1 | loop/b1 | proposal ready (proposals/b1.md, cycle 27): _save mirror (ONE subtree file) + engine preference; e2e 54/55 (sole failure = parked A12 signature, unrelated); fuzz green. STACKED on loop/a4 |
 | B3 pending-edit inline-card UI | B | queued | 0 | — | proposal only; build to prototype decisions |
 | B4 commit-cadence dial | B | awaiting-human | 1 | loop/b4 | proposal ready (proposals/b4.md, cycle 24): dial + soak A/B (−16% req, −29% up at dial 10). Default left 0 for the human. STACKED on loop/a14 |
-| B5 review resolutions over REST | B | queued | 0 | — | proposal only; wire-protocol change |
+| B5 review resolutions over REST | B | awaiting-human | 1 | loop/b5 | proposal ready (proposals/b5.md, cycle 28); verifier PASS. REST route + shared engine applier; legacy row path kept; client falls back on POST failure. STACKED on loop/b4 |
 
 Status vocabulary: `queued`, `in-progress`, `verifying`, `done`
 (verifier PASS recorded), `parked` (3 strikes or escalation trigger —
@@ -91,6 +91,33 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
   300 s cap.
 
 ## Cycle log
+
+### Cycle 28 — 2026-08-20 — B5 proposal ready (awaiting human), verifier PASS
+- Did: implemented the REST review lane on loop/b5 (stacked on b4).
+  Server: extracted `apply_resolution()` shared by the legacy transport
+  row path (behavior unchanged, kept for old clients) and a new public
+  `resolve_proposal()`; new `WP_De_RTC_Review_Controller` registers
+  POST `/wp-sync/v1/de-rtc/resolve` (edit_posts, engine-lineage 409
+  fence, enum-validated resolution). Client: `setRestResolver()` on the
+  review state; `resolve()` POSTs per id and falls back to the
+  transport row only on rejection; the REST split follows the commit
+  split (`hasDeRtcCommitRoute`) so collections keep the transport lane.
+- Evidence: Jest 530/530 (2 new REST-lane tests; transport-lane tests
+  unchanged on a non-commit-route type, pinning the split); PHPUnit
+  317/317 (7 new route tests incl. resolvedBy stamp, idempotent
+  double-resolve, 403/400/409); typecheck/eslint clean; phpcs zero
+  net-new (one stranded docblock re-attached); build OK; fuzz:quick
+  green 2/2 per engine.
+- Verifier: PASS (base loop/b4). Notes: wire-trigger tripped BY DESIGN
+  (this is the wire item, correctly held at proposal); `resolved` row
+  payload byte-identical, route additive; its one evidence-gap note
+  (dangling fuzz reference in the proposal) fixed in a follow-up commit
+  on the branch (d8a9c93e).
+- Open questions for the human recorded in proposals/b5.md: REST gate
+  choice (commit-route types vs all), route namespace, legacy-row
+  retirement timing.
+- Next: cycle 29 claims B3 (pending-edit inline-card UI proposal), the
+  last queued item.
 
 ### Cycles 26-27 — 2026-08-20 — B1 proposal ready (awaiting human)
 - Did: evidence run + proposal. Full default e2e 54/55 retries=0 — all
