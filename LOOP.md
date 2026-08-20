@@ -31,7 +31,7 @@ a merge.
 | A13 de-rtc burst-eat recurrence under load | A | done | 1 | loop/a13 | verifier PASS (cycle 19); typing-quiet snapshot deferral. Base failed 3/10 under stress, branch 10/10 |
 | A14 de-rtc session teardown hygiene | A | done | 1 | loop/a14 | verifier PASS (cycle 20); STACKED on loop/a13 — merge a13 then a14 |
 | A3 websocket fixme re-enable | A | in-progress | 1 | loop/a3 | real-daemon lane WORKS (fixme removed); one keystroke-race flake from green — blocked on A15. STACKED on loop/a2 (merge a2 then a3) |
-| A15 intent-log mid-burst remote pushes eat keystrokes | A | queued | 0 | — | filed cycle 21: at speed, a remote push remounts the caret block and a keystroke lands in a detached node (WS lane makes it visible; both windows agree afterward — canvas-level loss). Fix = the A13 typing-quiet gate applied to intent-log's remote-push path (syncEditor from onChange); acceptance = the a3 websocket suite green x3 retries=0 |
+| A15 intent-log mid-burst remote pushes eat keystrokes | A | in-progress | 1 | loop/a15 | gate implemented + fire-time re-check (Jest 527 green); WS truncation now DETERMINISTIC 48-of-60 — captures appear to stop at 48; instrumented hunt next. STACKED on loop/a3 |
 | A8 full fuzzer matrix soak | A | blocked | 0 | — | exit gate; runs after A1–A7 |
 | B1 yjs materialization (framework) | B | queued | 0 | — | proposal only; subtree edits |
 | B3 pending-edit inline-card UI | B | queued | 0 | — | proposal only; build to prototype decisions |
@@ -81,6 +81,25 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
 None.
 
 ## Cycle log
+
+### Cycle 22 — 2026-08-20 — A15 (gate in; deterministic residual to hunt)
+- Did: implemented the typing-quiet remote-push gate in the intent-log
+  manager (onChange tail defers mid-burst arrivals to the settled
+  editor sync; the sync timer re-checks hotness at fire time and
+  reschedules while hot). New Jest regression test for the gate; the
+  two echo-race tests flush the deferred push to keep their scenario;
+  Jest 527, sweep, build green.
+- WS suite: the variable keystroke losses became an EXACTLY-48-of-60
+  truncation of both users' bursts, identical across 3 retries=0 runs.
+  Interpretation: the canvas receives all 60 keystrokes (no more
+  mid-burst remounts), the manager's captures stop at 48, and the
+  final quiet push replaces the canvas with the 48-char document. A
+  deterministic cutoff is a different, findable bug (a limit, not a
+  race). Next cycle: console-marker + trace instrumentation of
+  update()/capture during the WS run to see where keystrokes 49+ stop
+  reaching the manager.
+- Ledger changes: A15 queued -> in-progress (attempt 1, loop/a15,
+  stacked on loop/a3).
 
 ### Cycle 21 — 2026-08-20 — A3 (real-daemon lane built; one flake from green)
 - Did: replaced the y-websocket PEER-relay fixture lane with the REAL
