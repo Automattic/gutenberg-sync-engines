@@ -207,8 +207,11 @@ integration branch supersedes them.
 **Decisions recorded (Chris, 2026-08-20):** all four Lane-B proposals
 ACCEPTED per their recommended dispositions (stamped in
 proposals/*.md); the loop/a12 merge KEPT; the M1 maybe-item ACCEPTED
-into V1.md. Still open: accept-or-file for the two fuzzer signatures
-above (yjs-server seed 3, de-rtc seed 5).
+into V1.md; the two fuzzer signatures FILED as V1.md v1.1 items F1
+(yjs-server seed-3 group recovery) and F2 (de-rtc seed-5 fault-lane
+convergence) with replay commands. A8's disposition is complete:
+soak green except the two filed signatures. No decisions remain open
+— B6 is now just the PR #35 merge.
 
 ### Cycle 30 — 2026-08-20 — B3 proposal ready; LOOP COMPLETE
 - Did: finished B3 on loop/b3 — subtree rebuilt on the branch, both
