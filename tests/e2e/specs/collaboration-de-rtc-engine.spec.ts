@@ -384,7 +384,10 @@ test.describe( 'Collaboration - de-rtc engine', () => {
 		} ).toPass( { timeout: 20000 } );
 
 		// The review panel in the document sidebar lists the parked
-		// conflict with the shared frame-conflict vocabulary.
+		// conflict with the shared frame-conflict vocabulary — as a
+		// summary-only index. The parked blocks anchor inline pending-edit
+		// cards in the canvas (de-rtc addresses blocks positionally), and
+		// resolution happens there.
 		await noticeEditor.openDocumentSettingsSidebar();
 		await noticePage
 			.getByRole( 'tab', { name: 'Post', exact: true } )
@@ -393,29 +396,44 @@ test.describe( 'Collaboration - de-rtc engine', () => {
 			'.editor-collaboration-review-panel'
 		);
 		await expect( panel ).toBeVisible( { timeout: 15000 } );
+		const pendingCard = noticePage.locator(
+			'.editor-collaboration-pending-card__body'
+		);
+		// The parked conflict ANCHORS in-canvas (de-rtc's positional
+		// targetIndex): the inline card with its verbs must actually
+		// render — resolution-by-panel-fallback alone is not the contract.
+		await expect( pendingCard.first() ).toBeVisible( { timeout: 15000 } );
+		await expect(
+			pendingCard
+				.getByRole( 'button', { name: 'Reject', exact: true } )
+				.first()
+		).toBeVisible();
 
-		// Discard everything parked, until settled-and-still-empty (the
-		// typing race can escalate additional proposals in flight).
+		// Reject everything parked, until settled-and-still-empty (the
+		// typing race can escalate additional proposals in flight):
+		// anchored conflicts at their inline card, unanchored ones through
+		// the panel verbs they retain.
 		await expect( async () => {
 			for ( let i = 0; i < 40; i++ ) {
-				const discardAll = panel.getByRole( 'button', {
-					name: 'Discard all',
-				} );
-				if ( ( await discardAll.count() ) > 0 ) {
-					await discardAll.click();
+				const cardReject = pendingCard
+					.getByRole( 'button', { name: 'Reject', exact: true } )
+					.first();
+				if ( ( await cardReject.count() ) > 0 ) {
+					await cardReject.click();
 					continue;
 				}
-				const discard = panel
-					.getByRole( 'button', { name: 'Discard', exact: true } )
+				const panelReject = panel
+					.getByRole( 'button', { name: 'Reject', exact: true } )
 					.first();
-				if ( ( await discard.count() ) > 0 ) {
-					await discard.click();
+				if ( ( await panelReject.count() ) > 0 ) {
+					await panelReject.click();
 					continue;
 				}
 				break;
 			}
 			await noticePage.waitForTimeout( 3000 );
 			expect( await panel.count() ).toBe( 0 );
+			expect( await pendingCard.count() ).toBe( 0 );
 		} ).toPass( { timeout: 60000 } );
 
 		// The resolution row travels to the OTHER collaborator too: their

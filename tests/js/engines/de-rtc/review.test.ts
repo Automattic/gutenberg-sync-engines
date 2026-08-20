@@ -125,6 +125,8 @@ describe( 'de-rtc review lane (client)', () => {
 			actorId: 'u7c9',
 			reason: 'frame-conflict',
 			summary: 'lost words',
+			// The first changed block anchors the inline card (B3).
+			targetIndex: 0,
 		} );
 
 		// The kses reason maps to the panel's capability-gated vocabulary.
@@ -135,6 +137,10 @@ describe( 'de-rtc review lane (client)', () => {
 		expect( updated.find( ( item ) => 'p-9-2' === item.id )?.reason ).toBe(
 			'requires-approval'
 		);
+		// No changed blocks → no canvas anchor: the item is panel-only.
+		expect(
+			updated.find( ( item ) => 'p-9-2' === item.id )?.targetIndex
+		).toBeUndefined();
 	} );
 
 	it( "marks the escalating client's own parked proposal as local", () => {

@@ -62,12 +62,39 @@ export function groupByUnit( items ) {
 }
 
 /**
+ * The clientId a review item anchors to in the canvas, or undefined for an
+ * unanchored item (its block no longer exists, or it targets no block).
+ * Identity (`targetId`/syncId) wins over the positional `targetIndex`
+ * fallback used by engines that address blocks by top-level index.
+ *
+ * @param {Object} item                  Review item.
+ * @param {Object} maps                  The maps returned by useReviewData.
+ * @param {Object} maps.clientIdByTarget syncId → clientId.
+ * @param {Object} maps.clientIdByIndex  Top-level block index → clientId.
+ * @return {string|undefined} Anchor clientId.
+ */
+export function itemAnchorClientId(
+	item,
+	{ clientIdByTarget, clientIdByIndex }
+) {
+	if ( item.targetId ) {
+		return clientIdByTarget[ item.targetId ];
+	}
+	if ( undefined !== item.targetIndex ) {
+		return clientIdByIndex[ item.targetIndex ];
+	}
+	return undefined;
+}
+
+/**
  * The current post's sync review state: open review items, and a map from
  * each item's target block identity (syncId) to the block's clientId in the
  * editor, for anchoring conflicts to canvas blocks. Targets whose block no
- * longer exists are absent from the map.
+ * longer exists are absent from the map. `clientIdByIndex` maps top-level
+ * block indexes to clientIds for positionally-addressed items
+ * (`targetIndex`).
  *
- * @return {Object} { postType, postId, items, clientIdByTarget }.
+ * @return {Object} { postType, postId, items, clientIdByTarget, clientIdByIndex }.
  */
 export function useReviewData() {
 	const { postType, postId } = useSelect( ( select ) => {
@@ -114,8 +141,27 @@ export function useReviewData() {
 		},
 		[ items ]
 	);
+	const clientIdByIndex = useSelect(
+		( select ) => {
+			const indexes = items
+				.map( ( item ) => item.targetIndex )
+				.filter( ( index ) => undefined !== index );
+			if ( ! indexes.length ) {
+				return EMPTY_CLIENT_IDS;
+			}
+			const order = select( blockEditorStore ).getBlockOrder();
+			const map = {};
+			for ( const index of indexes ) {
+				if ( order[ index ] ) {
+					map[ index ] = order[ index ];
+				}
+			}
+			return map;
+		},
+		[ items ]
+	);
 
-	return { postType, postId, items, clientIdByTarget };
+	return { postType, postId, items, clientIdByTarget, clientIdByIndex };
 }
 
 /**
