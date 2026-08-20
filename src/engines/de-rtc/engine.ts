@@ -448,6 +448,9 @@ export function createDeRtcEngine(): SyncEngine & {
 							( parked.revisions ?? 1 ) > 1
 								? `${ parked.excerpt } (${ parked.revisions } revisions)`
 								: parked.excerpt || undefined,
+						// De-rtc addresses blocks positionally: the first
+						// changed block anchors the inline card (B3).
+						targetIndex: parked.changedBlocks?.[ 0 ]?.index,
 					} ) ),
 					...Array.from( contested.entries() ).map(
 						( [ index, item ] ) => ( {
@@ -458,6 +461,7 @@ export function createDeRtcEngine(): SyncEngine & {
 							reason: 'frame-conflict',
 							intentType: 'proposal',
 							summary: contestedExcerpt( item ),
+							targetIndex: index,
 						} )
 					),
 				],

@@ -839,37 +839,29 @@ test.describe( 'Collaboration - intent-log engine', () => {
 		} ).toPass( { timeout: 15000 } );
 
 		/*
-		 * The conflicts anchor IN CONTEXT: the contested paragraph gets a
-		 * marker badge (rendered in the editor chrome, anchored to the
-		 * block), which opens the conflict card with Restore/Discard.
+		 * The conflicts anchor IN CONTEXT: the contested paragraph gets an
+		 * inline pending-edit card (ONE merged task per block, no chip),
+		 * whose Adopt/Reject verbs are the primary resolution surface.
 		 */
-		const markerChip = noticePage.locator(
-			'.editor-collaboration-conflict-marker__chip'
+		const pendingCard = noticePage.locator(
+			'.editor-collaboration-pending-card__body'
 		);
-		await expect( markerChip.first() ).toBeVisible( { timeout: 15000 } );
-		await markerChip.first().click();
-		const markerCard = noticePage.locator(
-			'.editor-collaboration-conflict-marker__card'
-		);
-		await expect( markerCard ).toBeVisible();
+		await expect( pendingCard.first() ).toBeVisible( { timeout: 15000 } );
 		await expect(
-			markerCard
-				.getByRole( 'button', { name: 'Discard', exact: true } )
+			pendingCard
+				.getByRole( 'button', { name: 'Reject', exact: true } )
 				.first()
 		).toBeVisible();
-		// Resolve one conflict group in place; the rest go through the panel.
-		await markerCard
-			.getByRole( 'button', { name: 'Discard', exact: true } )
-			.first()
-			.click();
 
 		/*
-		 * The review panel in the document sidebar lists every parked edit
-		 * regardless of how many notices were shown. Discarding closes each
+		 * The review panel in the document sidebar is a summary-only index:
+		 * anchored conflicts list without verbs and link to their block;
+		 * resolution happens at the inline card. Rejecting closes each
 		 * proposal for every collaborator, durably — after a reload the
 		 * resolved conflicts must NOT resurface (the resolution rows settle
 		 * the bootstrap replay). A sustained typing race parks many edits;
-		 * discard them all through the panel.
+		 * reject them all through the cards (and any unanchored leftovers
+		 * through the panel, which keeps verbs only for those).
 		 */
 		await noticeEditor.openDocumentSettingsSidebar();
 		// The sidebar auto-switches to the Block tab while a block is
@@ -881,23 +873,28 @@ test.describe( 'Collaboration - intent-log engine', () => {
 			'.editor-collaboration-review-panel'
 		);
 		await expect( panel ).toBeVisible( { timeout: 15000 } );
+		// Anchored conflicts carry no panel verbs — the summary-only
+		// contract (the panel still renders the group summaries).
+		await expect(
+			panel.getByRole( 'button', { name: 'Reject', exact: true } )
+		).toHaveCount( 0 );
 		await expect( async () => {
-			// Discard everything currently parked. "Discard all" appears
-			// with 2+ conflict groups; otherwise use the single group's
-			// Discard.
+			// Reject everything currently parked: each block's merged card
+			// resolves every conflict on that block; unanchored items (no
+			// live block) resolve through their panel verbs.
 			for ( let i = 0; i < 40; i++ ) {
-				const discardAll = panel.getByRole( 'button', {
-					name: 'Discard all',
-				} );
-				if ( ( await discardAll.count() ) > 0 ) {
-					await discardAll.click();
+				const cardReject = pendingCard
+					.getByRole( 'button', { name: 'Reject', exact: true } )
+					.first();
+				if ( ( await cardReject.count() ) > 0 ) {
+					await cardReject.click();
 					continue;
 				}
-				const discard = panel
-					.getByRole( 'button', { name: 'Discard', exact: true } )
+				const panelReject = panel
+					.getByRole( 'button', { name: 'Reject', exact: true } )
 					.first();
-				if ( ( await discard.count() ) > 0 ) {
-					await discard.click();
+				if ( ( await panelReject.count() ) > 0 ) {
+					await panelReject.click();
 					continue;
 				}
 				break;
@@ -905,13 +902,13 @@ test.describe( 'Collaboration - intent-log engine', () => {
 			// Quiescence, not just momentary emptiness: in-flight pushes
 			// from the typing race can escalate MORE edits after the list
 			// first empties. Only settled-and-still-empty after a full
-			// poll/flush cycle counts — otherwise discard again.
+			// poll/flush cycle counts — otherwise reject again.
 			await noticePage.waitForTimeout( 3000 );
 			expect( await panel.count() ).toBe( 0 );
-			// The in-canvas markers unmount with the list.
-			expect( await markerChip.count() ).toBe( 0 );
-			// Resolving through the panel also clears the notices
-			// (per-item and aggregate alike).
+			// The in-canvas cards unmount with the list.
+			expect( await pendingCard.count() ).toBe( 0 );
+			// Resolving also clears the notices (per-item and aggregate
+			// alike).
 			expect(
 				await noticePage
 					.locator( '.components-notice' )
@@ -947,7 +944,7 @@ test.describe( 'Collaboration - intent-log engine', () => {
 			noticePage.locator( '.editor-collaboration-review-panel' )
 		).toHaveCount( 0 );
 		await expect(
-			noticePage.locator( '.editor-collaboration-conflict-marker__chip' )
+			noticePage.locator( '.editor-collaboration-pending-card__body' )
 		).toHaveCount( 0 );
 	} );
 
