@@ -1071,7 +1071,7 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 					->insert( 5, ' <script>privileged()</script>' );
 			}
 		);
-		$result = $this->engine()->handle_updates(
+		$result     = $this->engine()->handle_updates(
 			$room,
 			101,
 			(int) $response_e['end_cursor'],
@@ -1099,7 +1099,7 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 					->insert( 6, ' plus author text' );
 			}
 		);
-		$result = $this->engine()->handle_updates(
+		$result     = $this->engine()->handle_updates(
 			$room,
 			202,
 			(int) $response_a['end_cursor'],

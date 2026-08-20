@@ -119,7 +119,12 @@ class Tests_Collaboration_WpDeRtcSelfHealing extends WP_UnitTestCase {
 		$this->assertSame( self::GENESIS_CONTENT, $engine->materialize( $room ) );
 
 		// An aware save stamps v1 lineage into post_content.
-		wp_update_post( array( 'ID' => $post_id, 'post_content' => self::GENESIS_CONTENT ) );
+		wp_update_post(
+			array(
+				'ID'           => $post_id,
+				'post_content' => self::GENESIS_CONTENT,
+			)
+		);
 		$saved = get_post( $post_id )->post_content;
 		$this->assertStringContainsString( 'data-wp-sync-meta', $saved );
 
@@ -144,7 +149,12 @@ class Tests_Collaboration_WpDeRtcSelfHealing extends WP_UnitTestCase {
 		$engine  = $this->engine();
 		$this->assertSame( self::GENESIS_CONTENT, $engine->materialize( $room ) );
 
-		wp_update_post( array( 'ID' => $post_id, 'post_content' => self::GENESIS_CONTENT ) );
+		wp_update_post(
+			array(
+				'ID'           => $post_id,
+				'post_content' => self::GENESIS_CONTENT,
+			)
+		);
 		$saved = get_post( $post_id )->post_content;
 
 		// Session and external writer both rewrite the SAME text from v1.

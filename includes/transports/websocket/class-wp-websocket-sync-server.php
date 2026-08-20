@@ -549,10 +549,9 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 			$this->clients[ $key ]['cookie']  = $auth['cookie'];
 			// Echo the base subprotocol the client offered alongside its
 			// token entry (browsers enforce the echo matches an offer).
-			$conn->accept_handshake(
-				$headers['sec-websocket-key'],
-				false !== strpos( (string) ( $headers['sec-websocket-protocol'] ?? '' ), self::SUBPROTOCOL ) ? self::SUBPROTOCOL : ''
-			);
+			$offered_protocols = (string) ( $headers['sec-websocket-protocol'] ?? '' );
+			$echoed_protocol   = false !== strpos( $offered_protocols, self::SUBPROTOCOL ) ? self::SUBPROTOCOL : '';
+			$conn->accept_handshake( $headers['sec-websocket-key'], $echoed_protocol );
 		}
 
 		/**

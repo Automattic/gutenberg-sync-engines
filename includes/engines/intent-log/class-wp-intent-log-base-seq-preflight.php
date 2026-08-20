@@ -274,12 +274,12 @@ if ( ! class_exists( 'WP_Intent_Log_Base_Seq_Preflight' ) ) {
 		 * Flattens a block tree (engine-doc nodes or specs — same shape)
 		 * into document-ordered id => placement records.
 		 *
-		 * @param array       $map    Accumulator (by reference).
-		 * @param array       $nodes  Sibling nodes.
-		 * @param string|null $parent Parent syncId.
+		 * @param array       $map       Accumulator (by reference).
+		 * @param array       $nodes     Sibling nodes.
+		 * @param string|null $parent_id Parent syncId.
 		 * @return void
 		 */
-		private static function flatten( array &$map, array $nodes, ?string $parent ): void {
+		private static function flatten( array &$map, array $nodes, ?string $parent_id ): void {
 			$prev = null;
 			foreach ( $nodes as $node ) {
 				if ( ! is_array( $node ) || ! is_string( $node['syncId'] ?? null ) ) {
@@ -287,7 +287,7 @@ if ( ! class_exists( 'WP_Intent_Log_Base_Seq_Preflight' ) ) {
 				}
 				$map[ $node['syncId'] ] = array(
 					'node'   => $node,
-					'parent' => $parent,
+					'parent' => $parent_id,
 					'after'  => $prev,
 				);
 				self::flatten( $map, is_array( $node['children'] ?? null ) ? $node['children'] : array(), $node['syncId'] );

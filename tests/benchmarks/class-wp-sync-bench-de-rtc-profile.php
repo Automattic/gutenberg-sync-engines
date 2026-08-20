@@ -390,8 +390,8 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 		 * @param array $response get_updates_since() response.
 		 */
 		public function observe( int $client, array $response ): void {
-			$latest       = null;
-			$announced    = null;
+			$latest    = null;
+			$announced = null;
 			foreach ( (array) ( $response['updates'] ?? array() ) as $row ) {
 				$decoded = json_decode( (string) $row['data'], true );
 				if ( ! is_array( $decoded ) ) {
