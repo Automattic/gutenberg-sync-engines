@@ -18,6 +18,7 @@
  * External dependencies
  */
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { defineConfig, type PlaywrightTestConfig } from '@playwright/test';
 
 /**
@@ -64,6 +65,15 @@ const config = defineConfig( {
 	...baseConfig,
 	testMatch: '**/specs/websocket-only/**/*.spec.ts',
 	testIgnore: [],
+	// Restores the site's transport in the MAIN process: the daemon
+	// launcher's own restore dies with the webServer process group when
+	// Playwright SIGKILLs it (a killed run once left the site pinned to
+	// a daemon-less websocket transport; every later polling suite then
+	// timed out at session discovery).
+	globalTeardown: fileURLToPath(
+		new URL( './config/rtc-websocket-teardown.ts', 'file:' + __filename )
+			.href
+	),
 	webServer: [
 		...baseWebServer,
 		{

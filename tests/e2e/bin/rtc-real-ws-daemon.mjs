@@ -19,7 +19,13 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import {
+	existsSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,6 +42,18 @@ const CONTAINER = 'rtc-e2e-ws-daemon';
 // daemon may also linger).
 const OTHER_PORT_HOLDERS = [ 'wp-sync-ws-daemon', 'rtc-fuzz-ws-daemon' ];
 const TRANSPORT_OPTION = 'gutenberg_sync_engines_transport';
+// The pre-suite transport selection, persisted OUTSIDE this process:
+// Playwright may SIGKILL webServer process groups at teardown, so the
+// in-process restore below can never be the only path back. The suite's
+// globalTeardown re-runs this script with --restore-only against this
+// file (per-checkout name — parallel worktrees must not collide).
+const STATE_FILE = path.join(
+	os.tmpdir(),
+	`rtc-e2e-ws-transport-${ createHash( 'md5' )
+		.update( REPO_ROOT )
+		.digest( 'hex' )
+		.slice( 0, 8 ) }.json`
+);
 
 /**
  * The tests env's wp-env work directory (legacy md5 name, descriptive
@@ -116,6 +134,40 @@ function removeContainers( names ) {
 	}
 }
 
+/**
+ * Restores the pre-suite transport selection recorded in STATE_FILE and
+ * removes the daemon container. Idempotent; a missing state file means
+ * a completed (or never-started) run — nothing to do.
+ */
+function restoreFromStateFile() {
+	let state = null;
+	try {
+		state = JSON.parse( readFileSync( STATE_FILE, 'utf8' ) );
+	} catch {
+		return;
+	}
+	if ( null === state.previous ) {
+		wpCli( [ 'option', 'delete', TRANSPORT_OPTION ], {
+			allowFailure: true,
+		} );
+	} else {
+		wpCli( [ 'option', 'update', TRANSPORT_OPTION, state.previous ], {
+			allowFailure: true,
+		} );
+	}
+	removeContainers( [ CONTAINER ] );
+	rmSync( STATE_FILE, { force: true } );
+	// eslint-disable-next-line no-console
+	console.log(
+		'[rtc-real-ws-daemon] transport restored from state file; daemon removed.'
+	);
+}
+
+if ( process.argv.includes( '--restore-only' ) ) {
+	restoreFromStateFile();
+	process.exit( 0 );
+}
+
 // Remember and select the transport (null = option unset).
 const previous = ( () => {
 	const result = wpCli( [ 'option', 'get', TRANSPORT_OPTION ], {
@@ -123,6 +175,7 @@ const previous = ( () => {
 	} );
 	return result.status === 0 ? result.stdout.trim() || null : null;
 } )();
+writeFileSync( STATE_FILE, JSON.stringify( { previous } ) );
 wpCli( [ 'option', 'update', TRANSPORT_OPTION, 'websocket' ] );
 // eslint-disable-next-line no-console
 console.log(
@@ -147,6 +200,7 @@ function restore() {
 		}
 	} finally {
 		removeContainers( [ CONTAINER ] );
+		rmSync( STATE_FILE, { force: true } );
 	}
 	// eslint-disable-next-line no-console
 	console.log( '[rtc-real-ws-daemon] transport restored; daemon removed.' );
