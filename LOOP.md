@@ -35,7 +35,7 @@ a merge.
 | A8 full fuzzer matrix soak | A | blocked | 0 | — | exit gate; runs after A1–A7 |
 | B1 yjs materialization (framework) | B | queued | 0 | — | proposal only; subtree edits |
 | B3 pending-edit inline-card UI | B | queued | 0 | — | proposal only; build to prototype decisions |
-| B4 commit-cadence dial | B | queued | 0 | — | proposal only; default is a product decision |
+| B4 commit-cadence dial | B | awaiting-human | 1 | loop/b4 | proposal ready (proposals/b4.md, cycle 24): dial + soak A/B (−16% req, −29% up at dial 10). Default left 0 for the human. STACKED on loop/a14 |
 | B5 review resolutions over REST | B | queued | 0 | — | proposal only; wire-protocol change |
 
 Status vocabulary: `queued`, `in-progress`, `verifying`, `done`
@@ -78,9 +78,32 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
 
 ## Proposals awaiting human review
 
-None.
+- **B4 — de-rtc commit-cadence dial** (`loop/b4`, `proposals/b4.md`):
+  settings field + client gate; soak A/B shows dial 10 cutting −16%
+  requests / −29% upload per user-hour with full convergence. Open
+  decisions: the default (0 vs 10), field visibility per engine, the
+  300 s cap.
 
 ## Cycle log
+
+### Cycle 24 — 2026-08-20 — B4 proposal ready (awaiting human)
+- Did: implemented the commit-cadence dial end to end on loop/b4
+  (stacked on loop/a14): a Settings → Collaboration field
+  (`gutenberg_sync_engines_de_rtc_commit_interval`, 0-300 s, default
+  0), plugin-owned script localization (framework announcement
+  untouched), and a minimum-spacing gate in maybePropose downstream of
+  every correctness guard, with one boundary timer and teardown
+  cleanup. New Jest cadence test (immediate first commit; coalesced
+  interim edits; one commit at the boundary); full Jest 528; phpcs
+  clean.
+- Evidence: 4-minute soak A/B on identical workloads — dial 10 vs 0:
+  requests/user-hour 3675 vs 4350 (−16%), upload 4179 vs 5897 KB
+  (−29%), download −14%, server dispatch ~par; both converged, zero
+  skipped bursts. (V1.md's save-sync-session note interpreted in the
+  proposal: the engine benchmark's scenario models cadence in-harness
+  and cannot read a client dial; the browser A/B is the meaningful
+  both-defaults run.)
+- Ledger changes: B4 queued -> awaiting-human (proposals/b4.md).
 
 ### Cycle 23 — 2026-08-20 — A15 + A3 done (verifier PASS, one acceptance)
 - Did: the instrumented hunt nailed the deterministic 48-of-60
