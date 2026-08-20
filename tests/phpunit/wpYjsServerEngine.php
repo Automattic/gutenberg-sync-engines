@@ -469,6 +469,49 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 		wp_delete_post( $post_id, true );
 	}
 
+	/**
+	 * B1 materialization fidelity: a client-maintained `_save` mirror (the
+	 * block's registered save() output for its CURRENT attributes)
+	 * outranks the genesis wrapper — attribute-driven wrapper changes
+	 * (alignment classes, heading levels) materialize instead of being
+	 * frozen at the genesis markup.
+	 */
+	public function test_client_save_markup_outranks_the_genesis_wrapper() {
+		$engine     = $this->engine();
+		$response_a = $engine->get_updates_since( $this->room(), 101, 0, array() );
+		$doc_a      = $this->client_doc_from_response( $response_a );
+
+		// The client re-renders the paragraph's save output after an
+		// alignment change and mirrors it into the block's `_save`.
+		$update = $this->encode_edit(
+			$doc_a,
+			static function ( $doc ) {
+				$block = $doc->getMap( 'document' )->get( 'blocks' )->get( 0 );
+				$block->set( '_save', '<p class="has-text-align-right">STALE TEXT</p>' );
+				$block->get( 'attributes' )->set( 'align', 'right' );
+			}
+		);
+		$result = $engine->handle_updates(
+			$this->room(),
+			101,
+			(int) $response_a['end_cursor'],
+			array(
+				array(
+					'type' => WP_Yjs_Server_Engine::UPDATE_TYPE_UPDATE,
+					'data' => $update,
+				),
+			),
+			array()
+		);
+		$this->assertNotWPError( $result );
+
+		$materialized = $engine->materialize( $this->room() );
+		// The _save wrapper wins; the live shared text (NOT the stale text
+		// embedded in the mirror) fills it.
+		$this->assertStringContainsString( '<p class="has-text-align-right">Hello world</p>', $materialized );
+		$this->assertStringNotContainsString( 'STALE TEXT', $materialized );
+	}
+
 	public function test_redelivered_update_settles_as_already_merged() {
 		$engine     = $this->engine();
 		$response_a = $engine->get_updates_since( $this->room(), 101, 0, array() );
