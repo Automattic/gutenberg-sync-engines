@@ -200,12 +200,15 @@ regressions):
    Per A8's rule these await explicit human acceptance (or new
    post-v1 items); the soak is otherwise green.
 
-**For the human (B6).** Review and merge `loop/integration`
-(8ab1e26a66). The per-branch merge orders in earlier entries are
-OBSOLETE — the integration branch supersedes them. Decisions still
-yours: the four proposals' recommended dispositions (stamped in
-proposals/*.md), keeping the a12 merge, M1 (merged, commits you to
-nothing), and accepting/filing the two fuzzer signatures.
+**For the human (B6).** Review and merge `loop/integration` (PR #35).
+The per-branch merge orders in earlier entries are OBSOLETE — the
+integration branch supersedes them.
+
+**Decisions recorded (Chris, 2026-08-20):** all four Lane-B proposals
+ACCEPTED per their recommended dispositions (stamped in
+proposals/*.md); the loop/a12 merge KEPT; the M1 maybe-item ACCEPTED
+into V1.md. Still open: accept-or-file for the two fuzzer signatures
+above (yjs-server seed 3, de-rtc seed 5).
 
 ### Cycle 30 — 2026-08-20 — B3 proposal ready; LOOP COMPLETE
 - Did: finished B3 on loop/b3 — subtree rebuilt on the branch, both
