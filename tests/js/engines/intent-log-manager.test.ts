@@ -326,6 +326,69 @@ describe( 'intent-log manager', () => {
 		).toHaveLength( 0 );
 	} );
 
+	it( 'REGRESSION: stale-base voids re-capture the editor tree instead of silently losing the edit', async () => {
+		// A2's retry-free e2e runs found this as real data loss: a client
+		// whose own earlier burst pushed the room past the checkpoint trim
+		// authors its next edits at a now-trimmed seq; the server voids
+		// them ALL as stale-base without planning, and (because the
+		// client's cursor is current) no snapshot reset ever arrives. The
+		// replica's replan then dropped the optimistic effect and the next
+		// editor sync pushed the REVERTED document over the canvas — the
+		// user watched their typing vanish. The manager must instead
+		// re-capture the current editor tree at the current seq.
+		const { manager, handlers, transport } = await loadManagedEntity();
+
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [
+				{
+					syncId: 'p1',
+					blockType: 'core/paragraph',
+					text: 'Hello world',
+				},
+			] )
+		);
+
+		const editedTree = [
+			{
+				name: 'core/paragraph',
+				attributes: {
+					content: 'Hello world!!',
+					metadata: { syncId: 'p1' },
+				},
+				innerBlocks: [],
+			},
+		];
+		manager.update(
+			'postType/post',
+			'1',
+			{ blocks: editedTree },
+			'gutenberg'
+		);
+		expect( transport.captured.sent ).toHaveLength( 1 );
+		const first = JSON.parse( transport.captured.sent[ 0 ].data );
+
+		// The server compacted past the authoring seq: the whole ladder
+		// voids as stale-base, with no snapshot reset (cursor is current).
+		transport.captured.session!.receiveDispositions!( [
+			{
+				intentId: first.intentId,
+				status: 'voided',
+				reason: 'stale-base',
+			} as never,
+		] );
+
+		// The recovery is deferred past the settle/replan.
+		await jest.advanceTimersByTimeAsync( 1 );
+
+		// The edit was re-authored — not silently lost.
+		expect( transport.captured.sent.length ).toBeGreaterThan( 1 );
+		const reauthored = JSON.parse(
+			transport.captured.sent.at( -1 )!.data
+		);
+		expect( reauthored.intentId ).not.toBe( first.intentId );
+		expect( JSON.stringify( reauthored.payload ) ).toContain( '!!' );
+	} );
+
 	it( 'pushes the snapshot document into the editor, captures edits as intents, and suppresses the echo', async () => {
 		const { manager, handlers, transport } = await loadManagedEntity();
 

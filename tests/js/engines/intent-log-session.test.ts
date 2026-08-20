@@ -163,7 +163,7 @@ describe( 'intent-log session codec', () => {
 		expect( canonicalJson( session.getDocument()! ) ).toBe( before );
 	} );
 
-	it( 'a checkpoint snapshot past the cursor RESETS the replica (horizon reset), dropping pending intents', () => {
+	it( 'a checkpoint snapshot past the cursor DEFERS behind pending work, then resets when it settles', () => {
 		const session = makeSession( 1, 11 );
 		session.receiveUpdate( {
 			data: JSON.stringify( { doc: createDocument( GENESIS_BLOCKS ) } ),
@@ -173,7 +173,7 @@ describe( 'intent-log session codec', () => {
 		session.onReset( () => resets++ );
 
 		// Pending local work exists when the reset arrives.
-		session.author( 'insert_text', {
+		const pending = session.author( 'insert_text', {
 			syncId: 'p1',
 			offset: 0,
 			text: 'pending',
@@ -192,7 +192,28 @@ describe( 'intent-log session codec', () => {
 			type: INTENT_LOG_UPDATE_TYPES.SNAPSHOT,
 		} );
 
+		/*
+		 * DEFERRED: applying a horizon reset while local work is
+		 * un-settled would mix authoring frames inside one transport
+		 * batch (the mid-burst tear A2's e2e runs found). The reset
+		 * waits for the outbox to drain.
+		 */
+		expect( resets ).toBe( 0 );
+		expect( session.hasDeferredReset() ).toBe( true );
+		expect( session.getSeq() ).not.toBe( 40 );
+
+		// The pending intent settles (the server voided it as below the
+		// horizon) — the deferred reset applies immediately after.
+		session.receiveDispositions!( [
+			{
+				intentId: pending.intentId,
+				status: 'voided',
+				reason: 'stale-base',
+			} as never,
+		] );
+
 		expect( resets ).toBe( 1 );
+		expect( session.hasDeferredReset() ).toBe( false );
 		expect( session.getSeq() ).toBe( 40 );
 		expect( session.getPendingCount() ).toBe( 0 );
 		expect( canonicalJson( session.getDocument()! ) ).toBe(
