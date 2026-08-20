@@ -33,7 +33,7 @@ a merge.
 | A3 websocket fixme re-enable | A | done | 1 | loop/a3 | verifier PASS (cycle 23) — real-daemon lane, suite 3x green retries=0. STACKED: merge a2 → a3 → a15 |
 | A15 intent-log mid-burst remote pushes eat keystrokes | A | done | 1 | loop/a15 | verifier PASS (cycle 23): typing-quiet push gate + checkpoint interval 100→500 (live-authoring-sized). STACKED on loop/a3 |
 | A8 full fuzzer matrix soak | A | blocked | 0 | — | exit gate; runs after A1–A7 |
-| B1 yjs materialization (framework) | B | in-progress | 1 | loop/b1 | _save mirror + engine preference built and unit-proven (yjs 27/27, php 314, jest 526). Remaining: e2e + fuzz + proposals/b1.md. STACKED on loop/a4 |
+| B1 yjs materialization (framework) | B | awaiting-human | 1 | loop/b1 | proposal ready (proposals/b1.md, cycle 27): _save mirror (ONE subtree file) + engine preference; e2e 54/55 (sole failure = parked A12 signature, unrelated); fuzz green. STACKED on loop/a4 |
 | B3 pending-edit inline-card UI | B | queued | 0 | — | proposal only; build to prototype decisions |
 | B4 commit-cadence dial | B | awaiting-human | 1 | loop/b4 | proposal ready (proposals/b4.md, cycle 24): dial + soak A/B (−16% req, −29% up at dial 10). Default left 0 for the human. STACKED on loop/a14 |
 | B5 review resolutions over REST | B | queued | 0 | — | proposal only; wire-protocol change |
@@ -78,6 +78,12 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
 
 ## Proposals awaiting human review
 
+- **B1 — yjs materialization fidelity** (`loop/b1`, `proposals/b1.md`):
+  every Y.Block carries a `_save` mirror (registered save() output,
+  refreshed on attribute merges; one subtree file) and the engine
+  prefers it over genesis wrappers — attribute-driven wrapper changes
+  finally materialize; stale-text-proof pinned. Open questions: key
+  naming, disable-flag for upstream, container edge cases.
 - **B4 — de-rtc commit-cadence dial** (`loop/b4`, `proposals/b4.md`):
   settings field + client gate; soak A/B shows dial 10 cutting −16%
   requests / −29% upload per user-hour with full convergence. Open
@@ -85,6 +91,16 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
   300 s cap.
 
 ## Cycle log
+
+### Cycles 26-27 — 2026-08-20 — B1 proposal ready (awaiting human)
+- Did: evidence run + proposal. Full default e2e 54/55 retries=0 — all
+  yjs-server specs green; the single failure is byte-for-byte parked
+  A12's intent-log table-cell signature (this branch predates A12/A15
+  and touches no intent-log code). fuzz:quick 2/2 per engine.
+  proposals/b1.md written: design, why, legacy/mixed-session behavior,
+  verification, the upstreaming note (constant naming, disable flag,
+  the block.private bucket), and open questions.
+- Ledger changes: B1 in-progress -> awaiting-human.
 
 ### Cycle 25 — 2026-08-20 — B1 built and unit-proven (proposal next)
 - Did: the recorded design, both halves. SUBTREE (the one framework
