@@ -28,7 +28,8 @@ a merge.
 | A11 de-rtc session request-rate runaway | A | parked | 1 | — | CLOSED-INVALID (cycle 9): the soak's minuteSamples are CUMULATIVE counters; the deltas are a flat ~75 req/min/window all hour. No runaway exists — cycle 8 misread the data. Server capture confirms flat sync-frame rate. Full diagnosis in the cycle-9 log |
 | A2 e2e flake stabilization | A | blocked | 1 | loop/a2 | login flake FIXED on the branch; acceptance unreachable while A12 (parked) fires ~25-50% of runs; A13 also pending |
 | A12 intent-log stale-base voids lose live edits | A | parked | 3 | loop/a12 | PARKED after 3 attempts (cycle 18) — see Parked section. Branch holds real, verified improvements worth merging |
-| A13 de-rtc burst-eat recurrence under load | A | queued | 0 | — | filed cycle 15: "Second from two" → "Second " in full-suite run 4 — the signature the pendingOwnMergeSeq commit-hold was meant to close; 0-in-6 solo repetitions, so load-schedule-dependent. Needs a capture-instrumented hunt like A12's |
+| A13 de-rtc burst-eat recurrence under load | A | done | 1 | loop/a13 | verifier PASS (cycle 19); typing-quiet snapshot deferral. Base failed 3/10 under stress, branch 10/10 |
+| A14 de-rtc session teardown hygiene | A | queued | 0 | — | filed cycle 19 (verifier note): destroy() should clear quietRetryTimer + deferredSnapshotRow like commitRetryTimer; 2-line fix + eyeball |
 | A3 websocket fixme re-enable | A | queued | 0 | — | prefer the real-daemon lane |
 | A8 full fuzzer matrix soak | A | blocked | 0 | — | exit gate; runs after A1–A7 |
 | B1 yjs materialization (framework) | B | queued | 0 | — | proposal only; subtree edits |
@@ -79,6 +80,27 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
 None.
 
 ## Cycle log
+
+### Cycle 19 — 2026-08-20 — A13 done (verifier PASS)
+- Did: reproduced the burst collapse deterministically-enough with a
+  6-way CPU stress + 8x repetition (3/8), then traced it with console
+  markers in a Playwright trace: the victim window's doc-update feed
+  goes SILENT right after its own proposal settles by hash mid-burst —
+  the dirty/inFlight canonical deferral has a hole exactly one
+  inter-keystroke gap wide, a snapshot applying in that window makes
+  the framework push rewritten blocks, the caret block remounts, and
+  the remaining keystrokes land in a detached node. Fix in
+  src/engines/de-rtc/session.ts: canonical snapshots wait out a
+  500 ms typing-quiet window (stashed newest-wins, re-injected through
+  processRow at quiet; module-level window with a test-only setter).
+  The announce suite pins the deferral; its same-tick cases run with
+  the window at 0.
+- Acceptance: stressed repetition 10/10 (verifier independently: base
+  3 failed/7 passed with the exact signature, branch 10/10); full
+  de-rtc e2e spec 5/5 retries=0; Jest 527; fuzz:quick green.
+- Verifier: PASS. Filed its hygiene note as A14 (destroy() should
+  clear the new timer/stash).
+- Ledger changes: A13 queued -> done (1 commit); A14 filed.
 
 ### Cycle 18 — 2026-08-19 — A12 attempt 3; parked at 3 strikes
 - Did: implemented the reset deferral (session buffers a horizon-reset
