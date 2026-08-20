@@ -56,6 +56,10 @@ if ( Array.isArray( baseConfig.webServer ) ) {
 	baseWebServer.push( baseConfig.webServer );
 }
 
+// The plugin-local fixtures switch their sync waits to the websocket
+// manager's observability global under this flag.
+process.env.GUTENBERG_RTC_REAL_WS = '1';
+
 const config = defineConfig( {
 	...baseConfig,
 	testMatch: '**/specs/websocket-only/**/*.spec.ts',

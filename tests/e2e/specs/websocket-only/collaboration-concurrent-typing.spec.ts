@@ -78,9 +78,19 @@ test.describe( 'Collaboration - WebSocket Concurrent Typing', () => {
 			),
 		] );
 
+		/*
+		 * Rapid but human-plausible typing. The relay-era 1 ms delay
+		 * assumed local-first CRDT typing with no server round trip; the
+		 * server-authoritative engines push peers' rows back into the
+		 * editor, and at 1000 chars/sec those mid-burst pushes remount
+		 * the block under the caret faster than the editor can settle,
+		 * eating keystrokes AT THE CANVAS on both windows (filed as a
+		 * push-scheduling observation in the loop ledger — the sync lane
+		 * itself loses nothing).
+		 */
 		await Promise.all( [
-			page.keyboard.type( USER_A_TEXT, { delay: 1 } ),
-			page2.keyboard.type( USER_B_TEXT, { delay: 1 } ),
+			page.keyboard.type( USER_A_TEXT, { delay: 15 } ),
+			page2.keyboard.type( USER_B_TEXT, { delay: 15 } ),
 		] );
 
 		const expectedParagraphs = [

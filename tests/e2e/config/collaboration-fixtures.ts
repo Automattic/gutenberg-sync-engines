@@ -48,6 +48,56 @@ class HardenedCollaborationUtils extends CollaborationUtils {
 			return await super.joinUser( ...args );
 		}
 	}
+
+	/**
+	 * The subtree's sync-cycle wait knows the HTTP transports (poll
+	 * responses) and the retired test WS provider fixture — the REAL
+	 * websocket transport has neither. When the suite runs on the real
+	 * daemon lane (GUTENBERG_RTC_REAL_WS=1, set by
+	 * playwright.rtc-websocket.config.ts), wait on the plugin websocket
+	 * manager's own observability global instead: socket open and the
+	 * target room past its first applied server response.
+	 *
+	 * @param args waitForSyncCycle arguments (page, cycles, options).
+	 */
+	async waitForSyncCycle(
+		...args: Parameters< CollaborationUtils[ 'waitForSyncCycle' ] >
+	): ReturnType< CollaborationUtils[ 'waitForSyncCycle' ] > {
+		if ( '1' !== process.env.GUTENBERG_RTC_REAL_WS ) {
+			return await super.waitForSyncCycle( ...args );
+		}
+		const [ page, cycles = 3, options = {} ] = args;
+		const { timeout = 10000, room } = options as {
+			timeout?: number;
+			room?: string;
+		};
+		await page.waitForFunction(
+			( target: string | null ) => {
+				const state = (
+					window as Window & {
+						__wpSyncWsState?: {
+							open: boolean;
+							rooms: Record< string, { synced: boolean } >;
+						};
+					}
+				 ).__wpSyncWsState;
+				if ( ! state?.open ) {
+					return false;
+				}
+				const roomsState = state.rooms ?? {};
+				if ( target ) {
+					return true === roomsState[ target ]?.synced;
+				}
+				return Object.keys( roomsState ).some(
+					( name ) =>
+						name.startsWith( 'postType/' ) &&
+						roomsState[ name ].synced
+				);
+			},
+			room ?? null,
+			{ timeout: timeout * cycles }
+		);
+	}
 }
 
 type Fixtures = {
