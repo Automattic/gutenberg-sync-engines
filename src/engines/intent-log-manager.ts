@@ -131,6 +131,14 @@ const PUSH_OBSERVED_DELAY = 1200;
 const CAPTURE_SYNC_DELAY = 1200;
 
 /**
+ * How recently the editor must have typed for remote application to be
+ * deferred to the settled editor sync instead of pushed immediately (see
+ * the onChange tail). Distinct from CAPTURE_SYNC_DELAY: this only decides
+ * WHETHER to defer; the deferred sync still waits the full capture delay.
+ */
+const PUSH_QUIET_MS = 500;
+
+/**
  * Cap on unconfirmed push candidates. Pushes supersede each other in the
  * editor (only the last value of the controlled block list is rendered), so
  * the recent ones are the only plausible baselines.
@@ -168,6 +176,15 @@ interface EntityState {
 	 * note): candidate baselines for the next tree, newest last.
 	 */
 	pendingPushes: ObservedState[];
+	/**
+	 * When the editor last handed update() a block tree — the typing-hot
+	 * signal for the remote-push gate (see the onChange tail). A push
+	 * landing mid-burst remounts the block under the caret and the
+	 * user's next keystrokes die in a detached node (found by the
+	 * real-websocket e2e lane, where remote rows arrive per-keystroke
+	 * instead of per poll; de-rtc got the equivalent gate first).
+	 */
+	lastEditorEditAt: number;
 	/**
 	 * Whether update() is currently authoring captured intents. The
 	 * session emits change events synchronously per authored intent;
@@ -816,6 +833,18 @@ function scheduleEditorSync( state: EntityState, force = false ): void {
 	}
 	state.syncTimer = setTimeout( () => {
 		state.syncTimer = null;
+		/*
+		 * Re-check typing-hotness at FIRE time: the delay only measures
+		 * from scheduling, and a burst that keeps going would otherwise
+		 * take this push mid-stream — remounting the caret block and
+		 * eating the next keystrokes (deterministic truncation on the
+		 * real-websocket lane, where per-keystroke remote rows schedule
+		 * this sync early in the peer's burst).
+		 */
+		if ( Date.now() - state.lastEditorEditAt < PUSH_QUIET_MS ) {
+			scheduleEditorSync( state, state.syncForce );
+			return;
+		}
 		const forced = state.syncForce;
 		state.syncForce = false;
 		if ( ! state.unloaded ) {
@@ -1082,6 +1111,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			unloaded: false,
 			observed: null,
 			pendingPushes: [],
+			lastEditorEditAt: 0,
 			capturing: false,
 			// Record seeding (source 1 of the editorIds contract): the ids
 			// persisted in the content this editor loaded and rendered.
@@ -1272,6 +1302,18 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			 * rendered it. Ids become removable when the editor itself
 			 * hands us a tree containing them (its echo of this push).
 			 */
+			/*
+			 * Typing-quiet gate for remote application: pushing a merged
+			 * view while the user's burst is hot remounts the caret block
+			 * and eats the next keystrokes at the canvas. Mid-burst
+			 * arrivals wait for the burst to settle via the existing
+			 * deferred editor sync (which any later capture resets); a
+			 * quiet editor still gets remote work immediately.
+			 */
+			if ( Date.now() - state.lastEditorEditAt < PUSH_QUIET_MS ) {
+				scheduleEditorSync( state );
+				return;
+			}
 			syncEditor( state );
 		} );
 
@@ -1783,6 +1825,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			if ( ! blocks ) {
 				return; // Only whitelisted properties and blocks sync.
 			}
+			state.lastEditorEditAt = Date.now();
 
 			/*
 			 * The incoming tree is the editor's own testimony about what it
