@@ -30,8 +30,8 @@ a merge.
 | A12 intent-log stale-base voids lose live edits | A | parked | 3 | loop/a12 | PARKED after 3 attempts (cycle 18) — see Parked section. Branch holds real, verified improvements worth merging |
 | A13 de-rtc burst-eat recurrence under load | A | done | 1 | loop/a13 | verifier PASS (cycle 19); typing-quiet snapshot deferral. Base failed 3/10 under stress, branch 10/10 |
 | A14 de-rtc session teardown hygiene | A | done | 1 | loop/a14 | verifier PASS (cycle 20); STACKED on loop/a13 — merge a13 then a14 |
-| A3 websocket fixme re-enable | A | in-progress | 1 | loop/a3 | real-daemon lane WORKS (fixme removed); one keystroke-race flake from green — blocked on A15. STACKED on loop/a2 (merge a2 then a3) |
-| A15 intent-log mid-burst remote pushes eat keystrokes | A | in-progress | 1 | loop/a15 | gate implemented + fire-time re-check (Jest 527 green); WS truncation now DETERMINISTIC 48-of-60 — captures appear to stop at 48; instrumented hunt next. STACKED on loop/a3 |
+| A3 websocket fixme re-enable | A | done | 1 | loop/a3 | verifier PASS (cycle 23) — real-daemon lane, suite 3x green retries=0. STACKED: merge a2 → a3 → a15 |
+| A15 intent-log mid-burst remote pushes eat keystrokes | A | done | 1 | loop/a15 | verifier PASS (cycle 23): typing-quiet push gate + checkpoint interval 100→500 (live-authoring-sized). STACKED on loop/a3 |
 | A8 full fuzzer matrix soak | A | blocked | 0 | — | exit gate; runs after A1–A7 |
 | B1 yjs materialization (framework) | B | queued | 0 | — | proposal only; subtree edits |
 | B3 pending-edit inline-card UI | B | queued | 0 | — | proposal only; build to prototype decisions |
@@ -81,6 +81,30 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
 None.
 
 ## Cycle log
+
+### Cycle 23 — 2026-08-20 — A15 + A3 done (verifier PASS, one acceptance)
+- Did: the instrumented hunt nailed the deterministic 48-of-60
+  truncation in one traced run: all 60 keystrokes captured on both
+  pages; the first ~48 dispositions applied; every later one voided
+  stale-base on BOTH pages at once. Mechanism: the push gate pins each
+  client's observed frame during the burst (it only advances past peer
+  rows when a push confirms), and two concurrent typists burn ~2
+  rows/keystroke — the room crossed the 100-row checkpoint trim
+  mid-burst and the burst tails fell below the transform floor. Fix:
+  intent-log's checkpoint interval default 100 → 500 (small JSON rows;
+  bounded ≤1000 retained; filter unchanged; rationale in a code
+  comment sized for live authoring frames, not just storage).
+- Acceptance (both items, clean build): fixme grep empty; websocket
+  suite (real daemon) 3x green retries=0 — verifier re-ran 3x green
+  and demonstrated red-on-base (deterministic truncation on loop/a3
+  without a15; the typing-delay change alone does not mask it); Jest
+  527; sweep; full test:php 310; intent-log PHPUnit filter 40/40;
+  fuzz:quick green.
+- Verifier: PASS for both. Notes: all interval-dependent tests pin
+  their own filters; __wpSyncWsState is browser-local observability,
+  not wire.
+- Ledger changes: A3 done, A15 done. Lane A now has no actionable
+  items: A2 and A8 remain blocked on parked A12. Lane B next.
 
 ### Cycle 22 — 2026-08-20 — A15 (gate in; deterministic residual to hunt)
 - Did: implemented the typing-quiet remote-push gate in the intent-log
