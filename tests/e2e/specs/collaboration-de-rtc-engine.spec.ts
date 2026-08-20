@@ -402,6 +402,15 @@ test.describe( 'Collaboration - de-rtc engine', () => {
 		const pendingCard = noticePage.locator(
 			'.editor-collaboration-pending-card__body'
 		);
+		// The parked conflict ANCHORS in-canvas (de-rtc's positional
+		// targetIndex): the inline card with its verbs must actually
+		// render — resolution-by-panel-fallback alone is not the contract.
+		await expect( pendingCard.first() ).toBeVisible( { timeout: 15000 } );
+		await expect(
+			pendingCard
+				.getByRole( 'button', { name: 'Reject', exact: true } )
+				.first()
+		).toBeVisible();
 
 		// Reject everything parked, until settled-and-still-empty (the
 		// typing race can escalate additional proposals in flight):
