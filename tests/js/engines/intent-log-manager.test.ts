@@ -216,6 +216,177 @@ describe( 'intent-log manager', () => {
 		expect( handlers.edits ).toHaveLength( 0 );
 	} );
 
+	it( 'REGRESSION: an edit made during the join round trip is captured at bootstrap (reload + insert on an empty-genesis room)', async () => {
+		// Fuzzer finding (intent-log/http-polling seed 6, concurrency
+		// profile): a participant reloads on an empty-genesis room and
+		// inserts a block before the room snapshot arrives. Pre-init
+		// edits cannot be authored (no document yet) and the capture lane
+		// is edge-triggered, so the insert stayed local forever — the
+		// empty-genesis bootstrap skips the reconciling push too.
+		const { manager, transport } = await loadManagedEntity();
+
+		manager.update(
+			'postType/post',
+			'1',
+			{
+				blocks: [
+					{
+						name: 'core/paragraph',
+						attributes: { content: 'typed during join' },
+						innerBlocks: [],
+					},
+				],
+			},
+			'gutenberg'
+		);
+		// Still pre-snapshot: nothing can be authored yet.
+		expect( transport.captured.sent ).toHaveLength( 0 );
+
+		// The empty-genesis snapshot lands: the buffered tree must be
+		// captured against the fresh baseline and reach the wire. The
+		// recovery is deferred past the delivery burst (a rejoiner's
+		// history replays right behind the genesis row), so advance the
+		// clock.
+		transport.captured.session!.receiveUpdate( snapshotRow( [] ) );
+		expect( transport.captured.sent ).toHaveLength( 0 );
+		jest.advanceTimersByTime( 1 );
+
+		expect( transport.captured.sent.length ).toBeGreaterThan( 0 );
+		const types = transport.captured.sent.map(
+			( update ) => JSON.parse( update.data ).type
+		);
+		expect( types ).toContain( 'insert_block' );
+		expect(
+			transport.captured.sent.some( ( update ) =>
+				update.data.includes( 'typed during join' )
+			)
+		).toBe( true );
+	} );
+
+	it( 'REGRESSION: a rejoin with history discards the buffered pre-init tree (no duplicated blocks)', async () => {
+		// The counterpart guard: a REJOINER's room also opens with the
+		// (empty) genesis snapshot, but its whole history replays in the
+		// same delivery burst. The buffered pre-init tree is an echo of
+		// the SAVED content the editor rendered — capturing it against
+		// the bare genesis baseline re-authors every saved block as new
+		// work, and the history rows landing beside those fabrications
+		// duplicate every block (found by fuzz:quick). A document that is
+		// non-empty after the burst must discard the buffer.
+		const { manager, transport } = await loadManagedEntity();
+
+		// Pre-init: the editor hands over its parsed saved content (one
+		// paragraph, with its persisted identity) plus early typing.
+		manager.update(
+			'postType/post',
+			'1',
+			{
+				blocks: [
+					{
+						name: 'core/paragraph',
+						attributes: {
+							content: 'saved marker',
+							metadata: { syncId: 'h1' },
+						},
+						innerBlocks: [],
+					},
+				],
+			},
+			'gutenberg'
+		);
+
+		// The join response: empty genesis, then history replays the
+		// same block — one synchronous burst.
+		transport.captured.session!.receiveUpdate( snapshotRow( [] ) );
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				intentId: 'hist-1',
+				actorId: 'u9c9',
+				baseSeq: 0,
+				txnId: null,
+				type: 'insert_block',
+				payload: {
+					block: {
+						syncId: 'h1',
+						blockType: 'core/paragraph',
+						text: 'saved marker',
+					},
+					parentId: null,
+					afterSiblingId: null,
+				},
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.INTENT,
+		} );
+		jest.advanceTimersByTime( 1 );
+
+		// The buffer was discarded: nothing was re-authored.
+		expect(
+			transport.captured.sent.filter(
+				( update ) => 'insert_block' === JSON.parse( update.data ).type
+			)
+		).toHaveLength( 0 );
+	} );
+
+	it( 'REGRESSION: stale-base voids re-capture the editor tree instead of silently losing the edit', async () => {
+		// A2's retry-free e2e runs found this as real data loss: a client
+		// whose own earlier burst pushed the room past the checkpoint trim
+		// authors its next edits at a now-trimmed seq; the server voids
+		// them ALL as stale-base without planning, and (because the
+		// client's cursor is current) no snapshot reset ever arrives. The
+		// replica's replan then dropped the optimistic effect and the next
+		// editor sync pushed the REVERTED document over the canvas — the
+		// user watched their typing vanish. The manager must instead
+		// re-capture the current editor tree at the current seq.
+		const { manager, transport } = await loadManagedEntity();
+
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [
+				{
+					syncId: 'p1',
+					blockType: 'core/paragraph',
+					text: 'Hello world',
+				},
+			] )
+		);
+
+		const editedTree = [
+			{
+				name: 'core/paragraph',
+				attributes: {
+					content: 'Hello world!!',
+					metadata: { syncId: 'p1' },
+				},
+				innerBlocks: [],
+			},
+		];
+		manager.update(
+			'postType/post',
+			'1',
+			{ blocks: editedTree },
+			'gutenberg'
+		);
+		expect( transport.captured.sent ).toHaveLength( 1 );
+		const first = JSON.parse( transport.captured.sent[ 0 ].data );
+
+		// The server compacted past the authoring seq: the whole ladder
+		// voids as stale-base, with no snapshot reset (cursor is current).
+		transport.captured.session!.receiveDispositions!( [
+			{
+				intentId: first.intentId,
+				status: 'voided',
+				reason: 'stale-base',
+			} as never,
+		] );
+
+		// The recovery is deferred past the settle/replan.
+		await jest.advanceTimersByTimeAsync( 1 );
+
+		// The edit was re-authored — not silently lost.
+		expect( transport.captured.sent.length ).toBeGreaterThan( 1 );
+		const reauthored = JSON.parse( transport.captured.sent.at( -1 )!.data );
+		expect( reauthored.intentId ).not.toBe( first.intentId );
+		expect( JSON.stringify( reauthored.payload ) ).toContain( '!!' );
+	} );
+
 	it( 'pushes the snapshot document into the editor, captures edits as intents, and suppresses the echo', async () => {
 		const { manager, handlers, transport } = await loadManagedEntity();
 
@@ -891,6 +1062,24 @@ describe( 'intent-log manager', () => {
 			( session as IntentLogSession ).getDocument()!.root[ 0 ].fields
 				.content.text;
 
+		it( 'REGRESSION: remote work arriving mid-burst defers its push past the typing-quiet window', async () => {
+			// A push landing while the user types remounts the caret block
+			// and the next keystrokes die in a detached node (seen on the
+			// real-websocket lane, where rows arrive per keystroke). While
+			// the editor is typing-hot, remote application must ride the
+			// settled editor sync; a quiet editor still gets it pushed.
+			const { handlers, transport } = await loadTypedRoom();
+			const editsBefore = handlers.edits.length;
+			transport.captured.session!.receiveUpdate(
+				remoteAppend( ' there' )
+			);
+			// Hot: no immediate push.
+			expect( handlers.edits.length ).toBe( editsBefore );
+			// The burst settles: the deferred sync pushes the merged view.
+			flushEditorSync();
+			expect( lastPushedContent( handlers ) ).toBe( 'Hello there' );
+		} );
+
 		it( 'REGRESSION: a keystroke racing a push does not clobber the remote text', async () => {
 			/*
 			 * The push (remote text → editor) and a live keystroke cross: the
@@ -906,6 +1095,10 @@ describe( 'intent-log manager', () => {
 			transport.captured.session!.receiveUpdate(
 				remoteAppend( ' there' )
 			);
+			// The typed room is still hot, so the push waits out the
+			// typing-quiet gate before dispatching (the websocket-lane
+			// keystroke-eating fix); flush it to set up the race.
+			flushEditorSync();
 			expect( lastPushedContent( handlers ) ).toBe( 'Hello there' );
 
 			// The editor never rendered that push: its tree is the old text
@@ -945,6 +1138,8 @@ describe( 'intent-log manager', () => {
 			transport.captured.session!.receiveUpdate(
 				remoteAppend( ' there' )
 			);
+			// Flush the typing-quiet-deferred push (see the sibling test).
+			flushEditorSync();
 
 			transport.captured.sent.length = 0;
 			manager.update(

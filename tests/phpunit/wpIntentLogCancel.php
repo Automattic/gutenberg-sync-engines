@@ -106,7 +106,13 @@ class Tests_Collaboration_WpIntentLogCancel extends WP_UnitTestCase {
 		);
 
 		$this->assertNotWPError( $result );
-		$this->assertSame( array( 'status' => 'voided', 'reason' => 'canceled' ), array_diff_key( $this->disposition_for( $result, 'i-1' ), array( 'intentId' => 1 ) ) );
+		$this->assertSame(
+			array(
+				'status' => 'voided',
+				'reason' => 'canceled',
+			),
+			array_diff_key( $this->disposition_for( $result, 'i-1' ), array( 'intentId' => 1 ) )
+		);
 		$this->assertSame( 'applied', $this->disposition_for( $result, 'cancel-i-1' )['status'] );
 		$this->assertStringNotContainsString( 'EDIT', (string) $engine->materialize( $room ), 'The canceled edit must never land.' );
 	}
@@ -118,7 +124,7 @@ class Tests_Collaboration_WpIntentLogCancel extends WP_UnitTestCase {
 		$result = $engine->handle_updates( $room, 202, 0, array( $this->intent_update( 'i-2', $sync_id ) ), array() );
 		$this->assertSame( 'applied', $this->disposition_for( $result, 'i-2' )['status'] );
 
-		$result = $engine->handle_updates( $room, 202, 0, array( $this->cancel_update( 'cancel-i-2', array( 'i-2' ) ) ), array() );
+		$result      = $engine->handle_updates( $room, 202, 0, array( $this->cancel_update( 'cancel-i-2', array( 'i-2' ) ) ), array() );
 		$disposition = $this->disposition_for( $result, 'cancel-i-2' );
 		$this->assertSame( 'voided', $disposition['status'] );
 		$this->assertSame( 'cancel-too-late', $disposition['reason'] );

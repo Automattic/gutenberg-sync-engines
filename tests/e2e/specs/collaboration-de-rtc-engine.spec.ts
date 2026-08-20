@@ -6,10 +6,7 @@ import type { RequestUtils } from '@wordpress/e2e-test-utils-playwright';
 /**
  * Internal dependencies
  */
-import {
-	test,
-	expect,
-} from '../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures';
+import { test, expect } from '../config/collaboration-fixtures';
 import {
 	SECOND_USER,
 	type CollaborationUtils,
@@ -356,6 +353,16 @@ test.describe( 'Collaboration - de-rtc engine', () => {
 		 * server accepts whichever proposal lands first; the other is a
 		 * genuine conflict (`manual-conflict-required`) that now PARKS as
 		 * a durable review row instead of being silently abandoned.
+		 *
+		 * DETERMINISTIC provocation: whether the conflict escalates used
+		 * to depend on scheduling — if user two's replica incorporated
+		 * user one's accepted version BEFORE its own commit left, the
+		 * later proposal could serialize cleanly and nothing parked (the
+		 * spec then flaked and leaned on CI retries). Holding user two's
+		 * SYNC traffic (never the commit lane) while user one's rewrite
+		 * lands guarantees user two proposes from the stale base, which
+		 * is the same-block overlap the merge core must escalate. The
+		 * held poll routes are released right after.
 		 */
 		const paragraph1 = editor.canvas
 			.locator( '[data-type="core/paragraph"]' )
@@ -363,13 +370,51 @@ test.describe( 'Collaboration - de-rtc engine', () => {
 		const paragraph2 = editor2.canvas
 			.locator( '[data-type="core/paragraph"]' )
 			.first();
-		await paragraph1.click( { clickCount: 3 } );
-		await paragraph2.click( { clickCount: 3 } );
 
-		await Promise.all( [
-			page1.keyboard.type( 'Rewrite by user one', { delay: 50 } ),
-			page2.keyboard.type( 'Rewrite by user two', { delay: 50 } ),
-		] );
+		// Both URL shapes: pretty (/wp-json/...) and plain
+		// (?rest_route=%2F..., percent-encoded) — the established
+		// decoded-match pattern from the http-only suite.
+		const isSyncPoll = ( url: URL ) =>
+			decodeURIComponent( url.href ).includes( '/wp-sync/v1/updates' );
+		const isAutosaveCommit = ( response: {
+			url: () => string;
+			request: () => { method: () => string };
+		} ) =>
+			decodeURIComponent( response.url() ).includes(
+				`/wp/v2/posts/${ post.id }/autosaves`
+			) && 'POST' === response.request().method();
+
+		const heldPolls: Array< { continue: () => Promise< void > } > = [];
+		await page2.route( isSyncPoll, ( route ) => {
+			heldPolls.push( route );
+		} );
+
+		// User one rewrites and their commit LANDS (the autosave commit
+		// response is the server's acceptance).
+		const userOneCommit = page1.waitForResponse( isAutosaveCommit, {
+			timeout: 30000,
+		} );
+		await paragraph1.click( { clickCount: 3 } );
+		await page1.keyboard.type( 'Rewrite by user one', { delay: 50 } );
+		expect( ( await userOneCommit ).ok() ).toBe( true );
+
+		// User two — still on the genesis version — rewrites the same
+		// words and commits; the server three-way-merges from the stale
+		// base and must park the overlap. The commit response itself
+		// carries the parked row, so user two learns the escalation even
+		// before their polls resume.
+		const userTwoCommit = page2.waitForResponse( isAutosaveCommit, {
+			timeout: 30000,
+		} );
+		await paragraph2.click( { clickCount: 3 } );
+		await page2.keyboard.type( 'Rewrite by user two', { delay: 50 } );
+		expect( ( await userTwoCommit ).ok() ).toBe( true );
+
+		// Resume user two's sync traffic.
+		for ( const route of heldPolls.splice( 0 ) ) {
+			await route.continue().catch( () => {} );
+		}
+		await page2.unroute( isSyncPoll );
 
 		// At least one side surfaces the escalation notice (the parked row
 		// reaches BOTH replicas; the notice names the loser's own edit on
@@ -387,7 +432,10 @@ test.describe( 'Collaboration - de-rtc engine', () => {
 		} ).toPass( { timeout: 20000 } );
 
 		// The review panel in the document sidebar lists the parked
-		// conflict with the shared frame-conflict vocabulary.
+		// conflict with the shared frame-conflict vocabulary — as a
+		// summary-only index. The parked blocks anchor inline pending-edit
+		// cards in the canvas (de-rtc addresses blocks positionally), and
+		// resolution happens there.
 		await noticeEditor.openDocumentSettingsSidebar();
 		await noticePage
 			.getByRole( 'tab', { name: 'Post', exact: true } )
@@ -396,30 +444,61 @@ test.describe( 'Collaboration - de-rtc engine', () => {
 			'.editor-collaboration-review-panel'
 		);
 		await expect( panel ).toBeVisible( { timeout: 15000 } );
+		const pendingCard = noticePage.locator(
+			'.editor-collaboration-pending-card__body'
+		);
+		// The parked conflict ANCHORS in-canvas (de-rtc's positional
+		// targetIndex): the inline card with its verbs must actually
+		// render — resolution-by-panel-fallback alone is not the contract.
+		await expect( pendingCard.first() ).toBeVisible( { timeout: 15000 } );
+		await expect(
+			pendingCard
+				.getByRole( 'button', { name: 'Reject', exact: true } )
+				.first()
+		).toBeVisible();
 
-		// Discard everything parked, until settled-and-still-empty (the
-		// typing race can escalate additional proposals in flight).
+		// Resolutions are MUTATIONS and must travel over the REST review
+		// lane (B5), not the advisory transport. Arm the listener BEFORE
+		// rejecting: a broken route would otherwise be masked by the
+		// client's silent transport-row fallback and this spec would
+		// still pass.
+		const resolveResponse = noticePage.waitForResponse(
+			( response ) =>
+				decodeURIComponent( response.url() ).includes(
+					'/wp-sync/v1/de-rtc/resolve'
+				) && 'POST' === response.request().method(),
+			{ timeout: 30000 }
+		);
+
+		// Reject everything parked, until settled-and-still-empty (the
+		// typing race can escalate additional proposals in flight):
+		// anchored conflicts at their inline card, unanchored ones through
+		// the panel verbs they retain.
 		await expect( async () => {
 			for ( let i = 0; i < 40; i++ ) {
-				const discardAll = panel.getByRole( 'button', {
-					name: 'Discard all',
-				} );
-				if ( ( await discardAll.count() ) > 0 ) {
-					await discardAll.click();
+				const cardReject = pendingCard
+					.getByRole( 'button', { name: 'Reject', exact: true } )
+					.first();
+				if ( ( await cardReject.count() ) > 0 ) {
+					await cardReject.click();
 					continue;
 				}
-				const discard = panel
-					.getByRole( 'button', { name: 'Discard', exact: true } )
+				const panelReject = panel
+					.getByRole( 'button', { name: 'Reject', exact: true } )
 					.first();
-				if ( ( await discard.count() ) > 0 ) {
-					await discard.click();
+				if ( ( await panelReject.count() ) > 0 ) {
+					await panelReject.click();
 					continue;
 				}
 				break;
 			}
 			await noticePage.waitForTimeout( 3000 );
 			expect( await panel.count() ).toBe( 0 );
+			expect( await pendingCard.count() ).toBe( 0 );
 		} ).toPass( { timeout: 60000 } );
+
+		// The REST resolve POST actually happened and succeeded.
+		expect( ( await resolveResponse ).ok() ).toBe( true );
 
 		// The resolution row travels to the OTHER collaborator too: their
 		// notices clear and their panel (were it open) would be empty.

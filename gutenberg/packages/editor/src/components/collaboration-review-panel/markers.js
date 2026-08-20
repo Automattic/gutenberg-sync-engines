@@ -1,11 +1,9 @@
 /**
  * WordPress dependencies
  */
-import { useState } from '@wordpress/element';
 import { useSelect } from '@wordpress/data';
-import { __, _n, sprintf } from '@wordpress/i18n';
+import { __, sprintf } from '@wordpress/i18n';
 import { Button } from '@wordpress/components';
-import { caution } from '@wordpress/icons';
 import {
 	store as blockEditorStore,
 	privateApis as blockEditorPrivateApis,
@@ -15,59 +13,104 @@ import {
  * Internal dependencies
  */
 import { unlock } from '../../lock-unlock';
-import ReviewGroup from './review-group';
 import {
 	canRestoreItems,
 	groupByUnit,
+	itemAnchorClientId,
+	REASON_LABELS,
 	useReviewData,
 	useResolveReviewItems,
 } from './review-data';
 
 const { PrivateBlockPopover: BlockPopover } = unlock( blockEditorPrivateApis );
 
-function ConflictMarker( { clientId, groups, onResolve, contentRef } ) {
-	const [ isExpanded, setIsExpanded ] = useState( false );
-	const count = groups.reduce( ( n, group ) => n + group.length, 0 );
+/**
+ * The content of the inline pending-edit card: ONE merged task per block
+ * (the prototype's merge-not-stack decision), no count chip, and the two
+ * verbs — Adopt takes the set-aside edit, Reject discards it. Adopting a
+ * requires-approval edit is reserved for users who may publish unfiltered
+ * HTML. Position-independent so it can be unit-tested without the block
+ * popover.
+ *
+ * @param {Object}   props
+ * @param {Array}    props.groups    Every review group targeting the block.
+ * @param {Function} props.onResolve ( items, resolution ) => void.
+ */
+export function BlockCardBody( { groups, onResolve } ) {
+	const items = groups.flat();
+	const allLocal = items.every( ( item ) => item.isLocal );
+	const restorable = canRestoreItems( items );
+	const reasons = Array.from(
+		new Set(
+			items
+				.map( ( item ) => REASON_LABELS[ item.reason ] )
+				.filter( Boolean )
+		)
+	);
+	const summaries = items
+		.map( ( item ) => item.summary ?? item.excerpt )
+		.filter( Boolean );
 
+	return (
+		<div className="editor-collaboration-pending-card__body">
+			<p className="editor-collaboration-pending-card__attribution">
+				{ allLocal
+					? __( 'Your edit on this block is pending.' )
+					: __(
+							'A collaborator’s edit on this block is pending.'
+					  ) }{ ' ' }
+				{ reasons.join( ' ' ) }
+			</p>
+			{ summaries.length > 0 && (
+				<p className="editor-collaboration-pending-card__summary">
+					{ sprintf(
+						/* translators: %s: the content of the edit that is pending. */
+						__( 'Pending content: “%s”' ),
+						summaries.join( ' ' )
+					) }
+				</p>
+			) }
+			<div className="editor-collaboration-pending-card__actions">
+				{ restorable ? (
+					<Button
+						__next40pxDefaultSize
+						size="compact"
+						variant="primary"
+						onClick={ () => onResolve( items, 'restored' ) }
+					>
+						{ __( 'Adopt' ) }
+					</Button>
+				) : (
+					<span className="editor-collaboration-pending-card__hint">
+						{ __(
+							'Only someone allowed to publish unfiltered HTML can adopt this.'
+						) }
+					</span>
+				) }
+				<Button
+					__next40pxDefaultSize
+					size="compact"
+					variant="tertiary"
+					isDestructive
+					onClick={ () => onResolve( items, 'dismissed' ) }
+				>
+					{ __( 'Reject' ) }
+				</Button>
+			</div>
+		</div>
+	);
+}
+
+function BlockCard( { clientId, groups, onResolve, contentRef } ) {
 	return (
 		<BlockPopover
 			clientId={ clientId }
 			placement="top-end"
 			focusOnMount={ false }
-			className="editor-collaboration-conflict-marker"
+			className="editor-collaboration-pending-card"
 			__unstableContentRef={ contentRef }
 		>
-			<Button
-				__next40pxDefaultSize
-				size="compact"
-				icon={ caution }
-				isPressed={ isExpanded }
-				className="editor-collaboration-conflict-marker__chip"
-				label={ sprintf(
-					/* translators: %d: number of conflicting edits on this block. */
-					_n(
-						'%d edit on this block was set aside — review it',
-						'%d edits on this block were set aside — review them',
-						count
-					),
-					count
-				) }
-				showTooltip
-				onClick={ () => setIsExpanded( ( value ) => ! value ) }
-			>
-				{ count > 1 ? count : undefined }
-			</Button>
-			{ isExpanded && (
-				<div className="editor-collaboration-conflict-marker__card">
-					{ groups.map( ( groupItems ) => (
-						<ReviewGroup
-							key={ groupItems[ 0 ].unitId }
-							items={ groupItems }
-							onResolve={ onResolve }
-						/>
-					) ) }
-				</div>
-			) }
+			<BlockCardBody groups={ groups } onResolve={ onResolve } />
 		</BlockPopover>
 	);
 }
@@ -158,18 +201,20 @@ function InsertionCard( { clientId, placement, item, onResolve, contentRef } ) {
 }
 
 /**
- * In-canvas review surface: a badge on every block whose edits were set
- * aside (opening the conflict in place), plus an inline card for each
- * parked new-block proposal, anchored where the block would land. Both
- * complement the document-sidebar panel, which lists everything —
- * including conflicts whose block or anchor no longer exists.
+ * In-canvas review surface: an inline pending-edit card on every block
+ * whose edits were set aside (ONE merged card per block — the primary
+ * resolution surface), plus an inline card for each parked new-block
+ * proposal, anchored where the block would land. The document-sidebar
+ * panel is a summary-only index over the same items; only conflicts whose
+ * block or anchor no longer exists resolve there.
  *
  * @param {Object} props
  * @param {Object} props.contentRef Ref to the editor content element, for
  *                                  popover scroll coupling.
  */
 export default function CollaborationConflictMarkers( { contentRef } ) {
-	const { postType, postId, items, clientIdByTarget } = useReviewData();
+	const { postType, postId, items, clientIdByTarget, clientIdByIndex } =
+		useReviewData();
 	const onResolve = useResolveReviewItems( postType, postId );
 	const firstRootClientId = useSelect(
 		( select ) => select( blockEditorStore ).getBlockOrder()[ 0 ] ?? null,
@@ -210,7 +255,10 @@ export default function CollaborationConflictMarkers( { contentRef } ) {
 			// Anchor gone (or empty canvas): the sidebar panel covers it.
 			continue;
 		}
-		const clientId = clientIdByTarget[ first.targetId ];
+		const clientId = itemAnchorClientId( first, {
+			clientIdByTarget,
+			clientIdByIndex,
+		} );
 		if ( ! clientId ) {
 			continue;
 		}
@@ -224,7 +272,7 @@ export default function CollaborationConflictMarkers( { contentRef } ) {
 		<>
 			{ Array.from( groupsByClientId.entries() ).map(
 				( [ clientId, groups ] ) => (
-					<ConflictMarker
+					<BlockCard
 						key={ clientId }
 						clientId={ clientId }
 						groups={ groups }

@@ -37,6 +37,16 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		const TRANSPORT_OPTION = 'gutenberg_sync_engines_transport';
 
 		/**
+		 * Option storing the de-rtc commit cadence in SECONDS. 0 keeps the
+		 * settle cycle (pseudo-realtime); the Distributed Editing vision's
+		 * operating point is 10.
+		 *
+		 * @since 0.3.0
+		 * @var string
+		 */
+		const DE_RTC_COMMIT_INTERVAL_OPTION = 'gutenberg_sync_engines_de_rtc_commit_interval';
+
+		/**
 		 * Registers the admin page, settings, and the transport filter.
 		 *
 		 * @since 0.1.0
@@ -168,6 +178,29 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 					'sanitize_callback' => array( $this, 'sanitize_transport' ),
 				)
 			);
+			register_setting(
+				self::PAGE,
+				self::DE_RTC_COMMIT_INTERVAL_OPTION,
+				array(
+					'type'              => 'integer',
+					'description'       => __( 'Distributed Editing commit cadence in seconds (0 = every settle)', 'gutenberg-sync-engines' ),
+					'sanitize_callback' => array( $this, 'sanitize_commit_interval' ),
+					'show_in_rest'      => true,
+					'default'           => 0,
+				)
+			);
+		}
+
+		/**
+		 * Sanitizes the de-rtc commit cadence: whole seconds, 0-300.
+		 *
+		 * @since 0.3.0
+		 *
+		 * @param mixed $value Submitted value.
+		 * @return int Cadence in seconds.
+		 */
+		public function sanitize_commit_interval( $value ): int {
+			return max( 0, min( 300, (int) $value ) );
 		}
 
 		/**
@@ -198,6 +231,56 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				array( $this, 'render_transport_field' ),
 				self::PAGE,
 				'gutenberg_sync_engines_main'
+			);
+			add_settings_field(
+				self::DE_RTC_COMMIT_INTERVAL_OPTION,
+				__( 'Distributed Editing commit cadence', 'gutenberg-sync-engines' ),
+				array( $this, 'render_commit_interval_field' ),
+				self::PAGE,
+				'gutenberg_sync_engines_main'
+			);
+		}
+
+		/**
+		 * Renders the de-rtc commit cadence field.
+		 *
+		 * @since 0.3.0
+		 *
+		 * @return void
+		 */
+		public function render_commit_interval_field(): void {
+			$value = (int) get_option( self::DE_RTC_COMMIT_INTERVAL_OPTION, 0 );
+			printf(
+				'<input type="number" min="0" max="300" step="1" name="%1$s" id="%1$s" value="%2$d" class="small-text" /> %3$s<p class="description">%4$s</p>',
+				esc_attr( self::DE_RTC_COMMIT_INTERVAL_OPTION ),
+				(int) $value,
+				esc_html__( 'seconds', 'gutenberg-sync-engines' ),
+				esc_html__( 'Distributed Editing (de-rtc) only. 0 commits whenever edits settle (pseudo-realtime). 10 is the Distributed Editing vision\'s save-and-sync cadence: edits coalesce locally and the room advances every ten seconds, cutting request rate and upload bytes on constrained hosts. Peers see each other\'s work at this cadence.', 'gutenberg-sync-engines' )
+			);
+
+			/*
+			 * The dial only applies to de-rtc: HIDE its row (live, following
+			 * the engine select) rather than disable the input — a disabled
+			 * input drops out of the POST and saving under another engine
+			 * would silently reset the stored cadence. A hidden row still
+			 * submits, so the value survives engine round-trips. Without JS
+			 * the row simply stays visible.
+			 */
+			printf(
+				'<script>( function () {
+					var input  = document.getElementById( %1$s );
+					var select = document.getElementById( "wp_sync_engine" );
+					if ( ! input || ! select ) {
+						return;
+					}
+					var row    = input.closest( "tr" );
+					var toggle = function () {
+						row.style.display = "de-rtc" === select.value ? "" : "none";
+					};
+					select.addEventListener( "change", toggle );
+					toggle();
+				} )();</script>',
+				wp_json_encode( self::DE_RTC_COMMIT_INTERVAL_OPTION )
 			);
 		}
 

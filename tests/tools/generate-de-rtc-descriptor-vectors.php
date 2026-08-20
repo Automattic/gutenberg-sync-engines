@@ -58,10 +58,10 @@ function gse_vec_doc( ...$blocks ) {
 	return implode( "\n\n", $blocks );
 }
 
-$gse_sep   = "<!-- wp:separator -->\n<hr class=\"wp-block-separator has-alpha-channel-opacity\"/>\n<!-- /wp:separator -->";
-$gse_img   = "<!-- wp:image {\"id\":42,\"url\":\"https://example.com/a/b.png\",\"alt\":\"caf\u{00e9}\"} -->\n<figure class=\"wp-block-image\"><img src=\"https://example.com/a/b.png\" alt=\"caf\u{00e9}\"/></figure>\n<!-- /wp:image -->";
-$gse_img2  = "<!-- wp:image {\"id\":42,\"url\":\"https://example.com/a/b.png\",\"alt\":\"tea\"} -->\n<figure class=\"wp-block-image\"><img src=\"https://example.com/a/b.png\" alt=\"tea\"/></figure>\n<!-- /wp:image -->";
-$gse_group = "<!-- wp:group {\"layout\":{\"type\":\"constrained\"}} -->\n<div class=\"wp-block-group\">" . gse_vec_p( 'inner' ) . "</div>\n<!-- /wp:group -->";
+$gse_sep    = "<!-- wp:separator -->\n<hr class=\"wp-block-separator has-alpha-channel-opacity\"/>\n<!-- /wp:separator -->";
+$gse_img    = "<!-- wp:image {\"id\":42,\"url\":\"https://example.com/a/b.png\",\"alt\":\"caf\u{00e9}\"} -->\n<figure class=\"wp-block-image\"><img src=\"https://example.com/a/b.png\" alt=\"caf\u{00e9}\"/></figure>\n<!-- /wp:image -->";
+$gse_img2   = "<!-- wp:image {\"id\":42,\"url\":\"https://example.com/a/b.png\",\"alt\":\"tea\"} -->\n<figure class=\"wp-block-image\"><img src=\"https://example.com/a/b.png\" alt=\"tea\"/></figure>\n<!-- /wp:image -->";
+$gse_group  = "<!-- wp:group {\"layout\":{\"type\":\"constrained\"}} -->\n<div class=\"wp-block-group\">" . gse_vec_p( 'inner' ) . "</div>\n<!-- /wp:group -->";
 $gse_group2 = "<!-- wp:group {\"layout\":{\"type\":\"constrained\"}} -->\n<div class=\"wp-block-group\">" . gse_vec_p( 'inner edited' ) . "</div>\n<!-- /wp:group -->";
 
 $gse_cases = array(
@@ -196,8 +196,8 @@ for ( $gse_seed = 0; $gse_seed < 24; $gse_seed++ ) {
 $gse_out = array();
 foreach ( $gse_cases as $gse_case ) {
 	list( $gse_name, $gse_base, $gse_next ) = $gse_case;
-	$gse_update = wp_de_rtc_create_automerge_update_for_content_change( $gse_base, $gse_next, 'client' );
-	$gse_out[]  = array(
+	$gse_update                             = wp_de_rtc_create_automerge_update_for_content_change( $gse_base, $gse_next, 'client' );
+	$gse_out[]                              = array(
 		'name'     => $gse_name,
 		'base'     => $gse_base,
 		'next'     => $gse_next,

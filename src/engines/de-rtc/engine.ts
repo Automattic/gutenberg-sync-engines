@@ -6,6 +6,7 @@ import * as Y from 'yjs';
 /**
  * WordPress dependencies
  */
+import apiFetch from '@wordpress/api-fetch';
 // eslint-disable-next-line import/no-unresolved -- Provided at runtime as wp.sync.
 import type {
 	EngineCollection,
@@ -30,7 +31,7 @@ import {
 	createDeRtcUndoFeed,
 	type DeRtcRevertUndoManager,
 } from './revert-undo';
-import { createDeRtcCommitAdapter } from './commit';
+import { createDeRtcCommitAdapter, hasDeRtcCommitRoute } from './commit';
 import { registerSaveBaseVersion } from './save-base-version';
 import { applyServerAwarenessStates } from '../awareness-sync';
 import type { EngineReviewSource } from '../review-manager-decorator';
@@ -263,6 +264,29 @@ export function createDeRtcEngine(): SyncEngine & {
 			const awareness = syncConfig.createAwareness?.( ydoc );
 			const bridge = createDeRtcDocBridge( ydoc, syncConfig );
 			const review = createDeRtcReviewState();
+			// The REST review lane (B5): resolutions are mutations, so they
+			// POST to the plugin's authenticated route; review.ts falls back
+			// to the transport row when the POST rejects (older servers 404
+			// here, and the row path stays accepted for legacy clients). It
+			// follows the commit split — types without a commit route keep
+			// the transport lane for resolutions too. The room string
+			// mirrors the providers' convention.
+			if ( hasDeRtcCommitRoute( objectType ) ) {
+				review.setRestResolver( ( proposalId, resolution ) =>
+					apiFetch( {
+						data: {
+							client_id: ydoc.clientID,
+							proposalId,
+							resolution,
+							room: objectId
+								? `${ objectType }:${ objectId }`
+								: objectType,
+						},
+						method: 'POST',
+						path: '/wp-sync/v1/de-rtc/resolve',
+					} )
+				);
+			}
 			const undoFeed = createDeRtcUndoFeed();
 			const authorship = createDeRtcAuthorship( undoFeed );
 			// Save-through-the-room (TODO-12): this post's REST saves carry
@@ -448,6 +472,9 @@ export function createDeRtcEngine(): SyncEngine & {
 							( parked.revisions ?? 1 ) > 1
 								? `${ parked.excerpt } (${ parked.revisions } revisions)`
 								: parked.excerpt || undefined,
+						// De-rtc addresses blocks positionally: the first
+						// changed block anchors the inline card (B3).
+						targetIndex: parked.changedBlocks?.[ 0 ]?.index,
 					} ) ),
 					...Array.from( contested.entries() ).map(
 						( [ index, item ] ) => ( {
@@ -458,6 +485,7 @@ export function createDeRtcEngine(): SyncEngine & {
 							reason: 'frame-conflict',
 							intentType: 'proposal',
 							summary: contestedExcerpt( item ),
+							targetIndex: index,
 						} )
 					),
 				],
@@ -579,6 +607,7 @@ export function createDeRtcEngine(): SyncEngine & {
 					if ( entityReviews.get( key )?.review === review ) {
 						entityReviews.delete( key );
 					}
+					review.setRestResolver( null );
 					unregisterSaveBaseVersion();
 					ydoc.destroy();
 				},

@@ -281,37 +281,35 @@ everywhere, so auth even succeeds); the first visible failure is
 (`npm run doctor` detects this arrangement and prints the right URL).
 
 All suites are green at head; CI (`.github/workflows/ci.yml`) is the
-source of truth for exact test counts — it certifies every suite on
-pushes to `main` and PRs. Known qualifications: e2e flakes occasionally
-under full-suite load — a save notice, a fixture login navigation, or
+source of truth for exact test counts — it certifies every suite
+(including `composer lint`, the websocket e2e lane, and the subtree's
+collaboration-review-panel component Jest) on pushes to `main` and
+PRs. Known qualifications: e2e flakes occasionally under full-suite
+load — a save notice, a fixture login navigation, or
 `http-only/collaboration-sync-body-size` failing after a preceding
 engine-flip suite [verified pre-existing: the yjs suite followed by
 body-size reproduces it without de-rtc involved]; each spec is green
 solo, and the e2e CI job leans on the base config's 2-retries-in-CI to
-absorb them (stabilization is V1.md A2). e2e:websocket carries one
-`test.fixme` skip (see below —
-the peer-relay WS fixture needs a client-merging engine and none
-remains). The vendored libraries' own conformance suites run separately:
+absorb them (stabilization is V1.md A2). The vendored libraries' own
+conformance suites run separately:
 y-php (`composer --working-dir=includes/lib/y-php test`) and
 automerge-php (`php includes/lib/automerge-php/tests/run.php`).
 
 The transport-specific e2e suites live here (relocated from the framework):
 `tests/e2e/specs/http-only/` runs in the default suite; `tests/e2e/specs/
-websocket-only/` runs only under `test:e2e:websocket`
-(`playwright.rtc-websocket.config.ts` sets `GUTENBERG_RTC_TEST_WS_PROVIDER=1`,
-starts `tests/e2e/bin/rtc-test-ws-sync-server.mjs` as a second webServer, and
-global-setup builds + activates the test WS provider plugin from
-`tests/e2e/plugins/rtc-websocket-provider/`; the default suite deactivates it).
-The fixture plugin implements the session-codec provider contract by
-relaying opaque `EngineUpdate` envelopes through a per-room Y.Doc over
-y-websocket — a pure PEER relay with no WP server in the loop, which only
-demonstrates collaboration under a client-merging engine. Since the
-yjs-relay engine was removed, its one spec is `test.fixme`-skipped: both
-remaining engines are server-authoritative (yjs-server clients wait for the
-server's genesis snapshot, so nothing syncs over a serverless relay).
-Re-enable by pointing the suite at the plugin's real websocket transport
-(the `wp collaboration sync-server` PHP daemon) or giving the fixture a
-server lane (V1.md A3). `.wp-env.json` maps `tests/e2e/plugins` (this fixture) and
+websocket-only/` runs only under `test:e2e:websocket`, which since the
+V1 A3 rework runs against the plugin's REAL websocket transport:
+`playwright.rtc-websocket.config.ts` launches
+`tests/e2e/bin/rtc-real-ws-daemon.mjs` as a second webServer, which
+selects the websocket transport on the tests site, publishes the
+`wp collaboration sync-server` PHP daemon from the tests env's cli
+image on host port 8787 (health-checked on the daemon's own /health),
+and restores the previous transport at teardown. No spec is skipped.
+(The old y-websocket PEER-relay fixture lane — the test WS provider
+plugin plus `rtc-test-ws-sync-server.mjs` — only demonstrated
+client-merging engines and none remains; the fixture files are kept
+for reference but no suite uses them.) `.wp-env.json` maps
+`tests/e2e/plugins` (that fixture) and
 `gutenberg/packages/e2e-tests/plugins` (framework fixtures like
 sync-connection-error-filter) as plugin dirs. `@y/websocket-server` is pinned
 EXACTLY to 0.1.1 — 0.1.5 switched to the yjs-14 (`@y/y`) family and its daemon
@@ -497,9 +495,10 @@ Open work items live in `V1.md` at the repo root, each with acceptance
 criteria and a lane (autonomous vs human-review); this section carries
 the operational facts and cites V1.md items where one applies.
 
-- `composer lint` currently reports ~275 errors + ~29 warnings in the plugin's
-  own `includes/` and `tests/` PHP — pre-existing standards debt, in
-  scope for v1 (V1.md A6). `composer format` auto-fixes a handful.
+- `composer lint` is clean (zero errors, zero warnings) since the v1
+  loop's A6 burn-down (branch `loop/a6`) — keep it that way; the
+  excludes (`gutenberg/`, frozen cores, vendored libraries) are by
+  design and must not widen.
 - All three engines have **collaborative undo**: intent-log via inverse
   intents over the accepted log (`src/engines/intent-log-undo.ts` — a
   still-pending unit CANCELS with an outbox removal plus a wire-chasing
@@ -615,14 +614,23 @@ the operational facts and cites V1.md items where one applies.
     loses them with the outbox: the undone edit (already accepted
     server-side) resurrects for everyone. The general unacked-edit-loss
     window, but undo makes it visible (the user watched the text vanish).
-  - OPEN (pre-existing, found 2026-08-17; V1.md A1): after a mid-session reload of
-    one participant on an EMPTY-genesis room, that participant's next
-    block insert can stay local forever — the room log never receives the
-    intent (the sending stalls; the room holds only the genesis snapshot).
-    Replay: `npm run fuzz -- --combos=intent-log/http-polling
-    --seed-list=6 --steps=14 --profile=concurrency` (schedule-dependent:
-    the failing schedule needs the reload milestone to land at step 0 on
-    the empty template).
+  - FIXED (V1.md A1, branch `loop/a1`): an edit made DURING the join
+    round trip used to stay local forever on an empty-genesis room
+    (found 2026-08-17 as a reload straddling a block insert — update()
+    dropped pre-init trees and the empty-genesis bootstrap pushes
+    nothing that would reconcile). update() now buffers the latest
+    pre-init tree and an empty-genesis bootstrap captures it via a
+    DEFERRED recovery that runs only if the document is still empty
+    after the delivery burst — a rejoiner's history replays right
+    behind the genesis row, and capturing against the bare genesis
+    baseline would duplicate every saved block (fuzz:quick caught the
+    synchronous variant). Regression tests in
+    `tests/js/engines/intent-log-manager.test.ts`; the old replay
+    (`npm run fuzz -- --combos=intent-log/http-polling --seed-list=6
+    --steps=14 --profile=concurrency`) passes. Pre-init edits on
+    NON-empty bootstraps are still discarded (reconciled by the
+    bootstrap push, which clobbers them) — pre-existing behavior,
+    unchanged.
 
 ## Deep history
 

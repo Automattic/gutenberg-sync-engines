@@ -308,7 +308,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 			$max_room_bytes = (int) apply_filters( 'wp_sync_yjs_server_max_room_bytes', 8 * MB_IN_BYTES, $room );
 			if ( $max_room_bytes > 0 && strlen( $before_bytes ) > $max_room_bytes ) {
 				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
-				do_action( 'qm/debug', "wp-sync: yjs-server room {$room} is over the room-size ceiling (" . strlen( $before_bytes ) . " bytes); rejecting writes" );
+				do_action( 'qm/debug', "wp-sync: yjs-server room {$room} is over the room-size ceiling (" . strlen( $before_bytes ) . ' bytes); rejecting writes' );
 				return new WP_Error(
 					'rest_sync_room_full',
 					__( 'This collaboration room has grown past its size ceiling; further updates are rejected. Save the post and start a fresh session.', 'gutenberg' ),
@@ -1290,6 +1290,66 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		 * @param array  $wrappers Collects clientId => wrapper (by reference).
 		 * @return \Yjs\Types\YMap[] YBlock shared types.
 		 */
+		/**
+		 * Decomposes a block's inner markup (genesis innerHTML, or a
+		 * client-maintained `_save` mirror) into the wrapper record the
+		 * materializer rebuilds from, plus the rich-text inner value:
+		 * the outer wrapper tags, and — for selector-sourced rich text
+		 * (image `caption` ← `figcaption`) — the surrounding pre/post
+		 * markup and the sub-element's own tags.
+		 *
+		 * @since 0.3.0
+		 *
+		 * @param string $markup     Inner markup (single wrapper element).
+		 * @param string $block_name Block name (for the rich-text schema).
+		 * @return array|null array{wrapper: array, text: string}, or null
+		 *                    when no single wrapper element matches.
+		 */
+		private static function decompose_inner_markup( string $markup, string $block_name ): ?array {
+			if ( ! preg_match( '/^<([a-zA-Z][a-zA-Z0-9-]*)(\s[^>]*)?>(.*)<\/\1>$/s', $markup, $matches ) ) {
+				return null;
+			}
+			$wrapper = array(
+				'open'  => '<' . $matches[1] . ( $matches[2] ?? '' ) . '>',
+				'close' => '</' . $matches[1] . '>',
+			);
+			$text    = $matches[3];
+
+			$selector = self::rich_text_source( $block_name )['selector'] ?? null;
+			if (
+				is_string( $selector ) &&
+				preg_match( '/^[a-zA-Z][a-zA-Z0-9-]*$/', $selector ) &&
+				strtolower( $selector ) !== strtolower( $matches[1] )
+			) {
+				if ( preg_match( '/^(.*)(<' . $selector . '(?:\s[^>]*)?>)(.*)(<\/' . $selector . '>)(.*)$/s', $text, $sub ) ) {
+					$wrapper['pre']        = $sub[1];
+					$wrapper['text_open']  = $sub[2];
+					$wrapper['text_close'] = $sub[4];
+					$wrapper['post']       = $sub[5];
+					$text                  = $sub[3];
+				} else {
+					$wrapper['pre'] = $text;
+					$text           = '';
+				}
+			}
+
+			return array(
+				'wrapper' => $wrapper,
+				'text'    => $text,
+			);
+		}
+
+		/**
+		 * Converts parsed blocks to the Y.Block records genesis seeds,
+		 * recording each block's non-rich wrapper markup by client id.
+		 *
+		 * @since 0.2.0
+		 *
+		 * @param array  $blocks   Parsed blocks (parse_blocks shape).
+		 * @param string $id_base  Deterministic client-id prefix.
+		 * @param array  $wrappers Wrapper markup collector (by reference).
+		 * @return array Y.Block records.
+		 */
 		private static function blocks_to_yblocks( array $blocks, string $id_base, array &$wrappers ): array {
 			$yblocks = array();
 			$index   = 0;
@@ -1309,14 +1369,12 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 					continue;
 				}
 
-				$attrs = is_array( $block['attrs'] ) ? $block['attrs'] : array();
-				$text  = trim( $block['innerHTML'] );
-				if ( preg_match( '/^<([a-zA-Z][a-zA-Z0-9-]*)(\s[^>]*)?>(.*)<\/\1>$/s', $text, $matches ) ) {
-					$wrappers[ $client_id ] = array(
-						'open'  => '<' . $matches[1] . ( $matches[2] ?? '' ) . '>',
-						'close' => '</' . $matches[1] . '>',
-					);
-					$text                   = $matches[3];
+				$attrs      = is_array( $block['attrs'] ) ? $block['attrs'] : array();
+				$text       = trim( $block['innerHTML'] );
+				$decomposed = self::decompose_inner_markup( $text, (string) $block['blockName'] );
+				if ( null !== $decomposed ) {
+					$wrappers[ $client_id ] = $decomposed['wrapper'];
+					$text                   = $decomposed['text'];
 				}
 
 				$children  = self::blocks_to_yblocks( $block['innerBlocks'], $client_id, $wrappers );
@@ -1379,15 +1437,40 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		 * @return string|null Attribute key, or null when the block has none.
 		 */
 		private static function rich_text_attribute( string $name ): ?string {
+			return self::rich_text_source( $name )['key'] ?? null;
+		}
+
+		/**
+		 * The markup-sourced rich-text attribute AND its source selector for
+		 * a block type. A null selector means the attribute sources from the
+		 * block's own wrapper (paragraph/heading `content`); a selector names
+		 * the sub-element it sources from (image `caption` ← `figcaption`).
+		 *
+		 * @since 0.3.0
+		 *
+		 * @param string $name Block name.
+		 * @return array|null array{key: string, selector: ?string}, or null
+		 *                    when the block has no rich-text attribute.
+		 */
+		private static function rich_text_source( string $name ): ?array {
 			$block_type = WP_Block_Type_Registry::get_instance()->get_registered( $name );
 			if ( null === $block_type || ! is_array( $block_type->attributes ) ) {
-				return 'content';
+				return array(
+					'key'      => 'content',
+					'selector' => null,
+				);
 			}
 			foreach ( $block_type->attributes as $key => $schema ) {
 				$source = is_array( $schema ) ? ( $schema['source'] ?? null ) : null;
 				$type   = is_array( $schema ) ? ( $schema['type'] ?? null ) : null;
 				if ( 'rich-text' === $source || 'html' === $source || 'rich-text' === $type ) {
-					return (string) $key;
+					$selector = is_array( $schema ) && is_string( $schema['selector'] ?? null )
+						? $schema['selector']
+						: null;
+					return array(
+						'key'      => (string) $key,
+						'selector' => $selector,
+					);
 				}
 			}
 			return null;
@@ -1427,7 +1510,49 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				);
 			}
 
-			$wrapper        = $wrappers[ $client_id ] ?? self::default_wrapper( $name, $attrs );
+			$wrapper = $wrappers[ $client_id ] ?? self::default_wrapper( $name, $attrs );
+
+			/*
+			 * Materialization fidelity (B1): a client-maintained `_save`
+			 * mirror — the block's registered save() output for its CURRENT
+			 * attributes — outranks the genesis wrapper record and the
+			 * static defaults. It carries wrapper classes, heading levels,
+			 * attribute-derived sub-elements (an image's <img>) as the
+			 * editor itself would save them; the rich-text value inside is
+			 * ignored (the live shared text below replaces it).
+			 */
+			if ( isset( $block['_save'] ) && is_string( $block['_save'] ) && '' !== trim( $block['_save'] ) ) {
+				$decomposed = self::decompose_inner_markup( trim( $block['_save'] ), $name );
+				if ( null !== $decomposed ) {
+					$wrapper = $decomposed['wrapper'];
+				}
+			}
+
+			/*
+			 * Selector-sourced rich text (see blocks_to_yblocks): the
+			 * attribute held only the sub-element's inner text; the
+			 * surrounding markup was recorded on the wrapper. Rebuild the
+			 * full inner markup. A sub-element that existed at genesis
+			 * always re-emits with its recorded tags (byte parity); a value
+			 * added in-session gets the element's conventional tags.
+			 */
+			if ( is_array( $wrapper ) && ( isset( $wrapper['pre'] ) || isset( $wrapper['post'] ) || isset( $wrapper['text_open'] ) ) ) {
+				$sub = '';
+				if ( isset( $wrapper['text_open'], $wrapper['text_close'] ) ) {
+					$sub = $wrapper['text_open'] . $text . $wrapper['text_close'];
+				} elseif ( '' !== $text ) {
+					$selector = self::rich_text_source( $name )['selector'] ?? null;
+					if ( is_string( $selector ) && '' !== $selector ) {
+						$sub = 'figcaption' === $selector
+							? '<figcaption class="wp-element-caption">' . $text . '</figcaption>'
+							: '<' . $selector . '>' . $text . '</' . $selector . '>';
+					} else {
+						$sub = $text;
+					}
+				}
+				$text = ( $wrapper['pre'] ?? '' ) . $sub . ( $wrapper['post'] ?? '' );
+			}
+
 			$open_fragment  = $text;
 			$close_fragment = '';
 			if ( is_array( $wrapper ) ) {

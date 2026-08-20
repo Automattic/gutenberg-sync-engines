@@ -1,10 +1,7 @@
 /**
  * Internal dependencies
  */
-import {
-	test,
-	expect,
-} from '../../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures';
+import { test, expect } from '../../config/collaboration-fixtures';
 
 /*
  * NOTE — engine-dependent scope: this spec covers the CLIENT-side outgoing

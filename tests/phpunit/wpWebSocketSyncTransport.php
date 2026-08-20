@@ -8,12 +8,26 @@
  *
  * @group collaboration
  */
-class Tests_Collaboration_WpWebSocketSyncTransport extends WP_UnitTestCase {
+class Test_WP_WebSocket_Sync_Transport extends WP_UnitTestCase {
 	public function set_up() {
 		parent::set_up();
 		global $wp_rest_server;
 		$wp_rest_server = new Spy_REST_Server();
 		do_action( 'rest_api_init', $wp_rest_server );
+
+		/*
+		 * Reset the storage post-id cache: the static survives the DB
+		 * rollback between tests, so a room post created by an EARLIER
+		 * class (the engine-registry suite uses the same collection room)
+		 * leaves a dead cached id — set_room_engine() then writes to a
+		 * rolled-back post while the reset path's fresh query sees nothing
+		 * to reset. Same pattern as the polling suite's set_up.
+		 */
+		$reflection = new ReflectionProperty( 'WP_Sync_Post_Meta_Storage', 'storage_post_ids' );
+		if ( PHP_VERSION_ID < 80100 ) {
+			$reflection->setAccessible( true );
+		}
+		$reflection->setValue( null, array() );
 	}
 
 	public function tear_down() {
@@ -196,5 +210,130 @@ class Tests_Collaboration_WpWebSocketSyncTransport extends WP_UnitTestCase {
 
 		self::delete_user( $editor_id );
 		wp_delete_post( $post_id, true );
+	}
+
+	public function test_forwarded_new_engine_stamp_heals_switched_collection_room() {
+		$editor_id = self::factory()->user->create( array( 'role' => 'editor' ) );
+		wp_set_current_user( $editor_id );
+		$room = 'taxonomy/wp_pattern_category';
+
+		// The room was written under another engine before the site
+		// switched: global collection rooms are rebuildable change-feeds,
+		// so a client provably speaking the NEW engine must reset them
+		// instead of being fenced forever (there is no post lock to
+		// degrade to).
+		( new WP_Sync_Post_Meta_Storage() )->set_room_engine( $room, WP_Intent_Log_Engine::SLUG );
+		update_option( 'wp_sync_engine', WP_Yjs_Server_Engine::SLUG );
+
+		try {
+			$validated = $this->validate(
+				array(
+					'room'            => $room,
+					'client_id'       => 7,
+					'after'           => 0,
+					'updates'         => array(),
+					'engine'          => WP_Yjs_Server_Engine::SLUG,
+					'engine_protocol' => WP_Yjs_Server_Engine::PROTOCOL_VERSION,
+				)
+			);
+			$this->assertIsArray( $validated );
+
+			$storage = new WP_Sync_Post_Meta_Storage();
+			$sync    = new WP_HTTP_Polling_Sync_Server( $storage );
+			$result  = $sync->process_room_request( $validated );
+
+			// Healed, not fenced: the room reset and re-genesised under
+			// the new engine, exactly as it does over HTTP polling.
+			$this->assertIsArray( $result );
+			$this->assertSame(
+				WP_Yjs_Server_Engine::SLUG,
+				( new WP_Sync_Post_Meta_Storage() )->get_room_engine( $room )
+			);
+			$this->assertNotEmpty( $result['updates'] );
+			$this->assertSame( WP_Yjs_Server_Engine::UPDATE_TYPE_SNAPSHOT, $result['updates'][0]['type'] );
+		} finally {
+			delete_option( 'wp_sync_engine' );
+			self::delete_user( $editor_id );
+		}
+	}
+
+	public function test_forwarded_stale_stamp_fences_switched_collection_room_without_reset() {
+		$editor_id = self::factory()->user->create( array( 'role' => 'editor' ) );
+		wp_set_current_user( $editor_id );
+		$room = 'taxonomy/wp_pattern_category';
+
+		( new WP_Sync_Post_Meta_Storage() )->set_room_engine( $room, WP_Intent_Log_Engine::SLUG );
+		update_option( 'wp_sync_engine', WP_Yjs_Server_Engine::SLUG );
+
+		try {
+			// A stale tab still speaks the OLD engine after the switch: it
+			// is fenced by the client-stamp check and must never trigger
+			// the collection-room reset.
+			$validated = $this->validate(
+				array(
+					'room'            => $room,
+					'client_id'       => 7,
+					'after'           => 0,
+					'updates'         => array(),
+					'engine'          => WP_Intent_Log_Engine::SLUG,
+					'engine_protocol' => 1,
+				)
+			);
+			$this->assertIsArray( $validated );
+
+			$sync   = new WP_HTTP_Polling_Sync_Server( new WP_Sync_Post_Meta_Storage() );
+			$result = $sync->process_room_request( $validated );
+
+			$this->assertWPError( $result );
+			$this->assertSame( 'rest_sync_engine_mismatch', $result->get_error_code() );
+			$this->assertSame(
+				WP_Intent_Log_Engine::SLUG,
+				( new WP_Sync_Post_Meta_Storage() )->get_room_engine( $room )
+			);
+		} finally {
+			delete_option( 'wp_sync_engine' );
+			self::delete_user( $editor_id );
+		}
+	}
+
+	public function test_forwarded_new_engine_stamp_keeps_switched_entity_room_fenced() {
+		$editor_id = self::factory()->user->create( array( 'role' => 'editor' ) );
+		wp_set_current_user( $editor_id );
+		$post_id = self::factory()->post->create( array( 'post_author' => $editor_id ) );
+		$room    = 'postType/post:' . $post_id;
+
+		( new WP_Sync_Post_Meta_Storage() )->set_room_engine( $room, WP_Intent_Log_Engine::SLUG );
+		update_option( 'wp_sync_engine', WP_Yjs_Server_Engine::SLUG );
+
+		try {
+			// Per-post entity rooms can hold unsaved collaborative content:
+			// even a client speaking the newly-selected engine stays fenced
+			// (sessions degrade to the post lock by design).
+			$validated = $this->validate(
+				array(
+					'room'            => $room,
+					'client_id'       => 7,
+					'after'           => 0,
+					'updates'         => array(),
+					'engine'          => WP_Yjs_Server_Engine::SLUG,
+					'engine_protocol' => WP_Yjs_Server_Engine::PROTOCOL_VERSION,
+				)
+			);
+			$this->assertIsArray( $validated );
+
+			$sync   = new WP_HTTP_Polling_Sync_Server( new WP_Sync_Post_Meta_Storage() );
+			$result = $sync->process_room_request( $validated );
+
+			$this->assertWPError( $result );
+			$this->assertSame( 'rest_sync_engine_mismatch', $result->get_error_code() );
+			$this->assertSame(
+				WP_Intent_Log_Engine::SLUG,
+				( new WP_Sync_Post_Meta_Storage() )->get_room_engine( $room )
+			);
+		} finally {
+			delete_option( 'wp_sync_engine' );
+			self::delete_user( $editor_id );
+			wp_delete_post( $post_id, true );
+		}
 	}
 }

@@ -23,7 +23,7 @@ describe( 'ReviewGroup', () => {
 		delete window._wpCollaborationCanUnfilteredHtml;
 	} );
 
-	it( 'offers Restore for ordinary conflicts regardless of capability', () => {
+	it( 'offers Adopt for ordinary conflicts regardless of capability', () => {
 		window._wpCollaborationCanUnfilteredHtml = false;
 		render(
 			<ReviewGroup
@@ -31,12 +31,10 @@ describe( 'ReviewGroup', () => {
 				onResolve={ () => {} }
 			/>
 		);
-		expect(
-			screen.getByRole( 'button', { name: 'Restore' } )
-		).toBeVisible();
+		expect( screen.getByRole( 'button', { name: 'Adopt' } ) ).toBeVisible();
 	} );
 
-	it( 'reserves Restore of requires-approval conflicts for unfiltered_html holders', () => {
+	it( 'reserves Adopt of requires-approval conflicts for unfiltered_html holders', () => {
 		window._wpCollaborationCanUnfilteredHtml = false;
 		render(
 			<ReviewGroup
@@ -45,18 +43,18 @@ describe( 'ReviewGroup', () => {
 			/>
 		);
 		expect(
-			screen.queryByRole( 'button', { name: 'Restore' } )
+			screen.queryByRole( 'button', { name: 'Adopt' } )
 		).not.toBeInTheDocument();
 		expect(
 			screen.getByText( /Only someone allowed to publish unfiltered/ )
 		).toBeVisible();
-		// Discard stays available to everyone.
+		// Reject stays available to everyone.
 		expect(
-			screen.getByRole( 'button', { name: 'Discard' } )
+			screen.getByRole( 'button', { name: 'Reject' } )
 		).toBeVisible();
 	} );
 
-	it( 'explains that restoring a requires-approval conflict publishes under the restorer', () => {
+	it( 'explains that adopting a requires-approval conflict publishes under the adopter', () => {
 		window._wpCollaborationCanUnfilteredHtml = true;
 		render(
 			<ReviewGroup
@@ -64,11 +62,33 @@ describe( 'ReviewGroup', () => {
 				onResolve={ () => {} }
 			/>
 		);
-		expect(
-			screen.getByRole( 'button', { name: 'Restore' } )
-		).toBeVisible();
+		expect( screen.getByRole( 'button', { name: 'Adopt' } ) ).toBeVisible();
 		expect(
 			screen.getByText( /publishes the content under your account/ )
 		).toBeVisible();
+	} );
+
+	it( 'summary-only renders no verbs: resolution lives at the inline block card', () => {
+		render(
+			<ReviewGroup
+				items={ [ conflictItem( 'frame-conflict' ) ] }
+				onResolve={ () => {} }
+				summaryOnly
+				onNavigate={ () => {} }
+			/>
+		);
+		expect(
+			screen.queryByRole( 'button', { name: 'Adopt' } )
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole( 'button', { name: 'Reject' } )
+		).not.toBeInTheDocument();
+		// The attribution remains a navigation link to the block.
+		expect(
+			screen.getByRole( 'button', {
+				name: 'Go to the conflicted block',
+			} )
+		).toBeVisible();
+		expect( screen.getByText( /Lost content/ ) ).toBeVisible();
 	} );
 } );

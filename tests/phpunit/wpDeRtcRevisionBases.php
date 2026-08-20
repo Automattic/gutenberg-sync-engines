@@ -86,7 +86,12 @@ class Tests_Collaboration_WpDeRtcRevisionBases extends WP_UnitTestCase {
 		// An aware save at v1 writes the lineage (and thus a revision
 		// carrying v1's snapshot) — then the room advances far past the
 		// window.
-		wp_update_post( array( 'ID' => $post_id, 'post_content' => self::GENESIS_CONTENT ) );
+		wp_update_post(
+			array(
+				'ID'           => $post_id,
+				'post_content' => self::GENESIS_CONTENT,
+			)
+		);
 		$this->assertNotEmpty( wp_get_post_revisions( $post_id ) );
 		$this->advance_past_window( $room, self::GENESIS_CONTENT );
 

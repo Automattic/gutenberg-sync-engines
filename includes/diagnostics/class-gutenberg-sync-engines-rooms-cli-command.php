@@ -318,7 +318,10 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Rooms_CLI_Command' ) && defined( 'W
 		 *
 		 * @since 0.3.0
 		 *
-		 * @param int $post_id Storage post ID.
+		 * @param int    $post_id Storage post ID.
+		 * @param string $room    Room identifier; when known, engine
+		 *                        option-row stores (the de-rtc canonical
+		 *                        chain) are summarized alongside room meta.
 		 * @return array<string, string> Meta key (unprefixed) → summary.
 		 */
 		private function collect_room_meta( int $post_id, string $room = '' ): array {
@@ -329,8 +332,8 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Rooms_CLI_Command' ) && defined( 'W
 				global $wpdb;
 				$canonical = WP_Sync_Atomic_Option::read( $wpdb->prefix . 'sync_de_rtc_canonical_' . md5( $room ) );
 				if ( is_string( $canonical ) ) {
-					$separator = strpos( $canonical, '|' );
-					$decoded   = false !== $separator ? json_decode( substr( $canonical, $separator + 1 ), true ) : null;
+					$separator                              = strpos( $canonical, '|' );
+					$decoded                                = false !== $separator ? json_decode( substr( $canonical, $separator + 1 ), true ) : null;
 					$summaries['de_rtc_canonical (option)'] = $this->summarize_room_meta( 'de_rtc_canonical', $decoded );
 				}
 			}

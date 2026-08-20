@@ -254,6 +254,23 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		}
 
 		/**
+		 * Drops the per-room state cache. A web request constructs a fresh
+		 * engine, so the cache is naturally request-scoped there; a
+		 * LONG-LIVED consumer (the websocket daemon, whose engine registry
+		 * holds one instance for the process lifetime) must call this at
+		 * its message boundary, or it keeps serving canonical state that
+		 * other processes have long since advanced. Found by the
+		 * post-inversion websocket fuzz: fetch answers synthesized from a
+		 * stale cached canonical concluded the client was current and
+		 * never returned the committed content.
+		 *
+		 * @since 0.3.0
+		 */
+		public function flush_room_state_cache(): void {
+			$this->room_states = array();
+		}
+
+		/**
 		 * Update types this engine reads or writes.
 		 *
 		 * @since 0.3.0
@@ -343,7 +360,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					 * disposition — fetches are advisory, idempotent, and
 					 * carry nothing to accept or reject.
 					 */
-					$decoded = json_decode( (string) $update['data'], true );
+					$decoded                                       = json_decode( (string) $update['data'], true );
 					$this->content_requests[ $room ][ $client_id ] = is_array( $decoded ) && is_string( $decoded['haveVersion'] ?? null )
 						? $decoded['haveVersion']
 						: '';
@@ -419,37 +436,14 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			 * new row; only a currently-open proposal appends one.
 			 */
 			foreach ( $resolutions as $resolution ) {
-				$proposal_id = $resolution['proposalId'];
 				if ( null === $review ) {
 					$review = $this->load_review_ledger( $room );
 				}
-				if ( isset( $review['open'][ $proposal_id ] ) && ! isset( $review['resolved'][ $proposal_id ] ) ) {
-					$stored = $this->add_row(
-						$room,
-						$client_id,
-						self::UPDATE_TYPE_RESOLVED,
-						wp_json_encode(
-							array(
-								'proposalId' => $proposal_id,
-								'resolution' => $resolution['resolution'],
-								'resolvedBy' => get_current_user_id(),
-								'time'       => time(),
-							)
-						)
-					);
-					if ( ! $stored ) {
-						return new WP_Error(
-							'rest_sync_storage_error',
-							__( 'Failed to store sync update.', 'gutenberg' ),
-							array( 'status' => 500 )
-						);
-					}
-					$review['resolved'][ $proposal_id ] = true;
+				$disposition = $this->apply_resolution( $room, $resolution, $client_id, $review );
+				if ( is_wp_error( $disposition ) ) {
+					return $disposition;
 				}
-				$dispositions[] = array(
-					'intentId' => $proposal_id,
-					'status'   => 'resolved',
-				);
+				$dispositions[] = $disposition;
 			}
 
 			$counts = array();
@@ -639,9 +633,9 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				}
 
 				// Claimed: this request owns the advancement to the next
-				// version. (A crash between here and add_row() leaves an
+				// version. A crash between here and add_row() leaves an
 				// orphaned claim; claim_version() heals that by TTL
-				// takeover.)
+				// takeover.
 				$next_seq     = (int) $state['version_seq'] + 1;
 				$next_version = 'v' . $next_seq;
 				$merged       = (string) $result['merged_content'];
@@ -794,6 +788,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				$normalized
 			);
 			if ( is_wp_error( $valid ) && $this->is_hash_pinned_unsupported_fallback( $valid, $normalized ) ) {
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 				do_action( 'qm/debug', 'wp-sync: de-rtc accepted digest-only descriptor evidence in ' . $room . ' (client sent the unsupported-fallback op; hashes verified)' );
 				$valid = true;
 			}
@@ -848,6 +843,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			$reason = is_array( $data ) && is_string( $data['detail'] ?? null )
 				? $data['detail']
 				: $error->get_error_code();
+			// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
 			do_action( 'qm/debug', 'wp-sync: de-rtc rejected a client descriptor in ' . $room . ' — ' . $reason );
 			return array(
 				'status' => 'voided',
@@ -1399,6 +1395,87 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		}
 
 		/**
+		 * Applies one proposal resolution against the room's review ledger:
+		 * an OPEN, un-resolved proposal gets a stamped `resolved` row (the
+		 * broadcastable advisory peers and late joiners replay); anything
+		 * else acks idempotently. Shared by the transport row path and the
+		 * REST review lane.
+		 *
+		 * @since 0.3.0
+		 *
+		 * @param string $room       Room identifier.
+		 * @param array  $resolution array{proposalId: string, resolution: string}.
+		 * @param int    $client_id  Resolving client id (0 = none declared).
+		 * @param array  $review     Review ledger (by reference; `resolved` updated).
+		 * @return array|WP_Error Disposition, or error on storage failure.
+		 */
+		private function apply_resolution( string $room, array $resolution, int $client_id, array &$review ) {
+			$proposal_id = $resolution['proposalId'];
+			if ( isset( $review['open'][ $proposal_id ] ) && ! isset( $review['resolved'][ $proposal_id ] ) ) {
+				$stored = $this->add_row(
+					$room,
+					$client_id,
+					self::UPDATE_TYPE_RESOLVED,
+					wp_json_encode(
+						array(
+							'proposalId' => $proposal_id,
+							'resolution' => $resolution['resolution'],
+							'resolvedBy' => get_current_user_id(),
+							'time'       => time(),
+						)
+					)
+				);
+				if ( ! $stored ) {
+					return new WP_Error(
+						'rest_sync_storage_error',
+						__( 'Failed to store sync update.', 'gutenberg' ),
+						array( 'status' => 500 )
+					);
+				}
+				$review['resolved'][ $proposal_id ] = true;
+			}
+			return array(
+				'intentId' => $proposal_id,
+				'status'   => 'resolved',
+			);
+		}
+
+		/**
+		 * Resolves one parked proposal outside the transport — the REST
+		 * review lane (B5): resolutions are MUTATIONS and belong on an
+		 * authenticated REST route; the transport stays advisory (the
+		 * stamped `resolved` row this appends still broadcasts through it).
+		 * The transport row path remains accepted for legacy clients.
+		 *
+		 * @since 0.3.0
+		 *
+		 * @param string $room        Room identifier.
+		 * @param string $proposal_id Parked proposal id.
+		 * @param string $resolution  'restored' or 'dismissed'.
+		 * @param int    $client_id   Resolving client id (0 = none declared).
+		 * @return array|WP_Error Disposition, or error.
+		 */
+		public function resolve_proposal( string $room, string $proposal_id, string $resolution, int $client_id = 0 ) {
+			if ( '' === $proposal_id || ! in_array( $resolution, array( 'restored', 'dismissed' ), true ) ) {
+				return new WP_Error(
+					'rest_sync_invalid_intent',
+					__( 'Malformed proposal resolution.', 'gutenberg' ),
+					array( 'status' => 400 )
+				);
+			}
+			$review = $this->load_review_ledger( $room );
+			return $this->apply_resolution(
+				$room,
+				array(
+					'proposalId' => $proposal_id,
+					'resolution' => $resolution,
+				),
+				$client_id,
+				$review
+			);
+		}
+
+		/**
 		 * Derives the open/resolved review ledger from retained rows.
 		 *
 		 * Parked rows are always retained while unresolved (the compaction
@@ -1727,7 +1804,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			// In sync, or a stale copy of a version the room knows: stamp
 			// as seen so the check stays cheap, but never merge (rollback
 			// guard).
-			$known = $external_hash === wp_de_rtc_hash_content( (string) $state['content'] );
+			$known = wp_de_rtc_hash_content( (string) $state['content'] ) === $external_hash;
 			if ( ! $known && is_array( $state['sync_meta']['version_snapshots'] ?? null ) ) {
 				foreach ( $state['sync_meta']['version_snapshots'] as $snapshot ) {
 					if ( is_array( $snapshot ) && ( $snapshot['content_hash'] ?? null ) === $external_hash ) {
@@ -1752,6 +1829,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					// copy of it (co-location pays off): use theirs.
 					$carried = $embedded_meta['version_snapshots'][ $base_version ];
 					if ( 'base64' === ( $carried['encoding'] ?? null ) && is_string( $carried['content_base64'] ?? null ) ) {
+						// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- Strict-mode decode of a hash-verified content snapshot carried in sync meta.
 						$decoded = base64_decode( $carried['content_base64'], true );
 						if ( is_string( $decoded ) && wp_de_rtc_hash_content( $decoded ) === ( $carried['content_hash'] ?? null ) ) {
 							$base = $decoded;
@@ -1995,6 +2073,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 
 					$snapshot = $meta['version_snapshots'][ $base_version ] ?? null;
 					if ( is_array( $snapshot ) && 'base64' === ( $snapshot['encoding'] ?? null ) && is_string( $snapshot['content_base64'] ?? null ) ) {
+						// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- Strict-mode decode of a hash-verified content snapshot carried in a revision's sync meta.
 						$decoded = base64_decode( $snapshot['content_base64'], true );
 						if ( is_string( $decoded ) && wp_de_rtc_hash_content( $decoded ) === ( $snapshot['content_hash'] ?? null ) ) {
 							$resolved = $decoded;
@@ -2003,7 +2082,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					}
 
 					if (
-						$base_version === ( $meta['room_version'] ?? null ) &&
+						( $meta['room_version'] ?? null ) === $base_version &&
 						is_string( $parsed['content'] ?? null ) &&
 						wp_de_rtc_hash_content( $parsed['content'] ) === ( $meta['content_hash'] ?? null )
 					) {
@@ -2137,9 +2216,12 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
-		 * @param string $room  Room identifier.
-		 * @param array  $state Room state.
-		 * @return void
+		 * @param string $room    Room identifier.
+		 * @param array  $state   Room state.
+		 * @param bool   $advance Whether this write extends the canonical
+		 *                        chain to a newly claimed version (chained
+		 *                        CAS) rather than overwriting in place.
+		 * @return bool Whether the store now reflects at least this state.
 		 */
 		private function save_canonical( string $room, array $state, bool $advance = false ): bool {
 			$seq   = (int) $state['version_seq'];

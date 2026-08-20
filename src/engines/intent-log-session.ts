@@ -263,6 +263,14 @@ export interface IntentLogSession extends EngineSessionCodec {
 	/** The engine log position this session has observed (intent rows). */
 	getSeq: () => number;
 
+	/**
+	 * Whether a horizon-reset snapshot is deferred behind un-settled
+	 * local work (see deferredResetBuffer in the factory). The manager's
+	 * stale-void recovery skips re-capturing while true: the reset's own
+	 * recapture will re-derive everything at the new frame.
+	 */
+	hasDeferredReset: () => boolean;
+
 	/** Whether the genesis snapshot has arrived. */
 	isInitialized: () => boolean;
 
@@ -464,7 +472,37 @@ export function createIntentLogSession(
 		return replica.outbox.length !== before;
 	};
 
-	return {
+	/*
+	 * A horizon-reset snapshot that arrives while LOCAL WORK is still
+	 * un-settled (outbox non-empty: authored intents, sent or not) is
+	 * DEFERRED, along with every row behind it, until the outbox drains.
+	 * Applying the reset mid-burst mixes authoring frames inside one
+	 * transport batch: the pre-reset intents void as stale while the
+	 * SAME burst's later keystrokes land at the new frame with offsets
+	 * that assumed the voided prefix — a torn, spliced document on the
+	 * server (A2/A12's e2e finding). Deferring means every intent the
+	 * server sees stays in ONE coherent frame; once the burst settles
+	 * (all dispositions in), the reset applies and the manager's
+	 * onReset recapture re-derives the whole local delta cleanly.
+	 */
+	let deferredResetBuffer: EngineUpdate[] | null = null;
+
+	const maybeReleaseDeferredReset = (): void => {
+		if (
+			null === deferredResetBuffer ||
+			! replica ||
+			replica.outbox.length > 0
+		) {
+			return;
+		}
+		const buffered = deferredResetBuffer;
+		deferredResetBuffer = null;
+		for ( const update of buffered ) {
+			session.receiveUpdate( update );
+		}
+	};
+
+	const session: IntentLogSession = {
 		actorId,
 		clientId,
 		engineSlug: INTENT_LOG_ENGINE_SLUG,
@@ -479,6 +517,11 @@ export function createIntentLogSession(
 		},
 
 		receiveUpdate: ( update: EngineUpdate ): void => {
+			// Everything behind a deferred reset stays ordered behind it.
+			if ( null !== deferredResetBuffer ) {
+				deferredResetBuffer.push( update );
+				return;
+			}
 			const decoded = JSON.parse( update.data );
 			switch ( update.type ) {
 				case INTENT_LOG_UPDATE_TYPES.SNAPSHOT: {
@@ -494,6 +537,15 @@ export function createIntentLogSession(
 						);
 						observedSeq = snapshotSeq;
 						notifyChange();
+						return;
+					}
+					if (
+						snapshotSeq > replica.cursor &&
+						replica.outbox.length > 0
+					) {
+						// Local work is still un-settled: defer (see
+						// deferredResetBuffer above).
+						deferredResetBuffer = [ update ];
 						return;
 					}
 					if ( snapshotSeq > replica.cursor ) {
@@ -645,6 +697,8 @@ export function createIntentLogSession(
 				replanClient( replica );
 			}
 			notifyChange();
+			// A drained outbox releases any deferred horizon reset.
+			maybeReleaseDeferredReset();
 		},
 
 		getLocalAwareness: () =>
@@ -875,5 +929,9 @@ export function createIntentLogSession(
 		onDiscard: ( listener ) => {
 			discardListeners.add( listener );
 		},
+
+		hasDeferredReset: () => null !== deferredResetBuffer,
 	};
+
+	return session;
 }

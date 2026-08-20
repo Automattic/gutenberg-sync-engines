@@ -134,8 +134,13 @@ class Tests_Collaboration_WpDeRtcAutosaveCommits extends WP_UnitTestCase {
 	}
 
 	public function test_commit_against_a_roomless_post_is_a_conflict() {
-		$orphan   = self::factory()->post->create( array( 'post_author' => self::$editor_id, 'post_content' => self::GENESIS_CONTENT ) );
-		$request  = new WP_REST_Request( 'POST', '/wp/v2/posts/' . $orphan . '/autosaves' );
+		$orphan  = self::factory()->post->create(
+			array(
+				'post_author'  => self::$editor_id,
+				'post_content' => self::GENESIS_CONTENT,
+			)
+		);
+		$request = new WP_REST_Request( 'POST', '/wp/v2/posts/' . $orphan . '/autosaves' );
 		$request->set_header( 'content-type', 'application/json' );
 		$request->set_body(
 			wp_json_encode(

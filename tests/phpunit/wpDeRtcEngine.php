@@ -902,7 +902,13 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 		$this->assertCount( 1, $parked );
 		$this->assertSame( 'p-props-b:title', $parked[0]['proposalId'] );
 		$this->assertSame( 'property-conflict', $parked[0]['reason'] );
-		$this->assertSame( array( 'name' => 'title', 'value' => 'Title by B' ), $parked[0]['property'] );
+		$this->assertSame(
+			array(
+				'name'  => 'title',
+				'value' => 'Title by B',
+			),
+			$parked[0]['property']
+		);
 	}
 
 	public function test_taxonomy_arrays_compare_order_insensitively() {

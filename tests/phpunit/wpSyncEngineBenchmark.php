@@ -746,11 +746,11 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 				);
 			}
 		}
-		$post_id                   = self::factory()->post->create(
+		$post_id = self::factory()->post->create(
 			array( 'post_content' => $workload['post_content'] )
 		);
-		$storage                   = new WP_Sync_Bench_Memory_Storage();
-		$engine                    = new WP_De_RTC_Engine( $storage );
+		$storage = new WP_Sync_Bench_Memory_Storage();
+		$engine  = new WP_De_RTC_Engine( $storage );
 
 		$report = WP_Sync_Bench_Runner::run( $engine, $storage, $post_id, $workload );
 

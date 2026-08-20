@@ -182,6 +182,28 @@ function sendUpdate( room: string, update: EngineUpdate ): void {
  *
  * @param {ServerRoom} serverRoom One room's response.
  */
+/**
+ * Test/diagnostic observability: mirrors the socket and per-room sync
+ * state onto a window global, the way the retired test WS provider
+ * exposed `__gutenbergTestWebSocketSync`. The websocket lane has no HTTP
+ * responses to await, so the e2e fixtures (and humans in devtools) read
+ * this instead. Cheap: a plain object rebuilt on lifecycle edges.
+ */
+function publishDebugState(): void {
+	const roomsState: Record< string, { synced: boolean } > = {};
+	for ( const state of rooms.values() ) {
+		roomsState[ state.room ] = { synced: state.cursor > 0 };
+	}
+	(
+		window as Window & {
+			__wpSyncWsState?: { open: boolean; rooms: typeof roomsState };
+		}
+	 ).__wpSyncWsState = {
+		open: !! socket && WebSocket.OPEN === socket.readyState,
+		rooms: roomsState,
+	};
+}
+
 function applyServerRoom( serverRoom: ServerRoom ): void {
 	const state = rooms.get( serverRoom.room );
 	if ( ! state ) {
@@ -224,6 +246,7 @@ function applyServerRoom( serverRoom: ServerRoom ): void {
 		state.session.receiveDispositions( serverRoom.dispositions as never );
 	}
 	state.cursor = serverRoom.end_cursor;
+	publishDebugState();
 
 	// Updates produced while applying (an engine's ack/response) go back out.
 	if ( responses.length > 0 ) {
@@ -307,6 +330,7 @@ function connect(): void {
 				`wp-sync-token.${ token }`,
 			] );
 			socket.addEventListener( 'open', () => {
+				publishDebugState();
 				connecting = false;
 				reconnectAttempts = 0;
 				rooms.forEach( ( state ) =>
@@ -335,6 +359,7 @@ function connect(): void {
  * room is still registered.
  */
 function onClose(): void {
+	publishDebugState();
 	connecting = false;
 	socket = null;
 	if ( awarenessTimer ) {

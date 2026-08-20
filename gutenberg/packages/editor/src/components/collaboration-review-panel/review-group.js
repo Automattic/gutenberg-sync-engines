@@ -11,15 +11,24 @@ import { canRestoreItems, REASON_LABELS } from './review-data';
 
 /**
  * One conflict group (a unit of edits set aside together): attribution,
- * reason, the lost content, and Restore/Discard actions. When `onNavigate`
- * is given, the attribution becomes a link to the conflicted block.
+ * reason, and the lost content. Resolution verbs are Adopt (take the set-
+ * aside edit) and Reject (discard it) — the pending-edit vocabulary. When
+ * `onNavigate` is given, the attribution becomes a link to the conflicted
+ * block. With `summaryOnly` the group renders no verbs: it is an index
+ * entry, and resolution happens at the inline block card.
  *
  * @param {Object}   props
- * @param {Array}    props.items        The group's review items.
- * @param {Function} props.onResolve    ( items, resolution ) => void.
- * @param {Function} [props.onNavigate] Jump to the conflicted block.
+ * @param {Array}    props.items         The group's review items.
+ * @param {Function} props.onResolve     ( items, resolution ) => void.
+ * @param {Function} [props.onNavigate]  Jump to the conflicted block.
+ * @param {boolean}  [props.summaryOnly] Render without resolution verbs.
  */
-export default function ReviewGroup( { items, onResolve, onNavigate } ) {
+export default function ReviewGroup( {
+	items,
+	onResolve,
+	onNavigate,
+	summaryOnly,
+} ) {
 	const [ first ] = items;
 	const attribution = first.isLocal
 		? __( 'One of your edits was set aside.' )
@@ -27,13 +36,13 @@ export default function ReviewGroup( { items, onResolve, onNavigate } ) {
 	const restorable = canRestoreItems( items );
 	const isApproval = 'requires-approval' === first.reason;
 	let reason = REASON_LABELS[ first.reason ];
-	if ( isApproval ) {
+	if ( isApproval && ! summaryOnly ) {
 		reason = restorable
 			? `${ reason } ${ __(
-					'Restoring it publishes the content under your account.'
+					'Adopting it publishes the content under your account.'
 			  ) }`
 			: `${ reason } ${ __(
-					'Only someone allowed to publish unfiltered HTML can restore it.'
+					'Only someone allowed to publish unfiltered HTML can adopt it.'
 			  ) }`;
 	}
 	const summaries = items
@@ -67,27 +76,29 @@ export default function ReviewGroup( { items, onResolve, onNavigate } ) {
 					) }
 				</p>
 			) }
-			<div className="editor-collaboration-review-panel__actions">
-				{ restorable && (
+			{ ! summaryOnly && (
+				<div className="editor-collaboration-review-panel__actions">
+					{ restorable && (
+						<Button
+							__next40pxDefaultSize
+							size="compact"
+							variant="secondary"
+							onClick={ () => onResolve( items, 'restored' ) }
+						>
+							{ __( 'Adopt' ) }
+						</Button>
+					) }
 					<Button
 						__next40pxDefaultSize
 						size="compact"
-						variant="secondary"
-						onClick={ () => onResolve( items, 'restored' ) }
+						variant="tertiary"
+						isDestructive
+						onClick={ () => onResolve( items, 'dismissed' ) }
 					>
-						{ __( 'Restore' ) }
+						{ __( 'Reject' ) }
 					</Button>
-				) }
-				<Button
-					__next40pxDefaultSize
-					size="compact"
-					variant="tertiary"
-					isDestructive
-					onClick={ () => onResolve( items, 'dismissed' ) }
-				>
-					{ __( 'Discard' ) }
-				</Button>
-			</div>
+				</div>
+			) }
 		</div>
 	);
 }

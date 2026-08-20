@@ -39,8 +39,9 @@ jobs:
           npm ci --ignore-scripts
           npm run build
 
-      # PHP lint (composer lint) is deliberately absent: the plugin carries
-      # documented pre-existing PHPCS debt (see AGENTS.md known issues).
+      # PHP lint (composer lint) runs in the php job, where Composer is
+      # already installed. The debt was burned down to zero (V1 item A6);
+      # the lint step keeps it there.
       - name: Lint
         run: npm run lint:js
 
@@ -49,6 +50,14 @@ jobs:
 
       - name: Jest
         run: npm run test:js
+
+      # The collaboration review-panel components (V1 item B3) live in the
+      # vendored subtree, outside the plugin Jest's roots — run their own
+      # suite so the card/panel lifecycle stays certified.
+      - name: Subtree component Jest (collaboration-review-panel)
+        run: |
+          cd gutenberg
+          npm run test:unit -- collaboration-review-panel
 
       - name: Build the plugin bundle
         run: npm run build
@@ -96,6 +105,11 @@ jobs:
 
       - name: Install PHP dependencies
         run: composer install --no-progress
+
+      # Zero errors, zero warnings since the A6 burn-down; this step keeps
+      # the standards debt from silently re-accumulating.
+      - name: PHP lint (phpcs)
+        run: composer lint
 
       # The vendored y-php library's own conformance suite: translated
       # upstream Yjs tests plus byte-level fixtures generated from the JS
@@ -183,5 +197,54 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-artifacts
+          path: artifacts/
+          retention-days: 7
+
+  e2e-websocket:
+    name: End-to-end websocket (real daemon)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            gutenberg/package-lock.json
+
+      - name: Install plugin dependencies
+        run: npm ci
+
+      - name: Install and build the vendored Gutenberg subtree
+        run: |
+          cd gutenberg
+          npm ci --ignore-scripts
+          npm run build
+
+      - name: Build the plugin bundle
+        run: npm run build
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Start wp-env (tests)
+        run: npm run env:tests start
+
+      # The websocket-only suite runs against the plugin's REAL websocket
+      # transport: the launcher publishes the `wp collaboration
+      # sync-server` daemon from the tests env's cli image on host port
+      # 8787 and restores the site's transport at teardown (V1 item A3 —
+      # this lane is what de-experimentalizes the websocket transport).
+      - name: Playwright (websocket-only)
+        run: npm run test:e2e:websocket
+
+      - name: Upload test artifacts
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-websocket-artifacts
           path: artifacts/
           retention-days: 7
