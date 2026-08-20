@@ -287,8 +287,13 @@ function runWpCli( wpArgs, options = {} ) {
  * naming (legacy md5 dir, then descriptive dir, then a compose-file scan).
  */
 function wpEnvWorkDirectory() {
+	// Mirror wp-env's own home derivation (get-cache-directory.js): with
+	// snap installed it uses PUBLIC ~/wp-env, not ~/.wp-env — GitHub's
+	// Ubuntu runners ship snapd, which is how CI ended up looking in the
+	// wrong place while every macOS checkout worked.
 	const home =
-		process.env.WP_ENV_HOME || path.join( os.homedir(), '.wp-env' );
+		process.env.WP_ENV_HOME ||
+		path.join( os.homedir(), existsSync( '/snap' ) ? 'wp-env' : '.wp-env' );
 	const configFilePath = path.join( REPO_ROOT, TESTS_CONFIG );
 	const hash = createHash( 'md5' ).update( configFilePath ).digest( 'hex' );
 

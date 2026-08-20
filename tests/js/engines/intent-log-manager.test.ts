@@ -336,7 +336,7 @@ describe( 'intent-log manager', () => {
 		// editor sync pushed the REVERTED document over the canvas — the
 		// user watched their typing vanish. The manager must instead
 		// re-capture the current editor tree at the current seq.
-		const { manager, handlers, transport } = await loadManagedEntity();
+		const { manager, transport } = await loadManagedEntity();
 
 		transport.captured.session!.receiveUpdate(
 			snapshotRow( [
@@ -382,9 +382,7 @@ describe( 'intent-log manager', () => {
 
 		// The edit was re-authored — not silently lost.
 		expect( transport.captured.sent.length ).toBeGreaterThan( 1 );
-		const reauthored = JSON.parse(
-			transport.captured.sent.at( -1 )!.data
-		);
+		const reauthored = JSON.parse( transport.captured.sent.at( -1 )!.data );
 		expect( reauthored.intentId ).not.toBe( first.intentId );
 		expect( JSON.stringify( reauthored.payload ) ).toContain( '!!' );
 	} );

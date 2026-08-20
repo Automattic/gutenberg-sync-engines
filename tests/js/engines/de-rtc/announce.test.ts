@@ -384,9 +384,9 @@ describe( 'de-rtc announce model', () => {
 				( update ) => DE_RTC_PROPOSAL_TYPE === update.type
 			);
 			expect( after ).toHaveLength( 2 );
-			expect(
-				JSON.parse( after[ 1 ].data ).proposedContent
-			).toContain( 'Gamma' );
+			expect( JSON.parse( after[ 1 ].data ).proposedContent ).toContain(
+				'Gamma'
+			);
 		} finally {
 			delete ( window as any )._gutenbergSyncEnginesSettings;
 			jest.useRealTimers();
