@@ -787,6 +787,11 @@ export function createDeRtcSessionCodec(
 				clearTimeout( commitRetryTimer );
 				commitRetryTimer = null;
 			}
+			if ( null !== quietRetryTimer ) {
+				clearTimeout( quietRetryTimer );
+				quietRetryTimer = null;
+			}
+			deferredSnapshotRow = null;
 			review?.setEmitter( null );
 			localUpdateListener = null;
 		},
