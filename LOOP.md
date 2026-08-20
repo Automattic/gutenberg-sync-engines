@@ -30,7 +30,8 @@ a merge.
 | A12 intent-log stale-base voids lose live edits | A | parked | 3 | loop/a12 | PARKED after 3 attempts (cycle 18) — see Parked section. Branch holds real, verified improvements worth merging |
 | A13 de-rtc burst-eat recurrence under load | A | done | 1 | loop/a13 | verifier PASS (cycle 19); typing-quiet snapshot deferral. Base failed 3/10 under stress, branch 10/10 |
 | A14 de-rtc session teardown hygiene | A | done | 1 | loop/a14 | verifier PASS (cycle 20); STACKED on loop/a13 — merge a13 then a14 |
-| A3 websocket fixme re-enable | A | queued | 0 | — | prefer the real-daemon lane |
+| A3 websocket fixme re-enable | A | in-progress | 1 | loop/a3 | real-daemon lane WORKS (fixme removed); one keystroke-race flake from green — blocked on A15. STACKED on loop/a2 (merge a2 then a3) |
+| A15 intent-log mid-burst remote pushes eat keystrokes | A | queued | 0 | — | filed cycle 21: at speed, a remote push remounts the caret block and a keystroke lands in a detached node (WS lane makes it visible; both windows agree afterward — canvas-level loss). Fix = the A13 typing-quiet gate applied to intent-log's remote-push path (syncEditor from onChange); acceptance = the a3 websocket suite green x3 retries=0 |
 | A8 full fuzzer matrix soak | A | blocked | 0 | — | exit gate; runs after A1–A7 |
 | B1 yjs materialization (framework) | B | queued | 0 | — | proposal only; subtree edits |
 | B3 pending-edit inline-card UI | B | queued | 0 | — | proposal only; build to prototype decisions |
@@ -80,6 +81,30 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
 None.
 
 ## Cycle log
+
+### Cycle 21 — 2026-08-20 — A3 (real-daemon lane built; one flake from green)
+- Did: replaced the y-websocket PEER-relay fixture lane with the REAL
+  transport: a launcher (tests/e2e/bin/rtc-real-ws-daemon.mjs) selects
+  the websocket transport on the tests site, runs the
+  `wp collaboration sync-server` daemon with 8787 published, and
+  restores everything at teardown; the config health-checks the
+  daemon's own /health and clears stale port holders MAIN-PROCESS-ONLY
+  (a Playwright worker reloading the config docker-rm'ed the live
+  daemon mid-run — cost one diagnosis round). The websocket manager
+  now publishes a `__wpSyncWsState` observability global, and the
+  plugin-local fixtures' waitForSyncCycle waits on it under
+  GUTENBERG_RTC_REAL_WS=1 (the subtree's wait knows only HTTP
+  responses). test.fixme removed; typing tuned 1 ms -> 15 ms (the 1 ms
+  assumption was relay-era local-first typing).
+- Result: the full session lifecycle works over the real daemon —
+  join, presence, typing, convergence. Residual: at speed a mid-burst
+  remote push can remount the caret block and eat a keystroke at the
+  canvas (1 char in 60 this run; both windows agree afterward, so the
+  sync lane loses nothing). Filed as A15 (the A13 typing-quiet gate,
+  applied to intent-log's remote-push path). A3 blocked on it.
+- Branch: loop/a3 STACKED on loop/a2 (uses its fixtures module);
+  merge order a2 then a3.
+- Ledger changes: A3 queued -> in-progress (blocked on A15); A15 filed.
 
 ### Cycle 20 — 2026-08-20 — A14 done (verifier PASS)
 - Did: the 5-line teardown cleanup on a branch STACKED on loop/a13
