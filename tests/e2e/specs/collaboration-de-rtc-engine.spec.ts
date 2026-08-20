@@ -353,6 +353,16 @@ test.describe( 'Collaboration - de-rtc engine', () => {
 		 * server accepts whichever proposal lands first; the other is a
 		 * genuine conflict (`manual-conflict-required`) that now PARKS as
 		 * a durable review row instead of being silently abandoned.
+		 *
+		 * DETERMINISTIC provocation: whether the conflict escalates used
+		 * to depend on scheduling — if user two's replica incorporated
+		 * user one's accepted version BEFORE its own commit left, the
+		 * later proposal could serialize cleanly and nothing parked (the
+		 * spec then flaked and leaned on CI retries). Holding user two's
+		 * SYNC traffic (never the commit lane) while user one's rewrite
+		 * lands guarantees user two proposes from the stale base, which
+		 * is the same-block overlap the merge core must escalate. The
+		 * held poll routes are released right after.
 		 */
 		const paragraph1 = editor.canvas
 			.locator( '[data-type="core/paragraph"]' )
@@ -360,13 +370,51 @@ test.describe( 'Collaboration - de-rtc engine', () => {
 		const paragraph2 = editor2.canvas
 			.locator( '[data-type="core/paragraph"]' )
 			.first();
-		await paragraph1.click( { clickCount: 3 } );
-		await paragraph2.click( { clickCount: 3 } );
 
-		await Promise.all( [
-			page1.keyboard.type( 'Rewrite by user one', { delay: 50 } ),
-			page2.keyboard.type( 'Rewrite by user two', { delay: 50 } ),
-		] );
+		// Both URL shapes: pretty (/wp-json/...) and plain
+		// (?rest_route=%2F..., percent-encoded) — the established
+		// decoded-match pattern from the http-only suite.
+		const isSyncPoll = ( url: URL ) =>
+			decodeURIComponent( url.href ).includes( '/wp-sync/v1/updates' );
+		const isAutosaveCommit = ( response: {
+			url: () => string;
+			request: () => { method: () => string };
+		} ) =>
+			decodeURIComponent( response.url() ).includes(
+				`/wp/v2/posts/${ post.id }/autosaves`
+			) && 'POST' === response.request().method();
+
+		const heldPolls: Array< { continue: () => Promise< void > } > = [];
+		await page2.route( isSyncPoll, ( route ) => {
+			heldPolls.push( route );
+		} );
+
+		// User one rewrites and their commit LANDS (the autosave commit
+		// response is the server's acceptance).
+		const userOneCommit = page1.waitForResponse( isAutosaveCommit, {
+			timeout: 30000,
+		} );
+		await paragraph1.click( { clickCount: 3 } );
+		await page1.keyboard.type( 'Rewrite by user one', { delay: 50 } );
+		expect( ( await userOneCommit ).ok() ).toBe( true );
+
+		// User two — still on the genesis version — rewrites the same
+		// words and commits; the server three-way-merges from the stale
+		// base and must park the overlap. The commit response itself
+		// carries the parked row, so user two learns the escalation even
+		// before their polls resume.
+		const userTwoCommit = page2.waitForResponse( isAutosaveCommit, {
+			timeout: 30000,
+		} );
+		await paragraph2.click( { clickCount: 3 } );
+		await page2.keyboard.type( 'Rewrite by user two', { delay: 50 } );
+		expect( ( await userTwoCommit ).ok() ).toBe( true );
+
+		// Resume user two's sync traffic.
+		for ( const route of heldPolls.splice( 0 ) ) {
+			await route.continue().catch( () => {} );
+		}
+		await page2.unroute( isSyncPoll );
 
 		// At least one side surfaces the escalation notice (the parked row
 		// reaches BOTH replicas; the notice names the loser's own edit on
@@ -416,8 +464,9 @@ test.describe( 'Collaboration - de-rtc engine', () => {
 		// still pass.
 		const resolveResponse = noticePage.waitForResponse(
 			( response ) =>
-				response.url().includes( '/wp-sync/v1/de-rtc/resolve' ) &&
-				'POST' === response.request().method(),
+				decodeURIComponent( response.url() ).includes(
+					'/wp-sync/v1/de-rtc/resolve'
+				) && 'POST' === response.request().method(),
 			{ timeout: 30000 }
 		);
 

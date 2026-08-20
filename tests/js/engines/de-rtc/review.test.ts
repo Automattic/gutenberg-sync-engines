@@ -1,7 +1,14 @@
 /**
  * External dependencies
  */
-import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	jest,
+} from '@jest/globals';
 import * as Y from 'yjs';
 
 /**
@@ -9,10 +16,12 @@ import * as Y from 'yjs';
  */
 import { createDeRtcEngine } from '../../../../src/engines/de-rtc/engine';
 import {
+	DE_RTC_ANNOUNCE_TYPE,
 	DE_RTC_PROPOSAL_PARKED_TYPE,
 	DE_RTC_PROPOSAL_TYPE,
 	DE_RTC_RESOLVED_TYPE,
 	DE_RTC_SNAPSHOT_TYPE,
+	setDeRtcBurstQuietMsForTesting,
 } from '../../../../src/engines/de-rtc/session';
 import { CRDT_RECORD_MAP_KEY } from '../../../../src/engines/yjs/constants';
 // eslint-disable-next-line import/no-unresolved -- Provided at runtime as wp.sync.
@@ -409,6 +418,126 @@ describe( 'de-rtc review lane (client)', () => {
 				proposalId: 'p-9-1',
 				resolution: 'dismissed',
 			} );
+		} );
+	} );
+
+	describe( 'contested-item review surface (TODO-12 contests at the engine level)', () => {
+		const A_LOCAL = {
+			name: 'core/paragraph',
+			attributes: { content: 'Alpha local' },
+		};
+		const A_NEWER = {
+			name: 'core/paragraph',
+			attributes: { content: 'Alpha local newer' },
+		};
+		const A_PEER = {
+			name: 'core/paragraph',
+			attributes: { content: 'Alpha peer' },
+		};
+
+		beforeEach( () => {
+			// Edits and snapshots land in the same tick here; the typing-
+			// burst quiet gate would defer every snapshot otherwise.
+			setDeRtcBurstQuietMsForTesting( 0 );
+		} );
+
+		afterEach( () => {
+			setDeRtcBurstQuietMsForTesting( 500 );
+		} );
+
+		/**
+		 * Drives the real collision choreography through the session codec:
+		 * propose an edit to block 0, edit block 0 AGAIN while the proposal
+		 * is in flight, then have the server merge a PEER's change to the
+		 * same block (merged own announce → fetch → snapshot). The
+		 * incorporation keeps our newer local block and raises a contest.
+		 */
+		function raiseContest() {
+			const { entity, session, sent } = makeEntity();
+			session.receiveUpdate( snapshotRow( 'v1', contentOf( BLOCK_A ) ) );
+			entity.applyLocalChanges(
+				{ blocks: [ A_LOCAL ] } as any,
+				'editor',
+				{}
+			);
+			const proposal = JSON.parse( sent[ 0 ].data );
+			const clientId = Number( proposal.proposalId.split( '-' )[ 1 ] );
+			// A newer edit to the SAME block while the proposal is in
+			// flight (local now differs from what we proposed).
+			entity.applyLocalChanges(
+				{ blocks: [ A_NEWER ] } as any,
+				'editor',
+				{}
+			);
+			// The server merged a peer's change to block 0 into v2.
+			session.receiveUpdate( {
+				type: DE_RTC_ANNOUNCE_TYPE,
+				data: JSON.stringify( {
+					version: 'v2',
+					baseVersion: 'v1',
+					contentHash: 'merged-differs',
+					authorClientId: clientId,
+					proposalId: proposal.proposalId,
+				} ),
+			} );
+			session.receiveUpdate( snapshotRow( 'v2', contentOf( A_PEER ) ) );
+			return { entity };
+		}
+
+		it( 'a contest surfaces as a review item anchored by targetIndex', () => {
+			const changed = jest.fn();
+			engine.review.subscribe( 'postType/book', '1', changed );
+			raiseContest();
+
+			const items = engine.review.getOpenItems( 'postType/book', '1' );
+			expect( items ).toHaveLength( 1 );
+			expect( items[ 0 ] ).toMatchObject( {
+				id: 'contested-0',
+				unitId: 'contested-0',
+				isLocal: false,
+				reason: 'frame-conflict',
+				// The positional anchor the inline card renders at (B3).
+				targetIndex: 0,
+			} );
+			expect( items[ 0 ].summary ).toContain( 'Alpha peer' );
+			expect( changed ).toHaveBeenCalled();
+		} );
+
+		it( 'dismiss routes to REJECT: the local block survives, the item closes', () => {
+			const { entity } = raiseContest();
+
+			engine.review.resolveProposal(
+				'postType/book',
+				'1',
+				'contested-0',
+				'dismissed'
+			);
+
+			expect(
+				engine.review.getOpenItems( 'postType/book', '1' )
+			).toHaveLength( 0 );
+			const changes = entity.getEditorChanges( {
+				blocks: [],
+			} as any ) as any;
+			expect( changes.blocks ).toEqual( [ A_NEWER ] );
+		} );
+
+		it( 'restore routes to ADOPT: the canonical block lands, the item closes', () => {
+			const { entity } = raiseContest();
+
+			engine.review.restoreProposal(
+				'postType/book',
+				'1',
+				'contested-0'
+			);
+
+			expect(
+				engine.review.getOpenItems( 'postType/book', '1' )
+			).toHaveLength( 0 );
+			const changes = entity.getEditorChanges( {
+				blocks: [],
+			} as any ) as any;
+			expect( changes.blocks ).toEqual( [ A_PEER ] );
 		} );
 	} );
 
