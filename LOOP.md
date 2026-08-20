@@ -5,11 +5,13 @@ Operational state for the v1 loop. `V1.md` is the frozen scope contract
 executor updates it every cycle and commits the update on the base
 branch. Newest cycle-log entries go on top.
 
-**Loop status:** COMPLETE (2026-08-20) — every Lane-A item is done or
-parked, every Lane-B item is awaiting-human. What remains is B6 (human
-sign-off): review the proposals, decide the parked items, merge the
-branches in the recorded orders. The loop is stopped; restart with
-`/loop /v1-cycle` if new items are queued.
+**Loop status:** COMPLETE (2026-08-20); INTEGRATION BRANCH READY —
+`loop/integration` merges every item branch (including parked
+loop/a12's fixes and v1-m1-maybe), carries the post-loop review's
+improvements, and is fully verified as a whole. B6 (human sign-off) is
+now: review `loop/integration` and merge IT — not the individual
+branches. See the "Post-loop integration" cycle-log entry below for
+the full evidence record and the two filed fuzzer signatures.
 **Base branch:** chriszarate/loop-v1
 **Current item:** none
 
@@ -106,6 +108,104 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
   resolution granularity, upstreaming shape.
 
 ## Cycle log
+
+### Post-loop integration — 2026-08-20 — loop/integration built, verified whole, A2 met, A8 run
+An independent post-loop review found the branches had only ever been
+verified individually; per its findings (worked in order, at the
+human's direction) `loop/integration` now exists, frozen at merge
+commit 8ab1e26a66, ready for human review-and-merge.
+
+**Branch contents.** All 16 branches merged in dependency order
+(a6, a9, a1, a10, a4, a5, a7, a2→a3→a15, a13→a14→b4→b5, b1, b3,
+v1-m1-maybe, and finally parked loop/a12's fixes). Two textual
+conflicts (a1×a15 and integration×a12, both in
+`src/engines/intent-log-manager.ts` — adjacent field insertions plus
+one docblock seam) resolved keep-both. Integration-only commits:
+- Positive B5 REST assertion in the de-rtc e2e walkthrough (the
+  transport-row fallback could mask a broken route; this is the first
+  tree where B3's cards and B5's REST lane coexist).
+- Three phpcs violations visible only on the merged tree (branches
+  based before A6's burn-down); `composer lint` clean again.
+- CI: `composer lint` step, an e2e-websocket job (A3's lane ran
+  nowhere in CI), and the subtree review-panel component Jest.
+- B3 gaps closed: engine-level Jest for the contested→targetIndex
+  mapping (real collision choreography through the session codec), and
+  the de-rtc e2e conflict provocation made DETERMINISTIC (user two's
+  sync polls held — never the commit lane — while user one's rewrite
+  lands, forcing the stale-base proposal; decoded-URL matchers for
+  plain-permalink envs).
+- Proposal tweaks: B1's `_save` key hoisted to exported
+  CRDT_BLOCK_SAVE_KEY; B4's cadence row hides live when the engine
+  isn't de-rtc (hidden row, not disabled input — a disabled input
+  drops from the POST and would reset the stored value); all four
+  proposals stamped with recommended dispositions (pending sign-off).
+- Docs sweep: AGENTS.md's websocket-lane section now describes A3's
+  real-daemon lane; engine-comparison.md carries the 500-row
+  intent-log checkpoint interval.
+- TWO real integration bugs found and fixed by the whole-tree sweep:
+  (1) full-suite PHPUnit failed — the storage's static post-id cache
+  survives per-test DB rollbacks and the new test files changed class
+  ordering; the WS transport suite now resets it in set_up like the
+  polling suite always did; (2) the websocket e2e launcher's
+  transport restore dies when Playwright SIGKILLs the webServer
+  process group — a killed run left the site pinned to a daemon-less
+  websocket transport and every later polling suite timed out at
+  discovery (initially masquerading as an 8/8 A12-hammer failure).
+  The launcher now persists the pre-suite selection to a state file
+  and a globalTeardown replays the restore in the main process.
+
+**Whole-tree verification (all on the frozen final tree).**
+typecheck clean; Jest 537/537; subtree component Jest 11/11;
+`composer lint` clean; PHPUnit 325/325; full default e2e 55/55
+**three consecutive runs, retries=0** (13.1-13.7 min each);
+e2e:websocket 1/1 against the real daemon (transport restore
+verified); fuzz:quick 6/6.
+
+**A2: acceptance MET** on the integration tree (the 3× retry-free
+runs above). Recorded as evidence for the human — the loop's
+maker-never-grader rule was not re-run for this (the whole branch is
+under human review, which supersedes it).
+
+**A12 re-measured** (the reviewer flagged that A15's checkpoint
+interval change invalidated the old numbers): hammer
+(`--repeat-each=8`, mix-of-block-types, intent-log) fails 1/8 WITHOUT
+loop/a12's fixes and 2/8 WITH them (statistically noise at this
+sample size) vs the recorded ~4/8 pre-A15. Signature unchanged
+(a coarse-capture table-cell/quote edit voided stale-base). The a12
+fixes are merged anyway — they close DIFFERENT sub-failures
+(peer-side silent loss, reset clobbering), are Jest-pinned, and the
+ledger already called them strictly better than base. The residual's
+real fix stays the trigger: batch the 3-rows-per-keystroke coarse
+captures (open, post-v1).
+
+**A8 exit gate RUN: full fuzz matrix** (9 combos × 5 seeds, faults on
+HTTP): intent-log 15/15; two signatures found and FILED, both
+REPRODUCED IDENTICALLY ON THE BASE TREE (pre-existing, newly exposed
+by seed/fault coverage the quick lane never ran — NOT integration
+regressions):
+1. `yjs-server seed 3` (all three transports, first-attempt fail,
+   passes recheck): invalid-content recovery `core/group` with empty
+   original after final reload. Replay:
+   `npm run fuzz -- --combos=yjs-server/http-polling --seed-list=3`.
+   Smells like the known genesis/isValid + container class; B1's
+   container question is adjacent but NOT the cause (fails at base
+   without B1).
+2. `de-rtc seed 5` (both HTTP transports; faults enabled — websocket
+   5/5): serialized state did not converge in 20 s (8 blocks, a
+   `<marker>` paragraph). Reproduced on recheck in the matrix run but
+   passed recheck in a standalone replay — fault-schedule-dependent.
+   Replay: `npm run fuzz -- --combos=de-rtc/http-polling
+   --seed-list=5 --steps=12 --trace=retain-on-failure`. Shrink was
+   not possible (needs reproducibility).
+   Per A8's rule these await explicit human acceptance (or new
+   post-v1 items); the soak is otherwise green.
+
+**For the human (B6).** Review and merge `loop/integration`
+(8ab1e26a66). The per-branch merge orders in earlier entries are
+OBSOLETE — the integration branch supersedes them. Decisions still
+yours: the four proposals' recommended dispositions (stamped in
+proposals/*.md), keeping the a12 merge, M1 (merged, commits you to
+nothing), and accepting/filing the two fuzzer signatures.
 
 ### Cycle 30 — 2026-08-20 — B3 proposal ready; LOOP COMPLETE
 - Did: finished B3 on loop/b3 — subtree rebuilt on the branch, both
