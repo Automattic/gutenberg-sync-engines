@@ -409,6 +409,18 @@ test.describe( 'Collaboration - de-rtc engine', () => {
 				.first()
 		).toBeVisible();
 
+		// Resolutions are MUTATIONS and must travel over the REST review
+		// lane (B5), not the advisory transport. Arm the listener BEFORE
+		// rejecting: a broken route would otherwise be masked by the
+		// client's silent transport-row fallback and this spec would
+		// still pass.
+		const resolveResponse = noticePage.waitForResponse(
+			( response ) =>
+				response.url().includes( '/wp-sync/v1/de-rtc/resolve' ) &&
+				'POST' === response.request().method(),
+			{ timeout: 30000 }
+		);
+
 		// Reject everything parked, until settled-and-still-empty (the
 		// typing race can escalate additional proposals in flight):
 		// anchored conflicts at their inline card, unanchored ones through
@@ -435,6 +447,9 @@ test.describe( 'Collaboration - de-rtc engine', () => {
 			expect( await panel.count() ).toBe( 0 );
 			expect( await pendingCard.count() ).toBe( 0 );
 		} ).toPass( { timeout: 60000 } );
+
+		// The REST resolve POST actually happened and succeeded.
+		expect( ( await resolveResponse ).ok() ).toBe( true );
 
 		// The resolution row travels to the OTHER collaborator too: their
 		// notices clear and their panel (were it open) would be empty.
