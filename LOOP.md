@@ -5,7 +5,11 @@ Operational state for the v1 loop. `V1.md` is the frozen scope contract
 executor updates it every cycle and commits the update on the base
 branch. Newest cycle-log entries go on top.
 
-**Loop status:** RUNNING
+**Loop status:** COMPLETE (2026-08-20) — every Lane-A item is done or
+parked, every Lane-B item is awaiting-human. What remains is B6 (human
+sign-off): review the proposals, decide the parked items, merge the
+branches in the recorded orders. The loop is stopped; restart with
+`/loop /v1-cycle` if new items are queued.
 **Base branch:** chriszarate/loop-v1
 **Current item:** none
 
@@ -26,15 +30,15 @@ a merge.
 | A4 yjs genesis rich-text defect | A | done | 1 | loop/a4 | verifier PASS (cycle 6); selector-sourced rich text split |
 | A5 announce-inversion verification debt | A | done | 1 | loop/a5 | verifier PASS (cycle 10); WS fuzz 0/5 → 5/5 via daemon room scan + engine cache flush |
 | A11 de-rtc session request-rate runaway | A | parked | 1 | — | CLOSED-INVALID (cycle 9): the soak's minuteSamples are CUMULATIVE counters; the deltas are a flat ~75 req/min/window all hour. No runaway exists — cycle 8 misread the data. Server capture confirms flat sync-frame rate. Full diagnosis in the cycle-9 log |
-| A2 e2e flake stabilization | A | blocked | 1 | loop/a2 | login flake FIXED on the branch; acceptance unreachable while A12 (parked) fires ~25-50% of runs; A13 also pending |
+| A2 e2e flake stabilization | A | parked | 1 | loop/a2 | PARKED-BY-DEPENDENCY (cycle 30): the login-flake fix on the branch is real and merge-worthy, but the acceptance (3x full-suite green) is unreachable while parked A12 fires ~25-50% of full runs. Unblocks when the human decides A12 |
 | A12 intent-log stale-base voids lose live edits | A | parked | 3 | loop/a12 | PARKED after 3 attempts (cycle 18) — see Parked section. Branch holds real, verified improvements worth merging |
 | A13 de-rtc burst-eat recurrence under load | A | done | 1 | loop/a13 | verifier PASS (cycle 19); typing-quiet snapshot deferral. Base failed 3/10 under stress, branch 10/10 |
 | A14 de-rtc session teardown hygiene | A | done | 1 | loop/a14 | verifier PASS (cycle 20); STACKED on loop/a13 — merge a13 then a14 |
 | A3 websocket fixme re-enable | A | done | 1 | loop/a3 | verifier PASS (cycle 23) — real-daemon lane, suite 3x green retries=0. STACKED: merge a2 → a3 → a15 |
 | A15 intent-log mid-burst remote pushes eat keystrokes | A | done | 1 | loop/a15 | verifier PASS (cycle 23): typing-quiet push gate + checkpoint interval 100→500 (live-authoring-sized). STACKED on loop/a3 |
-| A8 full fuzzer matrix soak | A | blocked | 0 | — | exit gate; runs after A1–A7 |
+| A8 full fuzzer matrix soak | A | parked | 0 | — | PARKED-BY-DEPENDENCY (cycle 30): the exit gate requires A1-A7 done incl. A2, which is parked on A12. Run `npm run fuzz` after sign-off merges; the harness and triage docs are ready |
 | B1 yjs materialization (framework) | B | awaiting-human | 1 | loop/b1 | proposal ready (proposals/b1.md, cycle 27): _save mirror (ONE subtree file) + engine preference; e2e 54/55 (sole failure = parked A12 signature, unrelated); fuzz green. STACKED on loop/a4 |
-| B3 pending-edit inline-card UI | B | in-progress | 1 | loop/b3 | implementation committed (aa3c8c47, wip): inline merged Adopt/Reject cards, panel summary-only, de-rtc targetIndex anchors; subtree Jest 11/11, plugin Jest+typecheck+lint green. Next: subtree rebuild on the branch, e2e walkthrough, fuzz:quick, proposal |
+| B3 pending-edit inline-card UI | B | awaiting-human | 1 | loop/b3 | proposal ready (proposals/b3.md, cycle 30); verifier PASS + addendum PASS. Inline merged Adopt/Reject cards, panel summary-only, de-rtc's first in-canvas anchoring (targetIndex). Branched from base (independent of the stacks) |
 | B4 commit-cadence dial | B | awaiting-human | 1 | loop/b4 | proposal ready (proposals/b4.md, cycle 24): dial + soak A/B (−16% req, −29% up at dial 10). Default left 0 for the human. STACKED on loop/a14 |
 | B5 review resolutions over REST | B | awaiting-human | 1 | loop/b5 | proposal ready (proposals/b5.md, cycle 28); verifier PASS. REST route + shared engine applier; legacy row path kept; client falls back on POST failure. STACKED on loop/b4 |
 
@@ -89,8 +93,60 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
   requests / −29% upload per user-hour with full convergence. Open
   decisions: the default (0 vs 10), field visibility per engine, the
   300 s cap.
+- **B5 — review resolutions over REST** (`loop/b5`, `proposals/b5.md`):
+  the last mutating transport row moves to an authenticated route with
+  transport-row fallback for old servers; legacy row path kept for old
+  clients. Open questions: gate scope (commit-route types vs all),
+  route namespace, legacy-row retirement timing.
+- **B3 — pending-edit inline block cards** (`loop/b3`,
+  `proposals/b3.md`): the prototype's decisions built — merged
+  Adopt/Reject card per block (no chip), summary-only panel, de-rtc
+  items anchoring in-canvas for the first time. Open questions:
+  always-open card loudness, insertion-card vocabulary, merged
+  resolution granularity, upstreaming shape.
 
 ## Cycle log
+
+### Cycle 30 — 2026-08-20 — B3 proposal ready; LOOP COMPLETE
+- Did: finished B3 on loop/b3 — subtree rebuilt on the branch, both
+  engine e2e specs green in one run (29/29, no retries; includes the
+  rewritten review-lane walkthroughs), fuzz:quick 6/6, proposals/b3.md
+  written. Verifier: PASS, with two notes — (1) the executor's own e2e
+  runs had used a bundle built before the plugin-side commit (the
+  verifier rebuilt and independently reproduced everything green), and
+  (2) the de-rtc spec never positively asserted its inline card
+  rendered (silent panel-fallback could pass). Note 2 was closed the
+  same cycle: the spec now asserts the card and its Reject verb are
+  visible before resolving (5/5 green locally, incl. --repeat-each=4);
+  the same verifier confirmed the addendum: PASS. Note 1 became moot
+  with that re-run. Lesson (real): rebuild `build/sync-engines.js`
+  after plugin src edits BEFORE browser-based evidence runs — Jest
+  doesn't need it, e2e does.
+- The conflict-provocation stage of the de-rtc review spec remains
+  schedule-dependent (two local runs failed to escalate before the
+  green streak) — a pre-existing trait of the racing-typists setup,
+  absorbed by CI retries; recorded in proposals/b3.md.
+- Queue state after B3: no queued items remain. A2 and A8 were
+  reclassified blocked → PARKED-BY-DEPENDENCY (their acceptance is
+  unreachable while A12 is parked; no cycle can advance them), so the
+  completion condition holds: **loop COMPLETE**.
+
+### FINAL SUMMARY (for B6 sign-off)
+- 12 Lane-A items closed with verifier PASS: A1, A3, A4, A5, A6, A7,
+  A9, A10, A13, A14, A15 (+ A11 closed-invalid with a corrected
+  diagnosis). Parked: A12 (3 attempts, branch holds merge-worthy
+  partial fixes), A2 and A8 (dependency-parked on A12).
+- 4 Lane-B proposals awaiting review: B1 (yjs materialization,
+  subtree), B4 (commit-cadence dial), B5 (REST review resolutions),
+  B3 (inline pending-edit cards). Each has proposals/<id>.md with
+  evidence and open questions.
+- Merge orders (recorded across cycles): a6 before/with a9; a1
+  before/with a10; a2 → a3 → a15 (stacked); a13 → a14 → b4 → b5
+  (stacked); a4 → b1 (stacked); b3 independent of all stacks.
+- Human decisions pending: A12 disposition (merge the partial fixes?
+  attack the trigger?), the v1-m1-maybe V1.md addition, the four
+  proposals' open questions, then A8 (full fuzz soak) as the exit
+  gate after merges.
 
 ### Cycle 29 — 2026-08-20 — B3 implementation (wip on loop/b3)
 - Preflight: the mapping-copy plugin activation trap had recurred (from
