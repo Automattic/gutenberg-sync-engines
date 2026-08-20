@@ -14,6 +14,20 @@ class Test_WP_WebSocket_Sync_Transport extends WP_UnitTestCase {
 		global $wp_rest_server;
 		$wp_rest_server = new Spy_REST_Server();
 		do_action( 'rest_api_init', $wp_rest_server );
+
+		/*
+		 * Reset the storage post-id cache: the static survives the DB
+		 * rollback between tests, so a room post created by an EARLIER
+		 * class (the engine-registry suite uses the same collection room)
+		 * leaves a dead cached id — set_room_engine() then writes to a
+		 * rolled-back post while the reset path's fresh query sees nothing
+		 * to reset. Same pattern as the polling suite's set_up.
+		 */
+		$reflection = new ReflectionProperty( 'WP_Sync_Post_Meta_Storage', 'storage_post_ids' );
+		if ( PHP_VERSION_ID < 80100 ) {
+			$reflection->setAccessible( true );
+		}
+		$reflection->setValue( null, array() );
 	}
 
 	public function tear_down() {
