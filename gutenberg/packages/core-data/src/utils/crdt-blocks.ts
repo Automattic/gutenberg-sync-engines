@@ -41,6 +41,14 @@ interface BlockType {
 	name: string;
 }
 
+/**
+ * The doc-side save-markup mirror's key (B1). Exported so the plugin
+ * side and any future rename stay mechanical: every stringly-typed
+ * access below goes through this constant; only the two interface
+ * fields repeat the literal (TypeScript keeps those honest).
+ */
+export const CRDT_BLOCK_SAVE_KEY = '_save';
+
 // A block as represented in Gutenberg's data store.
 export interface Block {
 	attributes: BlockAttributes;
@@ -261,7 +269,7 @@ export function deserializeBlockAttributes( blocks: Block[] ): Block[] {
 function areBlocksEqual( gblock: Block, yblock: YBlock ): boolean {
 	const yblockAsJson = yblock.toJSON();
 	// The save-markup mirror is doc-side bookkeeping, not editor state.
-	delete yblockAsJson._save;
+	delete yblockAsJson[ CRDT_BLOCK_SAVE_KEY ];
 
 	// we must not sync clientId, as this can't be generated consistently and
 	// hence will lead to merge conflicts.
@@ -427,7 +435,12 @@ function createNewYBlock( block: Block ): YBlock {
 			[
 				...( null === saveMarkup
 					? []
-					: [ [ '_save', saveMarkup ] as [ string, unknown ] ] ),
+					: [
+							[ CRDT_BLOCK_SAVE_KEY, saveMarkup ] as [
+								string,
+								unknown,
+							],
+					  ] ),
 				...Object.entries( block ),
 			].map( ( [ key, value ] ) => {
 				switch ( key ) {
@@ -559,9 +572,9 @@ export function mergeCrdtBlocks(
 		);
 		if (
 			null !== saveMarkup &&
-			saveMarkup !== localYBlock.get( '_save' )
+			saveMarkup !== localYBlock.get( CRDT_BLOCK_SAVE_KEY )
 		) {
-			localYBlock.set( '_save', saveMarkup );
+			localYBlock.set( CRDT_BLOCK_SAVE_KEY, saveMarkup );
 		}
 
 		Object.entries( incomingYBlock ).forEach(

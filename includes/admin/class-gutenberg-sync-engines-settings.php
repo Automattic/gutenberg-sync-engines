@@ -257,6 +257,31 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				esc_html__( 'seconds', 'gutenberg-sync-engines' ),
 				esc_html__( 'Distributed Editing (de-rtc) only. 0 commits whenever edits settle (pseudo-realtime). 10 is the Distributed Editing vision\'s save-and-sync cadence: edits coalesce locally and the room advances every ten seconds, cutting request rate and upload bytes on constrained hosts. Peers see each other\'s work at this cadence.', 'gutenberg-sync-engines' )
 			);
+
+			/*
+			 * The dial only applies to de-rtc: HIDE its row (live, following
+			 * the engine select) rather than disable the input — a disabled
+			 * input drops out of the POST and saving under another engine
+			 * would silently reset the stored cadence. A hidden row still
+			 * submits, so the value survives engine round-trips. Without JS
+			 * the row simply stays visible.
+			 */
+			printf(
+				'<script>( function () {
+					var input  = document.getElementById( %1$s );
+					var select = document.getElementById( "wp_sync_engine" );
+					if ( ! input || ! select ) {
+						return;
+					}
+					var row    = input.closest( "tr" );
+					var toggle = function () {
+						row.style.display = "de-rtc" === select.value ? "" : "none";
+					};
+					select.addEventListener( "change", toggle );
+					toggle();
+				} )();</script>',
+				wp_json_encode( self::DE_RTC_COMMIT_INTERVAL_OPTION )
+			);
 		}
 
 		/**
