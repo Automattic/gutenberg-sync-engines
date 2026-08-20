@@ -34,7 +34,7 @@ a merge.
 | A15 intent-log mid-burst remote pushes eat keystrokes | A | done | 1 | loop/a15 | verifier PASS (cycle 23): typing-quiet push gate + checkpoint interval 100→500 (live-authoring-sized). STACKED on loop/a3 |
 | A8 full fuzzer matrix soak | A | blocked | 0 | — | exit gate; runs after A1–A7 |
 | B1 yjs materialization (framework) | B | awaiting-human | 1 | loop/b1 | proposal ready (proposals/b1.md, cycle 27): _save mirror (ONE subtree file) + engine preference; e2e 54/55 (sole failure = parked A12 signature, unrelated); fuzz green. STACKED on loop/a4 |
-| B3 pending-edit inline-card UI | B | queued | 0 | — | proposal only; build to prototype decisions |
+| B3 pending-edit inline-card UI | B | in-progress | 1 | loop/b3 | implementation committed (aa3c8c47, wip): inline merged Adopt/Reject cards, panel summary-only, de-rtc targetIndex anchors; subtree Jest 11/11, plugin Jest+typecheck+lint green. Next: subtree rebuild on the branch, e2e walkthrough, fuzz:quick, proposal |
 | B4 commit-cadence dial | B | awaiting-human | 1 | loop/b4 | proposal ready (proposals/b4.md, cycle 24): dial + soak A/B (−16% req, −29% up at dial 10). Default left 0 for the human. STACKED on loop/a14 |
 | B5 review resolutions over REST | B | awaiting-human | 1 | loop/b5 | proposal ready (proposals/b5.md, cycle 28); verifier PASS. REST route + shared engine applier; legacy row path kept; client falls back on POST failure. STACKED on loop/b4 |
 
@@ -91,6 +91,34 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
   300 s cap.
 
 ## Cycle log
+
+### Cycle 29 — 2026-08-20 — B3 implementation (wip on loop/b3)
+- Preflight: the mapping-copy plugin activation trap had recurred (from
+  cycle 28's PHPUnit/fuzz runs); fixed via the tests-env config
+  (`wp-env --config .wp-env.tests.json run cli ...` — the doctor's
+  suggested bare `wp-env run` targets the dev env in this worktree).
+- Did: built B3 to the prototype's recorded decisions (V1.md B3 lists
+  them; no richer prototype record exists — verified against
+  gutenberg/prototypes/sync/). Subtree
+  (collaboration-review-panel): the chip-and-expand ConflictMarker is
+  now a directly-visible pending-edit card — ONE merged task per block,
+  no count chip, verbs Adopt/Reject (requires-approval adoption stays
+  capability-gated); the sidebar panel is a summary-only index
+  (anchored groups: no verbs, navigate link; orphaned groups keep verbs
+  so nothing is unresolvable; Discard-all retired). SyncReviewItem
+  gains optional positional `targetIndex` (targetId wins). Plugin:
+  de-rtc items now anchor (contests at their index, parked proposals at
+  first changed block) — de-rtc previously NEVER had in-canvas review
+  UI (no syncIds). Both engine e2e specs updated to the new surface.
+- Evidence so far: subtree component Jest 11/11 (new block-card.js
+  lifecycle suite: merged single verb pair, Adopt→restored all,
+  Reject→dismissed all, local attribution, capability gate) and subtree
+  lint clean; plugin Jest 526/526, typecheck clean, eslint clean.
+- Lesson: don't `git checkout` away from a branch while a subtree
+  build for that branch runs in the background — the build reads the
+  switched working tree (killed and deferred to next cycle).
+- Next: cycle 30 on loop/b3 — rebuild the subtree, run the two engine
+  e2e specs + fuzz:quick, write proposals/b3.md, mark awaiting-human.
 
 ### Cycle 28 — 2026-08-20 — B5 proposal ready (awaiting human), verifier PASS
 - Did: implemented the REST review lane on loop/b5 (stacked on b4).
