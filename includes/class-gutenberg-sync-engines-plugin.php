@@ -277,6 +277,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 					isset( $meta['version'] ) ? $meta['version'] : GUTENBERG_SYNC_ENGINES_VERSION,
 					true
 				);
+
 				/*
 				 * Plugin-owned client settings (the framework announcement
 				 * stays untouched): currently just the de-rtc commit

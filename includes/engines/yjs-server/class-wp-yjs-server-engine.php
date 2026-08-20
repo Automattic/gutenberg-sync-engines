@@ -1339,6 +1339,17 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 			);
 		}
 
+		/**
+		 * Converts parsed blocks to the Y.Block records genesis seeds,
+		 * recording each block's non-rich wrapper markup by client id.
+		 *
+		 * @since 0.2.0
+		 *
+		 * @param array  $blocks   Parsed blocks (parse_blocks shape).
+		 * @param string $id_base  Deterministic client-id prefix.
+		 * @param array  $wrappers Wrapper markup collector (by reference).
+		 * @return array Y.Block records.
+		 */
 		private static function blocks_to_yblocks( array $blocks, string $id_base, array &$wrappers ): array {
 			$yblocks = array();
 			$index   = 0;

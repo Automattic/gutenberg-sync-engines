@@ -285,7 +285,7 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 
 			$this->log( sprintf( 'Listening on ws://%s:%d', $this->host, $this->port ) );
 
-			$this->running       = true;
+			$this->running           = true;
 			$this->last_ping_at      = microtime( true );
 			$this->last_sweep_at     = microtime( true );
 			$this->last_room_scan_at = microtime( true );
