@@ -169,6 +169,20 @@ interface EntityState {
 	 */
 	pendingPushes: ObservedState[];
 	/**
+	 * Whether a stale-base void recovery is already scheduled (a whole
+	 * authoring ladder voids together — one re-capture per burst; see
+	 * the onDisposition handler).
+	 */
+	staleVoidRecapturePending: boolean;
+	/**
+	 * The latest block tree the editor handed to update() — the
+	 * known-good capture shape the stale-void recovery re-derives from.
+	 * (core-data's getEditedRecord() returns blocks in a shape the
+	 * bridge's derive/verify rejects wholesale — observed as derive
+	 * returning null — so recovery must reuse the feed's own trees.)
+	 */
+	lastEditorTree: BridgeBlock[] | null;
+	/**
 	 * Whether update() is currently authoring captured intents. The
 	 * session emits change events synchronously per authored intent;
 	 * those are the editor's own state and must not bounce back.
@@ -1082,6 +1096,8 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			unloaded: false,
 			observed: null,
 			pendingPushes: [],
+			staleVoidRecapturePending: false,
+			lastEditorTree: null,
 			capturing: false,
 			// Record seeding (source 1 of the editorIds contract): the ids
 			// persisted in the content this editor loaded and rendered.
@@ -1292,6 +1308,80 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			state.docTombstones.clear();
 			state.prevDocIds = new Set();
 			log( 'session reset from server checkpoint', { key } );
+		} );
+
+		session.onDisposition( ( settled ) => {
+			/*
+			 * Stale-base voids: the server compacted the room past the seq
+			 * these intents were authored at (their priors are gone, so a
+			 * one-sided transform is impossible) and voided them without
+			 * planning. The engine's contract expects the CLIENT to
+			 * re-derive the work — but the snapshot-reset path (onReset
+			 * above) only fires when the client's CURSOR fell below the
+			 * horizon. A live, connected client whose cursor is current
+			 * gets only the voids: the replan then drops the optimistic
+			 * effect and the next editor sync pushes the REVERTED document
+			 * over the canvas — the user watches their own typing vanish
+			 * (found by A2's retry-free e2e runs: a table-cell edit burst
+			 * landed right after its author's earlier burst pushed the room
+			 * past the checkpoint trim). Recover by re-capturing the CURRENT
+			 * editor tree against the current document, at the current seq:
+			 * the tree still holds the voided work until the revert push
+			 * lands, and the deferred recapture below runs first (the revert
+			 * waits out CAPTURE_SYNC_DELAY).
+			 */
+			if ( 'voided' !== settled.status || 'stale-base' !== settled.reason ) {
+				return;
+			}
+			// A whole authoring ladder voids together: one recovery per burst.
+			if ( state.staleVoidRecapturePending ) {
+				return;
+			}
+			state.staleVoidRecapturePending = true;
+			setTimeout( () => {
+				state.staleVoidRecapturePending = false;
+				if ( state.unloaded || ! state.session.isInitialized() ) {
+					return;
+				}
+				/*
+				 * Re-derive from the last tree the editor itself handed to
+				 * update() — the tree that authored the voided intents, in
+				 * the capture shape the bridge verifies. (core-data's
+				 * getEditedRecord() returns blocks whose attribute values
+				 * the derive/verify pass rejects wholesale.) Any later edit
+				 * refreshes this reference through the ordinary feed.
+				 */
+				const blocks = state.lastEditorTree;
+				if ( ! Array.isArray( blocks ) ) {
+					return;
+				}
+				const doc = state.session.getDocument();
+				if ( ! doc ) {
+					return;
+				}
+				/*
+				 * Re-seed the observed baseline at the CURRENT document and
+				 * seq — the stale frame's priors were trimmed, so authoring
+				 * must move to a retained frame. Mirrors onReset's
+				 * bookkeeping for the push machinery.
+				 */
+				setObserved( state, {
+					doc,
+					seq: state.session.getSeq(),
+					json: canonicalBlocksJson( documentBlocks( state, doc ) ),
+				} );
+				state.pendingPushes = [];
+				state.pushSeq++;
+				log( 'stale-base voids: re-capturing the editor tree', {
+					key,
+				} );
+				manager.update(
+					objectType,
+					objectId,
+					{ blocks },
+					'stale-void-recapture'
+				);
+			}, 0 );
 		} );
 
 		session.onDiscard( ( updates ) => {
@@ -1640,7 +1730,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 		} );
 	}
 
-	return {
+	const manager: SyncManager = {
 		load: loadEntity,
 
 		loadCollection,
@@ -1783,6 +1873,9 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			if ( ! blocks ) {
 				return; // Only whitelisted properties and blocks sync.
 			}
+			// The stale-void recovery re-derives from this tree (see the
+			// onDisposition handler in loadEntity).
+			state.lastEditorTree = blocks;
 
 			/*
 			 * The incoming tree is the editor's own testimony about what it
@@ -2154,4 +2247,5 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			}
 		},
 	};
+	return manager;
 }
