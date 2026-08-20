@@ -27,7 +27,7 @@ a merge.
 | A5 announce-inversion verification debt | A | done | 1 | loop/a5 | verifier PASS (cycle 10); WS fuzz 0/5 → 5/5 via daemon room scan + engine cache flush |
 | A11 de-rtc session request-rate runaway | A | parked | 1 | — | CLOSED-INVALID (cycle 9): the soak's minuteSamples are CUMULATIVE counters; the deltas are a flat ~75 req/min/window all hour. No runaway exists — cycle 8 misread the data. Server capture confirms flat sync-frame rate. Full diagnosis in the cycle-9 log |
 | A2 e2e flake stabilization | A | in-progress | 1 | loop/a2 | streak reset by run 4 (53/55). Blocked on A12 (the table-cell "flake" is a real engine-recovery bug) and A13 |
-| A12 intent-log stale-base voids lose live edits | A | queued | 0 | — | filed cycle 15, full diagnosis in the cycle log. Real P2 violation, surfaced by A2's runs, reproducible ~4/8 via `npm run test:e2e -- collaboration-multi-client-content --retries=0 --repeat-each=8 -g "intent-log engine.*mix of block types"`. Fix belongs in the non-frozen manager (recovery re-capture on stale-base voids) |
+| A12 intent-log stale-base voids lose live edits | A | in-progress | 1 | loop/a12 | recovery implemented (wip): peers converge now, but the AUTHOR's canvas can diverge ~2/8 under repetition. Resume point in the wip commit message |
 | A13 de-rtc burst-eat recurrence under load | A | queued | 0 | — | filed cycle 15: "Second from two" → "Second " in full-suite run 4 — the signature the pendingOwnMergeSeq commit-hold was meant to close; 0-in-6 solo repetitions, so load-schedule-dependent. Needs a capture-instrumented hunt like A12's |
 | A3 websocket fixme re-enable | A | queued | 0 | — | prefer the real-daemon lane |
 | A8 full fuzzer matrix soak | A | blocked | 0 | — | exit gate; runs after A1–A7 |
@@ -59,6 +59,31 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
 None.
 
 ## Cycle log
+
+### Cycle 16 — 2026-08-19 — A12 (recovery implemented; author-side residual)
+- Did: manager now subscribes to session dispositions; on
+  voided:stale-base it re-captures (one recovery per void burst) the
+  last editor-fed block tree against the current document at the
+  current seq. First attempt used core-data's getEditedRecord() — the
+  browser trace showed the bridge's derive returning NULL wholesale
+  for that block shape, so the recovery keeps a `lastEditorTree`
+  reference from the ordinary update() feed instead. Includes the
+  `const manager` refactor (byte-identical to loop/a1's, to ease the
+  merge). Jest: regression test green; a shape-faithful table+quote
+  scratch test re-authored set_attr x3 + replace_text.
+- Result so far: the PEER-side silent loss is closed — in failing
+  repetitions the second window now converges to the recovered
+  content (the old first-assertion failure is gone). RESIDUAL (~2/8
+  heavy repetitions): the AUTHOR's own canvas diverges — its cell
+  edit reverts locally and the coarse replace_text splices at stale
+  offsets ("Quoted texed by Bt") while peer + server hold clean
+  content. Suspect: the recapture fires before the replica absorbs
+  the post-trim rows, so the author's optimistic apply mispredicts
+  and never reconciles. Resume: gate the recovery on catch-up (defer
+  to the next clientReceive absorption), or force a re-bootstrap;
+  then 8x repetition + full suites.
+- Verifier: not yet requested (item mid-flight; wip committed).
+- Ledger changes: A12 queued -> in-progress (attempt 1, loop/a12).
 
 ### Cycle 15 — 2026-08-19 — A2 run 4 (streak reset); A12 diagnosed and filed
 - Did: run 4 came back 53/55 — the table-cell signature AGAIN plus a
