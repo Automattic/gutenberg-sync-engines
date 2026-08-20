@@ -337,6 +337,62 @@ describe( 'de-rtc announce model', () => {
 		expect( next.baseVersion ).toBe( 'v2' );
 	} );
 
+	it( 'the commit-cadence dial spaces commits and coalesces the interim edits', () => {
+		jest.useFakeTimers();
+		( window as any )._gutenbergSyncEnginesSettings = {
+			deRtcCommitIntervalMs: 10_000,
+		};
+		try {
+			const { entity, session, sent } = makeSession();
+			session.receiveUpdate( snapshotRow( 'v1', contentOf( BLOCK_A ) ) );
+
+			// The first settle commits immediately (nothing to space from).
+			entity.applyLocalChanges(
+				{ blocks: [ BLOCK_B ] } as any,
+				'editor',
+				{}
+			);
+			const first = sent.filter(
+				( update ) => DE_RTC_PROPOSAL_TYPE === update.type
+			);
+			expect( first ).toHaveLength( 1 );
+			const proposal = JSON.parse( first[ 0 ].data );
+
+			// It settles by hash; more edits land inside the window.
+			session.receiveUpdate(
+				announceRow(
+					'v2',
+					hashDeRtcContent( proposal.proposedContent ),
+					Number( proposal.proposalId.split( '-' )[ 1 ] ),
+					proposal.proposalId
+				)
+			);
+			entity.applyLocalChanges(
+				{ blocks: [ BLOCK_B, BLOCK_C ] } as any,
+				'editor',
+				{}
+			);
+			expect(
+				sent.filter(
+					( update ) => DE_RTC_PROPOSAL_TYPE === update.type
+				)
+			).toHaveLength( 1 ); // Held to the cadence.
+
+			// The dial's boundary arrives: ONE coalesced commit goes out.
+			jest.advanceTimersByTime( 10_050 );
+			const after = sent.filter(
+				( update ) => DE_RTC_PROPOSAL_TYPE === update.type
+			);
+			expect( after ).toHaveLength( 2 );
+			expect(
+				JSON.parse( after[ 1 ].data ).proposedContent
+			).toContain( 'Gamma' );
+		} finally {
+			delete ( window as any )._gutenbergSyncEnginesSettings;
+			jest.useRealTimers();
+		}
+	} );
+
 	it( 'REGRESSION: a snapshot arriving mid-typing-burst is deferred until the burst quiets', async () => {
 		// The e2e gap: our own proposal settles by hash MID-BURST, so for
 		// one inter-keystroke window dirty and inFlight are both false —

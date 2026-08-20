@@ -292,6 +292,31 @@ export function createDeRtcSessionCodec(
 	// parks — found by the fuzzer the moment commits moved to REST).
 	let commitsHeld = 0;
 
+	/*
+	 * The commit-cadence dial (TODO/B4): minimum spacing between commits,
+	 * in milliseconds. 0 (the default) keeps the settle cycle — a commit
+	 * whenever local edits settle and the slot is free (pseudo-realtime).
+	 * The Distributed Editing vision's operating point is ~10 s: edits
+	 * coalesce locally and the room advances at save-and-sync cadence,
+	 * cutting request rate and upload bytes on cheap hosts. Read from the
+	 * plugin settings the enqueue localizes; the dial changes WHEN a
+	 * commit is built, never what it contains — dirty coalescing already
+	 * batches everything since the last commit.
+	 */
+	const commitIntervalMs = ( () => {
+		const settings = (
+			window as Window & {
+				_gutenbergSyncEnginesSettings?: {
+					deRtcCommitIntervalMs?: number;
+				};
+			}
+		 )._gutenbergSyncEnginesSettings;
+		const value = Number( settings?.deRtcCommitIntervalMs ?? 0 );
+		return Number.isFinite( value ) && value > 0 ? value : 0;
+	} )();
+	let lastCommitBuiltAt = 0;
+	let cadenceTimer: ReturnType< typeof setTimeout > | null = null;
+
 	function maybePropose(): void {
 		if (
 			! dirty ||
@@ -314,6 +339,21 @@ export function createDeRtcSessionCodec(
 		) {
 			return;
 		}
+		if ( commitIntervalMs > 0 ) {
+			const wait = lastCommitBuiltAt + commitIntervalMs - Date.now();
+			if ( wait > 0 ) {
+				// Hold the commit to the dial's cadence; dirty keeps
+				// coalescing and ONE timer re-enters at the boundary.
+				if ( null === cadenceTimer ) {
+					cadenceTimer = setTimeout( () => {
+						cadenceTimer = null;
+						maybePropose();
+					}, wait );
+				}
+				return;
+			}
+		}
+		lastCommitBuiltAt = Date.now();
 		const update = buildProposal();
 		dirty = false;
 		inFlight = true;
@@ -790,6 +830,10 @@ export function createDeRtcSessionCodec(
 			if ( null !== quietRetryTimer ) {
 				clearTimeout( quietRetryTimer );
 				quietRetryTimer = null;
+			}
+			if ( null !== cadenceTimer ) {
+				clearTimeout( cadenceTimer );
+				cadenceTimer = null;
 			}
 			deferredSnapshotRow = null;
 			review?.setEmitter( null );

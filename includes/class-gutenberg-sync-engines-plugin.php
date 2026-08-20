@@ -275,6 +275,24 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 					isset( $meta['version'] ) ? $meta['version'] : GUTENBERG_SYNC_ENGINES_VERSION,
 					true
 				);
+				/*
+				 * Plugin-owned client settings (the framework announcement
+				 * stays untouched): currently just the de-rtc commit
+				 * cadence dial, in milliseconds for the session's timer.
+				 */
+				$commit_interval = 0;
+				if ( class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
+					$commit_interval = (int) get_option( Gutenberg_Sync_Engines_Settings::DE_RTC_COMMIT_INTERVAL_OPTION, 0 );
+				}
+				wp_add_inline_script(
+					'gutenberg-sync-engines',
+					'window._gutenbergSyncEnginesSettings = ' . wp_json_encode(
+						array(
+							'deRtcCommitIntervalMs' => max( 0, $commit_interval ) * 1000,
+						)
+					) . ';',
+					'before'
+				);
 			}
 
 			$storage = new WP_Sync_Post_Meta_Storage();
