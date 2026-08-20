@@ -29,7 +29,7 @@ a merge.
 | A2 e2e flake stabilization | A | blocked | 1 | loop/a2 | login flake FIXED on the branch; acceptance unreachable while A12 (parked) fires ~25-50% of runs; A13 also pending |
 | A12 intent-log stale-base voids lose live edits | A | parked | 3 | loop/a12 | PARKED after 3 attempts (cycle 18) — see Parked section. Branch holds real, verified improvements worth merging |
 | A13 de-rtc burst-eat recurrence under load | A | done | 1 | loop/a13 | verifier PASS (cycle 19); typing-quiet snapshot deferral. Base failed 3/10 under stress, branch 10/10 |
-| A14 de-rtc session teardown hygiene | A | queued | 0 | — | filed cycle 19 (verifier note): destroy() should clear quietRetryTimer + deferredSnapshotRow like commitRetryTimer; 2-line fix + eyeball |
+| A14 de-rtc session teardown hygiene | A | done | 1 | loop/a14 | verifier PASS (cycle 20); STACKED on loop/a13 — merge a13 then a14 |
 | A3 websocket fixme re-enable | A | queued | 0 | — | prefer the real-daemon lane |
 | A8 full fuzzer matrix soak | A | blocked | 0 | — | exit gate; runs after A1–A7 |
 | B1 yjs materialization (framework) | B | queued | 0 | — | proposal only; subtree edits |
@@ -80,6 +80,14 @@ diagnosis required below), `awaiting-human` (Lane B proposal ready),
 None.
 
 ## Cycle log
+
+### Cycle 20 — 2026-08-20 — A14 done (verifier PASS)
+- Did: the 5-line teardown cleanup on a branch STACKED on loop/a13
+  (the fields live there): destroy() clears quietRetryTimer and drops
+  deferredSnapshotRow, mirroring the commitRetryTimer block.
+- Acceptance: typecheck clean; Jest 527. Verifier confirmed the diff
+  is exactly the filing, verified against loop/a13 as base.
+- Ledger changes: A14 queued -> done (1 commit). Next: A3.
 
 ### Cycle 19 — 2026-08-20 — A13 done (verifier PASS)
 - Did: reproduced the burst collapse deterministically-enough with a
