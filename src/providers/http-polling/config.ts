@@ -48,6 +48,51 @@ export const MIN_SYNC_REQUEST_BODY_SIZE_LIMIT_IN_BYTES = 2 * 1024 * 1024;
 const DEFAULT_POLLING_INTERVAL_IN_MS = 4000; // 4 seconds
 const DEFAULT_POLLING_INTERVAL_WITH_COLLABORATORS_IN_MS = 1000; // 1 second
 
+// Must be less than the server-side AWARENESS_TIMEOUT (30 s) to avoid
+// false disconnects when the tab is in the background.
+export const POLLING_INTERVAL_BACKGROUND_TAB_IN_MS = 25 * 1000; // 25 seconds
+
+/**
+ * Reads the polling interval chosen on Settings → Collaboration, in
+ * milliseconds. The plugin injects it as an inline script before this bundle
+ * loads (`window._gutenbergSyncEnginesSettings`). Returns 0 when the site
+ * keeps the defaults. Capped at the background-tab cadence so a large value
+ * can never trip the server's 30-second awareness timeout.
+ */
+function getSitePollingIntervalMs(): number {
+	const settings = (
+		window as {
+			_gutenbergSyncEnginesSettings?: {
+				httpPollingIntervalMs?: number;
+			};
+		}
+	 )._gutenbergSyncEnginesSettings;
+	const value = Number( settings?.httpPollingIntervalMs ?? 0 );
+
+	if ( ! Number.isFinite( value ) || value <= 0 ) {
+		return 0;
+	}
+
+	return Math.min( value, POLLING_INTERVAL_BACKGROUND_TAB_IN_MS );
+}
+
+/*
+ * The site setting sets the cadence while collaborating — the interval that
+ * dominates request volume and how quickly peers see each other's edits.
+ * Solo polling only watches for a collaborator arriving, so it keeps its
+ * slower default unless the chosen interval is slower still (polling faster
+ * alone than while collaborating would be pure waste).
+ */
+const sitePollingIntervalMs = getSitePollingIntervalMs();
+const BASE_POLLING_INTERVAL_IN_MS =
+	sitePollingIntervalMs > 0
+		? Math.max( sitePollingIntervalMs, DEFAULT_POLLING_INTERVAL_IN_MS )
+		: DEFAULT_POLLING_INTERVAL_IN_MS;
+const BASE_POLLING_INTERVAL_WITH_COLLABORATORS_IN_MS =
+	sitePollingIntervalMs > 0
+		? sitePollingIntervalMs
+		: DEFAULT_POLLING_INTERVAL_WITH_COLLABORATORS_IN_MS;
+
 function getFilteredPollingInterval(
 	hookName: string,
 	defaultInterval: number
@@ -67,15 +112,11 @@ function getFilteredPollingInterval(
 
 export const POLLING_INTERVAL_IN_MS = getFilteredPollingInterval(
 	'sync.pollingManager.pollingInterval',
-	DEFAULT_POLLING_INTERVAL_IN_MS
+	BASE_POLLING_INTERVAL_IN_MS
 );
 
 export const POLLING_INTERVAL_WITH_COLLABORATORS_IN_MS =
 	getFilteredPollingInterval(
 		'sync.pollingManager.pollingIntervalWithCollaborators',
-		DEFAULT_POLLING_INTERVAL_WITH_COLLABORATORS_IN_MS
+		BASE_POLLING_INTERVAL_WITH_COLLABORATORS_IN_MS
 	);
-
-// Must be less than the server-side AWARENESS_TIMEOUT (30 s) to avoid
-// false disconnects when the tab is in the background.
-export const POLLING_INTERVAL_BACKGROUND_TAB_IN_MS = 25 * 1000; // 25 seconds

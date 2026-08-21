@@ -484,6 +484,11 @@ they exist so a failure is observable without re-instrumenting:
 
 ## Commits / PRs
 
+- **Keep `CHANGELOG.md` updated.** Any bug fix, new feature, or material
+  change gets an entry under **Unreleased**, written as part of the change
+  itself (same commit or PR). Granularity is coarse — one line per
+  user-visible change, not per commit. Refactors, test-only, and doc-only
+  changes don't need entries.
 - This repo has commit **signing disabled locally**. Commit with `--no-verify`
   (the pre-commit hook is heavy/flaky).
 - Do **not** open PRs / push to shared branches / take other outward-facing

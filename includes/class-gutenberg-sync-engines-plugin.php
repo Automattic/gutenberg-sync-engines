@@ -280,18 +280,22 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 
 				/*
 				 * Plugin-owned client settings (the framework announcement
-				 * stays untouched): currently just the de-rtc commit
-				 * cadence dial, in milliseconds for the session's timer.
+				 * stays untouched): the de-rtc commit cadence dial and the
+				 * short-polling interval, both stored in seconds and passed
+				 * in milliseconds for the client's timers.
 				 */
-				$commit_interval = 0;
+				$commit_interval  = 0;
+				$polling_interval = 0;
 				if ( class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
-					$commit_interval = (int) get_option( Gutenberg_Sync_Engines_Settings::DE_RTC_COMMIT_INTERVAL_OPTION, 0 );
+					$commit_interval  = (int) get_option( Gutenberg_Sync_Engines_Settings::DE_RTC_COMMIT_INTERVAL_OPTION, 0 );
+					$polling_interval = (int) get_option( Gutenberg_Sync_Engines_Settings::POLLING_INTERVAL_OPTION, 0 );
 				}
 				wp_add_inline_script(
 					'gutenberg-sync-engines',
 					'window._gutenbergSyncEnginesSettings = ' . wp_json_encode(
 						array(
 							'deRtcCommitIntervalMs' => max( 0, $commit_interval ) * 1000,
+							'httpPollingIntervalMs' => max( 0, min( 25, $polling_interval ) ) * 1000,
 						)
 					) . ';',
 					'before'
