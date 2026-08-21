@@ -1,7 +1,7 @@
 /**
  * Shared plumbing for the browser-driven transport tools:
  * benchmark-transport.mjs (two-window latency/traffic benchmark) and
- * soak-transport.mjs (N-window duration soak, TODO-10). Everything here
+ * soak-transport.mjs (N-window duration soak). Everything here
  * was extracted verbatim from benchmark-transport.mjs — behavior
  * changes belong in the tools, not the library.
  */
@@ -62,7 +62,7 @@ export function attachCounters( page ) {
 		}
 	};
 	const isSync = ( url ) => decoded( url ).includes( 'wp-sync/v1' );
-	// De-rtc commits ride the autosave endpoint (TODO-20 stage 2) — count
+	// De-rtc commits ride the autosave endpoint — count
 	// them as sync traffic (they replaced transport proposal rows). The
 	// commit shape is identified by its body, so editor-native autosaves
 	// stay out of the tally.

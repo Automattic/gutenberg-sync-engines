@@ -5,7 +5,7 @@ import { parseCanonicalBlocks } from './doc-bridge';
 import type { DeRtcUndoFeed, DeRtcUndoFeedRow } from './revert-undo';
 
 /*
- * Per-edit authorship (TODO-18 in docs/engine-comparison.md): "Edits
+ * Per-edit authorship: "Edits
  * retain authorship and it's possible to hover over a user's avatar and
  * highlight the changes they applied."
  *
@@ -13,9 +13,9 @@ import type { DeRtcUndoFeed, DeRtcUndoFeedRow } from './revert-undo';
  * author (user id + client id, server-stamped), and diffing each row
  * against its base yields which top-level blocks that edit touched —
  * so the last author of every block is derivable client-side with no
- * extra wire cost. The hover-highlight overlay itself is editor UX for
- * the TODO-12 era; range-grain attribution (which characters) needs
- * the descriptor lane (TODO-2a).
+ * extra wire cost. The hover-highlight overlay itself is future
+ * editor UX; range-grain attribution (which characters) needs
+ * the descriptor lane.
  *
  * Honest bounds: attribution is block-grain and positional. A
  * structural change (block count differs from the base) resets the map

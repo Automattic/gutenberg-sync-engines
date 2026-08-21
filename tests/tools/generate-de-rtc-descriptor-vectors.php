@@ -4,8 +4,9 @@
  *
  * The TS descriptor builder (src/engines/de-rtc/descriptor.ts) must
  * byte-match the frozen merge core's server-side derivation — a mismatch
- * is a FALSE TAMPER REJECTION of a legitimate save under TODO-2a's full
- * enforcement. This script runs the PHP side of the contract over an
+ * is a FALSE TAMPER REJECTION of a legitimate save under the engine's
+ * full descriptor enforcement. This script runs the PHP side of the
+ * contract over an
  * exhaustive (base, proposed) matrix and records the fingerprints the
  * server would expect; the Jest suite
  * (tests/js/engines/de-rtc/descriptor-vectors.test.ts) replays the same

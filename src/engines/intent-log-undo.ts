@@ -442,7 +442,7 @@ export function createIntentLogUndoManager(
 	/**
 	 * Every member still unacked: the whole unit is cancelable — undo
 	 * inside the settle window cancels the pending intents instead of
-	 * being a silent no-op (TODO-5).
+	 * being a silent no-op.
 	 *
 	 * @param unit The undo unit to test.
 	 * @return Whether none of the unit's members have reached the server.
@@ -535,7 +535,7 @@ export function createIntentLogUndoManager(
 		}
 		if ( ! isSettled( unit ) ) {
 			/*
-			 * Pre-settle undo (TODO-5): a unit whose members are ALL still
+			 * Pre-settle undo: a unit whose members are ALL still
 			 * unacked cancels in place — the intents leave the outbox (a
 			 * cancel row chases any copies already queued on the wire), the
 			 * optimistic document replans, and the canvas reverts. No

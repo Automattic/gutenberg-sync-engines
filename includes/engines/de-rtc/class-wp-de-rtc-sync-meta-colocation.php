@@ -7,10 +7,10 @@
 
 if ( ! class_exists( 'WP_De_RTC_Sync_Meta_Colocation' ) ) {
 	/**
-	 * Ties DE-RTC sync metadata to saved post_content (TODO-13 in
-	 * docs/engine-comparison.md — the upstream vision's co-location rule:
-	 * "sync metadata needed for version/pending-edit reconstruction must
-	 * be tied to saved post_content").
+	 * Ties DE-RTC sync metadata to saved post_content (the upstream
+	 * vision's co-location rule: "sync metadata needed for
+	 * version/pending-edit reconstruction must be tied to saved
+	 * post_content").
 	 *
 	 * Every save of a post whose room carries de-rtc lineage gets the
 	 * room's sync metadata embedded at the content's trailing edge as the
@@ -20,7 +20,8 @@ if ( ! class_exists( 'WP_De_RTC_Sync_Meta_Colocation' ) ) {
 	 * `wp_insert_post_data`, revisions copy it for free, which makes
 	 * revisions the backup mechanism the vision prescribes: any writer
 	 * that round-trips the post carries the version lineage with it, and
-	 * recovery (TODO-14/15) can mine revisions for the last-known state.
+	 * recovery (self-healing, revision-mined bases) can mine revisions
+	 * for the last-known state.
 	 *
 	 * Room state is read with a NON-creating storage lookup — the
 	 * framework storage API's own room resolution creates storage posts,

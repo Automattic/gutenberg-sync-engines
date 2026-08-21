@@ -93,8 +93,8 @@ export interface DeRtcDocBridge {
 	 * side (equal block counts); returns false when it cannot align, in
 	 * which case the caller keeps deferring.
 	 *
-	 * Per-block base honesty (TODO-2b in docs/engine-comparison.md):
-	 * when a kept block was ALSO changed in the arriving canonical (a
+	 * Per-block base honesty: when a kept block was ALSO changed in
+	 * the arriving canonical (a
 	 * true same-block collision), the version the doc held BEFORE this
 	 * incorporation is recorded as that block's base. The next proposal
 	 * carries the map, and the server merges the collided block from
@@ -122,7 +122,7 @@ export interface DeRtcDocBridge {
 	blockBaseVersions: () => Record< string, string >;
 
 	/**
-	 * Contested-block lifecycle (TODO-12, the validated pending-edits
+	 * Contested-block lifecycle (the validated pending-edits
 	 * model): fired each time an incorporation keeps a locally-edited
 	 * block that the arriving canonical ALSO changed. Repeats for the
 	 * same block REFRESH the one contest (merge-not-stack) — the event
@@ -292,10 +292,10 @@ export function createDeRtcDocBridge(
 	let bootstrapped = false;
 	let version: string | null = null;
 	// Per-block true bases of blocks kept through colliding
-	// incorporations (TODO-2b): block index -> the version their local
+	// incorporations: block index -> the version their local
 	// text was really written against.
 	const blockBases = new Map< number, string >();
-	// The latest canonical form of each contested block (TODO-12):
+	// The latest canonical form of each contested block:
 	// refreshed on every colliding row (merge-not-stack), consumed by
 	// the Adopt verb, cleared whenever the contest resolves.
 	const contestedLatest = new Map<
@@ -356,7 +356,7 @@ export function createDeRtcDocBridge(
 				 * entry (core-data mirrors the serialized string into the
 				 * doc) would duplicate the ENTIRE document as a property
 				 * register on every proposal and every announce — the
-				 * double-carry the TODO-20 wire inspection caught. One
+				 * double-carry that wire inspection caught. One
 				 * representation: content travels as content, never as a
 				 * property.
 				 */
@@ -497,7 +497,7 @@ export function createDeRtcDocBridge(
 						}
 						// The contest tracks the LATEST canonical form:
 						// repeats refresh the one pending item, never a
-						// second one (merge-not-stack, TODO-12).
+						// second one (merge-not-stack).
 						contestedLatest.set( index, {
 							version: nextVersion,
 							block: canonicalBlocks[ index ],
@@ -578,7 +578,7 @@ export function createDeRtcDocBridge(
 				return false;
 			}
 			// Keep the local block AND its recorded true base: the next
-			// proposal still declares it (TODO-2b honesty). Only the
+			// proposal still declares it (per-block base honesty). Only the
 			// pending item resolves; a later peer edit raises a fresh one.
 			resolveContest( index );
 			return true;

@@ -295,7 +295,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 			$before_bytes = \Yjs\encodeStateAsUpdateV2( $doc )->toBinaryString();
 
 			/*
-			 * Post-genesis growth policing (TODO-8, tiers 1+2). The genesis
+			 * Post-genesis growth policing (tiers 1+2). The genesis
 			 * size gate refuses to INITIALIZE an oversized room; this is the
 			 * terminal backstop for a room that GROWS past reason afterward:
 			 * further writes 413 (reads and saves continue — nothing already
@@ -1273,23 +1273,6 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 			return true;
 		}
 
-		/**
-		 * Maps parsed blocks onto YBlock shared types (the schema the client
-		 * sync layer uses: a Y.Map per block with `name`, `clientId`,
-		 * `attributes` (rich-text attrs as Y.Text), `innerBlocks`).
-		 *
-		 * Mirrors the intent-log genesis simplification: a block's inner HTML
-		 * maps onto its rich-text content attribute after stripping the
-		 * single wrapper element, which is recorded in $wrappers (keyed by
-		 * the minted clientId) for materialization.
-		 *
-		 * @since 0.2.0
-		 *
-		 * @param array  $blocks   Output of parse_blocks().
-		 * @param string $id_base  Deterministic clientId prefix.
-		 * @param array  $wrappers Collects clientId => wrapper (by reference).
-		 * @return \Yjs\Types\YMap[] YBlock shared types.
-		 */
 		/**
 		 * Decomposes a block's inner markup (genesis innerHTML, or a
 		 * client-maintained `_save` mirror) into the wrapper record the

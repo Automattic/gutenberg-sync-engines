@@ -12,9 +12,9 @@ if ( ! class_exists( 'WP_Sync_Room_Lock' ) ) {
 	 * The primitive is the WP_Upgrader::create_lock() pattern: an atomic
 	 * `INSERT IGNORE` of an options row claims the lock, a TTL lets a
 	 * crashed holder's claim expire, and release deletes the row. This
-	 * replaces MySQL GET_LOCK deliberately (TODO-1 in
-	 * docs/engine-comparison.md): GET_LOCK is connection-scoped and quietly
-	 * loses mutual exclusion under connection pooling/multiplexing, under
+	 * replaces MySQL GET_LOCK deliberately: GET_LOCK is connection-scoped
+	 * and quietly loses mutual exclusion under connection
+	 * pooling/multiplexing, under
 	 * read/write-splitting drop-ins (`SELECT GET_LOCK(...)` pattern-matches
 	 * as a read and can land on a replica), on multi-primary clusters (user
 	 * locks are node-local), and on SQLite builds (the function does not

@@ -165,9 +165,9 @@ export function createDeRtcEngine(): SyncEngine & {
 			proposalId: string,
 			modifiedBlocks?: Array< { index: number; html: string } >
 		) => void;
-		/** Adopt a contested block's latest canonical form (TODO-12). */
+		/** Adopt a contested block's latest canonical form. */
 		adoptContested: ( index: number ) => boolean;
-		/** Reject a contest, keeping the local block (TODO-12). */
+		/** Reject a contest, keeping the local block. */
 		rejectContested: ( index: number ) => boolean;
 	}
 
@@ -178,7 +178,7 @@ export function createDeRtcEngine(): SyncEngine & {
 			? Number( proposalId.slice( CONTESTED_PREFIX.length ) )
 			: null;
 	const entityReviews = new Map< string, EntityReviewHandle >();
-	// Per-entity authorship trackers (TODO-18): block-grain "who last
+	// Per-entity authorship trackers: block-grain "who last
 	// touched this", derived from the canonical row feed.
 	const entityAuthorship = new Map<
 		string,
@@ -248,7 +248,7 @@ export function createDeRtcEngine(): SyncEngine & {
 	return {
 		slug: DE_RTC_ENGINE_SLUG,
 		protocolVersion: DE_RTC_ENGINE_PROTOCOL,
-		// The revert-edit undo (TODO-16): undo never undoes, it applies
+		// The revert-edit undo: undo never undoes, it applies
 		// revert edits derived from the client's own accepted canonical
 		// rows, proposed like any other change.
 		createUndoManager: createDeRtcRevertUndoManager,
@@ -289,11 +289,11 @@ export function createDeRtcEngine(): SyncEngine & {
 			}
 			const undoFeed = createDeRtcUndoFeed();
 			const authorship = createDeRtcAuthorship( undoFeed );
-			// Save-through-the-room (TODO-12): this post's REST saves carry
+			// Save-through-the-room: this post's REST saves carry
 			// base_version while the session lives. `prepareForSave` is
-			// attached when the session comes up (TODO-20 stage 2: the
-			// save settles + holds the commit lane so it cannot
-			// self-conflict with the session's own in-flight commit).
+			// attached when the session comes up (the save settles +
+			// holds the commit lane so it cannot self-conflict with the
+			// session's own in-flight commit).
 			const saveControl: import('./save-base-version').DeRtcSaveControl =
 				{
 					lastVersion: bridge.lastVersion,
@@ -353,7 +353,7 @@ export function createDeRtcEngine(): SyncEngine & {
 			 * origin reaches the editor like a remote change AND marks the
 			 * doc dirty so the restored state re-proposes.
 			 *
-			 * Modify-before-adopt (TODO-17, upstream's
+			 * Modify-before-adopt (upstream's
 			 * `reviewed_block_source`): `modifiedBlocks` supplies the
 			 * reviewer's edited replacement for specific parked blocks,
 			 * keyed by the parked block's index — what the reviewer
@@ -412,7 +412,7 @@ export function createDeRtcEngine(): SyncEngine & {
 			review.onChange( () => notifyKey( key ) );
 
 			/*
-			 * Contested-block pending items (TODO-12): one item per block,
+			 * Contested-block pending items: one item per block,
 			 * refreshed in place by the bridge's merge-not-stack contest
 			 * events. Presented through the same review surface as parked
 			 * conflicts; the verbs route by the `contested-` id prefix
@@ -522,7 +522,7 @@ export function createDeRtcEngine(): SyncEngine & {
 						bridge,
 						review,
 						undoFeed,
-						// The Save/Sync inversion (TODO-20 stage 2):
+						// The Save/Sync inversion, stage 2:
 						// commits ride the autosave endpoint; the
 						// transport stays advisory. Null for types
 						// without a commit route (transport fallback).

@@ -7,8 +7,8 @@
 
 if ( ! class_exists( 'WP_De_RTC_Autosave_Commits' ) ) {
 	/**
-	 * The Save/Sync inversion's commit carrier (TODO-20 stage 2 in
-	 * docs/engine-comparison.md): de-rtc sessions COMMIT through the
+	 * The Save/Sync inversion's commit carrier: de-rtc sessions COMMIT
+	 * through the
 	 * ordinary WordPress autosave endpoint instead of transport rows —
 	 * "Save is the only commit primitive … wp_update_post / REST,
 	 * autosaves included", "Pseudo-realtime is a save/autosave cadence

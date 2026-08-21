@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests for the descriptor tamper-evidence lane (TODO-2a, full
+ * Tests for the descriptor tamper-evidence lane (full
  * enforcement): a proposal's block-native clientUpdate is validated
  * once against the PLAIN declared base and then dropped, so genuine
  * tampering voids the proposal while the server's own rewrites (kses
@@ -207,7 +207,7 @@ class Tests_Collaboration_WpDeRtcDescriptorEnforcement extends WP_UnitTestCase {
 		$engine = $this->engine();
 		$this->assertSame( self::GENESIS_CONTENT, $engine->materialize( $this->room() ) );
 
-		// Validate-once-then-drop: before TODO-2a a descriptor-carrying
+		// Validate-once-then-drop: previously a descriptor-carrying
 		// risky proposal escalated WHOLE; now the descriptor validates
 		// against the ORIGINAL proposal and the sequestration lane still
 		// parks exactly the risky block.
@@ -235,7 +235,7 @@ class Tests_Collaboration_WpDeRtcDescriptorEnforcement extends WP_UnitTestCase {
 		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
 
 		// A stale descriptor-carrying client conflicts on Alpha and edits
-		// Beta cleanly: before TODO-2a this parked whole; now salvage
+		// Beta cleanly: previously this parked whole; now salvage
 		// lands Beta and parks exactly Alpha.
 		$stale  = str_replace(
 			array( 'Alpha block original text.', 'Beta block original text.' ),

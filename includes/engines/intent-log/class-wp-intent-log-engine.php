@@ -50,9 +50,10 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 	 *
 	 * Genesis/materialization map a block's inner HTML onto the engine's
 	 * `content` field plus the `_wrapper` internal attr (the Phase 2a
-	 * model); since TODO-11 the client bridge keeps BOTH save-accurate
-	 * (wrapper refresh + save-derived content for non-rich-text blocks),
-	 * so sourced-attribute edits survive materialization.
+	 * model); since client-authored save markup landed, the client
+	 * bridge keeps BOTH save-accurate (wrapper refresh + save-derived
+	 * content for non-rich-text blocks), so sourced-attribute edits
+	 * survive materialization.
 	 *
 	 * @since 7.2.0
 	 * @access private
@@ -118,8 +119,8 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 
 		/**
 		 * Client-sent only, never stored: cancels intents that are still
-		 * queued (the pre-settle undo lane — TODO-5 in
-		 * docs/engine-comparison.md). All-or-nothing per cancel row: if
+		 * queued (the pre-settle undo lane). All-or-nothing per cancel
+		 * row: if
 		 * ANY target already settled, nothing cancels and the cancel acks
 		 * `cancel-too-late` (the client resurrects the unit from the
 		 * accepted rows). Confirmed cancellations settle each target as a
@@ -446,7 +447,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 			}
 
 			/*
-			 * Intent cancellations (the pre-settle undo lane, TODO-5).
+			 * Intent cancellations (the pre-settle undo lane).
 			 * All-or-nothing per cancel row: if ANY target already settled
 			 * (other than as canceled), nothing cancels and the cancel acks
 			 * `cancel-too-late` — the client resurrects the unit from the
@@ -858,18 +859,6 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 		}
 
 		/**
-		 * Whether an inserted block spec (recursively) carries protected
-		 * markup. Field text is entity-encoded by the serializer so only
-		 * span formats can smuggle markup; block attributes serialize into
-		 * the block comment (no more power than a kses-filtered save, which
-		 * preserves comments) and are not judged here.
-		 *
-		 * @since 7.2.0
-		 *
-		 * @param array $block Block spec from an insert_block payload.
-		 * @return bool True when protected.
-		 */
-		/**
 		 * Whether a `_wrapper` internal attr would emit protected markup.
 		 * materialize() rebuilds the wrapper's open/close fragments VERBATIM
 		 * around the field content, so they are judged as a fragment.
@@ -1261,16 +1250,8 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 		}
 
 		/**
-		 * Serializes the room's current document back to post content.
-		 *
-		 * @since 7.2.0
-		 *
-		 * @param string $room Room identifier.
-		 * @return string|null Serialized block content, or null on failure.
-		 */
-		/**
 		 * The engine document at an absolute log seq — the machine-writer
-		 * preflight's diff base (TODO-4b in docs/engine-comparison.md).
+		 * preflight's diff base.
 		 *
 		 * @since 0.5.0
 		 *

@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests for the intent-log base-seq machine-writer lane (TODO-4b): a
+ * Tests for the intent-log base-seq machine-writer lane: a
  * wp_update_post() caller declares the seq it read, its save diffs into
  * typed intents through the engine, concurrent session work merges by
  * transform, collisions park for review, and the saved content becomes

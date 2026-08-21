@@ -18,10 +18,11 @@ if ( ! class_exists( 'WP_Sync_Server_CLI_Command' ) && defined( 'WP_CLI' ) && WP
 		 * Starts the experimental PHP WebSocket sync server.
 		 *
 		 * EXPERIMENTAL. This server speaks plain ws:// and must be run behind
-		 * TLS termination (wss://) in production. The one-time authentication
-		 * token travels as a URL query parameter on the WebSocket handshake,
-		 * so without TLS it is visible to any on-path observer and may be
-		 * recorded by intermediaries. It is intended for evaluating the
+		 * TLS termination (wss://) in production: without TLS the handshake
+		 * and every frame are visible to any on-path observer. The one-time
+		 * authentication token rides the Sec-WebSocket-Protocol offer rather
+		 * than the URL query string, so it stays out of server and proxy
+		 * access logs either way. It is intended for evaluating the
 		 * 'php-websocket' collaboration transport.
 		 *
 		 * ## OPTIONS

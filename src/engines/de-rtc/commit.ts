@@ -10,8 +10,8 @@ import apiFetch from '@wordpress/api-fetch';
 import type { EngineDisposition, EngineUpdate } from '@wordpress/sync';
 
 /*
- * The Save/Sync inversion's commit carrier, client half (TODO-20 stage 2
- * in docs/engine-comparison.md): de-rtc sessions commit through the
+ * The Save/Sync inversion's commit carrier, client half: de-rtc
+ * sessions commit through the
  * ordinary autosave endpoint instead of transport rows. The session's
  * proposal payload is re-keyed onto the request; the response returns
  * the dispositions plus every room row the commit appended, which the

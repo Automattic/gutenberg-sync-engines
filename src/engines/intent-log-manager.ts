@@ -679,7 +679,7 @@ function withBlockDefaults(
 /**
  * Renders a block's save markup with EMPTY inner blocks — the wrapper plus
  * the block's own static inner HTML — for save-accurate `_wrapper` and
- * `content` authoring (TODO-11; see the bridge's SaveMarkupAdapter).
+ * `content` authoring (see the bridge's SaveMarkupAdapter).
  * Returns null when the type is unregistered or its save() throws; capture
  * then leaves the document's existing wrapper/content untouched.
  *
@@ -2071,7 +2071,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				excludeIds: state.docTombstones,
 				richTextFields: state.fieldsResolver,
 				rawContent: state.rawContent,
-				// Save-accurate wrapper/content authoring (TODO-11).
+				// Save-accurate wrapper/content authoring.
 				saveMarkup: saveMarkupAdapter,
 			} );
 

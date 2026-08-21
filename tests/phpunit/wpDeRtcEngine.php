@@ -100,7 +100,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 		}
 
 		/*
-		 * Announce model (TODO-20): a newer version was announced without
+		 * Announce model: a newer version was announced without
 		 * content — fetch it the way the session codec does (a `fetch` row
 		 * answered by one synthesized snapshot).
 		 */
@@ -270,7 +270,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 			array()
 		);
 
-		// TODO-2a: the descriptor is validated once and dropped, so the
+		// The descriptor is validated once and dropped, so the
 		// per-block salvage lane runs even for descriptor-carrying
 		// proposals — the conflicted block parks, the (empty) remainder
 		// lands, and canonical keeps A's accepted state.
@@ -380,7 +380,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 			array()
 		);
 
-		// TODO-2a: the descriptor is validated once and dropped, so the
+		// The descriptor is validated once and dropped, so the
 		// kses sequestration lane runs even for descriptor-carrying
 		// proposals: the risky new block drops from the laundered
 		// content, the proposal applies, and the risky block parks.
@@ -490,7 +490,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 
 	/**
 	 * Drives the standard two-client conflict so p-b's conflicted block
-	 * parks (per-block salvage; since TODO-2a the descriptor validates
+	 * parks (per-block salvage; the descriptor validates
 	 * once and drops, so salvage runs for descriptor proposals too).
 	 *
 	 * @return array Genesis state the proposals were authored against.

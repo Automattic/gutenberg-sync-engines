@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests for the wp_update_post base-version preflight (TODO-4a): a
+ * Tests for the wp_update_post base-version preflight: a
  * cooperating writer passes base_version and gets a genuine three-way
  * merge instead of an overwrite; unresolvable conflicts reject the save
  * with a rich error.

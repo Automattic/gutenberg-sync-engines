@@ -146,7 +146,7 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 			'data' => $update,
 		);
 
-		// TODO-8 tier 2: past the ceiling, writes 413 and reads continue.
+		// Growth-policing tier 2: past the ceiling, writes 413 and reads continue.
 		$ceiling = static function () {
 			return 10;
 		};

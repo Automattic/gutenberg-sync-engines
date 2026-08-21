@@ -210,7 +210,7 @@ describe( 'intent-log collaborative undo', () => {
 			},
 		] );
 		// Not yet settled — but undoable anyway: a fully-pending unit is
-		// CANCELABLE (TODO-5), so hasUndo no longer waits for the settle
+		// CANCELABLE, so hasUndo no longer waits for the settle
 		// round trip.
 		expect( undo.hasUndo() ).toBe( true );
 		link.poll();
@@ -230,7 +230,7 @@ describe( 'intent-log collaborative undo', () => {
 		expect( undo.hasRedo() ).toBe( false );
 	} );
 
-	it( 'undo inside the settle window CANCELS the pending unit (TODO-5)', () => {
+	it( 'undo inside the settle window CANCELS the pending unit', () => {
 		const { session, link, undo, edit, serverText } = harness();
 
 		edit( [

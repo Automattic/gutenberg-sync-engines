@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests for the de-rtc autosave commit lane (TODO-20 stage 2): commits
+ * Tests for the de-rtc autosave commit lane: commits
  * ride the ordinary autosave endpoint; the transport stays advisory.
  *
  * @package Gutenberg

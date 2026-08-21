@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests for the intent-log cancel lane (TODO-5): a cancel row dropping
+ * Tests for the intent-log cancel lane: a cancel row dropping
  * still-queued intents in the same batch, the too-late contract, and
  * idempotence under redelivery.
  *

@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests for per-block conflict salvage (TODO-3): a proposal whose
+ * Tests for per-block conflict salvage: a proposal whose
  * whole-document merge conflicts lands its clean blocks and parks
  * exactly the conflicted ones; structural divergence keeps the
  * whole-proposal fallback.
@@ -122,7 +122,8 @@ class Tests_Collaboration_WpDeRtcBlockConflictSalvage extends WP_UnitTestCase {
 	}
 
 	/**
-	 * TODO-2b: a client that kept its local block through a colliding
+	 * Per-block base honesty: a client that kept its local block
+	 * through a colliding
 	 * incorporation re-proposes from an advanced whole-document base but
 	 * declares the block's TRUE base — and non-overlapping concurrent
 	 * edits to the same block now MERGE instead of overwriting the peer.
@@ -155,8 +156,9 @@ class Tests_Collaboration_WpDeRtcBlockConflictSalvage extends WP_UnitTestCase {
 	}
 
 	/**
-	 * TODO-2b: when the same-block concurrency truly OVERLAPS, the honest
-	 * base turns the old silent overwrite into a parked review item —
+	 * Per-block base honesty: when the same-block concurrency truly
+	 * OVERLAPS, the honest base turns the old silent overwrite into a
+	 * parked review item —
 	 * canonical keeps the peer's text.
 	 */
 	public function test_per_block_base_parks_true_overlap_instead_of_lww() {

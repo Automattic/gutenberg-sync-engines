@@ -48,7 +48,7 @@ export const DE_RTC_CONTENT_TYPE = 'content';
 /**
  * Server-emitted row type: a canonical version ANNOUNCEMENT — version,
  * base version, content hash, author attribution, merged properties, NO
- * content (the transport carries advisories, not documents; TODO-20).
+ * content (the transport carries advisories, not documents).
  * Matches WP_De_RTC_Engine::UPDATE_TYPE_ANNOUNCE. Receive-only.
  */
 export const DE_RTC_ANNOUNCE_TYPE = 'announce';
@@ -93,7 +93,7 @@ export interface DeRtcSessionOptions {
 	bridge: DeRtcDocBridge;
 
 	/**
-	 * The revert-edit undo manager's row feed (TODO-16): every canonical
+	 * The revert-edit undo manager's row feed: every canonical
 	 * row this session decodes is published into it, own accepted
 	 * proposals tagged. Optional: collections and undo-less tests skip it.
 	 */
@@ -108,7 +108,7 @@ export interface DeRtcSessionOptions {
 	review?: DeRtcReviewState;
 
 	/**
-	 * The commit carrier (TODO-20 stage 2): when present, proposals go
+	 * The commit carrier (Save/Sync inversion): when present, proposals go
 	 * through the autosave endpoint instead of transport rows — the
 	 * poll lane stays advisory. Absent (collections, unsupported post
 	 * types, tests of the transport lane), proposals ride the transport
@@ -152,9 +152,9 @@ export function setDeRtcBurstQuietMsForTesting( ms: number ): void {
  *   server has not seen yet. The newest deferred row applies once the
  *   local state settles (the accepted row for our own proposal already
  *   contains our edits, merged). On a genuine conflict the server
- *   escalates, the local proposal is abandoned, and the canonical state
- *   wins locally once applied — surfacing conflicts to humans is the
- *   upstream review lane this port does not carry yet.
+ *   escalates: it sets the proposal aside as a parked review row (see
+ *   review.ts and the framework review panel), and the canonical state
+ *   wins locally once applied — a person then decides what to keep.
  *
  * @param options The doc bridge and optional awareness to wrap.
  * @return The transport-facing session codec.
@@ -181,7 +181,7 @@ export function createDeRtcSessionCodec(
 	} | null = null;
 	// Canonical content BY VERSION, as the server sent it (the doc may
 	// hold kept local blocks, so its serialization is not the canonical
-	// string). The descriptor builder (TODO-2a) needs the exact content
+	// string). The descriptor builder needs the exact content
 	// of the proposal's declared base version. Bounded: old versions can
 	// never become a proposal base again.
 	const canonicalContents = new Map< string, string >();
@@ -194,7 +194,7 @@ export function createDeRtcSessionCodec(
 	};
 
 	/*
-	 * Announce-model catch-up state (TODO-20): announcements carry no
+	 * Announce-model catch-up state: announcements carry no
 	 * content, so the session tracks the highest announced version it
 	 * has not reflected yet and fetches canonical content EAGERLY — at
 	 * most one fetch in flight, so a busy room costs one canonical
@@ -243,13 +243,13 @@ export function createDeRtcSessionCodec(
 		lastProposedContent = bridge.buildContent();
 		lastProposedProperties = bridge.buildProperties();
 		inFlightProposalId = `p-${ doc.clientID }-${ proposalCounter }`;
-		// Per-block base honesty (TODO-2b): blocks kept through colliding
+		// Per-block base honesty: blocks kept through colliding
 		// incorporations declare the version their text was really
 		// written against, so the server merges them from THEIR base
 		// instead of reading a clean sole-writer change.
 		const blockBaseVersions = bridge.blockBaseVersions();
 		const baseVersion = bridge.lastVersion() ?? '';
-		// The block-native descriptor (TODO-2a): TAMPER EVIDENCE the
+		// The block-native descriptor: TAMPER EVIDENCE the
 		// server validates against the PLAIN declared base and then
 		// drops (merge outcomes are identical either way — the server
 		// derives the same update itself). Built only when this session
@@ -359,7 +359,7 @@ export function createDeRtcSessionCodec(
 		inFlight = true;
 		if ( options.commit ) {
 			/*
-			 * The Save/Sync inversion (TODO-20 stage 2): the commit rides
+			 * The Save/Sync inversion: the commit rides
 			 * the autosave endpoint, not the transport — the poll lane
 			 * stays advisory (announces, on-demand snapshots, review
 			 * rows, presence). The response returns the rows this commit
@@ -495,7 +495,7 @@ export function createDeRtcSessionCodec(
 		if (
 			'string' !== typeof decoded?.version ||
 			( 'string' !== typeof decoded?.content &&
-				// Announce rows carry a hash, never content (TODO-20).
+				// Announce rows carry a hash, never content.
 				DE_RTC_ANNOUNCE_TYPE !== update.type )
 		) {
 			return;
@@ -506,7 +506,7 @@ export function createDeRtcSessionCodec(
 				? ( decoded.properties as Record< string, unknown > )
 				: undefined;
 
-		// The revert-edit undo manager (TODO-16) derives from canonical
+		// The revert-edit undo manager derives from canonical
 		// rows: feed it every row, tagging our own accepted proposals.
 		if (
 			DE_RTC_CONTENT_TYPE === update.type ||
@@ -516,7 +516,7 @@ export function createDeRtcSessionCodec(
 				'string' === typeof decoded.version &&
 				'string' === typeof decoded.content
 			) {
-				// The descriptor builder's base-content ledger (TODO-2a).
+				// The descriptor builder's base-content ledger.
 				recordCanonicalContent( decoded.version, decoded.content );
 			}
 			options.undoFeed?.noteRow( {
@@ -639,7 +639,7 @@ export function createDeRtcSessionCodec(
 				) {
 					// The catch-up for our merged proposal: adopt the
 					// blocks we did not touch since proposing, keep the
-					// ones we did (contested items raise per TODO-12).
+					// ones we did (contested items raise as usual).
 					pendingOwnMergeSeq = 0;
 					pendingCanonical = null;
 					if ( rowProperties ) {

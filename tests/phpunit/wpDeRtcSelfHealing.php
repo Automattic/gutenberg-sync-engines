@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests for DE-RTC self-healing from unaware writers (TODO-14): the
+ * Tests for DE-RTC self-healing from unaware writers: the
  * engine detects out-of-band post_content writes, merges them in as
  * ordinary collaborative updates, refuses to roll back stale copies,
  * and parks genuine conflicts for review.

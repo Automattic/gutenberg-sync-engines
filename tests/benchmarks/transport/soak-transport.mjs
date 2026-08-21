@@ -1,5 +1,5 @@
 /**
- * N-window duration soak (TODO-10 in docs/engine-comparison.md): the
+ * N-window duration soak: the
  * browser-driven multi-client run that validates the hosting cost cards'
  * composed per-user-hour projections against measured end-to-end totals.
  *
