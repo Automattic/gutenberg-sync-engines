@@ -289,13 +289,15 @@ All suites are green at head; CI (`.github/workflows/ci.yml`) is the
 source of truth for exact test counts — it certifies every suite
 (including `composer lint`, the websocket e2e lane, and the subtree's
 collaboration-review-panel component Jest) on pushes to `main` and
-PRs. Known qualifications: e2e flakes occasionally under full-suite
-load — a save notice, a fixture login navigation, or
-`http-only/collaboration-sync-body-size` failing after a preceding
-engine-flip suite [verified pre-existing: the yjs suite followed by
-body-size reproduces it without de-rtc involved]; each spec is green
-solo, and the e2e CI job leans on the base config's 2-retries-in-CI to
-absorb them (stabilization is V1.md A2). The vendored libraries' own
+PRs. The v1 integration tree passed the full default e2e suite three
+consecutive times with retries disabled (V1.md A2 met); the old login
+flake is closed by the plugin-local hardened fixtures
+(`tests/e2e/config/collaboration-fixtures.ts` — the root-cause subtree
+fixture fix remains upstream/human-owned). One known intermittent
+remains: the parked-A12 residual (intent-log mid-burst compaction
+splice, V1.md F3), firing ~1-2 of 8 under the repetition hammer; the
+e2e CI job keeps the base config's 2-retries-in-CI to absorb it. The
+vendored libraries' own
 conformance suites run separately:
 y-php (`composer --working-dir=includes/lib/y-php test`) and
 automerge-php (`php includes/lib/automerge-php/tests/run.php`).
