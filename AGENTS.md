@@ -161,7 +161,10 @@ The framework/plugin split is complete: the framework ships **neither** engines
   both benchmark harnesses; deliberately number-free (run `npm run
   bench` for numbers) — keep the SHAPES current when engine
   capabilities or benchmarks change.
-- `PORTING.md` — historical record of the client-side split (mostly DONE).
+- `plan/` — what we intend to change next: `issues/` (one file per bug
+  or feature, in plain language), `not-now.md` (looked at, set aside,
+  with reasons), `history.md` (why the code is shaped this way and what
+  has already failed), plus `bin/` (`check.mjs`, `mirror.mjs`).
 
 ## The `gutenberg/` subtree
 
@@ -290,12 +293,12 @@ source of truth for exact test counts — it certifies every suite
 (including `composer lint`, the websocket e2e lane, and the subtree's
 collaboration-review-panel component Jest) on pushes to `main` and
 PRs. The v1 integration tree passed the full default e2e suite three
-consecutive times with retries disabled (V1.md A2 met); the old login
+consecutive times with retries disabled; the old login
 flake is closed by the plugin-local hardened fixtures
 (`tests/e2e/config/collaboration-fixtures.ts` — the root-cause subtree
 fixture fix remains upstream/human-owned). One known intermittent
 remains: the parked-A12 residual (intent-log mid-burst compaction
-splice, `docs/plan/items/0001-typing-in-a-table-gets-scrambled.md`),
+splice, `plan/issues/0001-typing-in-a-table-gets-scrambled.md`),
 firing ~1-2 of 8 under the repetition hammer; the
 e2e CI job keeps the base config's 2-retries-in-CI to absorb it. The
 vendored libraries' own
@@ -504,18 +507,27 @@ they exist so a failure is observable without re-instrumenting:
 
 ## Known issues / out of scope
 
-Open work items live in `docs/plan/` — one file per bug or feature,
+Open work lives in `plan/issues/` — one file per bug or feature,
 written in plain language with an example and a way to tell when it is
-done. Read `docs/plan/README.md` before adding one; the `plan-item`
-skill applies its rules, and `npm run plan:check` enforces them.
-Ideas we looked at and set aside are in `docs/plan/not-now.md`. `V1.md`
-is now the historical record of the v1 scope contract, not a live queue.
+done. Read `plan/README.md` before adding one; the `plan-issue` skill
+applies its rules and `npm run plan:check` enforces them. **Write
+plainly there.** The rule is mechanical: if a word is defined in
+`docs/glossary.md`, it is one of our invented words and does not belong
+in an issue's title, problem, or example — only in its notes.
 
-This section carries the operational facts and cites plan items where
-one applies.
+Ideas we looked at and set aside are in `plan/not-now.md`.
+`plan/history.md` records why the code is shaped the way it is and what
+has already been tried and failed — read it before a big change, and
+before re-attempting anything that looks obvious.
 
-- `composer lint` is clean (zero errors, zero warnings) since the v1
-  loop's A6 burn-down (branch `loop/a6`) — keep it that way; the
+`LOOP.md` is the working ledger when the issue loop is running
+(`/loop /issue-cycle`).
+
+This section carries the operational facts and cites issues where one
+applies.
+
+- `composer lint` is clean (zero errors, zero warnings) — keep it
+  that way; the
   excludes (`gutenberg/`, frozen cores, vendored libraries) are by
   design and must not widen.
 - All three engines have **collaborative undo**: intent-log via inverse
@@ -556,7 +568,7 @@ one applies.
   sourced split. Genesis blocks must still set `isValid: true` or the
   editor renders them as invalid-content recovery blocks (has bitten) —
   and a container-shaped variant of exactly that symptom is open, see
-  `docs/plan/items/0002-group-block-breaks-after-reload.md`.
+  `plan/issues/0002-group-block-breaks-after-reload.md`.
 - **de-rtc known gaps** (docs/engine-comparison.md has the full list):
   truly concurrent SAME-block edits merge from their TRUE base
   (`blockBaseVersions`) or raise a contested pending item
@@ -583,7 +595,7 @@ one applies.
   one synthesized, never-stored snapshot. The active typist advances
   by hash and downloads nothing; row bytes no longer scale with
   document size (the hour soak's PHP-memory cliff, closed structurally;
-  the hour-scale re-measurement is V1.md A5).
+  re-measured at hour scale: request rate flat, peak PHP memory 9 MB).
   Stage 2 completes the Save/Sync inversion: sessions COMMIT through
   the ordinary autosave endpoint (`WP_De_RTC_Autosave_Commits`
   intercepts the commit shape; editor-native autosaves pass through),
@@ -636,7 +648,7 @@ one applies.
     loses them with the outbox: the undone edit (already accepted
     server-side) resurrects for everyone. The general unacked-edit-loss
     window, but undo makes it visible (the user watched the text vanish).
-  - FIXED (V1.md A1, branch `loop/a1`): an edit made DURING the join
+  - FIXED: an edit made DURING the join
     round trip used to stay local forever on an empty-genesis room
     (found 2026-08-17 as a reload straddling a block insert — update()
     dropped pre-init trees and the empty-genesis bootstrap pushes

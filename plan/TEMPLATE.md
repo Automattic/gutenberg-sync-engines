@@ -49,4 +49,5 @@ This is where the deep detail goes, and it should be as precise as you
 like. File paths, the exact mechanism, what has already been tried,
 which fixes are already merged, and any dead ends.
 
-Link related items like this: [0002](0002-some-other-item.md).
+Link related issues by number and filename, for example
+`[0002](0002-group-block-breaks-after-reload.md)`.

@@ -47,6 +47,11 @@ and each engine's known gaps — live in
 compared separately in [`docs/transports.md`](docs/transports.md). Both are
 deliberately number-free. Run `npm run bench` for numbers on your hardware.
 
+**Want to help?** [`plan/`](plan/README.md) holds what we intend to build
+next, one file per bug or feature, each with an example and a way to tell
+when it is done. [`plan/not-now.md`](plan/not-now.md) covers what we looked
+at and set aside, and why.
+
 ## Architecture
 
 Both axes are independent registries with a client/server handshake: the

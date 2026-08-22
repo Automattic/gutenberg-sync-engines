@@ -38,7 +38,7 @@ word.
 ## Words to avoid at the top of an item
 
 Here is the test, and it is mechanical: **if a word appears in
-[the glossary](../glossary.md), it is one of our invented words.** Do
+[the glossary](../docs/glossary.md), it is one of our invented words.** Do
 not use it in the title, the problem, or the example. Say what it means
 instead.
 
@@ -84,7 +84,7 @@ npm run plan:check
 
 It reports our invented words used above the notes section, missing
 sections, and examples without numbered steps. The jargon check reads
-`../glossary.md`, so it is eager on purpose — look at each word it
+`docs/glossary.md`, so it is eager on purpose — look at each word it
 flags and decide.
 
 ## Mirroring to GitHub
@@ -93,8 +93,8 @@ The mirror is one-way. Files here are the source of truth. Issue
 numbers land in each file's frontmatter once mirrored.
 
 ```bash
-node docs/plan/mirror.mjs --dry-run   # preview
-node docs/plan/mirror.mjs             # push
+node plan/bin/mirror.mjs --dry-run   # preview
+node plan/bin/mirror.mjs             # push
 ```
 
 **Run it yourself.** It creates and edits issues on the public

@@ -63,9 +63,11 @@ paths are updated to expect one.
 
 ## Notes for whoever picks this up
 
-Filed during the v1 close-out as F4, from the accepted proposal in
-`proposals/b5.md`, which deliberately kept the old path and said its
-removal should be its own item.
+The two paths exist deliberately. When the newer one was built, the
+older was kept so that editor tabs opened before the change would keep
+working, and its removal was written up as its own future job — this
+one. That write-up is in the git history (`git log --diff-filter=D --
+proposals/`).
 
 The pieces: the shared code that applies a decision lives in
 `includes/engines/de-rtc/class-wp-de-rtc-engine.php`; the newer route is

@@ -75,11 +75,11 @@ Roughly a week, and that estimate assumes the experiment goes well.
 
 ## Notes for whoever picks this up
 
-Filed during the v1 close-out as F5, promoted from a note that had sat
-undecided since 19 August. The original write-up is in the history of
-`V1.md`, and it carries the detail this summary leaves out: exact line
-numbers, the phased plan, and the reason the dead route is dead even if
-something reached it.
+Written up first on 19 August and left undecided for a while. The
+original, longer write-up is in the git history of the deleted `V1.md`
+(`git log --diff-filter=D -- V1.md`); it carries the detail this
+summary leaves out, including exact line numbers, a phased plan, and
+why the unused route stays unreachable even if something called it.
 
 **Read the reasons against it before starting.** They are good reasons,
 and someone wrote them down when they had the whole picture:

@@ -151,8 +151,7 @@ without it. It is an integrity check, which makes it really a P1 concern.
   — and restoring that vision after our port damaged it was a program,
   not a patch. It is essentially complete: the
   [fidelity audit](de-rtc-fidelity.md) records what each restoration
-  did, and the remaining deltas are UI surface, not merge semantics
-  (V1.md B3–B5).
+  did. The UI and cadence work it once waited on has since shipped.
 
 ## Feature parity
 
@@ -304,7 +303,7 @@ De-rtc's is the largest at benchmark sizes.
 ## Known gaps and qualifications
 
 Residual facts that color conclusions but don't rise to work items of
-their own (open work items live in `V1.md`), grouped by engine.
+their own (open work lives in `plan/issues/`), grouped by engine.
 
 ### intent-log
 
@@ -349,11 +348,12 @@ their own (open work items live in `V1.md`), grouped by engine.
   writes with 413 while reads/saves continue. What the ceiling cannot
   do is shrink an over-limit room — epoch compaction, which would, is
   parked as post-v1 work.
-- **Materialization still carries the wrapper simplification**
-  (intent-log's twin was fixed by client-authored save markup; the yjs
-  fix needs framework changes — V1.md B1), and its genesis wrongly
-  stores stripped inner markup in the first rich-text-source attribute
-  (e.g. `<img>` in an image's `caption` — V1.md A4).
+- **Container blocks can come back broken after a reload** — a Group
+  block occasionally returns as invalid-content recovery with an empty
+  saved copy ([plan issue 0002](../plan/issues/0002-group-block-breaks-after-reload.md)).
+  Materialization fidelity itself is fixed: each block now carries its
+  own saved HTML, and the genesis rich-text defect was fixed by the
+  selector-sourced split.
 
 ### de-rtc
 

@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 /**
- * Mirrors plan items to GitHub Issues.
+ * Mirrors plan issues to GitHub Issues.
  *
  * The Markdown file is the source of truth. This pushes it to an issue
  * and writes the issue number back into the file's frontmatter. It
  * never reads changes back from GitHub, because two-way sync rots.
  *
  * Usage:
- *   node docs/plan/mirror.mjs --dry-run          preview every change
- *   node docs/plan/mirror.mjs                    push every item
- *   node docs/plan/mirror.mjs items/0001-*.md    push specific items
+ *   node plan/bin/mirror.mjs --dry-run          preview every change
+ *   node plan/bin/mirror.mjs                    push every issue
+ *   node plan/bin/mirror.mjs issues/0001-*.md   push specific issues
  *
  * This creates and edits issues on the plugin repository, which is a
  * public action. Run it yourself; do not ask an agent to run it for
@@ -23,9 +23,9 @@ import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const planDir = dirname( fileURLToPath( import.meta.url ) );
-const itemsDir = join( planDir, 'items' );
-const repoRoot = resolve( planDir, '..', '..' );
+const planDir = resolve( dirname( fileURLToPath( import.meta.url ) ), '..' );
+const issuesDir = join( planDir, 'issues' );
+const repoRoot = resolve( planDir, '..' );
 
 const args = process.argv.slice( 2 );
 const dryRun = args.includes( '--dry-run' );
@@ -85,9 +85,9 @@ function writeIssueNumber( path, text, number ) {
 
 const targets = paths.length
 	? paths.map( ( path ) => resolve( path ) )
-	: readdirSync( itemsDir )
+	: readdirSync( issuesDir )
 			.filter( ( name ) => name.endsWith( '.md' ) )
-			.map( ( name ) => join( itemsDir, name ) );
+			.map( ( name ) => join( issuesDir, name ) );
 
 for ( const path of targets ) {
 	const { text, fields, body } = parse( path );

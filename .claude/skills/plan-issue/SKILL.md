@@ -1,11 +1,11 @@
 ---
-name: plan-item
-description: Write or revise a work item in docs/plan/items/ — the product-focused, plain-language format this repo uses for bugs and features. Use when the user wants to file a bug, propose a feature, capture a finding as future work, or rewrite an existing item or V1.md entry into the plan format. Also use before opening a GitHub issue for this repo, since the Markdown file is the source of truth and the issue is a mirror.
+name: plan-issue
+description: Write or revise an issue in plan/issues/ — the product-focused, plain-language format this repo uses for bugs and features. Use when the user wants to file a bug, propose a feature, capture a finding as future work, or rewrite an existing note or finding into the plan format. Also use before opening a GitHub issue for this repo, since the Markdown file is the source of truth and the issue is a mirror.
 ---
 
-# Writing a plan item
+# Writing an issue
 
-Read `docs/plan/README.md` first. It holds the rules; this skill is how
+Read `plan/README.md` first. It holds the rules; this skill is how
 you apply them.
 
 ## The one thing that matters
@@ -25,18 +25,18 @@ dashes and parentheses, stop and write three sentences.
 ## Steps
 
 **1. Check it is one thing.** If the title needs "and", split it into
-two items. Two small items always beat one item with two halves.
+two issues. Two small issues always beat one with two halves.
 
 **2. Get the facts.** Read the code, run the failing command, or read
-the record in `LOOP.md` and git history. An item built on a guess wastes
+the record in `plan/history.md`, `LOOP.md` and git history. An issue built on a guess wastes
 the time of whoever picks it up. If something is genuinely unknown, say
 so in the notes rather than inventing it.
 
-**3. Pick the next number.** Look at `docs/plan/items/` and take the
+**3. Pick the next number.** Look at `plan/issues/` and take the
 next free one. Name the file `NNNN-short-slug.md`, where the slug is a
 few words from the title.
 
-**4. Copy `docs/plan/TEMPLATE.md` and fill it in.** Write the example
+**4. Copy `plan/TEMPLATE.md` and fill it in.** Write the example
 last if that helps — a concrete example often shows you that the
 problem statement was vague.
 
@@ -46,8 +46,8 @@ problem statement was vague.
   Say which decision is missing, near the top.
 - `ready` — someone could pick this up today and start.
 
-Most new items are `shaping`. That is fine and it is useful information.
-An item marked `ready` that is not really ready wastes someone's
+Most new issues are `shaping`. That is fine and it is useful information.
+An issue marked `ready` that is not really ready wastes someone's
 afternoon.
 
 **6. Run the checker.**
@@ -62,12 +62,12 @@ sections, and examples with no numbered steps. The jargon check reads
 flags. Usually the fix is to say what the word means. Sometimes the
 sentence belongs in the notes instead.
 
-**7. Update the changelog when an item ships**, not when it is filed.
+**7. Update the changelog when an issue ships**, not when it is filed.
 `AGENTS.md` explains the rule.
 
-## Turning an existing entry into an item
+## Turning an existing note into an issue
 
-When migrating from `V1.md` or from a `LOOP.md` diagnosis, the source
+When writing up an old finding or a `LOOP.md` diagnosis, the source
 text is written for people who already know the system. Do not
 paraphrase it. Work out what a person using the editor would actually
 experience, lead with that, and keep the original technical account in

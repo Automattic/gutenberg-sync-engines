@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Checks a plan item against the rules in docs/plan/README.md.
+ * Checks a plan issue against the rules in plan/README.md.
  *
- * Usage: node docs/plan/check.mjs [file...]
- * With no arguments it checks every item in docs/plan/items/.
+ * Usage: node plan/bin/check.mjs [file...]
+ * With no arguments it checks every issue in plan/issues/.
  *
  * The most useful check is the last one: it reads docs/glossary.md and
  * reports any of our invented words used above the notes section, where
@@ -15,9 +15,9 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const planDir = dirname( fileURLToPath( import.meta.url ) );
-const itemsDir = join( planDir, 'items' );
-const glossaryPath = resolve( planDir, '..', 'glossary.md' );
+const planDir = resolve( dirname( fileURLToPath( import.meta.url ) ), '..' );
+const issuesDir = join( planDir, 'issues' );
+const glossaryPath = resolve( planDir, '..', 'docs', 'glossary.md' );
 
 const NOTES_HEADING = '## Notes for whoever picks this up';
 
@@ -90,7 +90,7 @@ function frontmatter( text ) {
 	return fields;
 }
 
-function checkItem( path, terms ) {
+function checkIssue( path, terms ) {
 	const text = readFileSync( path, 'utf8' );
 	const problems = [];
 	const warnings = [];
@@ -159,15 +159,15 @@ function checkItem( path, terms ) {
 const files = process.argv.slice( 2 );
 const targets = files.length
 	? files.map( ( file ) => resolve( file ) )
-	: readdirSync( itemsDir )
+	: readdirSync( issuesDir )
 			.filter( ( name ) => name.endsWith( '.md' ) )
-			.map( ( name ) => join( itemsDir, name ) );
+			.map( ( name ) => join( issuesDir, name ) );
 
 const terms = glossaryTerms();
 let failed = 0;
 
 for ( const path of targets ) {
-	const { problems, warnings, found } = checkItem( path, terms );
+	const { problems, warnings, found } = checkIssue( path, terms );
 	const label = path.replace( `${ process.cwd() }/`, '' );
 
 	if ( ! problems.length && ! warnings.length && ! found.size ) {
@@ -200,8 +200,8 @@ for ( const path of targets ) {
 }
 
 if ( failed ) {
-	console.log( `\n${ failed } item(s) need attention.` );
+	console.log( `\n${ failed } issue(s) need attention.` );
 	process.exit( 1 );
 }
 
-console.log( `\nAll ${ targets.length } item(s) look fine.` );
+console.log( `\nAll ${ targets.length } issue(s) look fine.` );
