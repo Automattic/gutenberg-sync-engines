@@ -4,12 +4,12 @@
 import apiFetch from '@wordpress/api-fetch';
 
 /*
- * Save-through-the-room (TODO-12): while a de-rtc session is live for a
+ * Save-through-the-room: while a de-rtc session is live for a
  * post, the editor's ordinary REST save carries `base_version` — the
  * version the session last applied — so the server's base-version
  * preflight merges the save through the room instead of letting it
- * bypass sync entirely (the TODO-14 "stamped but neither merges nor
- * heals" gap, closed for editor saves).
+ * bypass sync entirely (the unaware-writer "stamped but neither
+ * merges nor heals" gap, closed for editor saves).
  *
  * Mechanics: an apiFetch middleware injects `base_version` into
  * POST/PUT bodies for /wp/v2/posts|pages/<id> while a session is
@@ -33,8 +33,8 @@ export interface DeRtcSaveControl {
 	/** The session bridge's version getter. */
 	lastVersion: () => string | null;
 	/**
-	 * Settles + holds the session's commit lane for the save's duration
-	 * (TODO-20 stage 2): a save must never race the session's own
+	 * Settles + holds the session's commit lane for the save's
+	 * duration: a save must never race the session's own
 	 * in-flight commit into a self-conflict. Returns the release.
 	 */
 	prepareForSave?: () => Promise< () => void >;

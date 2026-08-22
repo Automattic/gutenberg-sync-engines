@@ -24,7 +24,7 @@ export interface DeRtcParkedProposal {
 	property?: { name: string; value: unknown };
 	excerpt?: string;
 	/**
-	 * Merge-not-stack (TODO-12): how many parked revisions this ONE
+	 * Merge-not-stack: how many parked revisions this ONE
 	 * review task has folded (the fields above always show the latest).
 	 */
 	revisions?: number;
@@ -101,7 +101,7 @@ export function createDeRtcReviewState(): DeRtcReviewState {
 	};
 
 	/**
-	 * Merge-not-stack key (TODO-12): one review task per author per
+	 * Merge-not-stack key: one review task per author per
 	 * target — a property register, or a block index set. A revised
 	 * parked proposal from the same author over the same target FOLDS
 	 * into the open task instead of raising a second one.

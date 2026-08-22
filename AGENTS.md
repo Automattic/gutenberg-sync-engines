@@ -151,11 +151,16 @@ The framework/plugin split is complete: the framework ships **neither** engines
   Jest) and `tests/phpunit/test-vectors/` (replayed by PHPUnit) — kept
   byte-identical by `tests/js/engines/intent-log/vector-parity.test.js`;
   regenerate with the `tests/tools/` scripts and always update both.
-- `docs/engine-comparison.md` — the engine comparison guide: parity table,
-  host resource profiles, transport trade-offs, known gaps. The
-  interpretation layer over both benchmark harnesses; deliberately
-  number-free (run `npm run bench` for numbers) — keep the SHAPES current
-  when engine capabilities or benchmarks change.
+- `docs/` — the conceptual docs, indexed by `docs/README.md`:
+  `engine-comparison.md` (the decision guide: scorecard, parity table,
+  resource profiles, per-engine known gaps), `principles.md` (P1-P7),
+  `scenarios.md` (the A-G wire narratives), `transports.md`,
+  `de-rtc-fidelity.md` (the audit against the upstream vision),
+  `architecture-decisions.md`, and `glossary.md` (the project's
+  vocabulary in plain words). The set is the interpretation layer over
+  both benchmark harnesses; deliberately number-free (run `npm run
+  bench` for numbers) — keep the SHAPES current when engine
+  capabilities or benchmarks change.
 - `PORTING.md` — historical record of the client-side split (mostly DONE).
 
 ## The `gutenberg/` subtree
@@ -484,6 +489,11 @@ they exist so a failure is observable without re-instrumenting:
 
 ## Commits / PRs
 
+- **Keep `CHANGELOG.md` updated.** Any bug fix, new feature, or material
+  change gets an entry under **Unreleased**, written as part of the change
+  itself (same commit or PR). Granularity is coarse — one line per
+  user-visible change, not per commit. Refactors, test-only, and doc-only
+  changes don't need entries.
 - This repo has commit **signing disabled locally**. Commit with `--no-verify`
   (the pre-commit hook is heavy/flaky).
 - Do **not** open PRs / push to shared branches / take other outward-facing

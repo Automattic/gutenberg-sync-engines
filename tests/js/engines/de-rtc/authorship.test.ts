@@ -1,5 +1,5 @@
 /**
- * Per-edit authorship (TODO-18): block-grain "who last touched this",
+ * Per-edit authorship: block-grain "who last touched this",
  * derived from the canonical row feed at zero extra wire cost.
  */
 import { describe, expect, it, jest } from '@jest/globals';

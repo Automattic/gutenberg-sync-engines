@@ -73,7 +73,7 @@ export const INTENT_LOG_UPDATE_TYPES = {
 	SNAPSHOT: 'snapshot',
 	VOIDED: 'voided',
 	// Client-sent only, never stored: cancels still-queued intents
-	// (TODO-5 — the pre-settle undo lane).
+	// (the pre-settle undo lane).
 	CANCEL: 'cancel',
 } as const;
 
@@ -253,7 +253,7 @@ export interface IntentLogSession extends EngineSessionCodec {
 	 * intents canceled within the same batch, and acks
 	 * `cancel-too-late` when an intent was already ingested — in which
 	 * case its accepted row resurrects the effect (nothing is ever
-	 * half-lost). The pre-settle undo lane (TODO-5) is the caller.
+	 * half-lost). The pre-settle undo lane is the caller.
 	 *
 	 * @return Whether the cancellation was accepted locally (every id
 	 *         was still pending).

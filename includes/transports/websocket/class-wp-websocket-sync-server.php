@@ -648,8 +648,7 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 			 * token rides the Sec-WebSocket-Protocol offer list (the one
 			 * handshake header browsers let a page set), NOT the URL — a
 			 * query-string token leaks into server/proxy access logs and
-			 * referrer-adjacent tooling (TODO-9 in
-			 * docs/engine-comparison.md). The offer is
+			 * referrer-adjacent tooling. The offer is
 			 * `<SUBPROTOCOL>, <TOKEN_PROTOCOL_PREFIX><token>`; the server
 			 * echoes only the base subprotocol.
 			 */

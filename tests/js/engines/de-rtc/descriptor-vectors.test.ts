@@ -1,5 +1,5 @@
 /**
- * TODO-2a: the descriptor cross-language vector contract.
+ * The descriptor cross-language vector contract.
  *
  * The TS builder must produce operations whose server-side fingerprints
  * (`wp_de_rtc_get_automerge_block_native_operation_fingerprints`) match

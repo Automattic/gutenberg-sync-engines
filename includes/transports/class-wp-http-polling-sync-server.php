@@ -2,7 +2,7 @@
 /**
  * WP_HTTP_Polling_Sync_Server class
  *
- * @package gutenberg
+ * @package GutenbergSyncEngines
  */
 
 if ( ! class_exists( 'WP_Sync_Config' ) ) {

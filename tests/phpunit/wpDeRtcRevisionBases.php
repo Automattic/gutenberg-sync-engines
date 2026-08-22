@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests for revision-backed base resolution (TODO-15): a proposal whose
+ * Tests for revision-backed base resolution: a proposal whose
  * base aged out of the room's snapshot window resolves from a revision's
  * embedded sync-meta instead of voiding.
  *

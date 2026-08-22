@@ -446,7 +446,7 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 				}
 
 				if ( $is_announce ) {
-					// Announce model (TODO-20): version + hash + properties,
+					// Announce model: version + hash + properties,
 					// no content — the newest one drives a fetch below.
 					$seq = (int) ltrim( $decoded['version'], 'v' );
 					if ( null === $announced || $seq > $announced['seq'] ) {

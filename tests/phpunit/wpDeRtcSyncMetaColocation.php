@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests for DE-RTC sync-meta co-location with post_content (TODO-13):
+ * Tests for DE-RTC sync-meta co-location with post_content:
  * the save path embeds the room's sync metadata, revisions carry it,
  * and genesis adopts it back — version lineage included.
  *

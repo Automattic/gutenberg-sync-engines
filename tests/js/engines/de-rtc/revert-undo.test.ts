@@ -1,5 +1,5 @@
 /**
- * DE-RTC revert-edit undo (TODO-16): undo never undoes — it derives a
+ * DE-RTC revert-edit undo: undo never undoes — it derives a
  * revert from the client's own accepted canonical rows and applies it
  * as an ordinary dirty edit; redo re-applies the reverted delta; peer
  * work is never collateral.

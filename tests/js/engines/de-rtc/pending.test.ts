@@ -1,8 +1,9 @@
 /**
- * TODO-12 v1: the contested-only pending-edits behavior layer.
+ * The contested-only pending-edits behavior layer (v1).
  * Contested blocks raise ONE pending item that merges-not-stacks;
- * Adopt takes the latest canonical form, Reject keeps yours (2b base
- * honesty intact); parked review tasks fold revisions the same way;
+ * Adopt takes the latest canonical form, Reject keeps yours
+ * (per-block base honesty intact); parked review tasks fold
+ * revisions the same way;
  * editor saves carry base_version while a session lives.
  */
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';

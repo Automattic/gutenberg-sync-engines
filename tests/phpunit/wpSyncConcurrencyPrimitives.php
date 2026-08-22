@@ -2,8 +2,7 @@
 /**
  * Tests for the Core-style concurrency primitives (WP_Sync_Room_Lock,
  * WP_Sync_Atomic_Option) and the de-rtc engine's optimistic
- * version-claim concurrency built on them (TODO-1 in
- * docs/engine-comparison.md).
+ * version-claim concurrency built on them.
  *
  * @package Gutenberg
  */

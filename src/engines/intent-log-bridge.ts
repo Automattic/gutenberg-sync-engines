@@ -66,15 +66,15 @@ export type RichTextFieldsResolver = ( blockName: string ) => string[];
  * Renders a block's SAVE markup with empty inner blocks (wrapper plus the
  * block's own static inner HTML), or null when unavailable (unregistered
  * type, save() throw). The editor side supplies `getSaveContent`; with an
- * adapter present, capture authors save-accurate materialization state
- * (TODO-11 in docs/engine-comparison.md): the block's single wrapper
- * element refreshes into the `_wrapper` internal attr (alignment/class
- * changes survive server materialization), and for block types whose
- * resolver names no `content` field the whole save-derived inner HTML is
- * authored as the engine `content` field through the codec — sourced
- * attributes (image url/alt, embeds) then round-trip materialization,
- * because the markup the SERVER emits is markup the CLIENT authored from
- * the block's current attributes.
+ * adapter present, capture authors save-accurate materialization state:
+ * the block's single wrapper element refreshes into the `_wrapper`
+ * internal attr (alignment/class changes survive server
+ * materialization), and for block types whose resolver names no
+ * `content` field the whole save-derived inner HTML is authored as the
+ * engine `content` field through the codec — sourced attributes (image
+ * url/alt, embeds) then round-trip materialization, because the markup
+ * the SERVER emits is markup the CLIENT authored from the block's
+ * current attributes.
  */
 export type SaveMarkupAdapter = ( block: BridgeBlock ) => string | null;
 
@@ -190,7 +190,7 @@ export interface DeriveOptions {
 
 	/**
 	 * Save-markup renderer for save-accurate `_wrapper`/`content`
-	 * authoring (TODO-11). Optional: without it capture retains the
+	 * authoring. Optional: without it capture retains the
 	 * document's existing wrapper/content untouched.
 	 */
 	saveMarkup?: SaveMarkupAdapter;
@@ -313,7 +313,7 @@ export function blockToEngineSpec(
 	}
 
 	/*
-	 * Save-accurate materialization state (TODO-11): with an adapter, the
+	 * Save-accurate materialization state: with an adapter, the
 	 * block's rendered save markup refreshes the `_wrapper` internal attr
 	 * (the server materializes wrapper VERBATIM, so alignment/class
 	 * changes must travel), and for block types with no resolver-named
@@ -322,7 +322,7 @@ export function blockToEngineSpec(
 	 * url/alt — and the server cannot regenerate it). Types WITH a
 	 * content field keep the attribute-driven path (identical bytes: the
 	 * save renders the same content inside the wrapper). Adapter failures
-	 * degrade to the pre-TODO-11 model: nothing authored, the document's
+	 * degrade to the older model: nothing authored, the document's
 	 * existing wrapper/content stay put.
 	 */
 	if ( ! raw?.is( block.name ) && saveMarkup ) {
@@ -1043,7 +1043,7 @@ export function deriveIntents(
 		fieldNamesFor( name, resolver, raw );
 	/*
 	 * Blocks whose specs carry a save-authored `content` field BEYOND the
-	 * resolver's schema (TODO-11): their content participates in the diff
+	 * resolver's schema: their content participates in the diff
 	 * and in verification. Blocks the adapter could not render keep the
 	 * resolver-only projection, so the document's existing content is
 	 * never read as a deletion.
@@ -1635,8 +1635,8 @@ function specsToDocument(
  * @param resolver   Rich-text attribute names per block type.
  * @param restrictTo Optional id allowlist.
  * @param contentIds Ids whose projection ALSO includes the `content`
- *                   field beyond the resolver's schema (TODO-11
- *                   save-authored content must verify).
+ *                   field beyond the resolver's schema
+ *                   (save-authored content must verify).
  * @return Canonical JSON of the projection.
  */
 function bridgeCanonical(

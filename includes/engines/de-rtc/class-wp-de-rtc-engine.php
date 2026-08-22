@@ -13,13 +13,17 @@
  * merged. Peers receive the merged canonical content as server-authored
  * rows.
  *
- * Where the upstream prototype co-located sync metadata inside
- * post_content (the wp:sync-meta pseudo-block) and rode wp_update_post(),
- * this engine keeps canonical state in sync-storage room meta — the
- * revision-scan/kses-allowance/preservation periphery that existed to
- * protect in-content metadata is unnecessary here. Genesis still adopts
- * (and strips) an existing sync-meta block, so documents written by an
- * upstream DE-RTC install keep their version lineage.
+ * The server keeps its working copy in sync-storage room meta, but it
+ * also writes the sync metadata back into post_content on every save
+ * (the wp:sync-meta pseudo-block — see
+ * class-wp-de-rtc-sync-meta-colocation.php), the way the upstream
+ * prototype did. That write-back is what lets the server notice when a
+ * script edited the post behind the room's back, and what lets
+ * resolve_base_from_revisions() recover an old base from post revisions
+ * when a client has been offline longer than the room's own snapshot
+ * window covers. Genesis adopts (and strips) an existing sync-meta
+ * block, so documents written by an upstream DE-RTC install keep their
+ * version lineage.
  *
  * @package GutenbergSyncEngines
  */
@@ -45,7 +49,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * Engine protocol version (bump on breaking payload changes).
 		 * Version 2: accepted proposals broadcast ANNOUNCE rows (version +
 		 * content hash, no content); clients fetch canonical content on
-		 * demand (TODO-20 in docs/engine-comparison.md).
+		 * demand.
 		 *
 		 * @since 0.3.0
 		 * @var int
@@ -79,7 +83,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * canonical content lives once in room meta (plus checkpoint
 		 * snapshots and the post/revision write-through), and a client that
 		 * needs it sends a `fetch` row. Row bytes stop scaling with document
-		 * size — the TODO-20 cliff.
+		 * size — the pre-announce row-size cliff.
 		 *
 		 * @since 0.6.0
 		 * @var string
@@ -496,16 +500,16 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			}
 
 			/*
-			 * Descriptor tamper evidence (TODO-2a), enforced: a proposal
-			 * carrying a block-native clientUpdate has it validated ONCE
-			 * against the PLAIN declared base — the state the client
-			 * actually built it from, never the TODO-2b composite — and
-			 * then DROPPED. Dropping matters twice over: kses laundering
-			 * and per-block salvage rewrite the proposed content
-			 * server-side, so a retained descriptor would false-positive
-			 * the merge core's own tamper check; and the drop is what
-			 * lets descriptor-carrying proposals use those
-			 * partial-acceptance lanes at all.
+			 * Descriptor tamper evidence, enforced: a proposal carrying a
+			 * block-native clientUpdate has it validated ONCE against the
+			 * PLAIN declared base — the state the client actually built it
+			 * from, never the blockBaseVersions composite — and then
+			 * DROPPED. Dropping matters twice over: kses laundering and
+			 * per-block salvage rewrite the proposed content server-side,
+			 * so a retained descriptor would false-positive the merge
+			 * core's own tamper check; and the drop is what lets
+			 * descriptor-carrying proposals use those partial-acceptance
+			 * lanes at all.
 			 */
 			$rejection = $this->validate_and_drop_client_update( $room, $state, $proposal );
 			if ( null !== $rejection ) {
@@ -656,7 +660,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				);
 
 				/*
-				 * Announce model (TODO-20): canonical truth writes FIRST
+				 * Announce model: canonical truth writes FIRST
 				 * (room meta), the row second — the row is an ADVISORY
 				 * notification, not the document. A lost row is benign
 				 * (the next fetch/poll converges from meta); the reverse
@@ -729,7 +733,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		/**
 		 * Validates a proposal's block-native descriptor and drops it.
 		 *
-		 * TODO-2a (docs/engine-comparison.md), full enforcement: when a
+		 * Descriptor tamper evidence, full enforcement: when a
 		 * proposal carries `clientUpdate`, the frozen merge core re-derives
 		 * the expected update from (plain declared base, proposed content)
 		 * and compares fingerprints — a mismatch is tamper evidence and
@@ -739,9 +743,10 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * and the descriptor-less lanes derive an identical update anyway.
 		 *
 		 * The validation base is deliberately the PLAIN base of the
-		 * declared `baseVersion` — never the TODO-2b composite — because
-		 * that is the exact state the client built its evidence from, so
-		 * descriptors and `blockBaseVersions` compose.
+		 * declared `baseVersion` — never the `blockBaseVersions`
+		 * composite — because that is the exact state the client built
+		 * its evidence from, so descriptors and `blockBaseVersions`
+		 * compose.
 		 *
 		 * One deliberate acceptance: a client that could not split blocks
 		 * (its parser twin refused where ours did not — e.g. PHP-authored
@@ -883,7 +888,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			 * One representation: content travels as content (the proposal
 			 * body / canonical state), never as a property register. A
 			 * `content` register would re-carry the ENTIRE document on
-			 * every announce (the TODO-20 double-carry). Stripped here
+			 * every announce (the double-carry trap). Stripped here
 			 * defensively for legacy clients; also scrubbed from any
 			 * previously-persisted canonical map.
 			 */
@@ -1261,12 +1266,12 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 
 		/**
 		 * Per-block salvage of a proposal whose whole-document three-way
-		 * merge failed: the partial-acceptance grain (TODO-3 in
-		 * docs/engine-comparison.md), mirroring the kses sequestration
-		 * lane. Blocks only the client changed pass through; blocks only
-		 * canonical changed adopt canonical; blocks BOTH changed get their
-		 * own three-way merge — and when that conflicts too, canonical
-		 * wins the position while the client's block parks for review.
+		 * merge failed: the partial-acceptance grain, mirroring the kses
+		 * sequestration lane. Blocks only the client changed pass through;
+		 * blocks only canonical changed adopt canonical; blocks BOTH
+		 * changed get their own three-way merge — and when that conflicts
+		 * too, canonical wins the position while the client's block parks
+		 * for review.
 		 *
 		 * Sound only when the block structure aligns positionally on all
 		 * three sides (equal top-level record counts): structural
@@ -1550,7 +1555,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			}
 
 			/*
-			 * Content-on-demand (the announce model, TODO-20): a `fetch` row
+			 * Content-on-demand (the announce model): a `fetch` row
 			 * in this request's ingest half asked for canonical content. When
 			 * the client is behind, append ONE synthesized snapshot of the
 			 * CURRENT canonical state — never stored, never counted in
@@ -1954,18 +1959,18 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * (room snapshots, then revision mining), with per-block base
 		 * substitutions when the proposal declares them.
 		 *
-		 * Per-block base honesty (TODO-2b in docs/engine-comparison.md):
-		 * a client that kept a locally-edited block through a colliding
-		 * incorporation re-proposes from an ADVANCED whole-document base —
-		 * which used to present the kept block as a clean sole-writer
-		 * change and silently overwrite the peer (block-level LWW). The
-		 * `blockBaseVersions` map declares each kept block's TRUE base;
-		 * substituting that version's record into the base hands the
-		 * three-way merge real concurrency to resolve: non-overlapping
-		 * same-block edits merge, true overlaps park via salvage. A
-		 * substitution that cannot be made soundly (unknown version,
-		 * structural drift between the versions) is skipped — degrading to
-		 * exactly the pre-TODO-2b behavior, never worse.
+		 * Per-block base honesty: a client that kept a locally-edited block
+		 * through a colliding incorporation re-proposes from an ADVANCED
+		 * whole-document base — which used to present the kept block as a
+		 * clean sole-writer change and silently overwrite the peer
+		 * (block-level LWW). The `blockBaseVersions` map declares each kept
+		 * block's TRUE base; substituting that version's record into the
+		 * base hands the three-way merge real concurrency to resolve:
+		 * non-overlapping same-block edits merge, true overlaps park via
+		 * salvage. A substitution that cannot be made soundly (unknown
+		 * version, structural drift between the versions) is skipped —
+		 * degrading to exactly the plain whole-document-base behavior,
+		 * never worse.
 		 *
 		 * @since 0.5.0
 		 *
@@ -2029,8 +2034,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * still recoverable from the revision written closest to it. This
 		 * is the vision's "look for recent copies … in post revisions"
 		 * lane, and what lets arbitrarily long offline editing recombine
-		 * (TODO-15 in docs/engine-comparison.md) instead of voiding
-		 * `unknown-base-version`.
+		 * instead of voiding `unknown-base-version`.
 		 *
 		 * Two sources per revision, newest first: a snapshot of the wanted
 		 * version inside the embed (hash-verified), or the revision's own
@@ -2243,7 +2247,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 
 			/*
 			 * Advance write: the CHAINED CAS that makes canonical
-			 * persistence ordered (TODO-20). The version claim allocates
+			 * persistence ordered. The version claim allocates
 			 * sequence numbers, but claims cannot order the persistence
 			 * itself — writer N's meta landing AFTER writer N+1's would
 			 * silently regress canonical, and under the announce model rows

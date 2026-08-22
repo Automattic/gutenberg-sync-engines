@@ -92,7 +92,7 @@ const MATRIX = {
 		reps: 3,
 		warmup: 1,
 	},
-	// DE-RTC's native cadence applied to every engine (TODO-19): two
+	// DE-RTC's native cadence applied to every engine: two
 	// minutes of staggered ~10s save beats + 10s sync reads. The fair
 	// measurement for the save-centric design; compare its byte and
 	// escalation shapes against the per-second scenarios above.

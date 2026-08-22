@@ -7,9 +7,9 @@
 import { parse as parseBlockGrammar } from '@wordpress/block-serialization-default-parser';
 
 /*
- * The DE-RTC block-native client-update descriptor builder (TODO-2a in
- * docs/engine-comparison.md): the client-side twin of the frozen merge
- * core's `wp_de_rtc_create_automerge_update_for_content_change()`.
+ * The DE-RTC block-native client-update descriptor builder: the
+ * client-side twin of the frozen merge core's
+ * `wp_de_rtc_create_automerge_update_for_content_change()`.
  *
  * The descriptor is TAMPER EVIDENCE, not merge input: the server derives
  * the exact same update from the (base, proposed) pair and rejects the

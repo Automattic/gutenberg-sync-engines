@@ -1,6 +1,6 @@
 <?php
 /**
- * Escalation-rate acceptance criteria (TODO-6): the P3 fine line made
+ * Escalation-rate acceptance criteria: the P3 fine line made
  * measurable. "We should detect and surface conflicts when changes
  * overlap meaningfully. However, we should also take care not to
  * overburden humans with constant review tasks. As we find this fine
@@ -17,8 +17,8 @@
  *   both escalated dispositions and partial-acceptance parked rows —
  *   while staying under an upper bound (overburdening is also failure).
  * - yjs-server's silence on contended workloads is its DOCUMENTED
- *   policy (TODO-7 owns the decision); the criterion pins the policy so
- *   a change is a deliberate act, not drift.
+ *   policy; the criterion pins that policy so a change to it is a
+ *   deliberate act, not drift.
  *
  * @package Gutenberg
  */
@@ -94,7 +94,7 @@ class Tests_Collaboration_WpSyncEscalationCriteria extends WP_UnitTestCase {
 					// must not drown the session in review work.
 					'WP_Intent_Log_Engine' => array( 0.000001, 0.7 ),
 					'WP_De_RTC_Engine'     => array( 0.000001, 0.7 ),
-					// Silent by documented policy (TODO-7).
+					// Silent by documented policy.
 					'WP_Yjs_Server_Engine' => array( 0.0, 0.0 ),
 				),
 			),

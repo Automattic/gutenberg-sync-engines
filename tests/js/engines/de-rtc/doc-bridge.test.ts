@@ -1,5 +1,5 @@
 /**
- * Per-block base honesty (TODO-2b): the doc bridge records the TRUE
+ * Per-block base honesty: the doc bridge records the TRUE
  * base of blocks kept through colliding incorporations and clears the
  * record once the collision resolves — retiring the silent block-level
  * last-writer-wins.

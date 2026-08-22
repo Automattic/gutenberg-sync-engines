@@ -17,7 +17,7 @@ import type { SyncUndoManager } from '@wordpress/sync';
 import { parseCanonicalBlocks, type DeRtcDocBridge } from './doc-bridge';
 
 /*
- * DE-RTC's revert-edit undo (TODO-16 in docs/engine-comparison.md).
+ * DE-RTC's revert-edit undo.
  *
  * The vision: "Undo and Redo never undo, but rather apply revert edits
  * that return the document to an earlier state by means of adding a new
@@ -41,8 +41,8 @@ import { parseCanonicalBlocks, type DeRtcDocBridge } from './doc-bridge';
  *   becomes a new own row like any other edit.
  *
  * The history-slider UI the vision sketches would read the same
- * version-content record this manager keeps; it remains editor UX for
- * the TODO-12 era.
+ * version-content record this manager keeps; it remains future
+ * editor UX work.
  */
 
 /** A canonical row as the session feed reports it. */
@@ -52,7 +52,7 @@ export interface DeRtcUndoFeedRow {
 	content: string;
 	/** Whether this row is the local client's own accepted proposal. */
 	own: boolean;
-	/** Server-stamped author user id (content rows since TODO-18). */
+	/** Server-stamped author user id (stamped on content rows). */
 	author?: number;
 	/** The authoring transport client id. */
 	authorClientId?: number;

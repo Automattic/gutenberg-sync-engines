@@ -1,7 +1,7 @@
 <?php
 /**
- * Tests for TODO-11 (intent-log half): client-authored `_wrapper` and
- * `content` updates make sourced-attribute edits survive server
+ * Tests for client-authored save markup (intent-log half): `_wrapper`
+ * and `content` updates make sourced-attribute edits survive server
  * materialization — the markup the server emits is markup the client
  * authored from the block's current attributes.
  *
@@ -85,7 +85,7 @@ class Tests_Collaboration_WpIntentLogSourcedAttrs extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'old alt', (string) $engine->materialize( $this->room() ) );
 
 		/*
-		 * The client bridge's TODO-11 capture for an alt change: set_attr
+		 * The client bridge's save-markup capture for an alt change: set_attr
 		 * for the sourced attribute (peers render from attrs), a content
 		 * rewrite carrying the block's NEW save markup (the codec models
 		 * the img as one object span), and the refreshed wrapper. Coarse

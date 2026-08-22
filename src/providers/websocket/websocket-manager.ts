@@ -85,7 +85,7 @@ async function fetchToken(): Promise< string > {
  * The announced socket URL. The one-time token deliberately does NOT
  * ride the URL (query strings land in server and proxy access logs);
  * it travels as a Sec-WebSocket-Protocol offer instead — the one
- * handshake header a browser page can influence (TODO-9).
+ * handshake header a browser page can influence.
  *
  * @return {string} Socket URL.
  */
@@ -178,11 +178,6 @@ function sendUpdate( room: string, update: EngineUpdate ): void {
 }
 
 /**
- * Applies a server room response to its room's codec.
- *
- * @param {ServerRoom} serverRoom One room's response.
- */
-/**
  * Test/diagnostic observability: mirrors the socket and per-room sync
  * state onto a window global, the way the retired test WS provider
  * exposed `__gutenbergTestWebSocketSync`. The websocket lane has no HTTP
@@ -204,6 +199,11 @@ function publishDebugState(): void {
 	};
 }
 
+/**
+ * Applies a server room response to its room's codec.
+ *
+ * @param serverRoom One room's response.
+ */
 function applyServerRoom( serverRoom: ServerRoom ): void {
 	const state = rooms.get( serverRoom.room );
 	if ( ! state ) {
@@ -322,9 +322,9 @@ function connect(): void {
 
 	fetchToken()
 		.then( ( token ) => {
-			// The token rides the subprotocol offer list, never the URL
-			// (TODO-9): the daemon consumes the `wp-sync-token.<hex>`
-			// offer and echoes the base `wp-sync` protocol on accept.
+			// The token rides the subprotocol offer list, never the URL:
+			// the daemon consumes the `wp-sync-token.<hex>` offer and
+			// echoes the base `wp-sync` protocol on accept.
 			socket = new window.WebSocket( socketUrl(), [
 				'wp-sync',
 				`wp-sync-token.${ token }`,

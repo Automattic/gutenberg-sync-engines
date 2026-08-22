@@ -59,10 +59,19 @@ From `config.ts`:
 - **Background tab**: 25 000 ms (kept below the server's 30 s awareness
   timeout so backgrounded tabs are not marked disconnected).
 
-Hosts can *lower* (never raise) the active-tab intervals with the
-`sync.pollingManager.pollingInterval` and
+Site administrators can *slow down* active-tab polling with the "Polling
+interval" field on Settings → Collaboration (1-25 seconds; 0 keeps the
+defaults). The chosen interval becomes the with-collaborators cadence; solo
+polling keeps its 4-second default unless the chosen interval is longer. The
+cap of 25 seconds keeps polling ahead of the server's 30-second awareness
+timeout. The setting does not affect the long-polling transport or the
+background-tab cadence.
+
+Developers can *lower* (never raise) the resulting active-tab intervals with
+the `sync.pollingManager.pollingInterval` and
 `sync.pollingManager.pollingIntervalWithCollaborators` filters; values above
-the defaults are ignored. Faster polling increases request volume.
+the setting (or the defaults) are ignored. Faster polling increases request
+volume.
 
 On poll failure the manager backs off (solo: 2/4/8/12 s; with collaborators:
 1/2/4/8 s), then shows a disconnect dialog that auto-retries every 30 s

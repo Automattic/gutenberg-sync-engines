@@ -265,7 +265,7 @@ describe( 'de-rtc review lane (client)', () => {
 		).toHaveLength( 0 );
 	} );
 
-	it( 'modify-before-adopt: a reviewer-edited block replaces the parked original (TODO-17)', () => {
+	it( 'modify-before-adopt: a reviewer-edited block replaces the parked original', () => {
 		const { entity, session, sent } = makeEntity();
 		session.receiveUpdate(
 			snapshotRow( 'v1', contentOf( BLOCK_A, BLOCK_B ) )
@@ -421,7 +421,7 @@ describe( 'de-rtc review lane (client)', () => {
 		} );
 	} );
 
-	describe( 'contested-item review surface (TODO-12 contests at the engine level)', () => {
+	describe( 'contested-item review surface (contests at the engine level)', () => {
 		const A_LOCAL = {
 			name: 'core/paragraph',
 			attributes: { content: 'Alpha local' },

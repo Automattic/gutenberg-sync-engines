@@ -62,13 +62,16 @@ const DEFAULT_ENGINES = [ 'intent-log', 'yjs-server', 'de-rtc' ];
 
 /*
  * Documented engine capability gaps the fuzzer must not "rediscover"
- * (docs/engine-comparison.md): actions an engine cannot sync are excluded
- * from its lanes rather than reported as divergence.
+ * (docs/engine-comparison.md): an action an engine cannot sync is dropped
+ * from that engine's lanes instead of being reported as divergence.
+ *
+ * No engine declares a gap today. De-rtc used to declare `syncsTitle:
+ * false`, but it syncs the title now — the whole entity property map rides
+ * every commit (src/engines/de-rtc/doc-bridge.ts, readFlatProperties) and
+ * the server merges it per property. Add an entry here only alongside the
+ * doc that documents the gap.
  */
-const ENGINE_CAPABILITIES = {
-	// "Content only (no title sync yet); title edits stay local."
-	'de-rtc': { syncsTitle: false },
-};
+const ENGINE_CAPABILITIES = {};
 const DEFAULT_TRANSPORTS = [ 'http-polling', 'http-long-polling', 'websocket' ];
 
 function parseArgs( argv ) {

@@ -1,5 +1,5 @@
 /**
- * TODO-20 stage 2: the commit lane. Proposals ride the autosave
+ * Save/Sync inversion, stage 2: the commit lane. Proposals ride the autosave
  * endpoint instead of transport rows; the response's rows + dispositions
  * settle through the session's ordinary machinery; failures retry
  * without losing edits. The transport carries no proposals at all.
@@ -64,7 +64,7 @@ function makeCommitSession(
 /** Flushes pending microtasks. */
 const flush = () => new Promise( ( resolve ) => setTimeout( resolve, 0 ) );
 
-describe( 'de-rtc commit lane (TODO-20 stage 2)', () => {
+describe( 'de-rtc commit lane', () => {
 	beforeEach( () => {
 		jest.useRealTimers();
 	} );

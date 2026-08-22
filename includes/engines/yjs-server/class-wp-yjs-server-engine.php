@@ -12,12 +12,12 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 	 *
 	 * Where a naive relay engine (like the retired yjs-relay) stores opaque
 	 * client blobs and lets the merge happen in each client's CRDT, this
-	 * engine understands Yjs on the
-	 * server (via the vendored y-php library): it maintains a canonical
-	 * room document, merges every incoming update into it, performs
-	 * compaction itself, and can materialize the document back to post
-	 * content — the same server-side authority the intent-log engine has,
-	 * built on CRDT merge semantics instead of a transform log.
+	 * engine understands Yjs on the server (via the vendored y-php
+	 * library): it maintains a canonical room document, merges every
+	 * incoming update into it, performs compaction itself, and can
+	 * materialize the document back to post content — the same
+	 * server-side authority the intent-log engine has, built on CRDT
+	 * merge semantics instead of a transform log.
 	 *
 	 * Storage model (the append-log-plus-canonical-document design):
 	 *
@@ -295,7 +295,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 			$before_bytes = \Yjs\encodeStateAsUpdateV2( $doc )->toBinaryString();
 
 			/*
-			 * Post-genesis growth policing (TODO-8, tiers 1+2). The genesis
+			 * Post-genesis growth policing (tiers 1+2). The genesis
 			 * size gate refuses to INITIALIZE an oversized room; this is the
 			 * terminal backstop for a room that GROWS past reason afterward:
 			 * further writes 413 (reads and saves continue — nothing already
@@ -1149,8 +1149,10 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				 * genesis, later joiners never re-author the document, so
 				 * only this gate keeps an oversized post from creating (and
 				 * every ingest from re-merging) a huge canonical document.
-				 * Zero disables the gate. Per-room growth after genesis
-				 * remains future work.
+				 * Zero disables the gate. A room that grows past genesis is
+				 * capped separately by wp_sync_yjs_server_max_room_bytes;
+				 * what neither gate can do is SHRINK a room already over
+				 * the limit (epoch compaction, parked as post-v1 work).
 				 *
 				 * @since 0.4.0
 				 *
@@ -1273,23 +1275,6 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 			return true;
 		}
 
-		/**
-		 * Maps parsed blocks onto YBlock shared types (the schema the client
-		 * sync layer uses: a Y.Map per block with `name`, `clientId`,
-		 * `attributes` (rich-text attrs as Y.Text), `innerBlocks`).
-		 *
-		 * Mirrors the intent-log genesis simplification: a block's inner HTML
-		 * maps onto its rich-text content attribute after stripping the
-		 * single wrapper element, which is recorded in $wrappers (keyed by
-		 * the minted clientId) for materialization.
-		 *
-		 * @since 0.2.0
-		 *
-		 * @param array  $blocks   Output of parse_blocks().
-		 * @param string $id_base  Deterministic clientId prefix.
-		 * @param array  $wrappers Collects clientId => wrapper (by reference).
-		 * @return \Yjs\Types\YMap[] YBlock shared types.
-		 */
 		/**
 		 * Decomposes a block's inner markup (genesis innerHTML, or a
 		 * client-maintained `_save` mirror) into the wrapper record the

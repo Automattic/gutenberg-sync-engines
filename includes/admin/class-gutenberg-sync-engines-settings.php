@@ -47,6 +47,17 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		const DE_RTC_COMMIT_INTERVAL_OPTION = 'gutenberg_sync_engines_de_rtc_commit_interval';
 
 		/**
+		 * Option storing the HTTP short-polling interval in SECONDS. 0 keeps
+		 * the built-in defaults (1 second with collaborators, 4 seconds
+		 * alone). Capped at 25 so polling always beats the server's
+		 * 30-second awareness timeout.
+		 *
+		 * @since 0.4.0
+		 * @var string
+		 */
+		const POLLING_INTERVAL_OPTION = 'gutenberg_sync_engines_polling_interval';
+
+		/**
 		 * Registers the admin page, settings, and the transport filter.
 		 *
 		 * @since 0.1.0
@@ -180,6 +191,17 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			);
 			register_setting(
 				self::PAGE,
+				self::POLLING_INTERVAL_OPTION,
+				array(
+					'type'              => 'integer',
+					'description'       => __( 'HTTP short-polling interval in seconds (0 = defaults)', 'gutenberg-sync-engines' ),
+					'sanitize_callback' => array( $this, 'sanitize_polling_interval' ),
+					'show_in_rest'      => true,
+					'default'           => 0,
+				)
+			);
+			register_setting(
+				self::PAGE,
 				self::DE_RTC_COMMIT_INTERVAL_OPTION,
 				array(
 					'type'              => 'integer',
@@ -189,6 +211,18 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 					'default'           => 0,
 				)
 			);
+		}
+
+		/**
+		 * Sanitizes the polling interval: whole seconds, 0-25.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param mixed $value Submitted value.
+		 * @return int Interval in seconds.
+		 */
+		public function sanitize_polling_interval( $value ): int {
+			return max( 0, min( 25, (int) $value ) );
 		}
 
 		/**
@@ -233,11 +267,62 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				'gutenberg_sync_engines_main'
 			);
 			add_settings_field(
+				self::POLLING_INTERVAL_OPTION,
+				__( 'Polling interval', 'gutenberg-sync-engines' ),
+				array( $this, 'render_polling_interval_field' ),
+				self::PAGE,
+				'gutenberg_sync_engines_main'
+			);
+			add_settings_field(
 				self::DE_RTC_COMMIT_INTERVAL_OPTION,
 				__( 'Distributed Editing commit cadence', 'gutenberg-sync-engines' ),
 				array( $this, 'render_commit_interval_field' ),
 				self::PAGE,
 				'gutenberg_sync_engines_main'
+			);
+		}
+
+		/**
+		 * Renders the polling interval field.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @return void
+		 */
+		public function render_polling_interval_field(): void {
+			$value = (int) get_option( self::POLLING_INTERVAL_OPTION, 0 );
+			printf(
+				'<input type="number" min="0" max="25" step="1" name="%1$s" id="%1$s" value="%2$d" class="small-text" /> %3$s<p class="description">%4$s</p>',
+				esc_attr( self::POLLING_INTERVAL_OPTION ),
+				(int) $value,
+				esc_html__( 'seconds', 'gutenberg-sync-engines' ),
+				esc_html__( 'HTTP short-polling only. How often each editor asks the server for new updates while collaborating. 0 keeps the defaults: every second with collaborators, every 4 seconds when editing alone. A larger interval reduces server load, but edits take that much longer to reach other editors.', 'gutenberg-sync-engines' )
+			);
+
+			/*
+			 * The dial only applies to the short-polling transport: HIDE its
+			 * row (live, following the transport select) rather than disable
+			 * the input — a disabled input drops out of the POST and saving
+			 * under another transport would silently reset the stored
+			 * interval. A hidden row still submits, so the value survives
+			 * transport round-trips. Without JS the row simply stays visible.
+			 */
+			printf(
+				'<script>( function () {
+					var input  = document.getElementById( %1$s );
+					var select = document.getElementById( %2$s );
+					if ( ! input || ! select ) {
+						return;
+					}
+					var row    = input.closest( "tr" );
+					var toggle = function () {
+						row.style.display = "http-polling" === select.value ? "" : "none";
+					};
+					select.addEventListener( "change", toggle );
+					toggle();
+				} )();</script>',
+				wp_json_encode( self::POLLING_INTERVAL_OPTION ),
+				wp_json_encode( self::TRANSPORT_OPTION )
 			);
 		}
 

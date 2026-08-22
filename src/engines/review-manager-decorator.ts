@@ -38,8 +38,8 @@ export interface EngineReviewSource {
 	 * Best-effort restore of the parked content as ordinary local edits
 	 * under the restorer's capability, then resolves as restored.
 	 *
-	 * `modifiedBlocks` is the modify-before-adopt lane (TODO-17,
-	 * upstream's `reviewed_block_source`): the reviewer's edited
+	 * `modifiedBlocks` is the modify-before-adopt lane (upstream's
+	 * `reviewed_block_source`): the reviewer's edited
 	 * replacements for specific parked blocks, keyed by the parked
 	 * block's index. What the reviewer supplies IS what gets applied —
 	 * approval and content are pinned together by construction.

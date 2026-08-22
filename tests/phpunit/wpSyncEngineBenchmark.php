@@ -342,7 +342,7 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 	}
 
 	public function test_save_sync_session_converges_on_every_engine() {
-		// DE-RTC's native cadence (TODO-19), applied to every engine:
+		// DE-RTC's native cadence, applied to every engine:
 		// staggered ~10s save beats, 10s sync reads. The fair measurement
 		// for the save-centric design; every engine must still converge
 		// with zero loss at this cadence.
@@ -687,7 +687,7 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 		$report   = WP_Sync_Bench_Runner::run( $engine, $storage, $post_id, $workload );
 
 		// Concurrent restyles of the same block from the same base are a
-		// genuine conflict. Since per-block salvage (TODO-3) the clean
+		// genuine conflict. Since per-block salvage landed, the clean
 		// remainder of each proposal lands while exactly the conflicted
 		// blocks park for a human decision — surfaced as durable review
 		// rows, never silently merged, never dropped.
@@ -720,7 +720,7 @@ class Tests_Collaboration_WpSyncEngineBenchmark extends WP_UnitTestCase {
 	}
 
 	public function test_de_rtc_stale_base_voids_retry_after_deep_read_gap() {
-		// The reconnect shape. Since per-block salvage (TODO-3), a
+		// The reconnect shape. Since per-block salvage landed, a
 		// PRESENT client can barely age out anymore — even its conflicts
 		// partially apply and advance its base. What still produces
 		// stale-base voids is genuine ABSENCE: a client that goes silent

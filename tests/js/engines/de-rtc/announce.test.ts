@@ -1,5 +1,5 @@
 /**
- * TODO-20 (Tier 3, stage 1): the announce model. Accepted proposals
+ * The announce model (Tier 3, stage 1). Accepted proposals
  * arrive as content-less ANNOUNCE rows; the session advances by hash for
  * its own unchanged round-trips, fetches canonical content only when it
  * will actually use it, and incorporates fetched snapshots for merged

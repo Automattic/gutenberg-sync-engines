@@ -7,7 +7,7 @@
 
 if ( ! class_exists( 'WP_De_RTC_Base_Version_Preflight' ) ) {
 	/**
-	 * The cooperating-writer lane (TODO-4a in docs/engine-comparison.md):
+	 * The cooperating-writer lane:
 	 * "The addition of a single argument — base_version — makes it
 	 * possible to … incorporate updates from API calls that explicitly
 	 * request them to merge instead of replace."

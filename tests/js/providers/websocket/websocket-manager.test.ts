@@ -121,7 +121,7 @@ describe( 'websocket manager', () => {
 
 		const ws = FakeWebSocket.instances[ 0 ];
 		expect( ws ).toBeDefined();
-		// TODO-9: the token rides the subprotocol offer, never the URL
+		// The token rides the subprotocol offer, never the URL
 		// (query strings land in server/proxy access logs).
 		expect( ws.url ).not.toContain( 't0ken' );
 		expect( ws.protocols ).toEqual( [ 'wp-sync', 'wp-sync-token.t0ken' ] );

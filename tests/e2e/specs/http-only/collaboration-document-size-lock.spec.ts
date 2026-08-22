@@ -11,9 +11,11 @@ import { test, expect } from '../../config/collaboration-fixtures';
  * the whole document at init (client-side genesis) — so a second user fell
  * back to the classic post-locked modal, which this spec used to assert.
  * Under yjs-server the server owns genesis and clients only send small
- * diffs, so later joiners are never size-fenced; there is no server-side
- * genesis size gate yet (a known yjs-server gap — see
- * docs/engine-comparison.md).
+ * diffs, so later joiners are never size-fenced by this guard. The server
+ * has its own separate size gates (genesis refuses above
+ * `wp_sync_yjs_server_max_genesis_bytes`, and a grown room rejects writes
+ * above `wp_sync_yjs_server_max_room_bytes`); they return 413 and are not
+ * what this spec exercises. See docs/engine-comparison.md.
  */
 test.describe( 'Collaboration with large documents', () => {
 	test( 'disables collaboration when an oversized local update exceeds the document size limit', async ( {

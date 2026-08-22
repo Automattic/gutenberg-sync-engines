@@ -1,5 +1,5 @@
 /**
- * TODO-11: save-accurate `_wrapper`/`content` authoring. With a
+ * Save-accurate `_wrapper`/`content` authoring. With a
  * save-markup adapter, capture refreshes the wrapper (alignment/class
  * changes survive materialization) and, for block types without a
  * resolver-named content field, authors the save-derived inner HTML as
@@ -88,7 +88,7 @@ const contentHtml = ( doc: EngineDocument, index: number ): string =>
 		doc.root[ index ].fields.content ?? { text: '', formats: [] }
 	);
 
-describe( 'save-accurate capture (TODO-11)', () => {
+describe( 'save-accurate capture', () => {
 	it( 'a sourced-attribute change rewrites the authored content field', () => {
 		const doc = docFromBlocks(
 			[ image( 'i1', 'https://x/a.png', 'old alt' ) ],

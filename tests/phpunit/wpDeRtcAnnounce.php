@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests for the de-rtc announce model (TODO-20 Tier 3, stage 1): the
+ * Tests for the de-rtc announce model (Tier 3, stage 1): the
  * transport carries advisories, not documents. Accepted proposals store
  * content-less ANNOUNCE rows; canonical content lives once in room meta;
  * a behind client's `fetch` row is answered with ONE synthesized (never
@@ -172,7 +172,7 @@ class Tests_Collaboration_WpDeRtcAnnounce extends WP_UnitTestCase {
 		$this->assertLessThan(
 			1024,
 			$max_announce_bytes,
-			'Announce rows must not scale with document size (the TODO-20 cliff).'
+			'Announce rows must not scale with document size (the pre-announce row-size cliff).'
 		);
 		$this->assertGreaterThan( 4000, strlen( $edited ), 'The document is genuinely larger than any announce row.' );
 	}
