@@ -37,28 +37,29 @@ word.
 
 ## Words to avoid at the top of an item
 
-These are all real words we use in the code, and they are correct
-there. They just do not belong in the part of an item that a newcomer
-reads first. Use the plain version instead, and save the precise term
-for the notes at the bottom.
+Here is the test, and it is mechanical: **if a word appears in
+[the glossary](../glossary.md), it is one of our invented words.** Do
+not use it in the title, the problem, or the example. Say what it means
+instead.
 
-| We say | Write this instead |
+Room, genesis, materialize, disposition, void, park, escalate,
+register, salvage, sequester, incorporate, announce, checkpoint — all
+of these are correct in the code and correct in the rest of `docs/`.
+They are wrong at the top of a plan item, because the person reading
+that part may be meeting this project today.
+
+They are welcome in the notes at the bottom. Link the glossary when you
+use one there.
+
+Some plain replacements, to show what this looks like in practice:
+
+| Instead of | Write |
 | --- | --- |
-| room | the post everyone is editing |
-| intent | a single change someone made |
-| seq / base-seq | which version of the post they started from |
-| stale base | they were working from an old version |
-| voided | the change was thrown away |
-| escalated / parked | set aside for a person to decide |
-| disposition | what the server decided to do with a change |
-| canonical content | the official copy of the post on the server |
-| materialize | turn the saved data back into post content |
-| genesis | the first copy of the post the server stores |
-| CRDT | a document that merges itself |
-| transform | adjust a change so it still fits |
-| coarse capture | a change we recorded roughly, not precisely |
-
-Add to this table whenever you catch yourself explaining a word.
+| the room | the post everyone is editing |
+| the intent was voided | the change was thrown away |
+| it escalated / parked | it was set aside for a person to decide |
+| a stale base | they were working from an old version of the post |
+| canonical content | the official copy on the server |
 
 ## Status values
 
