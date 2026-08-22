@@ -295,7 +295,8 @@ flake is closed by the plugin-local hardened fixtures
 (`tests/e2e/config/collaboration-fixtures.ts` — the root-cause subtree
 fixture fix remains upstream/human-owned). One known intermittent
 remains: the parked-A12 residual (intent-log mid-burst compaction
-splice, V1.md F3), firing ~1-2 of 8 under the repetition hammer; the
+splice, `docs/plan/items/0001-typing-in-a-table-gets-scrambled.md`),
+firing ~1-2 of 8 under the repetition hammer; the
 e2e CI job keeps the base config's 2-retries-in-CI to absorb it. The
 vendored libraries' own
 conformance suites run separately:
@@ -503,9 +504,15 @@ they exist so a failure is observable without re-instrumenting:
 
 ## Known issues / out of scope
 
-Open work items live in `V1.md` at the repo root, each with acceptance
-criteria and a lane (autonomous vs human-review); this section carries
-the operational facts and cites V1.md items where one applies.
+Open work items live in `docs/plan/` — one file per bug or feature,
+written in plain language with an example and a way to tell when it is
+done. Read `docs/plan/README.md` before adding one; the `plan-item`
+skill applies its rules, and `npm run plan:check` enforces them.
+Ideas we looked at and set aside are in `docs/plan/not-now.md`. `V1.md`
+is now the historical record of the v1 scope contract, not a live queue.
+
+This section carries the operational facts and cites plan items where
+one applies.
 
 - `composer lint` is clean (zero errors, zero warnings) since the v1
   loop's A6 burn-down (branch `loop/a6`) — keep it that way; the
@@ -538,15 +545,18 @@ the operational facts and cites V1.md items where one applies.
   (genesis refuses above `wp_sync_yjs_server_max_genesis_bytes`, 1 MB
   default; a room grown past `wp_sync_yjs_server_max_room_bytes`, 8 MB
   default, rejects further writes with 413 while reads/saves continue —
-  shrinking an over-limit room via epoch compaction stays post-v1), and
-  materialization still carries the Phase-2a wrapper simplification
-  (intent-log's was fixed by client-authored save markup; the yjs twin
-  needs framework changes — core-data owns the Yjs block writer —
-  V1.md B1; and its genesis wrongly stores stripped inner markup in the
-  first rich-text-source attribute, e.g. `<img>` in image `caption` —
-  V1.md A4). Genesis
-  blocks must set `isValid: true` or the editor renders them as
-  invalid-content recovery blocks (has bitten).
+  shrinking an over-limit room via epoch compaction stays post-v1).
+  Materialization fidelity is FIXED as of PR #35: every Y.Block carries
+  a `_save` mirror (its registered save() output, refreshed on attribute
+  merges; the subtree's `crdt-blocks.ts` writes it under the exported
+  `CRDT_BLOCK_SAVE_KEY`) and the engine prefers it over genesis
+  wrappers, so attribute-driven wrapper changes materialize. The genesis
+  rich-text defect (stripped inner markup landing in the first
+  rich-text-source attribute) was fixed separately by the selector-
+  sourced split. Genesis blocks must still set `isValid: true` or the
+  editor renders them as invalid-content recovery blocks (has bitten) —
+  and a container-shaped variant of exactly that symptom is open, see
+  `docs/plan/items/0002-group-block-breaks-after-reload.md`.
 - **de-rtc known gaps** (docs/engine-comparison.md has the full list):
   truly concurrent SAME-block edits merge from their TRUE base
   (`blockBaseVersions`) or raise a contested pending item

@@ -139,9 +139,15 @@ function checkItem( path, terms ) {
 		warnings.push( 'The heading and the frontmatter title do not match.' );
 	}
 
+	// File paths, commands and identifiers legitimately contain our
+	// vocabulary, so only prose is checked for jargon.
+	const prose = ( top ?? text )
+		.replace( /```[\s\S]*?```/g, ' ' )
+		.replace( /`[^`]*`/g, ' ' );
+
 	const found = new Map();
 	for ( const term of terms ) {
-		const hits = ( top ?? text ).match( termPattern( term ) );
+		const hits = prose.match( termPattern( term ) );
 		if ( hits ) {
 			found.set( term, hits.length );
 		}
