@@ -40,10 +40,12 @@ The active engine and transport are chosen on the plugin's **Settings →
 Collaboration** screen (or via `wp_sync_engine` / the
 `WP_COLLABORATION_TRANSPORT` config value).
 
-**Comparing the engines?** Start with
-[`docs/engine-comparison.md`](docs/engine-comparison.md) and the feature
-parity table, host-facing resource profiles, measured transport numbers,
-and the known gaps that should color any conclusion.
+**Comparing the engines?** Start with [`docs/`](docs/README.md). The short
+answer and the full trade-off — scorecard, feature parity, resource shapes,
+and each engine's known gaps — live in
+[`docs/engine-comparison.md`](docs/engine-comparison.md); the transports are
+compared separately in [`docs/transports.md`](docs/transports.md). Both are
+deliberately number-free. Run `npm run bench` for numbers on your hardware.
 
 ## Architecture
 

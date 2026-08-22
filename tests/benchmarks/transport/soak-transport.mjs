@@ -1,7 +1,7 @@
 /**
- * N-window duration soak: the
- * browser-driven multi-client run that validates the hosting cost cards'
- * composed per-user-hour projections against measured end-to-end totals.
+ * N-window duration soak: the browser-driven multi-client run that
+ * validates the hosting cost cards' composed per-user-hour projections
+ * against measured end-to-end totals.
  *
  *   node tests/benchmarks/transport/soak-transport.mjs \
  *       engine=de-rtc transport=http-polling windows=3 soak=3600 \

@@ -162,7 +162,7 @@ of this benchmark differ for engine reasons too — compare transports under
 one engine at a time, and use the engine benchmark for engine-vs-engine
 server cost.
 
-## The N-window soak (`soak-transport.mjs`, TODO-10)
+## The N-window soak (`soak-transport.mjs`)
 
 The trial benchmark above answers "what does one edit cost"; the soak
 answers "what does an hour of real co-editing cost per user" — the

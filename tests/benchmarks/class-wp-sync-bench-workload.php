@@ -344,10 +344,10 @@ if ( ! class_exists( 'WP_Sync_Bench_Workload' ) ) {
 
 					case 'save-sync-session':
 						/*
-						 * DE-RTC's native cadence: rounds are
-						 * wall-clock seconds; a client WRITES only on its
-						 * staggered ~10s save beats, submitting the burst it
-						 * typed since its last save as one batch, and reads
+						 * DE-RTC's native cadence: rounds are wall-clock
+						 * seconds; a client WRITES only on its staggered
+						 * ~10s save beats, submitting the burst it typed
+						 * since its last save as one batch, and reads
 						 * on the sync cadence (read_every = 10 for every
 						 * client). Engine-agnostic like every scenario — it
 						 * measures each engine at the cadence the

@@ -1356,9 +1356,9 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 							$log      = array();
 							$settled  = array();
 						} elseif ( null === $genesis ) {
-							// Genesis: first snapshot wins (a concurrent-
-							// initialization duplicate is ignored
-							// deterministically).
+							// Genesis: the first snapshot wins, so a racing
+							// second initializer is ignored the same way
+							// on every server.
 							$genesis = $decoded['doc'];
 						}
 						break;

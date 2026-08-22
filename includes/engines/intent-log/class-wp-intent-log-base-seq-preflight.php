@@ -8,16 +8,15 @@
 if ( ! class_exists( 'WP_Intent_Log_Base_Seq_Preflight' ) ) {
 	/**
 	 * The intent-log machine-writer lane: a `wp_update_post()` caller
-	 * (WP-CLI, plugins, REST via the `base_seq` request param on posts
-	 * and pages)
-	 * passes `intent_log_base_seq` — the room seq whose materialization it
-	 * read before editing — and its save is DIFFED against the document at
-	 * that seq and authored as ordinary typed intents through the engine:
-	 * transforms, per-intent dispositions, the kses lane, and the review
-	 * lane all apply exactly as they do to a browser session's edits. The
-	 * saved `post_content` is then replaced with the merged canonical
-	 * materialization (identity metadata included), so post and room stay
-	 * convergent.
+	 * (WP-CLI, plugins, REST via the `base_seq` request param on posts and
+	 * pages) passes `intent_log_base_seq` — the room seq whose
+	 * materialization it read before editing — and its save is DIFFED
+	 * against the document at that seq and authored as ordinary typed
+	 * intents through the engine: transforms, per-intent dispositions, the
+	 * kses lane, and the review lane all apply exactly as they do to a
+	 * browser session's edits. The saved `post_content` is then replaced
+	 * with the merged canonical materialization (identity metadata
+	 * included), so post and room stay convergent.
 	 *
 	 * The diff is keyed by the `metadata.syncId` identity that
 	 * `materialize()` persists into content — a round-tripping writer

@@ -5,9 +5,8 @@ import { parseCanonicalBlocks } from './doc-bridge';
 import type { DeRtcUndoFeed, DeRtcUndoFeedRow } from './revert-undo';
 
 /*
- * Per-edit authorship: "Edits
- * retain authorship and it's possible to hover over a user's avatar and
- * highlight the changes they applied."
+ * Per-edit authorship: "Edits retain authorship and it's possible to
+ * hover over a user's avatar and highlight the changes they applied."
  *
  * This is the DATA surface: every accepted canonical row carries its
  * author (user id + client id, server-stamped), and diffing each row

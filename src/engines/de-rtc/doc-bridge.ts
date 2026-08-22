@@ -93,14 +93,13 @@ export interface DeRtcDocBridge {
 	 * side (equal block counts); returns false when it cannot align, in
 	 * which case the caller keeps deferring.
 	 *
-	 * Per-block base honesty: when a kept block was ALSO changed in
-	 * the arriving canonical (a
-	 * true same-block collision), the version the doc held BEFORE this
-	 * incorporation is recorded as that block's base. The next proposal
-	 * carries the map, and the server merges the collided block from
-	 * its TRUE base — non-overlapping concurrent edits merge, real
-	 * overlaps park for review — instead of reading the re-proposal as
-	 * a clean sole-writer change (the silent block-level
+	 * Per-block base honesty: when a kept block was ALSO changed in the
+	 * arriving canonical (a true same-block collision), the version the
+	 * doc held BEFORE this incorporation is recorded as that block's
+	 * base. The next proposal carries the map, and the server merges the
+	 * collided block from its TRUE base — non-overlapping concurrent
+	 * edits merge, real overlaps park for review — instead of reading the
+	 * re-proposal as a clean sole-writer change (the silent block-level
 	 * last-writer-wins this client policy used to cause).
 	 *
 	 * @param version         Canonical version label.

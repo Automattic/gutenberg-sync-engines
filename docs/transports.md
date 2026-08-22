@@ -25,11 +25,13 @@ Settings → Collaboration slows active-tab polling down to 25 seconds
 for hosts that want fewer requests (see
 `src/providers/http-polling/README.md` for the exact semantics).
 
-Websocket specifics: the one-time auth token rides the
-`Sec-WebSocket-Protocol` offer list rather than the URL query string
-(query strings land in server and proxy access logs), and plaintext
-`ws://` must never leave a dev box — TLS termination in front of the
-daemon is the operator's job. The websocket-only e2e suite runs against
+Two websocket specifics. The one-time auth token rides the
+`Sec-WebSocket-Protocol` offer list rather than the URL query string,
+because query strings end up in server and proxy access logs. And
+plaintext `ws://` must never leave a dev box; terminating TLS in front
+of the daemon is the operator's job.
+
+The websocket-only e2e suite runs against
 the real transport: it selects the websocket transport on the tests
 site, publishes the `wp collaboration sync-server` daemon, and restores
 the previous transport at teardown (`npm run test:e2e:websocket`). For

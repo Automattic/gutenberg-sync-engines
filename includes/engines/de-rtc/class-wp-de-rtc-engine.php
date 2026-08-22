@@ -500,17 +500,16 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			}
 
 			/*
-			 * Descriptor tamper evidence, enforced: a proposal
-			 * carrying a block-native clientUpdate has it validated ONCE
-			 * against the PLAIN declared base — the state the client
-			 * actually built it from, never the blockBaseVersions
-			 * composite — and then DROPPED. Dropping matters twice over:
-			 * kses laundering and per-block salvage rewrite the proposed
-			 * content
-			 * server-side, so a retained descriptor would false-positive
-			 * the merge core's own tamper check; and the drop is what
-			 * lets descriptor-carrying proposals use those
-			 * partial-acceptance lanes at all.
+			 * Descriptor tamper evidence, enforced: a proposal carrying a
+			 * block-native clientUpdate has it validated ONCE against the
+			 * PLAIN declared base — the state the client actually built it
+			 * from, never the blockBaseVersions composite — and then
+			 * DROPPED. Dropping matters twice over: kses laundering and
+			 * per-block salvage rewrite the proposed content server-side,
+			 * so a retained descriptor would false-positive the merge
+			 * core's own tamper check; and the drop is what lets
+			 * descriptor-carrying proposals use those partial-acceptance
+			 * lanes at all.
 			 */
 			$rejection = $this->validate_and_drop_client_update( $room, $state, $proposal );
 			if ( null !== $rejection ) {
@@ -1268,11 +1267,11 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		/**
 		 * Per-block salvage of a proposal whose whole-document three-way
 		 * merge failed: the partial-acceptance grain, mirroring the kses
-		 * sequestration lane. Blocks only the client changed pass
-		 * through; blocks only
-		 * canonical changed adopt canonical; blocks BOTH changed get their
-		 * own three-way merge — and when that conflicts too, canonical
-		 * wins the position while the client's block parks for review.
+		 * sequestration lane. Blocks only the client changed pass through;
+		 * blocks only canonical changed adopt canonical; blocks BOTH
+		 * changed get their own three-way merge — and when that conflicts
+		 * too, canonical wins the position while the client's block parks
+		 * for review.
 		 *
 		 * Sound only when the block structure aligns positionally on all
 		 * three sides (equal top-level record counts): structural
@@ -1960,18 +1959,18 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * (room snapshots, then revision mining), with per-block base
 		 * substitutions when the proposal declares them.
 		 *
-		 * Per-block base honesty: a client that kept a locally-edited
-		 * block through a colliding
-		 * incorporation re-proposes from an ADVANCED whole-document base —
-		 * which used to present the kept block as a clean sole-writer
-		 * change and silently overwrite the peer (block-level LWW). The
-		 * `blockBaseVersions` map declares each kept block's TRUE base;
-		 * substituting that version's record into the base hands the
-		 * three-way merge real concurrency to resolve: non-overlapping
-		 * same-block edits merge, true overlaps park via salvage. A
-		 * substitution that cannot be made soundly (unknown version,
-		 * structural drift between the versions) is skipped — degrading to
-		 * exactly the plain whole-document-base behavior, never worse.
+		 * Per-block base honesty: a client that kept a locally-edited block
+		 * through a colliding incorporation re-proposes from an ADVANCED
+		 * whole-document base — which used to present the kept block as a
+		 * clean sole-writer change and silently overwrite the peer
+		 * (block-level LWW). The `blockBaseVersions` map declares each kept
+		 * block's TRUE base; substituting that version's record into the
+		 * base hands the three-way merge real concurrency to resolve:
+		 * non-overlapping same-block edits merge, true overlaps park via
+		 * salvage. A substitution that cannot be made soundly (unknown
+		 * version, structural drift between the versions) is skipped —
+		 * degrading to exactly the plain whole-document-base behavior,
+		 * never worse.
 		 *
 		 * @since 0.5.0
 		 *

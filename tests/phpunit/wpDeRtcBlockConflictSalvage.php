@@ -122,11 +122,11 @@ class Tests_Collaboration_WpDeRtcBlockConflictSalvage extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Per-block base honesty: a client that kept its local block
-	 * through a colliding
-	 * incorporation re-proposes from an advanced whole-document base but
-	 * declares the block's TRUE base — and non-overlapping concurrent
-	 * edits to the same block now MERGE instead of overwriting the peer.
+	 * Per-block base honesty: a client that kept its local block through a
+	 * colliding incorporation re-proposes from an advanced whole-document
+	 * base but declares the block's TRUE base — and non-overlapping
+	 * concurrent edits to the same block now MERGE instead of overwriting
+	 * the peer.
 	 */
 	public function test_per_block_base_merges_true_same_block_concurrency() {
 		$engine = $this->engine();

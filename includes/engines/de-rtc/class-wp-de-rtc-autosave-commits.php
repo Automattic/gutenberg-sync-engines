@@ -7,13 +7,12 @@
 
 if ( ! class_exists( 'WP_De_RTC_Autosave_Commits' ) ) {
 	/**
-	 * The Save/Sync inversion's commit carrier: de-rtc sessions COMMIT
-	 * through the
-	 * ordinary WordPress autosave endpoint instead of transport rows —
-	 * "Save is the only commit primitive … wp_update_post / REST,
-	 * autosaves included", "Pseudo-realtime is a save/autosave cadence
-	 * dial, not a second commit channel". The transport is left fully
-	 * advisory for documents: announces, on-demand snapshots, review
+	 * The Save/Sync inversion's commit carrier: de-rtc sessions commit
+	 * through the ordinary WordPress autosave endpoint instead of
+	 * transport rows — "Save is the only commit primitive … wp_update_post
+	 * / REST, autosaves included", "Pseudo-realtime is a save/autosave
+	 * cadence dial, not a second commit channel". The transport is left
+	 * fully advisory for documents: announces, on-demand snapshots, review
 	 * rows, presence.
 	 *
 	 * A POST to `/wp/v2/(posts|pages)/<id>/autosaves` carrying the

@@ -359,12 +359,11 @@ export function createDeRtcSessionCodec(
 		inFlight = true;
 		if ( options.commit ) {
 			/*
-			 * The Save/Sync inversion: the commit rides
-			 * the autosave endpoint, not the transport — the poll lane
-			 * stays advisory (announces, on-demand snapshots, review
-			 * rows, presence). The response returns the rows this commit
-			 * appended plus the dispositions, and the ordinary row
-			 * machinery settles them.
+			 * The Save/Sync inversion: the commit rides the autosave
+			 * endpoint, not the transport — the poll lane stays advisory
+			 * (announces, on-demand snapshots, review rows, presence).
+			 * The response returns the rows this commit appended plus the
+			 * dispositions, and the ordinary row machinery settles them.
 			 */
 			void commitThroughSave( update );
 			return;
@@ -562,10 +561,10 @@ export function createDeRtcSessionCodec(
 						// equality — the wire-safe twin of the old byte
 						// compare; every server-side comparison
 						// canonicalizes the same way): advance without any
-						// content download — the announce model's core win
-						// for the active typist. Properties the server
-						// merged from peers still incorporate (they ride
-						// the announce).
+						// content download, the announce model's win for
+						// the active typist. Properties the server merged
+						// from peers still incorporate (they ride the
+						// announce).
 						pendingCanonical = null;
 						recordCanonicalContent(
 							decoded.version,

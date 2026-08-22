@@ -17,8 +17,8 @@
  *   both escalated dispositions and partial-acceptance parked rows —
  *   while staying under an upper bound (overburdening is also failure).
  * - yjs-server's silence on contended workloads is its DOCUMENTED
- *   policy; the criterion pins the policy so
- *   a change is a deliberate act, not drift.
+ *   policy; the criterion pins that policy so a change to it is a
+ *   deliberate act, not drift.
  *
  * @package Gutenberg
  */

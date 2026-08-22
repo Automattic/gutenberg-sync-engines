@@ -6,9 +6,8 @@
  * byte-match the frozen merge core's server-side derivation — a mismatch
  * is a FALSE TAMPER REJECTION of a legitimate save under the engine's
  * full descriptor enforcement. This script runs the PHP side of the
- * contract over an
- * exhaustive (base, proposed) matrix and records the fingerprints the
- * server would expect; the Jest suite
+ * contract over an exhaustive (base, proposed) matrix and records the
+ * fingerprints the server would expect; the Jest suite
  * (tests/js/engines/de-rtc/descriptor-vectors.test.ts) replays the same
  * matrix through the TS builder.
  *
@@ -17,7 +16,7 @@
  *   node tests/tools/generate-de-rtc-descriptor-vectors.mjs
  *
  * (which runs `wp eval-file` on this script in the tests env cli
- * container and rewrites
+ * container and rewrites the vector file at
  * tests/js/engines/de-rtc/test-vectors/descriptor-vectors.json).
  *
  * @package gutenberg-sync-engines

@@ -66,15 +66,15 @@ export type RichTextFieldsResolver = ( blockName: string ) => string[];
  * Renders a block's SAVE markup with empty inner blocks (wrapper plus the
  * block's own static inner HTML), or null when unavailable (unregistered
  * type, save() throw). The editor side supplies `getSaveContent`; with an
- * adapter present, capture authors save-accurate materialization
- * state: the block's single wrapper
- * element refreshes into the `_wrapper` internal attr (alignment/class
- * changes survive server materialization), and for block types whose
- * resolver names no `content` field the whole save-derived inner HTML is
- * authored as the engine `content` field through the codec — sourced
- * attributes (image url/alt, embeds) then round-trip materialization,
- * because the markup the SERVER emits is markup the CLIENT authored from
- * the block's current attributes.
+ * adapter present, capture authors save-accurate materialization state:
+ * the block's single wrapper element refreshes into the `_wrapper`
+ * internal attr (alignment/class changes survive server
+ * materialization), and for block types whose resolver names no
+ * `content` field the whole save-derived inner HTML is authored as the
+ * engine `content` field through the codec — sourced attributes (image
+ * url/alt, embeds) then round-trip materialization, because the markup
+ * the SERVER emits is markup the CLIENT authored from the block's
+ * current attributes.
  */
 export type SaveMarkupAdapter = ( block: BridgeBlock ) => string | null;
 

@@ -12,12 +12,12 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 	 *
 	 * Where a naive relay engine (like the retired yjs-relay) stores opaque
 	 * client blobs and lets the merge happen in each client's CRDT, this
-	 * engine understands Yjs on the
-	 * server (via the vendored y-php library): it maintains a canonical
-	 * room document, merges every incoming update into it, performs
-	 * compaction itself, and can materialize the document back to post
-	 * content — the same server-side authority the intent-log engine has,
-	 * built on CRDT merge semantics instead of a transform log.
+	 * engine understands Yjs on the server (via the vendored y-php
+	 * library): it maintains a canonical room document, merges every
+	 * incoming update into it, performs compaction itself, and can
+	 * materialize the document back to post content — the same
+	 * server-side authority the intent-log engine has, built on CRDT
+	 * merge semantics instead of a transform log.
 	 *
 	 * Storage model (the append-log-plus-canonical-document design):
 	 *
@@ -1149,8 +1149,10 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				 * genesis, later joiners never re-author the document, so
 				 * only this gate keeps an oversized post from creating (and
 				 * every ingest from re-merging) a huge canonical document.
-				 * Zero disables the gate. Per-room growth after genesis
-				 * remains future work.
+				 * Zero disables the gate. A room that grows past genesis is
+				 * capped separately by wp_sync_yjs_server_max_room_bytes;
+				 * what neither gate can do is SHRINK a room already over
+				 * the limit (epoch compaction, parked as post-v1 work).
 				 *
 				 * @since 0.4.0
 				 *

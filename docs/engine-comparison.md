@@ -12,13 +12,15 @@ told. The rest of this guide explains those trade-offs.
 The engines are judged against the seven principles in
 [principles.md](principles.md); [scenarios.md](scenarios.md) traces
 concrete situations through all three engines;
-[transports.md](transports.md) covers the separate transport axis. This
-guide deliberately carries no measured numbers (they go stale and
-mislead). To regenerate every number behind it on YOUR hardware, run
-`npm run bench` against a running tests env — the whole decision
-matrix, with per-scenario comparison tables and hosting cost cards,
-failing loudly if any engine loses work. `npm run bench -- certify=10`
-re-certifies the never-lose-work invariant across ten seeds per engine.
+[transports.md](transports.md) covers transports, which are a separate
+choice.
+
+This guide carries no measured numbers, because they go stale and
+mislead. To produce them on your own hardware, run `npm run bench`
+against a running tests env. It prints the whole decision matrix — a
+comparison table per scenario, plus hosting cost cards — and fails loudly
+if any engine loses work. `npm run bench -- certify=10` re-checks the
+never-lose-work guarantee across ten seeds per engine.
 
 ## The engines
 
@@ -48,21 +50,22 @@ as historical context.
 
 ## One architectural choice drives everything
 
-- **Merging on the server** costs server CPU (and, for intent-log, a
-  per-room Core-style lock) and in exchange the server can
-  *observe* outcomes: per-edit dispositions (applied / escalated /
-  voided), a convergence oracle in the benchmark, a review lane for
-  conflicts, and capability enforcement at ingest (an author without
-  `unfiltered_html` gets raw-HTML content parked for review by someone
-  who has it — the server is not relaying bytes it cannot inspect). This
-  is P1 made concrete.
-- **Merging on the clients (the retired yjs-relay)** made the server
-  nearly free — append a row, read rows — and in exchange the server
-  could observe *nothing*: no merge outcomes, no conflict surfacing, no
-  content-level capability enforcement before save, and no benchmarkable
-  quality metrics (the harness printed "NOT SERVER-OBSERVABLE" rather
-  than faking them). That blindness, plus unbounded growth in abandoned
-  rooms, is why the relay was retired in favor of yjs-server.
+- **Merging on the server** costs processor time, and for intent-log a
+  per-room lock as well. In exchange, the server can *see* what happened
+  to every edit. That buys per-edit verdicts (applied, held for review,
+  or thrown away), a correctness check in the benchmark, a review lane
+  for conflicts, and permission checks at the moment an edit arrives. An
+  author without `unfiltered_html` has their raw HTML held for someone
+  who does have it to approve; the server is not passing along bytes it
+  cannot read. This is P1 made concrete.
+- **Merging on the clients**, as the retired yjs-relay did, made the
+  server nearly free: append a row, read rows. In exchange the server
+  could see *nothing*. No merge outcomes, no way to surface a conflict,
+  no permission checks on content before it was saved, and no quality
+  numbers to benchmark — the harness printed "NOT SERVER-OBSERVABLE"
+  rather than inventing them. That blindness, plus rooms that grew
+  without limit once abandoned, is why the relay was replaced by
+  yjs-server.
 
 None of the three remaining engines is strictly better; they price the
 same work differently. The scorecard and tables below are how the price
@@ -74,13 +77,63 @@ shows up.
 | --- | --- | --- | --- |
 | P1 server authority | **Meets.** Typed intents authorized, attributed, and transformed at ingest | **Meets.** Server merges and materializes; per-update dispositions | **Meets.** Server merges every proposal; per-proposal dispositions with version lineage |
 | P2 no silent loss | **Meets, one window.** Oracle-certified; unacked outbox intents die with a tab reload (undo makes the loss visible) | **Meets.** Oracle-certified; races heal via idempotent full-state recovery | **Meets.** Oracle-certified; escalations park durably, voided proposals re-propose |
-| P3 conflicts surfaced | **Meets.** Per-register review lane; residual over-escalation on same-paragraph bursts (rate, not silence) | **Violates, by documented policy.** Register conflicts resolve by silent CRDT last-writer-wins; no review lane. Stated on the settings screen; pinned by the escalation-criteria fixture | **Meets.** When an edit clashes, only the blocks that actually clash are held for review — the rest lands (the whole edit is held only when the two sides changed the document's *structure*, where blocks can no longer be matched up). Each client declares which version each kept block was really written against (`blockBaseVersions`), so simultaneous edits to the same block merge when they don't overlap and park when they do. Residual: an old or simple client that omits the declaration still presents its changes as if it were editing alone |
-| P4 machine writers | **Met for read-modify-write.** `wp_update_post( …, 'intent_log_base_seq' => N )` (REST: `base_seq`) diffs the save against the declared base by persisted syncId and authors typed intents — transforms merge concurrent work, collisions park for review, the save lands as merged canonical. Unaware writers still bypass the room (no detection stamp) | **Accepted limitation.** Ingest speaks binary CRDT updates; a diff-to-CRDT lane would be semantically worse, not just costly | **Met.** Unaware writers heal in ([scenario F](scenarios.md)) and cooperating writers merge through the room: `wp_update_post( …, 'base_version' => 'vN' )` — WP-CLI, plugins, REST (`base_version` param on posts/pages) — three-way-merges via the ingest lane with per-block salvage and review parking; conflicts reject the save with a rich 409 |
-| P5 cheap hosting | **Meets.** Cheapest per-ingest CPU; Core-style options-row lock, topology-safe | **Partially.** No lock (good); heaviest per-ingest CPU, scaling with document size | **Partially.** Cheap CPU; lock-free optimistic claims, topology-safe; wire/storage bytes still scale with document size |
+| P3 conflicts surfaced | **Meets.** Per-field review lane; over-escalates on same-paragraph bursts (a rate problem, not silence) | **Violates, by documented policy.** Field clashes resolve by silent last-writer-wins and there is no review lane. Said out loud on the settings screen; pinned by the escalation-criteria fixture | **Meets.** Only the blocks that actually clash are held for review ([note](#p3-how-de-rtc-holds-back-only-what-clashes)) |
+| P4 machine writers | **Met for read-modify-write.** A script that declares the version it read gets a real merge; one that declares nothing still bypasses the room ([note](#p4-how-scripts-and-plugins-join-in)) | **Accepted limitation.** Ingest speaks binary CRDT updates; a diff-to-CRDT lane would be semantically worse, not just costly | **Met.** Cooperating scripts merge through the room, and unaware ones are healed afterwards ([note](#p4-how-scripts-and-plugins-join-in)) |
+| P5 cheap hosting | **Meets.** Cheapest per-ingest CPU; Core-style options-row lock, topology-safe | **Partly.** No lock (good); heaviest per-ingest CPU, and it grows with document size | **Partly.** Cheap CPU; lock-free optimistic claims, topology-safe; upload bytes still grow with document size |
 | P6 measured economics | **Meets.** Real wire format in its benchmark profile | **Meets.** Real wire format; convergence oracle | **Meets.** Real wire format; disposition/lineage oracle |
-| P7 intent & identity | **Meets.** Typed intents end-to-end; syncIds persist in saved `post_content` and round-trip genesis | **Fails.** Snapshot-diff binding inherited from the relay; no semantic ops, no stable identity in the merge | **Designed for it, wired.** Block identity + rich-text ops live in the merge core, and sessions now author the block-native descriptor client-side (hash-pinned base/proposed + operation fingerprints, byte-parity with the PHP derivation enforced by 75 PHP-generated vectors); the server validates it once against the plain declared base and rejects mismatches (`de_rtc_sync_meta_tampered`). Merge outcomes remain server-derived and identical either way — the descriptor is a P1 integrity surface |
+| P7 intent & identity | **Meets.** Typed intents end-to-end; syncIds persist in saved `post_content` and round-trip genesis | **Fails.** Snapshot-diff binding inherited from the relay; no semantic operations, no stable identity in the merge | **Designed for it, and wired up.** Block identity and rich-text operations live in the merge core, and each commit carries tamper evidence ([note](#p7-what-de-rtc-sends-with-each-commit)) |
 
-Three honest readings of that table:
+### Notes on the longer verdicts
+
+#### P3: how de-rtc holds back only what clashes
+
+When two people's edits clash, de-rtc holds back just the blocks that
+actually clash. Everything else in the edit lands normally. It holds the
+whole edit back only when both sides changed the document's *structure* —
+added or removed blocks — because at that point the blocks can no longer
+be matched up one to one.
+
+Each client also records which version every block it kept was really
+written against, and sends that with its next commit (the
+`blockBaseVersions` map). That is what makes it safe for two people to
+edit the same block at once. If their changes don't overlap, both land.
+If they do overlap, the block is held for review. One residual: an older
+or simpler client that doesn't send this map presents its changes as
+though it had been editing alone.
+
+#### P4: how scripts and plugins join in
+
+**intent-log** handles the read-modify-write case. A script passes
+`intent_log_base_seq` with its save (`base_seq` over REST) to name the
+version it read. The server compares the save against that version,
+matching blocks by their stored syncId, and turns the difference into
+ordinary typed edits. Live editors' concurrent work merges in, genuine
+clashes are held for review, and the save lands as the merged result. A
+script that does *not* declare a base still bypasses the room, and
+intent-log has no way to notice that it happened.
+
+**de-rtc** handles both kinds of script. A cooperating one passes
+`base_version` with its save — from WP-CLI, a plugin, or the REST
+`base_version` parameter on posts and pages — and gets a real three-way
+merge through the room, with per-block salvage and review parking. If it
+genuinely conflicts, the save is rejected with a 409 that explains why. A
+script that knows nothing about collaboration is healed after the fact;
+[scenario F](scenarios.md) walks through how.
+
+#### P7: what de-rtc sends with each commit
+
+Block identity and rich-text operations live in the merge core. On top of
+that, each session builds a short description of its own change and sends
+it with the commit: hashes of the content before and after, plus
+fingerprints of the operations. The server rebuilds the same description
+from the version the client declared, and rejects the commit if the two
+disagree (`de_rtc_sync_meta_tampered`). Seventy-five PHP-generated test
+vectors keep the two implementations byte-identical.
+
+This description never affects the merge — outcomes are the same with or
+without it. It is an integrity check, which makes it really a P1 concern.
+
+### Three honest readings of that table
 
 - **intent-log** is the closest fit to the principles today. Its main
   risk is a rate problem, not a design problem: same-paragraph bursts
@@ -143,87 +196,110 @@ each pay for it differently:
   browser to send its whole document again. That is one extra round
   trip; nothing is lost.
 
-This guide deliberately carries NO measured numbers: they vary by
-machine, PHP build, and code revision, and stale numbers mislead harder
-than no numbers. Run `npm run bench` for
-current numbers on your hardware — every claim below is a shape the
-tables it prints make concrete. The stable shape: intent-log is the
-cheapest per ingest; de-rtc costs a small multiple of it (the content
-three-way merge); yjs-server is the most expensive per ingest (the
-canonical document is decoded, merged, and re-encoded in PHP on every
-request) and is the one whose service time grows with document size.
-For scale, the retired append-only relay sat at the timer floor — read
-it as "negligible", and as the price of observing nothing. Where de-rtc
-pays is upload bytes and request count, not cycles: each commit still
-carries the session's whole content UP (through the ordinary autosave
-endpoint — the transport itself carries no session proposals), and
-commit POSTs roughly double the per-typist request rate at
-pseudo-realtime cadence. The broadcast and storage side no longer
-scales with document size: accepted work broadcasts a constant-size
-announce, canonical content is stored once per room, and only a client
-whose content hash disagrees downloads a document (one synthesized
-fetch answer) — the active typist advances by hash and downloads
-nothing. One fairness caveat stands: the session scenarios run at the
-harness's RTC poll cadence, which measures de-rtc as we adapted it, not
-as designed; the `save-sync-session` scenario measures the vision's
-save-and-sync cadence, where both profiles differ.
-All three engines' payload/storage bytes are REAL (each benchmark
-profile speaks its engine's actual wire format), all three converge
-with **zero lost work** on every scenario, and the escalation policies
-differ visibly on the same contended workload: intent-log parks
-escalations at per-register grain, de-rtc at per-block grain
-(whole-proposal only for structural divergence), yjs-server
-none (silent CRDT last-writer-wins).
+### Why this guide has no numbers
 
-The session-shaped scenarios add the time dimension single workloads
-miss. Under `structural-churn` (concurrent block inserts/removals plus
-typing) the conflict policies separate hardest: intent-log and
-yjs-server merge everything cleanly while de-rtc escalates a share of
-proposals — structural divergence is what per-block salvage
-correctly refuses, so those conflicts still park whole; since salvage,
-the non-structural share lands its clean blocks and the overall
-escalation rate dropped markedly (run the scenario for the current
-share); nothing is lost on any engine. `remove-contention` isolates the edit-vs-remove
-conflict class; `field-sync` separates the same policies at field grain
-(see [scenarios.md](scenarios.md) for what actually happens on the
-wire). Under a ten-minute three-user `editorial-session` (joins, typing
-bursts, per-second polling, autosaves), intent-log's service time holds
-flat, de-rtc's holds nearly flat (its room tail is constant-size
-advisories since the announce inversion — the megabyte-scale tail
-growth the old full-content rows showed here is structurally gone, and
-a joiner downloads one synthesized snapshot instead of that tail), and
-**yjs-server's ingest grows with the accumulating document**. Run `editorial-session
-rounds=3600` for the full hour before concluding about long sessions.
-And run `save-sync-session` before concluding about de-rtc at all: at
-the vision's ten-second save-and-sync cadence the escalation ranking
-INVERTS — de-rtc surfaces only a small share of parked blocks
-(staggered saves rarely truly collide; per-block salvage absorbs most
-of what does) while intent-log becomes the escalation-heavy engine
-(its same-paragraph frame-conflict residual bites hardest when editors
-observe peers seconds late). Cadence is not a detail; it is half the
-comparison. The escalation-criteria fixture
+Numbers vary by machine, PHP build, and code revision, and stale numbers
+mislead harder than no numbers at all. Run `npm run bench` for figures
+from your own hardware. What follows are the stable shapes those figures
+make concrete.
+
+**Cost per edit.** intent-log is the cheapest. de-rtc costs a small
+multiple of it, which is the price of the three-way content merge.
+yjs-server is the most expensive, because it decodes, merges, and
+re-encodes the whole canonical document in PHP on every request. It is
+also the only engine whose response time grows as the document grows. For
+scale, the retired append-only relay sat at the timer floor. Read that as
+"negligible", and as the price of a server that observes nothing.
+
+**Where de-rtc pays is bytes and requests, not processor time.** Every
+commit sends the session's whole content up, through the ordinary
+autosave endpoint. Those commit requests roughly double how many requests
+each typist makes at pseudo-realtime cadence.
+
+The download and storage side no longer grows with the document. Accepted
+work broadcasts a fixed-size announce. Canonical content is stored once
+per room. Only a client whose content hash disagrees downloads a
+document, and it gets one synthesized snapshot. The person actively
+typing advances by hash and downloads nothing at all.
+
+One fairness caveat: the session scenarios run at the benchmark's
+real-time poll cadence, which measures de-rtc as we adapted it rather
+than as it was designed. The `save-sync-session` scenario measures the
+save-and-sync cadence the design intended, and the two profiles differ.
+
+**What is real in every profile.** All three engines' payload and storage
+byte counts come from their actual wire formats — nothing is estimated.
+All three converge with **zero lost work** on every scenario. Their
+escalation policies differ visibly on the same contended workload:
+intent-log holds back individual fields, de-rtc holds back individual
+blocks (and holds a whole edit only for structural changes), and
+yjs-server holds back nothing at all.
+
+### What a session-length run shows
+
+Single workloads miss the time dimension. The session scenarios add it.
+
+Under `structural-churn` — people inserting and removing blocks while
+others type — the conflict policies separate hardest. intent-log and
+yjs-server merge everything cleanly. de-rtc holds back a share of
+commits, because structural divergence is exactly what per-block salvage
+refuses to guess at, so those conflicts are held whole. Since salvage
+landed, the non-structural share lands its clean blocks and the overall
+rate dropped markedly; run the scenario for the current share. Nothing is
+lost on any engine.
+
+`remove-contention` isolates the edit-versus-remove clash on its own.
+`field-sync` separates the same policies at field grain.
+[scenarios.md](scenarios.md) describes what actually happens on the wire
+in each case.
+
+Under a ten-minute, three-person `editorial-session` (joins, typing
+bursts, per-second polling, autosaves), intent-log's service time stays
+flat and de-rtc's stays nearly flat. De-rtc's stored room tail is
+fixed-size advisories now, so the megabyte-scale growth the old
+full-content rows produced here is structurally gone, and a joiner
+downloads one synthesized snapshot instead of that tail. **yjs-server's
+ingest cost grows with the accumulating document.** Run
+`editorial-session rounds=3600` for the full hour before concluding
+anything about long sessions.
+
+And run `save-sync-session` before concluding anything about de-rtc at
+all. At the ten-second save-and-sync cadence the design intended, the
+escalation ranking inverts. De-rtc surfaces only a small share of held
+blocks, because staggered saves rarely truly collide and per-block
+salvage absorbs most of what does. intent-log becomes the
+escalation-heavy engine, because its same-paragraph residual bites
+hardest when editors see each other's changes seconds late. Cadence is
+not a detail. It is half the comparison.
+
+The escalation-criteria fixture
 (`tests/phpunit/wpSyncEscalationCriteria.php`) pins these shapes as
-policy bands — note that "escalated dispositions" undercounts de-rtc's
-surfaced conflicts under per-block salvage: partial acceptance parks blocks while
-the proposal reports applied, so the honest metric is escalations PLUS
-parked rows, which is what the fixture measures.
+policy bands. Note that counting escalations alone undercounts de-rtc:
+under per-block salvage a commit can report success while some of its
+blocks are held for review. The honest measure is escalations plus held
+rows, and that is what the fixture measures.
 
-Two costs live off the edit path and are easy to miss; the benchmark
-reports both. The **later-joiner read** (a cold read at cursor 0 — what
-a fresh visitor downloads to enter the room after a session): modest
-under all three engines since the announce inversion — de-rtc's
-retained tail is constant-size advisories, and the joiner's actual
-content arrives as ONE synthesized snapshot rather than the
-full-content row tail that used to make this read the largest by a
-wide margin. The **save path**
-(`materialize()` on a cold engine, as a real save request runs it):
-cheap under intent-log, near-zero under de-rtc (the canonical IS post
-content), and the most expensive under yjs-server — the whole canonical
-document is decoded from scratch, a cost the ingest figures never show
-because the engine instance keeps the decoded doc cached within a
-request. The benchmark also reports per-request ingest peak memory (the
-number a constrained PHP-FPM pool actually OOMs on); de-rtc's is the
-largest at benchmark sizes.
+### Two costs that are easy to miss
+
+Both live off the edit path, and the benchmark reports both.
+
+**What a late joiner downloads** — a cold read at cursor 0, which is what
+a fresh visitor pulls to enter a room a session has been running in.
+Modest under all three engines since the announce change. De-rtc's
+retained tail is fixed-size advisories, and the joiner's actual content
+arrives as one synthesized snapshot, rather than the full-content tail
+that used to make this read the largest by a wide margin.
+
+**The save path** — `materialize()` on a cold engine, the way a real save
+request runs it. Cheap under intent-log. Near-zero under de-rtc, because
+the canonical document *is* the post content. Most expensive under
+yjs-server, which decodes the whole canonical document from scratch. The
+ingest figures never show that cost, because within a single request the
+engine keeps the decoded document cached.
+
+The benchmark also reports peak memory per ingest request. That is the
+number a constrained PHP-FPM pool actually runs out of memory on.
+De-rtc's is the largest at benchmark sizes.
 
 ## Known gaps and qualifications
 
@@ -232,13 +308,14 @@ their own (open work items live in `V1.md`), grouped by engine.
 
 ### intent-log
 
-- **Same-paragraph typing can escalate instead of merging**
-  ([scenario C](scenarios.md)). The echo race that corrupted canvas
-  text is fixed — capture diffs the editor tree against the document
-  state that tree reflects and authors at its seq (see "THE OBSERVED
-  BASELINE" in `src/engines/intent-log-manager.ts`); what remains is an
-  escalation *rate* residual, policed by the escalation-criteria
-  fixture's policy bands. AGENTS.md lists the remaining residuals.
+- **Same-paragraph typing can be held for review instead of merging**
+  ([scenario C](scenarios.md)). The race that used to corrupt text on
+  the canvas is fixed. Capture now compares the editor's blocks against
+  the document state those blocks actually reflect, and writes its edits
+  at that position in the log (see "THE OBSERVED BASELINE" in
+  `src/engines/intent-log-manager.ts`). What remains is a *rate*
+  problem, not a correctness one, and the escalation-criteria fixture
+  polices it. AGENTS.md lists the rest of the residuals.
 
 ### yjs-server
 
@@ -247,14 +324,15 @@ their own (open work items live in `V1.md`), grouped by engine.
   `npm run bench -- concurrency=8`: most runs settle fully applied with
   zero voids, the occasional run a handful of benign `resync-required`
   voids that heal by full-state upload. intent-log showed zero voids
-  under the same load, paying with measured lock queueing. de-rtc
-  (lock-free) pays with optimistic re-merge retries — and at hammer
-  cadence a share of contenders settles as escalations or stale-base
-  voids instead of waiting: surfaced, retryable outcomes, zero lost
-  work by the same oracle, and exactly the shape upstream's
-  validate-and-retry model predicts under contention it was never
-  designed to queue. The benchmark treats `resync-required` as benign
-  and `invalid-payload` as REAL loss that fails the run.
+  under the same load, paying with measured lock queueing instead.
+  De-rtc has no lock, so it pays by re-merging and retrying. At hammer
+  cadence some of those contenders end up held for review or thrown
+  away as stale-base rather than waiting their turn. Both outcomes are
+  visible and retryable, and the same check confirms nothing is lost.
+  It is exactly what an optimistic validate-and-retry design does under
+  contention it was never meant to queue. The benchmark treats
+  `resync-required` as benign and `invalid-payload` as real loss that
+  fails the run.
 - **Ingest cost is real and scales with document size**, and the save
   path is worse (a cold request decodes the whole canonical doc;
   `materialize_us` in the benchmark). This used to be an order of
@@ -280,18 +358,18 @@ their own (open work items live in `V1.md`), grouped by engine.
 ### de-rtc
 
 - **Document-size costs live on the commit path, not in storage.**
-  Since the announce inversion, stored rows are constant-size
-  advisories and a later joiner downloads one synthesized snapshot —
-  the old linearly-growing full-content tail (once a multiple of
-  intent-log's stored bytes, and the largest join payload) is
-  structurally gone. What still scales with document size: each
-  commit's upload body (whole content up), the fetch answer a behind
-  client downloads, and per-ingest merge CPU/memory. Run `long-form` at
-  YOUR document sizes before concluding. Deep-lag behavior is distinct:
-  rarely-reading clients escalate more, and past the 20-version
-  snapshot window their proposals fall back to revision-mined bases —
-  voiding and retrying only when no revision carries the base
-  ([scenario G](scenarios.md)).
+  Stored rows are fixed-size advisories now, and a later joiner
+  downloads one synthesized snapshot. The old tail that grew with the
+  document — once a multiple of intent-log's stored bytes, and the
+  largest thing a joiner had to download — is structurally gone. Three
+  things still grow with the document: what each commit uploads, the
+  answer a behind client downloads, and the processor time and memory
+  each merge takes. Run `long-form` at your own document sizes before
+  concluding anything. Deep lag behaves differently again: clients that
+  rarely read have more of their work held for review, and once they
+  fall past the 20-version snapshot window the server mines post
+  revisions for their base. Only a base no revision carries is thrown
+  away and retried ([scenario G](scenarios.md)).
 - **Sessions author block-native descriptors**: every session proposal
   carries hash-pinned tamper evidence the server validates once against
   the plain declared base, then drops before the kses/salvage lanes.
@@ -303,14 +381,14 @@ their own (open work items live in `V1.md`), grouped by engine.
   front-end markup (upstream's protection periphery is unported), and
   autosave REST writes update the autosave revision directly without
   re-embedding.
-- **The plain-save blind spot**: a machine write through
-  `wp_update_post` WITHOUT `base_version` passes the co-location
-  filter, gets a fresh matching `content_hash` stamp, and therefore
-  looks "aware" — it neither merges nor heals, and the room diverges
-  until the next session save. The covered classes are preflighted
-  writers (merge) and filter-bypassing writers (heal); resolving the
-  plain-save class principledly belongs to the deeper Save/Sync
-  inversion (post-v1).
+- **The plain-save blind spot**: a script that calls `wp_update_post`
+  without `base_version` passes through the co-location filter and gets
+  a fresh, matching `content_hash` stamp. That makes it look like an
+  aware writer, so it is neither merged nor healed, and the room drifts
+  apart from the post until the next session save. Two kinds of writer
+  are covered: those that declare a base (merged) and those that bypass
+  the filter entirely (healed). Handling this third kind properly
+  belongs to the deeper Save/Sync inversion, which is post-v1 work.
 - **Commit POSTs roughly double the per-typist request rate** at
   pseudo-realtime cadence (bytes collapsed under the announce model;
   request counts did not), and collections plus unsupported post types

@@ -8,103 +8,125 @@ is.
 
 ## A. One editor types a sentence (the solo baseline)
 
-- **intent-log**: Keystrokes hit the canvas immediately. Capture waits
-  for the burst to quiet (a deliberate delay forced by core-data's
-  update ordering), diffs the editor tree against the document state
-  that tree reflects, and authors typed intents into the outbox at that
-  observed seq. The next poll sends them; the server takes the room
-  lock, transforms (a no-op solo), appends rows, and acks dispositions.
-  The replica absorbs the authoritative rows, and roughly a poll cycle
-  after the burst quiets, the unit "settles". Undo works throughout: a
-  still-pending unit cancels (outbox removal plus a wire-chasing
-  `cancel` row), a settled unit inverts.
+- **intent-log**: Keystrokes reach the canvas immediately. Capture then
+  waits for the typing to fall quiet — a deliberate delay that
+  core-data's update ordering forces on us. It compares the editor's
+  blocks against the document state those blocks reflect, and writes
+  typed edits into the outbox at that position in the log. The next poll
+  sends them. The server takes the room lock, transforms them (nothing
+  to do when you are alone), appends the rows, and sends back a verdict
+  for each. The client absorbs those rows, and about one poll cycle
+  after the typing stops, the edit settles. Undo works the whole time:
+  an edit still in flight is cancelled, and one that has settled is
+  reversed by a new opposite edit.
 - **yjs-server**: Keystrokes apply to the local Y.Doc instantly, so
   undo is armed from the first character. The provider encodes an
   incremental binary update; the next poll delivers it; the server
   decodes the canonical doc, merges, re-encodes, and stores the diff
   row. No lock, no transform.
-- **de-rtc**: Keystrokes edit the doc and mark it dirty. When the burst
-  settles and no commit is in flight, the client COMMITS its WHOLE
-  content against the version it last incorporated — through the
-  ordinary autosave endpoint (`WP_De_RTC_Autosave_Commits` intercepts
-  the commit shape; the room transport carries no session proposals).
-  The server three-way-merges (a fast-forward solo), claims the version
-  advance (an uncontended CAS write), persists canonical once in the
-  room's chained options row, and stores a ~200-byte `announce`
-  (version + content hash + property registers). The next poll delivers
-  the announce; the hash matches the typist's own content, so it
-  advances its version downloading nothing.
+- **de-rtc**: Keystrokes edit the local document and mark it changed.
+  Once the typing settles and no earlier commit is still in flight, the
+  client sends its **whole** content, saying which version it was
+  written against. That goes through the ordinary autosave endpoint, not
+  the room transport — `WP_De_RTC_Autosave_Commits` recognizes the
+  commit and handles it. The server three-way-merges it, which when you
+  are alone is just a fast-forward. It then claims the next version
+  number, stores the canonical content once in the room's chained
+  options row, and writes a roughly 200-byte announce carrying the
+  version, a hash of the content, and the entity properties. The next
+  poll delivers that announce. The
+  hash matches what the typist already has, so they move to the new
+  version without downloading anything.
 
 ## B. Two editors, different blocks (the common concurrent case)
 
-All three merge losslessly; they differ in *how* and in *what travels*.
-intent-log transforms each editor's intents over the other's rows — the
-transforms are no-ops because the frames don't intersect. yjs-server's
-CRDT merges the updates commutatively. de-rtc three-way-merges each
-whole-content commit against base and current: each editor's block
-change is a sole-writer change to its block, so both land. The upload
-side carries each editor's entire document per commit; the download
-side is an announce whose hash doesn't match (the peer merged new
-work), so each editor fetches ONE synthesized snapshot of the merged
-canonical (P5/P6: de-rtc pays in upload bytes and in a
-document-per-incorporation download — no longer in stored rows).
+All three merge without losing anything. They differ in *how*, and in
+*what travels over the wire*.
+
+intent-log transforms each editor's edits over the other's rows. The
+transforms do nothing here, because the two editors' edits touch
+different regions. yjs-server's CRDT merges the two updates in either
+order with the same result. de-rtc three-way-merges each whole-content
+commit against the base version and the current one; each editor is the
+only one who changed their block, so both changes land.
+
+The cost is lopsided. Going up, each editor sends their entire document
+with every commit. Coming down, each receives an announce whose hash
+doesn't match their content, because the other person's work was merged
+in, so each downloads one synthesized snapshot of the merged result.
+That is P5 and P6 in practice: de-rtc pays in upload bytes and in one
+document download per incorporation, but no longer in stored rows.
 
 ## C. Two editors, the same paragraph (the policy separator)
 
-- **intent-log**: When both edits are observed before the next burst,
-  offsets transform and the texts merge. The residual: while this editor
-  is still *behind* on the peer's change to the same paragraph, the later
-  keystrokes of its burst escalate as `frame-conflict` — parked in the
-  review lane, never lost — and normal merging resumes once the peer's
-  change is observed. An over-escalation rate problem (P3 honored,
-  arguably too eagerly; the escalation-criteria fixture polices the
-  rate).
+- **intent-log**: If each editor has seen the other's change before
+  typing again, the positions transform and the two texts merge. The
+  residual case is when one editor is still *behind* on the other's
+  change to that paragraph. Then the later keystrokes of their burst are
+  held for review as a `frame-conflict`. They are parked, never lost,
+  and normal merging resumes as soon as the peer's change arrives. This
+  is a rate problem: P3 is honored, arguably too eagerly. The
+  escalation-criteria fixture polices the rate.
 - **yjs-server**: Character-level CRDT merge interleaves both texts
   deterministically; block-attribute (register) collisions resolve by
   silent last-writer-wins. Nothing surfaces to a human (P3 violation,
   documented policy).
-- **de-rtc**: The peer's accepted commit announces mid-burst; the
-  local hash disagrees, so the client fetches the canonical it names
-  (one synthesized snapshot). The client cannot merge (clients never
-  merge) and cannot apply it verbatim (that would clobber unsent
-  keystrokes), so it *incorporates*: adopts canonical blocks it hasn't
-  touched and keeps its own version of the contested block — but it
-  also RECORDS the version that block's text was really written
-  against, and its next commit declares it (`blockBaseVersions`).
-  The server merges the contested block from its TRUE base:
-  non-overlapping concurrent edits to the same block merge (both texts
-  land), true overlaps park for review at block grain while
-  the clean remainder lands. The silent block-level last-writer-wins
-  this moment used to cause is retired; and the
-  interaction model matches the vision's shape: the colliding
-  incorporation raises ONE pending item on the review surface (later
-  peer edits to the same block refresh it rather than stacking),
-  resolved by explicit Adopt (take the latest canonical form) or
-  Reject (keep yours — the recorded base keeps the next server merge
-  honest). One timing rule guards the burst itself: while the server
-  has merged PEER work into this client's own accepted commit (a newer
-  version exists whose content the client does not hold yet), the
-  client holds its commit lane — committing against the dead pre-merge
-  base would have the server treat its own just-accepted keystrokes as
-  a foreign concurrent change and park them (the fuzzer found exactly
-  this eating the tail of bursts that straddled a commit round trip).
-  The residual: a map-less legacy client still presents
-  sole-writer changes. Structural divergence still parks the commit
-  whole.
+- **de-rtc**: The peer's commit is accepted and announced mid-burst. The
+  local hash disagrees, so the client downloads the canonical content
+  that announce names, as one synthesized snapshot.
+
+  Now the client is stuck between two things it cannot do. It cannot
+  merge, because clients never merge. It cannot apply the snapshot as-is
+  either, because that would wipe out keystrokes it hasn't sent yet. So
+  it *incorporates* instead: it adopts the canonical version of every
+  block it hasn't touched, and keeps its own version of the block both
+  people changed. Crucially, it also records which version that block's
+  text was really written against, and declares it with the next commit
+  (the `blockBaseVersions` map).
+
+  That declaration is what lets the server merge the contested block
+  from its true base. Concurrent edits to the same block that don't
+  overlap merge, and both texts land. Edits that genuinely overlap are
+  held for review at block grain, while the rest of the commit lands.
+  The silent block-level last-writer-wins this moment used to cause is
+  gone.
+
+  The person sees one pending item, not a pile: later peer edits to the
+  same block refresh that item rather than stacking up. They resolve it
+  by choosing Adopt (take the latest canonical form) or Reject (keep
+  mine — and the recorded base keeps the next server merge honest).
+
+  One timing rule protects the burst itself. When the server has merged
+  peer work into this client's own accepted commit, a newer version
+  exists whose content the client doesn't have yet. Until it does, the
+  client holds its commits back. Committing against the dead pre-merge
+  base would make the server treat the client's own just-accepted
+  keystrokes as someone else's concurrent change and hold them for
+  review. The fuzzer caught exactly this eating the tail of any burst
+  that straddled a commit round trip.
+
+  Two residuals. An older client that sends no `blockBaseVersions` map
+  still presents its changes as if it had been editing alone. And when
+  the two sides diverge structurally, the whole commit is still held.
 
 ## D. Edit versus remove (one client types into a block another removes)
 
-intent-log escalates the trailing side: if the removal lands first, the
-trailing keystrokes park as `target-deleted`; if the text lands first,
-both apply and the token vanishes with the removed block. yjs-server
-escalates nothing — CRDT deletion dissolves the edit with the deleted
-block, deterministically and invisibly. de-rtc still escalates the
-most: the structural change shifts the base under the whole-content
-commit, and structural divergence is exactly the class per-block
-salvage refuses — the trailing commit parks whole (roughly one
-escalation per contended pair; per-block salvage removed the *collateral* from
-non-structural rounds). The benchmark's `remove-contention` scenario
-measures exactly this spread.
+intent-log holds back whichever side arrives second. If the removal
+lands first, the trailing keystrokes are parked as `target-deleted`. If
+the text lands first, both apply and the text disappears along with the
+removed block.
+
+yjs-server holds back nothing. CRDT deletion dissolves the edit together
+with the block, the same way every time, and invisibly.
+
+de-rtc holds back the most. The removal shifts the base under the whole
+commit, and that structural divergence is exactly the case per-block
+salvage refuses to guess at, so the trailing commit is held whole —
+roughly one per contended pair. Per-block salvage did remove the
+*collateral damage* from rounds with no structural change.
+
+The benchmark's `remove-contention` scenario measures exactly this
+spread.
 
 ## E. An author without `unfiltered_html` pastes risky markup (P1)
 
@@ -135,13 +157,15 @@ back its modified copy while two editors are collaborating.
   the write — an aware save's embedded `content_hash` matches its own
   content; this one doesn't — and heals it as an ordinary collaborative
   update.
-  If the integration round-tripped the embedded sync-meta, the server
-  three-way-merges from that base and the editors' concurrent work
-  survives alongside the integration's changes; a metaless replacement
-  converges the room to the accepted post state (prior canonical stays
-  in history); a stale copy heals nothing (rollback guard); an edit
-  colliding with concurrent session work parks for review. Connected
-  editors see the external change arrive like any peer's edit.
+  What healing does depends on what the integration wrote back. If it
+  round-tripped the embedded sync-meta, the server merges from that
+  base, and the editors' concurrent work survives alongside the
+  integration's changes. If it replaced the content with no meta at all,
+  the room converges to the post state as accepted, and the previous
+  canonical stays in history. A stale copy heals nothing, because a
+  rollback guard stops it. And an edit that collides with concurrent
+  session work is held for review. Connected editors see the outside
+  change arrive just like any peer's edit.
 - **intent-log**: a *cooperating* integration declares
   `intent_log_base_seq` and its save diffs into typed intents — the
   session's concurrent work merges by transform, register collisions
@@ -172,12 +196,12 @@ back its modified copy while two editors are collaborating.
 - **de-rtc**: The client re-commits its doc's current state; if the
   lost send actually landed, the re-commit merges as a no-op (and its
   announce's hash confirms it). A stale
-  base within the engine's 20-version snapshot window is fine — that's
-  what the three-way merge is for (though cumulative staleness escalates
-  more). Beyond the window the server first mines post revisions for
-  the base (each aware save embeds its own snapshot window),
-  so even arbitrarily old bases usually merge; only a base no revision
-  carries voids as `unknown-base-version`, and the client retries
-  against a fresher base: fetch canonical (one synthesized snapshot),
-  rebase, re-commit. The
-  benchmark models one retry per edit; nothing is lost either way.
+  base within the engine's 20-version snapshot window is fine — that is
+  what the three-way merge is for, though the staler it gets the more
+  ends up held for review. Past that window, the server mines post
+  revisions for the base, since every aware save embeds its own snapshot
+  window. So even very old bases usually still merge. Only a base that
+  no revision carries is thrown away as `unknown-base-version`, and then
+  the client retries against a fresher one: download the canonical as a
+  single synthesized snapshot, rebase, commit again. The benchmark
+  models one retry per edit. Nothing is lost either way.

@@ -88,11 +88,10 @@ if ( ! in_array( $engine_slug, $wp_sync_bench_engine_slugs, true ) ) {
 /**
  * Times the environment's database round-trips so the intent-log service
  * time can be decomposed: its handle_updates() holds a Core-style
- * options-row lock (WP_Sync_Room_Lock, the GET_LOCK replacement) for
- * the length of the request, so
- * each timed request includes one claim/release pair of DB writes that
- * lock-free engines (yjs-server's CRDT ingest, de-rtc's optimistic
- * version claims) do not pay.
+ * options-row lock (WP_Sync_Room_Lock, the GET_LOCK replacement) for the
+ * length of the request, so each timed request includes one
+ * claim/release pair of DB writes that lock-free engines (yjs-server's
+ * CRDT ingest, de-rtc's optimistic version claims) do not pay.
  *
  * @return array db_rtt and lock_pair p50, in milliseconds.
  */

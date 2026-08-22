@@ -13,14 +13,14 @@ if ( ! class_exists( 'WP_Sync_Room_Lock' ) ) {
 	 * `INSERT IGNORE` of an options row claims the lock, a TTL lets a
 	 * crashed holder's claim expire, and release deletes the row. This
 	 * replaces MySQL GET_LOCK deliberately: GET_LOCK is connection-scoped
-	 * and quietly loses mutual exclusion under connection
-	 * pooling/multiplexing, under
-	 * read/write-splitting drop-ins (`SELECT GET_LOCK(...)` pattern-matches
-	 * as a read and can land on a replica), on multi-primary clusters (user
-	 * locks are node-local), and on SQLite builds (the function does not
-	 * exist). Options-row INSERTs are writes, so every topology routes them
-	 * to the primary, and the SQLite integration supports INSERT IGNORE
-	 * (Core's upgrader lock depends on it).
+	 * and quietly loses mutual exclusion under connection pooling or
+	 * multiplexing, under read/write-splitting drop-ins (`SELECT
+	 * GET_LOCK(...)` pattern-matches as a read and can land on a replica),
+	 * on multi-primary clusters (user locks are node-local), and on SQLite
+	 * builds (the function does not exist). Options-row INSERTs are writes,
+	 * so every topology routes them to the primary, and the SQLite
+	 * integration supports INSERT IGNORE (Core's upgrader lock depends on
+	 * it).
 	 *
 	 * All access is direct $wpdb — never get_option()/update_option() — so
 	 * external object caches cannot serve a stale view of the lock row.
