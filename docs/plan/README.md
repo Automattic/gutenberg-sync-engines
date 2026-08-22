@@ -76,10 +76,35 @@ An item that is `shaping` should say what decision is missing.
 - `medium` — a few days
 - `large` — needs breaking up before anyone starts
 
+## Checking an item
+
+```bash
+npm run plan:check
+```
+
+It reports our invented words used above the notes section, missing
+sections, and examples without numbered steps. The jargon check reads
+`../glossary.md`, so it is eager on purpose — look at each word it
+flags and decide.
+
 ## Mirroring to GitHub
 
-The mirror is one-way. Files here are the source of truth. A script
-pushes each file to a GitHub Issue and writes the issue number back
-into the file. Two-way sync always rots, so we do not do it.
+The mirror is one-way. Files here are the source of truth. Issue
+numbers land in each file's frontmatter once mirrored.
 
-Comments and discussion live on the issue. The spec lives here.
+```bash
+node docs/plan/mirror.mjs --dry-run   # preview
+node docs/plan/mirror.mjs             # push
+```
+
+**Run it yourself.** It creates and edits issues on the public
+repository, so it is not something to hand to an agent in passing.
+
+Comments and discussion live on the issue. The spec lives here. If an
+issue and its file disagree, the file wins.
+
+## When an item ships
+
+Update `CHANGELOG.md` as part of the change, per `AGENTS.md`. Set the
+item's status to `done`. Leave the file in place; it is the record of
+why the change happened.
