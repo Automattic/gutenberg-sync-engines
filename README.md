@@ -49,7 +49,7 @@ deliberately number-free. Run `npm run bench` for numbers on your hardware.
 
 **Want to help?** [`plan/`](plan/README.md) holds what we intend to build
 next, one file per bug or feature, each with an example and a way to tell
-when it is done. [`plan/not-now.md`](plan/not-now.md) covers what we looked
+when it is done. [`plan/wontfix.md`](plan/wontfix.md) covers what we looked
 at and set aside, and why.
 
 ## Architecture

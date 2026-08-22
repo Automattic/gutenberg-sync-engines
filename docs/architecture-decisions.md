@@ -17,7 +17,7 @@ we would scope.
    materialize) and let each engine own its wire surface. An engine
    that wants its own REST routes — or no live transport at all —
    should be able to say so. Feeds the deeper Save/Sync inversion (a
-   post-v1 direction; see [plan/not-now.md](../plan/not-now.md)).
+   post-v1 direction; see [plan/wontfix.md](../plan/wontfix.md)).
 2. **Canonical state lives in plugin storage posts for every engine.**
    Room meta was chosen for plugin containment. For the log-is-truth
    engines it is a reasonable substrate. For de-rtc it inverted the

@@ -303,7 +303,7 @@ De-rtc's is the largest at benchmark sizes.
 ## Known gaps and qualifications
 
 Residual facts that color conclusions but don't rise to work items of
-their own (open work lives in `plan/issues/`), grouped by engine.
+their own (open work lives in GitHub Issues), grouped by engine.
 
 ### intent-log
 

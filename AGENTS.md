@@ -161,10 +161,11 @@ The framework/plugin split is complete: the framework ships **neither** engines
   both benchmark harnesses; deliberately number-free (run `npm run
   bench` for numbers) — keep the SHAPES current when engine
   capabilities or benchmarks change.
-- `plan/` — what we intend to change next: `issues/` (one file per bug
-  or feature, in plain language), `not-now.md` (looked at, set aside,
-  with reasons), `history.md` (why the code is shaped this way and what
-  has already failed), plus `bin/` (`check.mjs`, `mirror.mjs`).
+- `plan/` — how we plan work. `README.md` (the rules, the labels, the
+  flow), `history.md` (why the code is shaped this way and what has
+  already been tried and failed), `wontfix.md` (looked at, set aside,
+  with reasons), and `bin/check.mjs` (the plain-language checker). The
+  work itself lives in GitHub Issues, not here.
 
 ## The `gutenberg/` subtree
 
@@ -298,8 +299,8 @@ flake is closed by the plugin-local hardened fixtures
 (`tests/e2e/config/collaboration-fixtures.ts` — the root-cause subtree
 fixture fix remains upstream/human-owned). One known intermittent
 remains: the parked-A12 residual (intent-log mid-burst compaction
-splice, `plan/issues/0001-typing-in-a-table-gets-scrambled.md`),
-firing ~1-2 of 8 under the repetition hammer; the
+splice — see the open issues), firing ~1-2 of 8 under the repetition
+hammer; the
 e2e CI job keeps the base config's 2-retries-in-CI to absorb it. The
 vendored libraries' own
 conformance suites run separately:
@@ -507,21 +508,22 @@ they exist so a failure is observable without re-instrumenting:
 
 ## Known issues / out of scope
 
-Open work lives in `plan/issues/` — one file per bug or feature,
-written in plain language with an example and a way to tell when it is
-done. Read `plan/README.md` before adding one; the `plan-issue` skill
-applies its rules and `npm run plan:check` enforces them. **Write
-plainly there.** The rule is mechanical: if a word is defined in
+Open work lives in **GitHub Issues** (`gh issue list --label "agent:ready"`).
+Anyone can file one; an agent investigates it and rewrites it into the
+shape defined by `.github/ISSUE_TEMPLATE/shaped-issue.md`. Read
+`plan/README.md` for the rules and the label set before touching any of
+it. **Write plainly.** The rule is mechanical: if a word is defined in
 `docs/glossary.md`, it is one of our invented words and does not belong
-in an issue's title, problem, or example — only in its notes.
+in an issue's title, problem, or example — only in its notes. Check a
+draft with `node plan/bin/check.mjs draft.md`.
 
-Ideas we looked at and set aside are in `plan/not-now.md`.
+Ideas we looked at and set aside are in `plan/wontfix.md`.
 `plan/history.md` records why the code is shaped the way it is and what
 has already been tried and failed — read it before a big change, and
 before re-attempting anything that looks obvious.
 
 `LOOP.md` is the working ledger when the issue loop is running
-(`/loop /issue-cycle`).
+(`/shape-issues` to work up what was filed, then `/loop /issue-cycle`).
 
 This section carries the operational facts and cites issues where one
 applies.
@@ -568,7 +570,7 @@ applies.
   sourced split. Genesis blocks must still set `isValid: true` or the
   editor renders them as invalid-content recovery blocks (has bitten) —
   and a container-shaped variant of exactly that symptom is open, see
-  `plan/issues/0002-group-block-breaks-after-reload.md`.
+  the open issue for the Group-block recovery symptom.
 - **de-rtc known gaps** (docs/engine-comparison.md has the full list):
   truly concurrent SAME-block edits merge from their TRUE base
   (`blockBaseVersions`) or raise a contested pending item

@@ -1,7 +1,7 @@
 # Things we decided not to do yet
 
 These are real ideas that we have looked at and set aside. They are not
-items, and nobody should start one without moving it into `items/`
+issues, and nobody should start one without filing it as an issue
 first.
 
 Each one says why it is waiting. "Why" matters more than the idea: it is

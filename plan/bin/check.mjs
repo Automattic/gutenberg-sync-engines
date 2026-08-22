@@ -1,22 +1,29 @@
 #!/usr/bin/env node
 /**
- * Checks a plan issue against the rules in plan/README.md.
+ * Checks an issue body against the rules in plan/README.md.
  *
- * Usage: node plan/bin/check.mjs [file...]
- * With no arguments it checks every issue in plan/issues/.
+ * Usage:
+ *   node plan/bin/check.mjs draft.md               a drafted body, before filing
+ *   node plan/bin/check.mjs --issue 12             one issue already on GitHub
+ *   node plan/bin/check.mjs --label agent:ready    every open issue with a label
  *
  * The most useful check is the last one: it reads docs/glossary.md and
  * reports any of our invented words used above the notes section, where
  * a newcomer would hit them. That check is deliberately eager — it
  * flags words for a human to look at, it does not know what you meant.
+ *
+ * Run it before `gh issue create` or `gh issue edit`. Reports filed by
+ * humans are NOT held to this: the rule exists to stop agents writing
+ * like the inside of the codebase, not to police anyone describing a
+ * problem in their own words.
  */
 
-import { readFileSync, readdirSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const planDir = resolve( dirname( fileURLToPath( import.meta.url ) ), '..' );
-const issuesDir = join( planDir, 'issues' );
 const glossaryPath = resolve( planDir, '..', 'docs', 'glossary.md' );
 
 const NOTES_HEADING = '## Notes for whoever picks this up';
@@ -29,9 +36,9 @@ const REQUIRED_SECTIONS = [
 	NOTES_HEADING,
 ];
 
-const REQUIRED_FIELDS = [ 'id', 'title', 'status', 'size' ];
-const VALID_STATUS = [ 'shaping', 'ready', 'in progress', 'done' ];
-const VALID_SIZE = [ 'small', 'medium', 'large' ];
+function gh( ...args ) {
+	return execFileSync( 'gh', args, { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 } );
+}
 
 /**
  * Pulls the defined terms out of the glossary.
@@ -74,76 +81,35 @@ function termPattern( term ) {
 	return new RegExp( `\\b${ stem }(e|es|ed|ing|s)?\\b`, 'gi' );
 }
 
-function frontmatter( text ) {
-	const match = text.match( /^---\n([\s\S]+?)\n---\n/ );
-	if ( ! match ) {
-		return null;
-	}
-
-	const fields = {};
-	for ( const line of match[ 1 ].split( '\n' ) ) {
-		const pair = line.match( /^(\w+):\s*(.*)$/ );
-		if ( pair ) {
-			fields[ pair[ 1 ] ] = pair[ 2 ].trim();
-		}
-	}
-	return fields;
-}
-
-function checkIssue( path, terms ) {
-	const text = readFileSync( path, 'utf8' );
+function checkBody( title, body, terms ) {
 	const problems = [];
 	const warnings = [];
 
-	const fields = frontmatter( text );
-	if ( ! fields ) {
-		problems.push( 'No frontmatter block at the top of the file.' );
-	} else {
-		for ( const field of REQUIRED_FIELDS ) {
-			if ( ! fields[ field ] ) {
-				problems.push( `Frontmatter is missing "${ field }".` );
-			}
-		}
-		if ( fields.status && ! VALID_STATUS.includes( fields.status ) ) {
-			problems.push(
-				`Status "${ fields.status }" is not one of: ${ VALID_STATUS.join( ', ' ) }.`
-			);
-		}
-		if ( fields.size && ! VALID_SIZE.includes( fields.size ) ) {
-			problems.push(
-				`Size "${ fields.size }" is not one of: ${ VALID_SIZE.join( ', ' ) }.`
-			);
-		}
-		if ( fields.status === 'shaping' && ! /missing|decide|decision/i.test( text ) ) {
-			warnings.push(
-				'Status is "shaping" but the file never says which decision is missing.'
-			);
-		}
-	}
-
 	for ( const section of REQUIRED_SECTIONS ) {
-		if ( ! text.includes( section ) ) {
+		if ( ! body.includes( section ) ) {
 			problems.push( `Missing section: ${ section }` );
 		}
 	}
 
-	const [ top, notes ] = text.split( NOTES_HEADING );
-	if ( ! notes ) {
-		// Already reported as a missing section.
-	} else if ( ! /^\s*1\.\s+\S/m.test( top ) ) {
+	const [ top, notes ] = body.split( NOTES_HEADING );
+	if ( notes && ! /^\s*1\.\s+\S/m.test( top ) ) {
 		problems.push( 'The example has no numbered steps.' );
 	}
 
-	const heading = text.match( /^# (.+)$/m );
-	if ( heading && fields?.title && heading[ 1 ].trim() !== fields.title ) {
-		warnings.push( 'The heading and the frontmatter title do not match.' );
+	if ( /still being shaped|not yet decided/i.test( body )
+		&& ! /decision (that is )?missing|missing decision|decision to make/i.test( body ) ) {
+		warnings.push(
+			'Says it is still being shaped but never names the missing decision.'
+		);
 	}
 
-	// File paths, commands and identifiers legitimately contain our
-	// vocabulary, so only prose is checked for jargon.
-	const prose = ( top ?? text )
+	// File paths, commands, quotes and identifiers legitimately contain
+	// our vocabulary, so only prose is checked. The title counts: it is
+	// the part most people read.
+	const prose = `${ title }\n${ top ?? body }`
 		.replace( /```[\s\S]*?```/g, ' ' )
-		.replace( /`[^`]*`/g, ' ' );
+		.replace( /`[^`]*`/g, ' ' )
+		.replace( /^\s*>.*$/gm, ' ' );
 
 	const found = new Map();
 	for ( const term of terms ) {
@@ -156,26 +122,51 @@ function checkIssue( path, terms ) {
 	return { problems, warnings, found };
 }
 
-const files = process.argv.slice( 2 );
-const targets = files.length
-	? files.map( ( file ) => resolve( file ) )
-	: readdirSync( issuesDir )
-			.filter( ( name ) => name.endsWith( '.md' ) )
-			.map( ( name ) => join( issuesDir, name ) );
+const args = process.argv.slice( 2 );
+const targets = [];
+
+for ( let i = 0; i < args.length; i++ ) {
+	if ( args[ i ] === '--issue' ) {
+		const number = args[ ++i ];
+		const data = JSON.parse( gh( 'issue', 'view', number, '--json', 'title,body' ) );
+		targets.push( { label: `#${ number }`, title: data.title, body: data.body ?? '' } );
+	} else if ( args[ i ] === '--label' ) {
+		const wanted = args[ ++i ];
+		const list = JSON.parse(
+			gh(
+				'issue', 'list', '--label', wanted, '--state', 'open',
+				'--json', 'number,title,body', '--limit', '100'
+			)
+		);
+		for ( const issue of list ) {
+			targets.push( {
+				label: `#${ issue.number } ${ issue.title }`,
+				title: issue.title,
+				body: issue.body ?? '',
+			} );
+		}
+	} else {
+		targets.push( { label: args[ i ], title: '', body: readFileSync( args[ i ], 'utf8' ) } );
+	}
+}
+
+if ( ! targets.length ) {
+	console.log( 'Nothing to check. Pass a file, --issue <number>, or --label <name>.' );
+	process.exit( 2 );
+}
 
 const terms = glossaryTerms();
 let failed = 0;
 
-for ( const path of targets ) {
-	const { problems, warnings, found } = checkIssue( path, terms );
-	const label = path.replace( `${ process.cwd() }/`, '' );
+for ( const target of targets ) {
+	const { problems, warnings, found } = checkBody( target.title, target.body, terms );
 
 	if ( ! problems.length && ! warnings.length && ! found.size ) {
-		console.log( `ok    ${ label }` );
+		console.log( `ok    ${ target.label }` );
 		continue;
 	}
 
-	console.log( `\n${ label }` );
+	console.log( `\n${ target.label }` );
 	for ( const problem of problems ) {
 		console.log( `  problem  ${ problem }` );
 	}
@@ -183,12 +174,8 @@ for ( const path of targets ) {
 		console.log( `  warning  ${ warning }` );
 	}
 	if ( found.size ) {
-		console.log(
-			'  jargon   These glossary words appear before the notes section.'
-		);
-		console.log(
-			'           Say what they mean instead, or move the sentence down:'
-		);
+		console.log( '  jargon   These glossary words appear before the notes section.' );
+		console.log( '           Say what they mean instead, or move the sentence down:' );
 		for ( const [ term, count ] of found ) {
 			console.log( `             ${ term }${ count > 1 ? ` (x${ count })` : '' }` );
 		}
@@ -200,8 +187,8 @@ for ( const path of targets ) {
 }
 
 if ( failed ) {
-	console.log( `\n${ failed } issue(s) need attention.` );
+	console.log( `\n${ failed } of ${ targets.length } need attention.` );
 	process.exit( 1 );
 }
 
-console.log( `\nAll ${ targets.length } issue(s) look fine.` );
+console.log( `\nAll ${ targets.length } look fine.` );

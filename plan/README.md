@@ -1,57 +1,65 @@
-# The plan folder
+# How we plan work
 
-This is where work gets described before anyone builds it.
+**Work lives in GitHub Issues.** Anyone can file one, read one, or
+argue with one without a checkout. This folder holds the things that
+are not issues: why the code is shaped the way it is
+([history.md](history.md)), what we looked at and set aside
+([wontfix.md](wontfix.md)), and the rules below.
 
-One file per item, in `items/`. Each file describes one thing that a
-person using the editor would notice. The file is the source of truth.
-GitHub Issues are a mirror of these files, so discussion has a home,
-but the file is what we edit.
+> **Migration pending.** `issues/` still holds the eight issues written
+> before this move. They have not been filed on GitHub yet. Once they
+> are, that folder goes away.
 
-Everything else in `docs/` explains how the system works today. This
-folder is only about what we plan to change.
+## The two ways in
+
+**A human files a report.** Two required fields: what happened, and
+what you expected. That is a complete report. You do not need to know
+how anything works, and you do not need to use our words for things.
+It arrives labelled `agent:needs shaping`.
+
+**An agent shapes it.** Someone investigates, works out what is
+actually going on, and rewrites the issue body into the full shape
+below. The label moves to `agent:ready`. The reporter's original words
+stay in the issue's edit history.
+
+That is the whole point of the split: a report costs a person two
+minutes, and the expensive part is done by whoever picks it up.
+
+## The shape of a shaped issue
+
+Defined by
+[`.github/ISSUE_TEMPLATE/shaped-issue.md`](../.github/ISSUE_TEMPLATE/shaped-issue.md),
+which is the one copy — do not restate it here.
+
+Five sections: what happens now, an example with numbered steps, what
+should happen instead, how we will know it is done, and notes for
+whoever picks it up.
 
 ## The rules
 
-**One item is one thing.** If the title needs the word "and", it is
-probably two items. Split it.
+**One issue is one thing.** If the title needs "and", it is two issues.
 
-**Plain language at the top.** Someone who has never opened this repo
-should understand the title, the problem, and the example. Write for a
-new engineer joining next week, not for the person who found the bug.
+**Plain language at the top.** The title, the problem, and the example
+are read by people meeting this project today. Write for them.
 
-**Every item has a real example.** Numbered steps. Real text someone
-would type. What they saw. What they expected.
+**The deep technical detail goes in the notes section at the bottom.**
+It is welcome there, in full. It is not welcome above.
 
-**Every item says how we will know it is done.** A command if there is
-one. A description of the correct behavior if there is not.
+**Every issue has a real example** with numbered steps, real text, what
+you saw, and what you expected.
 
-**The deep technical detail goes at the bottom**, under "Notes for
-whoever picks this up". It is welcome there. It is not welcome in the
-first three sections.
+**Every issue says how we will know it is done** — a command if there
+is one.
 
-## The read-aloud test
+### The jargon rule, and who it binds
 
-Read the title and the first paragraph out loud. If someone outside
-this project would have to stop and ask what a word means, change the
-word.
-
-## Words to avoid at the top of an item
-
-Here is the test, and it is mechanical: **if a word appears in
-[the glossary](../docs/glossary.md), it is one of our invented words.** Do
-not use it in the title, the problem, or the example. Say what it means
-instead.
+If a word is defined in [`docs/glossary.md`](../docs/glossary.md), it is
+one of ours. Do not use it in the title, the problem, or the example.
+Say what it means instead, and save the precise term for the notes.
 
 Room, genesis, materialize, disposition, void, park, escalate,
 register, salvage, sequester, incorporate, announce, checkpoint — all
-of these are correct in the code and correct in the rest of `docs/`.
-They are wrong at the top of a plan item, because the person reading
-that part may be meeting this project today.
-
-They are welcome in the notes at the bottom. Link the glossary when you
-use one there.
-
-Some plain replacements, to show what this looks like in practice:
+correct in the code, all wrong at the top of an issue.
 
 | Instead of | Write |
 | --- | --- |
@@ -61,50 +69,61 @@ Some plain replacements, to show what this looks like in practice:
 | a stale base | they were working from an old version of the post |
 | canonical content | the official copy on the server |
 
-## Status values
+**This rule binds agents, not reporters.** A person describing their
+own problem is plain by default. The risk is entirely ours.
 
-- `shaping` — the problem is real but we have not decided what to build
-- `ready` — anyone could pick this up and start
-- `in progress` — someone is on it
-- `done` — shipped and verified
-
-An item that is `shaping` should say what decision is missing.
-
-## Sizes
-
-- `small` — a day or less
-- `medium` — a few days
-- `large` — needs breaking up before anyone starts
-
-## Checking an item
+## Checking before you file
 
 ```bash
-npm run plan:check
+node plan/bin/check.mjs draft.md            # a body you are about to file
+node plan/bin/check.mjs --issue 12          # one already on GitHub
+node plan/bin/check.mjs --label agent:ready # everything with a label
 ```
 
-It reports our invented words used above the notes section, missing
-sections, and examples without numbered steps. The jargon check reads
-`docs/glossary.md`, so it is eager on purpose — look at each word it
-flags and decide.
+It reports jargon above the notes section, missing sections, and
+examples without numbered steps. The jargon check is eager on purpose:
+look at each word and decide.
 
-## Mirroring to GitHub
+## Labels
 
-The mirror is one-way. Files here are the source of truth. Issue
-numbers land in each file's frontmatter once mirrored.
+Anything an agent maintains carries an `agent:` prefix. Everything else
+(`bug`, `enhancement`, `documentation`, engine names) is free for
+anyone to use.
+
+| Label | Means |
+| --- | --- |
+| `agent:needs shaping` | Filed, not yet investigated. The front door. |
+| `agent:ready` | Shaped. Someone could pick it up today. |
+| `agent:in progress` | A loop cycle is working on it. |
+| `agent:needs decision` | Shaped, but a human has to decide something before work starts. The issue says what. |
+| `agent:parked` | Three failed attempts. A comment records what was tried and what to do differently. |
+
+Create them once:
 
 ```bash
-node plan/bin/mirror.mjs --dry-run   # preview
-node plan/bin/mirror.mjs             # push
+gh label create "agent:needs shaping" -c "#FBCA04" -d "Filed, not yet investigated by an agent"
+gh label create "agent:ready"         -c "#0E8A16" -d "Shaped and ready to work on"
+gh label create "agent:in progress"   -c "#1D76DB" -d "A loop cycle is working on this"
+gh label create "agent:needs decision" -c "#D93F0B" -d "Shaped, but blocked on a human decision"
+gh label create "agent:parked"        -c "#5319E7" -d "Three failed attempts; see the diagnosis comment"
 ```
 
-**Run it yourself.** It creates and edits issues on the public
-repository, so it is not something to hand to an agent in passing.
+## Working through them
 
-Comments and discussion live on the issue. The spec lives here. If an
-issue and its file disagree, the file wins.
+```
+/shape-issues          # investigate what was filed, write it up properly
+/loop /issue-cycle     # work through everything labelled agent:ready
+```
 
-## When an item ships
+`LOOP.md` is the ledger while the loop runs. The queue itself is
+GitHub:
 
-Update `CHANGELOG.md` as part of the change, per `AGENTS.md`. Set the
-item's status to `done`. Leave the file in place; it is the record of
-why the change happened.
+```bash
+gh issue list --label "agent:ready"
+```
+
+## When an issue ships
+
+Update `CHANGELOG.md` as part of the change, per `AGENTS.md`. Close the
+issue. If it taught us something that would save the next person a
+week, add a line to [history.md](history.md).
