@@ -1,7 +1,7 @@
 ---
-name: Worked-up issue (agents)
-about: The full shape, after investigation. Agents use this; people are welcome to.
-labels: [ "needs shaping" ]
+name: Shaped issue
+about: A shaped issue that is ready for work by an agent.
+labels: [ "agent:ready" ]
 ---
 
 <!--

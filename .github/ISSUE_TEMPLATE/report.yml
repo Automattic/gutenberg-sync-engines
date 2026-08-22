@@ -1,6 +1,6 @@
 name: Report a problem or suggest an idea
-description: For people. Say what happened in your own words — we will work out the technical detail.
-labels: [ "needs shaping" ]
+description: For humans. Say what happened in your own words and an agent will work out the technical detail.
+labels: [ "agent:needs shaping" ]
 body:
   - type: markdown
     attributes:
