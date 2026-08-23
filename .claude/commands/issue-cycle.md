@@ -10,17 +10,31 @@ bounded piece of work, leave the ledger accurate, and stop.
 
 ## The cycle
 
-1. **Load state.** Read `LOOP.md`, then get the queue:
+1. **Work out what you are working on.** In order:
 
-   ```bash
-   gh issue list --label "agent:in progress" --state open
-   gh issue list --label "agent:ready" --state open
-   ```
+   - If you were given issue numbers, use those.
+   - Otherwise, anything already assigned to you and not finished:
+     ```bash
+     gh issue list --assignee "@me" --label "agent:in progress" --state open
+     gh issue list --assignee "@me" --label "agent:ready" --state open
+     ```
+   - Otherwise, ask the human ONCE, with AskUserQuestion: every ready
+     issue, or specific ones they name. Show them the list first:
+     ```bash
+     gh issue list --label "agent:ready" --state open
+     ```
+     Then **assign their answer to yourself immediately**
+     (`gh issue edit <n> --add-assignee "@me"`). That is what makes this
+     a one-time question: from the next cycle on, the assignments above
+     answer it and you must not ask again.
 
-   If both are empty, say so, write a closing note in the cycle log,
-   commit the ledger, and stop the loop rather than scheduling another
-   wakeup. Read the issue you are going to work on in full, comments
-   included: `gh issue view <n> --comments`.
+   Never take an issue labelled `agent:in progress` that is assigned to
+   someone else — someone is on it. If nothing is left, say so, write a
+   closing note, and stop the loop rather than scheduling another
+   wakeup.
+
+   Read the issue you are going to work on in full, comments included:
+   `gh issue view <n> --comments`.
 
 2. **Preflight.** Run `npm run doctor`. If it reports real problems: fix
    them if the fix is obvious and local, otherwise write the diagnosis
@@ -29,14 +43,22 @@ bounded piece of work, leave the ledger accurate, and stop.
    across every engine are an environment failure, not a bug in the
    code.
 
-3. **Claim it.** Continue an `agent:in progress` issue if there is one.
-   Otherwise take the oldest `agent:ready` issue:
+3. **Claim it, before doing anything else.** Continue your own
+   `agent:in progress` issue if you have one. Otherwise take the oldest
+   available `agent:ready` issue and claim it in one call:
 
    ```bash
-   gh issue edit <n> --add-label "agent:in progress" --remove-label "agent:ready"
+   gh issue edit <n> --add-label "agent:in progress" \
+     --remove-label "agent:ready" --add-assignee "@me"
    ```
 
-   Record it in `LOOP.md` as the current issue.
+   The label is what hides it from everyone else's list. The assignee is
+   who to ask about it. Claim first, work second — a claim applied after
+   an hour of work protects nothing.
+
+   If the claim call fails because someone claimed it in the same few
+   seconds, take the next issue instead. That race is rare and costs a
+   branch, not correctness.
 
 4. **Work on a branch** named `loop/<issue number>`, created from the
    base branch the first time. One bounded piece per cycle. Anything you
@@ -87,10 +109,22 @@ bounded piece of work, leave the ledger accurate, and stop.
    - weakening or deleting a test to get a pass
    - a product decision that is genuinely the human's to make
 
-10. **Update the ledger.** Every cycle ends by updating `LOOP.md` — the
-    current issue, a cycle-log entry in the documented format, any
-    lesson worth keeping — and committing that on the BASE branch with
-    `--no-verify`. A cycle that changed nothing still records why.
+10. **Write the cycle up on the issue, not in a file.** Every cycle
+    ends with a comment on the issue saying what you did, what you ran
+    and what it said, and the verdict if there was one:
+
+    ```bash
+    gh issue comment <n> --body-file cycle.md
+    ```
+
+    That is the ledger. It lives where the next person looks, and two
+    agents on two machines can write it at the same time without
+    conflicting. A cycle that changed nothing still comments why.
+
+    `LOOP.md` is only for lessons that outlive one issue. Touch it when
+    you learn something durable, not every cycle — it is a shared file
+    on the base branch, and every write is a chance to collide with
+    another machine.
 
 11. **Report and pace.** Finish with a short plain report: what
     happened, the verdict if there was one, what the next cycle will
@@ -113,8 +147,14 @@ bounded piece of work, leave the ledger accurate, and stop.
 - **Report failures honestly.** Failing output word for word, skipped
   steps named. The ledger is worth nothing if it is optimistic.
 - **Park cleanly if you run out of budget.** Commit unfinished work on
-  the issue branch with a `wip:` prefix and write the resume point in
-  the ledger before the cycle ends.
+  the issue branch with a `wip:` prefix and comment the resume point on
+  the issue before the cycle ends.
+- **Release what you cannot finish.** If you stop for any reason other
+  than handing it to the verifier, either leave `agent:in progress`
+  with a comment saying you are still on it, or take the label off so
+  somebody else can. An abandoned claim is invisible to every future
+  run, and that — not collision — is the failure that actually costs
+  time.
 - **Write plainly**, in the ledger, in issue comments, and in commit
   messages. The rules in `docs/plan/README.md` apply to everything the loop
   writes.

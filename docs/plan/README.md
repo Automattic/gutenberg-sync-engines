@@ -109,6 +109,18 @@ anyone to use.
 | `agent:in progress` | A loop cycle is working on it. |
 | `agent:parked` | Cannot move forward. |
 
+**Claim an issue before working on it**, whether you are shaping it or
+fixing it: add `agent:in progress` and assign yourself, in one call,
+before you start. The label hides it from everyone else's list, and the
+assignee says who to ask. Release it when you stop, whatever the
+reason — a claim nobody took off is invisible to every future run, and
+that costs more time than two people colliding ever would.
+
+Several people and agents can work this way at once, on separate
+machines or in separate workspaces. They must not share a test
+environment: running the PHP tests wipes the database out from under a
+running browser suite.
+
 **A parked issue always says what it needs**, in a comment: a decision
 from a named person, an answer to a specific question, something else
 finished first, or — after three failed attempts — what was tried and

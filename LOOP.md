@@ -1,7 +1,13 @@
-# LOOP.md — the working ledger
+# LOOP.md — lessons that outlive one issue
 
-This is the loop's working state: what it is on, what happened, and
-what it learned.
+**This is not a per-cycle ledger.** Each cycle writes itself up as a
+comment on its own issue, which is where the next person looks and
+which two machines can write at once without colliding. This file is
+only for things that outlive one issue: how the loop itself should be
+run, and what it has learned the hard way.
+
+Touch it rarely. It is a shared file on the base branch, so every write
+is a chance to collide with someone else's machine.
 
 **The queue is not here.** It is GitHub Issues:
 
@@ -11,9 +17,10 @@ gh issue list --label "agent:in progress"  # being worked now
 gh issue list --label "agent:needs shaping" # filed, not investigated yet
 ```
 
-**Loop status:** READY — v1 is closed and merged.
+Anything claimed carries `agent:in progress`, and its assignee is who
+to ask about it.
+
 **Base branch:** trunk
-**Current issue:** none
 
 ## How to run it
 
@@ -27,38 +34,40 @@ work per cycle. The full protocol is in
 `.claude/commands/issue-cycle.md`; the writing rules are in
 `docs/plan/README.md`; the standing repo rules are in `AGENTS.md`.
 
-## Parked
+## Working alongside other people and agents
 
-Three, all waiting on a decision rather than on work. Each carries a
-comment saying what it needs:
+Several people and agents can run this at once, on separate machines or
+in separate workspaces with their own test environments. The rules that
+make that safe are small:
 
-- **#40** — when is it safe to stop accepting the old way of sending
-  Adopt and Reject, and what happens to the types the new route does
-  not cover?
-- **#42** — what does a websocket notification say, and is it a fourth
-  transport or a mode of the existing one?
-- **#44** — does anyone want the Automerge question answered? It is a
-  week, and nothing is broken either way.
+- **Claim before working.** `agent:in progress` plus assigning
+  yourself, in one call, before the first line of work. The label hides
+  the issue from everyone else's list; the assignee says who to ask.
+- **Release what you do not finish.** An abandoned claim is invisible
+  to every future run. That, not two agents colliding, is the failure
+  that actually costs time. If you find a claim that looks stale, check
+  with its assignee before taking it.
+- **Never share a test environment.** Running the PHP tests wipes the
+  database out from under a running browser suite. One workspace, one
+  environment, one consumer at a time.
+- **Write cycle notes on the issue, not here.**
 
-A park is recorded as a comment on the issue plus the `agent:parked`
-label — that is where the next person will look. Note it here too, in
-one line, so the ledger reads straight through.
+Parked issues (`agent:parked`) each carry a comment saying what they
+are waiting for.
 
-## Cycle log
+## How a cycle writes itself up
 
-Newest first. One entry per cycle, including cycles that changed
-nothing.
+As a comment on its own issue, in this shape:
 
 ```
-### Cycle N — YYYY-MM-DD — #<issue> <short name>
 - Did: <one bounded piece of work, in a sentence or two>
 - Checked: <the commands run and what they said>
 - Verifier: PASS / FAIL — <reasons if FAIL> (or "not requested")
-- Ledger: <label changes, anything reported to the user>
+- Next: <what the following cycle will do>
 ```
 
-No cycles yet. The v1 run that came before this is summarised in
-`docs/plan/history.md`; its cycle-by-cycle record is in this file's git
+The v1 run that came before this is summarised in
+`docs/plan/history.md`. Its cycle-by-cycle record is in this file's git
 history and is not worth reading unless you are studying the loop
 itself.
 

@@ -6,20 +6,34 @@ You are shaping issues for this repo. Someone filed a report in their
 own words. Your job is to work out what is actually going on and
 rewrite it so that anyone could pick it up.
 
-You may be given issue numbers. If not, take everything that needs
-shaping, oldest first:
+## What to shape
+
+If you were given issue numbers, use those. Otherwise list what is
+waiting and ask the human ONCE, with AskUserQuestion, whether to shape
+all of them or specific ones:
 
 ```bash
 gh issue list --label "agent:needs shaping" --state open
 ```
+
+Note that this list already excludes anything someone else is shaping,
+because a claimed issue carries `agent:in progress`.
 
 Read `docs/plan/README.md` for the rules and
 `.github/ISSUE_TEMPLATE/shaped-issue.md` for the shape.
 
 ## For each issue
 
-**1. Read it as filed.** `gh issue view <n> --comments`. The reporter's
-words are evidence. Do not discard them because they are imprecise —
+**1. Claim it, then read it.** Claim one issue at a time, as you get to
+it — never the whole batch up front, or you block others from work you
+may not reach:
+
+```bash
+gh issue edit <n> --add-label "agent:in progress" --add-assignee "@me"
+```
+
+Then `gh issue view <n> --comments`. The reporter's words are
+evidence. Do not discard them because they are imprecise —
 imprecision is often the symptom. "It goes weird when we both type" is
 a real observation.
 
@@ -90,8 +104,12 @@ that too.
 
 ```bash
 gh issue edit <n> --title "<plain-language title>" --body-file draft.md \
-  --add-label "agent:ready" --remove-label "agent:needs shaping"
+  --add-label "agent:ready" --remove-label "agent:needs shaping" \
+  --remove-label "agent:in progress" --remove-assignee "@me"
 ```
+
+Releasing the claim matters as much as making it: a shaped issue nobody
+can see is worse than an unshaped one.
 
 Then add a short comment saying what you found and what changed, so the
 reporter sees a human-readable answer rather than silently rewritten
@@ -113,6 +131,10 @@ text. Two or three sentences.
   loop cycle, on a branch, against the issue you just wrote.
 - **Write plainly.** Same rule as everything else here: if the word is
   in `docs/glossary.md`, it does not go above the notes section.
+- **Never leave a claim behind.** Whatever the outcome — shaped,
+  closed, parked, or a question asked — take `agent:in progress` back
+  off before you move on. If you stop early, release everything you had
+  claimed and say so in your report.
 
 ## At the end
 
