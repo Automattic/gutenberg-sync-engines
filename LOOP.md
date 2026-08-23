@@ -27,14 +27,18 @@ work per cycle. The full protocol is in
 `.claude/commands/issue-cycle.md`; the writing rules are in
 `plan/README.md`; the standing repo rules are in `AGENTS.md`.
 
-**Before the first run:** the eight issues written before the move to
-GitHub are still in `plan/issues/` and have not been filed. The labels
-in `plan/README.md` have not been created either. Both are jobs for a
-human, because they change the public repository.
-
 ## Parked
 
-Nothing parked.
+Three, all waiting on a decision rather than on work. Each carries a
+comment saying what it needs:
+
+- **#40** — when is it safe to stop accepting the old way of sending
+  Adopt and Reject, and what happens to the types the new route does
+  not cover?
+- **#42** — what does a websocket notification say, and is it a fourth
+  transport or a mode of the existing one?
+- **#44** — does anyone want the Automerge question answered? It is a
+  week, and nothing is broken either way.
 
 A park is recorded as a comment on the issue plus the `agent:parked`
 label — that is where the next person will look. Note it here too, in

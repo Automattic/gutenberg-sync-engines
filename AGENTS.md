@@ -298,8 +298,7 @@ flake is closed by the plugin-local hardened fixtures
 (`tests/e2e/config/collaboration-fixtures.ts` — the root-cause subtree
 fixture fix remains upstream/human-owned). One known intermittent
 remains: the parked-A12 residual (intent-log mid-burst compaction
-splice — see the open issues), firing ~1-2 of 8 under the repetition
-hammer; the
+splice, issue #37), firing ~1-2 of 8 under the repetition hammer; the
 e2e CI job keeps the base config's 2-retries-in-CI to absorb it. The
 vendored libraries' own
 conformance suites run separately:
@@ -568,7 +567,7 @@ applies.
   sourced split. Genesis blocks must still set `isValid: true` or the
   editor renders them as invalid-content recovery blocks (has bitten) —
   and a container-shaped variant of exactly that symptom is open, see
-  the open issue for the Group-block recovery symptom.
+  issue #38.
 - **de-rtc known gaps** (docs/engine-comparison.md has the full list):
   truly concurrent SAME-block edits merge from their TRUE base
   (`blockBaseVersions`) or raise a contested pending item

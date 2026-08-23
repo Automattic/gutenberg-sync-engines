@@ -6,10 +6,6 @@ are not issues: why the code is shaped the way it is
 ([history.md](history.md)), what we looked at and set aside
 ([wontfix.md](wontfix.md)), and the rules below.
 
-> **Migration pending.** `issues/` still holds the eight issues written
-> before this move. They have not been filed on GitHub yet. Once they
-> are, that folder goes away.
-
 ## The two ways in
 
 **A human files a report.** Two required fields: what happened, and
