@@ -57,9 +57,15 @@ Keep the reporter's own description of the symptom where you can. They
 described what it looks like from outside, which is exactly the part
 you are least able to invent.
 
-**5. Check it before sending.** Three things, done by reading the
+**5. Check it before sending.** Four things, done by reading the
 draft, not by feel:
 
+- **Paragraphs are NOT hard-wrapped.** GitHub turns every newline
+  inside a paragraph into a visible line break. One paragraph is one
+  long line; lists, headings, tables and fenced code keep their own
+  lines. Our `.md` files are wrapped, so anything copied out of one
+  needs unwrapping first. This is the easiest of these to get wrong,
+  because a wrapped draft looks correct in a terminal.
 - **All five sections are there**, in order.
 - **The example has numbered steps**, real text, what you see, what you
   expected. A description of a scenario is not an example.

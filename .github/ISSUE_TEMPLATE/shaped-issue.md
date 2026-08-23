@@ -9,7 +9,13 @@ This is the shape an issue takes once someone has investigated it.
 
 Agents: `gh issue create --body-file draft.md` bypasses this template,
 so copy the headings below into your draft, and check it against the
-rules in plan/README.md before creating. The one that matters: the title, the
+rules in plan/README.md before creating.
+
+DO NOT hard-wrap paragraphs. GitHub turns every newline inside a
+paragraph into a visible line break, so wrapped text renders ragged.
+One paragraph is one long line; let the browser wrap it. This differs
+from our .md files, which are wrapped — the same text needs unwrapping
+on its way to an issue. The one that matters: the title, the
 problem, and the example are read by people meeting this project today.
 If a word is defined in docs/glossary.md, it is one of ours — say what
 it means instead, or move the sentence down into the notes.
@@ -19,9 +25,7 @@ Delete these comments and every unused heading before filing.
 
 ## What happens now
 
-Two or three sentences on what a person doing ordinary work runs into.
-No jargon. For a feature rather than a bug, describe what people cannot
-do today.
+Two or three sentences on what a person doing ordinary work runs into. No jargon. For a feature rather than a bug, describe what people cannot do today. Keep each paragraph on one line.
 
 ## Example
 
@@ -37,8 +41,7 @@ Numbered steps someone could follow to see it.
 
 ## What should happen instead
 
-One short paragraph, described the way you would say it to the person
-who reported it.
+One short paragraph, described the way you would say it to the person who reported it.
 
 ## How we will know it is done
 
@@ -54,9 +57,6 @@ decision is missing** and who makes it.
 
 ## Notes for whoever picks this up
 
-The deep detail, as precise as you like: file paths, the mechanism,
-what has been tried, what is already fixed, dead ends. Link related
-issues as `#12`.
+The deep detail, as precise as you like: file paths, the mechanism, what has been tried, what is already fixed, dead ends. Link related issues as `#12`.
 
-Check `plan/history.md` before writing this section — if the approach
-you are about to suggest is already listed there as a dead end, say so.
+Check `plan/history.md` before writing this section — if the approach you are about to suggest is already listed there as a dead end, say so.

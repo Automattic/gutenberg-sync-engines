@@ -68,10 +68,22 @@ correct in the code, all wrong at the top of an issue.
 **This rule binds agents, not reporters.** A person describing their
 own problem is plain by default. The risk is entirely ours.
 
+## Do not hard-wrap issue bodies
+
+GitHub renders issue, pull request and comment bodies with hard line
+breaks on: every newline inside a paragraph becomes a visible break, so
+wrapped text arrives ragged. **One paragraph is one long line.** Lists,
+headings, tables and fenced code keep their own lines as usual.
+
+The files in this repo are wrapped at about 72 columns, so text moving
+from a file into an issue has to be unwrapped on the way. Text moving
+the other way should be rewrapped.
+
 ## Checking before you file
 
-Read the draft against three things:
+Read the draft against four things:
 
+- paragraphs are unwrapped, one line each;
 - all five sections present, in order;
 - the example has numbered steps, real text, what you saw, what you
   expected;
