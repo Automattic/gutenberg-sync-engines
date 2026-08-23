@@ -74,15 +74,19 @@ own problem is plain by default. The risk is entirely ours.
 
 ## Checking before you file
 
-```bash
-node plan/bin/check.mjs draft.md            # a body you are about to file
-node plan/bin/check.mjs --issue 12          # one already on GitHub
-node plan/bin/check.mjs --label agent:ready # everything with a label
-```
+Read the draft against three things:
 
-It reports jargon above the notes section, missing sections, and
-examples without numbered steps. The jargon check is eager on purpose:
-look at each word and decide.
+- all five sections present, in order;
+- the example has numbered steps, real text, what you saw, what you
+  expected;
+- no glossary words above the notes section.
+
+For the last one, read the current list rather than working from
+memory — it grows:
+
+```bash
+grep -o '^- \*\*[^*]*\*\*' docs/glossary.md | sed 's/^- \*\*//; s/\*\*$//'
+```
 
 ## Labels
 
@@ -95,8 +99,13 @@ anyone to use.
 | `agent:needs shaping` | Filed, not yet investigated. The front door. |
 | `agent:ready` | Shaped. Someone could pick it up today. |
 | `agent:in progress` | A loop cycle is working on it. |
-| `agent:needs decision` | Shaped, but a human has to decide something before work starts. The issue says what. |
-| `agent:parked` | Three failed attempts. A comment records what was tried and what to do differently. |
+| `agent:parked` | Cannot move forward. |
+
+**A parked issue always says what it needs**, in a comment: a decision
+from a named person, an answer to a specific question, something else
+finished first, or — after three failed attempts — what was tried and
+what the next person should do differently. "Parked" with no comment is
+not parked, it is abandoned.
 
 Create them once:
 
@@ -104,8 +113,7 @@ Create them once:
 gh label create "agent:needs shaping" -c "#FBCA04" -d "Filed, not yet investigated by an agent"
 gh label create "agent:ready"         -c "#0E8A16" -d "Shaped and ready to work on"
 gh label create "agent:in progress"   -c "#1D76DB" -d "A loop cycle is working on this"
-gh label create "agent:needs decision" -c "#D93F0B" -d "Shaped, but blocked on a human decision"
-gh label create "agent:parked"        -c "#5319E7" -d "Three failed attempts; see the diagnosis comment"
+gh label create "agent:parked"        -c "#5319E7" -d "Cannot move forward; the comment says what it needs"
 ```
 
 ## Working through them

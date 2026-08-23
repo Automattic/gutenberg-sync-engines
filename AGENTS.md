@@ -164,8 +164,7 @@ The framework/plugin split is complete: the framework ships **neither** engines
 - `plan/` — how we plan work. `README.md` (the rules, the labels, the
   flow), `history.md` (why the code is shaped this way and what has
   already been tried and failed), `wontfix.md` (looked at, set aside,
-  with reasons), and `bin/check.mjs` (the plain-language checker). The
-  work itself lives in GitHub Issues, not here.
+  with reasons). The work itself lives in GitHub Issues, not here.
 
 ## The `gutenberg/` subtree
 
@@ -514,8 +513,7 @@ shape defined by `.github/ISSUE_TEMPLATE/shaped-issue.md`. Read
 `plan/README.md` for the rules and the label set before touching any of
 it. **Write plainly.** The rule is mechanical: if a word is defined in
 `docs/glossary.md`, it is one of our invented words and does not belong
-in an issue's title, problem, or example — only in its notes. Check a
-draft with `node plan/bin/check.mjs draft.md`.
+in an issue's title, problem, or example — only in its notes.
 
 Ideas we looked at and set aside are in `plan/wontfix.md`.
 `plan/history.md` records why the code is shaped the way it is and what

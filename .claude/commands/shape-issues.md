@@ -35,8 +35,9 @@ places to look first:
 
 - **A real bug we can act on** → shape it, label `agent:ready`.
 - **Real, but a human must decide something first** → shape it, put the
-  missing decision near the top, label `agent:needs decision`. Say who
-  decides and what the options are.
+  missing decision near the top, label `agent:parked`, and comment
+  saying who decides and what the options are. A park always states
+  what it is waiting for.
 - **Working as designed** → explain why, in plain language, link the
   doc that says so, and close it. Be gracious: a report that turns out
   to be a misunderstanding is still a documentation problem.
@@ -56,15 +57,28 @@ Keep the reporter's own description of the symptom where you can. They
 described what it looks like from outside, which is exactly the part
 you are least able to invent.
 
-**5. Check it before sending.**
+**5. Check it before sending.** Three things, done by reading the
+draft, not by feel:
 
-```bash
-node plan/bin/check.mjs draft.md
-```
+- **All five sections are there**, in order.
+- **The example has numbered steps**, real text, what you see, what you
+  expected. A description of a scenario is not an example.
+- **No jargon above the notes section.** Get the current list — it
+  grows as the glossary does, so read it rather than working from
+  memory:
 
-Fix what it flags. The jargon check is eager, so use judgement, but the
-default is to take its advice — it is catching you writing like the
-inside of the codebase.
+  ```bash
+  grep -o '^- \*\*[^*]*\*\*' docs/glossary.md | sed 's/^- \*\*//; s/\*\*$//'
+  ```
+
+  Search your draft for each one, above the notes heading only. Word
+  endings count: "materializes" is "materialize". Words inside file
+  paths, commands and code are fine — it is prose that matters. When
+  you find one, say what it means instead, or move the whole sentence
+  down into the notes.
+
+Say in your report which of these you checked. If you skipped one, say
+that too.
 
 **6. Update the issue.**
 

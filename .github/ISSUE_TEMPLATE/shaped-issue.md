@@ -8,11 +8,8 @@ labels: [ "agent:ready" ]
 This is the shape an issue takes once someone has investigated it.
 
 Agents: `gh issue create --body-file draft.md` bypasses this template,
-so copy the headings below into your draft. Check it before creating:
-
-    node plan/bin/check.mjs draft.md
-
-The rules are in plan/README.md. The one that matters: the title, the
+so copy the headings below into your draft, and check it against the
+rules in plan/README.md before creating. The one that matters: the title, the
 problem, and the example are read by people meeting this project today.
 If a word is defined in docs/glossary.md, it is one of ours — say what
 it means instead, or move the sentence down into the notes.

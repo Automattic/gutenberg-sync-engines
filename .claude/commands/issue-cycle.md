@@ -71,12 +71,15 @@ bounded piece of work, leave the ledger accurate, and stop.
    ```
 
    The diagnosis says what you tried, what you learned, and what the
-   next person should do differently. Parking is a normal outcome.
-   Trying the same thing a fourth time is not.
+   next person should do differently. Every park says what the issue
+   needs to move again — that is what makes it a park rather than an
+   abandonment. Parking is a normal outcome. Trying the same thing a
+   fourth time is not.
 
 9. **Escalate instead of pressing on** when the work turns out to need
-   any of these. Comment on the issue explaining what you hit, move it
-   to `agent:needs decision`, and go on to the next issue:
+   any of these. Comment on the issue saying exactly what it now needs
+   and from whom, move it to `agent:parked`, and go on to the next
+   issue:
    - a change inside the `gutenberg/` copy of the framework
    - a change to frozen code: the intent-log core and its PHP twin, the
      de-rtc merge core, or the bundled y-php and automerge-php
