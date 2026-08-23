@@ -25,7 +25,7 @@ gh issue list --label "agent:needs shaping" # filed, not investigated yet
 One issue per branch, named `loop/<issue number>`. One bounded piece of
 work per cycle. The full protocol is in
 `.claude/commands/issue-cycle.md`; the writing rules are in
-`plan/README.md`; the standing repo rules are in `AGENTS.md`.
+`docs/plan/README.md`; the standing repo rules are in `AGENTS.md`.
 
 ## Parked
 
@@ -58,14 +58,14 @@ nothing.
 ```
 
 No cycles yet. The v1 run that came before this is summarised in
-`plan/history.md`; its cycle-by-cycle record is in this file's git
+`docs/plan/history.md`; its cycle-by-cycle record is in this file's git
 history and is not worth reading unless you are studying the loop
 itself.
 
 ## Lessons
 
 Things this loop learned the hard way. Keep them short, and move
-anything that stops being about *process* into `plan/history.md` or
+anything that stops being about *process* into `docs/plan/history.md` or
 `AGENTS.md`.
 
 - Run an issue's stated check exactly as written before claiming it

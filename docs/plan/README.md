@@ -24,7 +24,7 @@ minutes, and the expensive part is done by whoever picks it up.
 ## The shape of a shaped issue
 
 Defined by
-[`.github/ISSUE_TEMPLATE/shaped-issue.md`](../.github/ISSUE_TEMPLATE/shaped-issue.md),
+[`.github/ISSUE_TEMPLATE/shaped-issue.md`](../../.github/ISSUE_TEMPLATE/shaped-issue.md),
 which is the one copy — do not restate it here.
 
 Five sections: what happens now, an example with numbered steps, what
@@ -49,7 +49,7 @@ is one.
 
 ### The jargon rule, and who it binds
 
-If a word is defined in [`docs/glossary.md`](../docs/glossary.md), it is
+If a word is defined in [`docs/glossary.md`](../glossary.md), it is
 one of ours. Do not use it in the title, the problem, or the example.
 Say what it means instead, and save the precise term for the notes.
 

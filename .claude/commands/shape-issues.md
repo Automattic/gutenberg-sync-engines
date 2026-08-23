@@ -13,7 +13,7 @@ shaping, oldest first:
 gh issue list --label "agent:needs shaping" --state open
 ```
 
-Read `plan/README.md` for the rules and
+Read `docs/plan/README.md` for the rules and
 `.github/ISSUE_TEMPLATE/shaped-issue.md` for the shape.
 
 ## For each issue
@@ -27,7 +27,7 @@ a real observation.
 label change. Read the code, run the reproduction, check the tests. Two
 places to look first:
 
-- `plan/history.md` — is this a known dead end, or already explained?
+- `docs/plan/history.md` — is this a known dead end, or already explained?
 - `docs/` — is this behaving as designed? Some things are deliberate,
   like conflicts resolving silently in yjs-server.
 

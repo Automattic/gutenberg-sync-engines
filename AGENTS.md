@@ -161,7 +161,7 @@ The framework/plugin split is complete: the framework ships **neither** engines
   both benchmark harnesses; deliberately number-free (run `npm run
   bench` for numbers) — keep the SHAPES current when engine
   capabilities or benchmarks change.
-- `plan/` — how we plan work. `README.md` (the rules, the labels, the
+- `docs/plan/` — how we plan work. `README.md` (the rules, the labels, the
   flow), `history.md` (why the code is shaped this way and what has
   already been tried and failed), `wontfix.md` (looked at, set aside,
   with reasons). The work itself lives in GitHub Issues, not here.
@@ -509,13 +509,13 @@ they exist so a failure is observable without re-instrumenting:
 Open work lives in **GitHub Issues** (`gh issue list --label "agent:ready"`).
 Anyone can file one; an agent investigates it and rewrites it into the
 shape defined by `.github/ISSUE_TEMPLATE/shaped-issue.md`. Read
-`plan/README.md` for the rules and the label set before touching any of
+`docs/plan/README.md` for the rules and the label set before touching any of
 it. **Write plainly.** The rule is mechanical: if a word is defined in
 `docs/glossary.md`, it is one of our invented words and does not belong
 in an issue's title, problem, or example — only in its notes.
 
-Ideas we looked at and set aside are in `plan/wontfix.md`.
-`plan/history.md` records why the code is shaped the way it is and what
+Ideas we looked at and set aside are in `docs/plan/wontfix.md`.
+`docs/plan/history.md` records why the code is shaped the way it is and what
 has already been tried and failed — read it before a big change, and
 before re-attempting anything that looks obvious.
 

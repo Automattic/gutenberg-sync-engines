@@ -116,7 +116,7 @@ bounded piece of work, leave the ledger accurate, and stop.
   the issue branch with a `wip:` prefix and write the resume point in
   the ledger before the cycle ends.
 - **Write plainly**, in the ledger, in issue comments, and in commit
-  messages. The rules in `plan/README.md` apply to everything the loop
+  messages. The rules in `docs/plan/README.md` apply to everything the loop
   writes.
 - **Do not hard-wrap anything going to GitHub.** Issue comments and
   pull request bodies render every newline inside a paragraph as a
