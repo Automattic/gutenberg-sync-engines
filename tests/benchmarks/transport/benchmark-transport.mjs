@@ -189,7 +189,7 @@ async function main() {
 		const canvasA = await canvasOf( pageA );
 		try {
 			await canvasA
-				.locator( 'role=button[name="Add default block"i]' )
+				.getByRole( 'document', { name: 'Add default block' } )
 				.click();
 		} catch ( error ) {
 			await pageA

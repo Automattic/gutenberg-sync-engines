@@ -223,7 +223,7 @@ async function main() {
 		// starts (this is also the collaboration-works gate).
 		const canvas0 = wins[ 0 ].canvas;
 		await canvas0
-			.locator( 'role=button[name="Add default block"i]' )
+			.getByRole( 'document', { name: 'Add default block' } )
 			.click();
 		for ( let i = 0; i < WINDOWS; i++ ) {
 			await wins[ 0 ].page.keyboard.type( `soakw${ i }anchor` );
