@@ -667,10 +667,9 @@ applies.
 
 ## Deep history
 
-The multi-month RTC effort (framework/plugin split, engine SPI, transports,
-benchmarks, the subtree/e2e work) is recorded in the **Gutenberg project's**
-agent memory at
-`/Users/zzz/.claude/projects/-Users-zzz-Code-gutenberg/memory/` — start at
-`MEMORY.md`, especially the `rtc-plugin-split` and `try-intent-log-engine`
-entries. A fresh session in *this* repo does not load that memory automatically;
-read it directly when you need the backstory.
+The backstory of the multi-month RTC effort (framework/plugin split, engine
+SPI, transports, benchmarks, the subtree/e2e work) lives in this repo:
+`docs/plan/history.md` records where the project came from, the decisions
+that shape the code today, and what has already been tried and failed;
+`docs/architecture-decisions.md` records the load-bearing early decisions
+still open to revisiting. Read both before a big change.
