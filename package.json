@@ -1,6 +1,6 @@
 {
   "name": "gutenberg-sync-engines",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Pluggable real-time collaboration engines and transports for the Gutenberg collaborative-editing framework.",
   "license": "GPL-2.0-or-later",
   "private": true,
@@ -42,8 +42,10 @@
     "lint:js": "wp-scripts lint-js src tests",
     "lint:js:fix": "npm run lint:js -- --fix",
     "lint:php": "composer lint",
+    "plugin-zip": "bash bin/build-plugin-zip.sh",
     "pretest:e2e": "rimraf gutenberg/node_modules/@playwright/test gutenberg/node_modules/playwright",
     "pretest:e2e:websocket": "rimraf gutenberg/node_modules/@playwright/test gutenberg/node_modules/playwright",
+    "release": "node bin/release.mjs",
     "rtc:http": "node ./tests/e2e/bin/rtc-dev.mjs --mode=http",
     "rtc:ws": "node ./tests/e2e/bin/rtc-dev.mjs --mode=websockets",
     "start": "wp-scripts start",

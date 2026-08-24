@@ -9,6 +9,13 @@ them under a version heading when a version ships.
 
 ### Added
 
+-   Release automation: a "Create release PR" workflow (pick patch, minor, or
+    major) opens a version-bump PR; merging it into trunk triggers a release
+    workflow that builds and publishes a ready-to-install plugin zip as a
+    GitHub release.
+-   The release zip is self-contained: it bundles the pinned, built Gutenberg
+    plugin, and the plugin now loads that bundled copy automatically when no
+    other Gutenberg is present.
 -   Polling interval setting on Settings → Collaboration for the HTTP
     short-polling transport (1-25 seconds; 0 keeps the defaults). Sets how
     often each editor asks the server for updates while collaborating; solo

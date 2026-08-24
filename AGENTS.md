@@ -504,6 +504,20 @@ they exist so a failure is observable without re-instrumenting:
 - Do **not** open PRs / push to shared branches / take other outward-facing
   actions unless the user names that specific action.
 
+## Releasing
+
+Humans release via GitHub Actions: the **Create release PR** workflow
+(workflow_dispatch; pick patch/minor/major) runs `npm run release`
+(`bin/release.mjs` — bumps the version everywhere, replaces `n.e.x.t`
+placeholders, dates the changelog) and opens a release PR. Merging it into
+trunk changes the plugin-header version, which triggers `release.yml`: it
+builds the plugin and the subtree, runs `npm run plugin-zip`
+(`bin/build-plugin-zip.sh`), and publishes `gutenberg-sync-engines.zip` as a
+GitHub release. The zip is self-contained — it bundles the built Gutenberg
+subtree, and the plugin entry loads that bundled copy on sites where no
+other Gutenberg is active. Use `@since n.e.x.t` in new code; the release
+script stamps the real version.
+
 ## Known issues / out of scope
 
 Open work lives in **GitHub Issues** (`gh issue list --label "agent:ready"`).
