@@ -22,7 +22,15 @@ them under a version heading when a version ships.
     editing keeps its slower default unless the chosen interval is longer.
 -   This changelog.
 
-## 0.3.0 — August 2026 (V1 loop)
+## Pre-release history
+
+The plugin's first published GitHub release is 0.1.0, produced by the
+release workflow. The milestones below predate it: they were internal
+version numbers on paper, never packaged or tagged, and were retired when
+release automation landed (the plugin sits at 0.0.0 until that first
+release ships).
+
+### V1 loop (August 2026)
 
 -   DE-RTC commit cadence setting (seconds; 0 commits on every settle).
 -   DE-RTC Stage 2: sessions commit through the ordinary autosave endpoint;
@@ -37,7 +45,7 @@ them under a version heading when a version ships.
 -   The websocket e2e suite now runs against the real websocket transport.
 -   `composer lint` clean; zero-warning baseline.
 
-## 0.2.0 — August 2026
+### Engines, transports, diagnostics (August 2026)
 
 -   Third engine: `de-rtc` (Distributed Editing's save-centric model; merge
     core ported verbatim from wordpress-develop).
@@ -48,7 +56,7 @@ them under a version heading when a version ships.
     `wp collaboration rooms`, session capture/replay, the browser fuzzer,
     and the benchmark harnesses.
 
-## 0.1.0 — August 2026
+### Initial split from Gutenberg (August 2026)
 
 -   Initial split from the Gutenberg framework: this plugin owns all engines
     and transports; the framework keeps the engine-neutral substrate. First

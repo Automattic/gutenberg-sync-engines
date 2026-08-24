@@ -3,9 +3,9 @@
  * Plugin Name:       Gutenberg Sync Engines
  * Plugin URI:        https://github.com/WordPress/gutenberg
  * Description:       Pluggable real-time collaboration engines and transports for the Gutenberg collaborative-editing framework. Without this plugin active, real-time collaboration is effectively disabled.
- * Requires at least: 6.7
+ * Requires at least: 6.9
  * Requires PHP:      7.4
- * Version:           0.3.0
+ * Version:           0.0.0
  * Author:            WordPress Contributors
  * License:           GPL-2.0-or-later
  * License URI:       https://www.gnu.org/licenses/gpl-2.0.html
@@ -32,7 +32,7 @@ if ( function_exists( 'gutenberg_sync_engines_bootstrap' ) ) {
 	return;
 }
 
-define( 'GUTENBERG_SYNC_ENGINES_VERSION', '0.3.0' );
+define( 'GUTENBERG_SYNC_ENGINES_VERSION', '0.0.0' );
 define( 'GUTENBERG_SYNC_ENGINES_PATH', plugin_dir_path( __FILE__ ) );
 define( 'GUTENBERG_SYNC_ENGINES_URL', plugin_dir_url( __FILE__ ) );
 define( 'GUTENBERG_SYNC_ENGINES_FILE', __FILE__ );
@@ -73,7 +73,13 @@ if ( ! function_exists( 'gutenberg_sync_engines_load_bundled_gutenberg' ) ) {
 				array_keys( (array) get_site_option( 'active_sitewide_plugins', array() ) )
 			);
 		}
-		if ( in_array( 'gutenberg/gutenberg.php', $active, true ) ) {
+		if (
+			in_array( 'gutenberg/gutenberg.php', $active, true )
+			// A stale activation entry whose plugin file is gone (deleted
+			// over FTP, an unmounted dev checkout) must not disable bundled
+			// loading — WordPress itself skips missing active plugins.
+			&& file_exists( WP_PLUGIN_DIR . '/gutenberg/gutenberg.php' )
+		) {
 			return; // A standalone Gutenberg will load; defer to it.
 		}
 

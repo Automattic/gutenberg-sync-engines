@@ -8,9 +8,9 @@
  * framework must therefore load BEFORE this plugin — both are required in on
  * `muplugins_loaded` below. The framework's plugin entry path resolves from,
  * in order: the `WP_SYNC_FRAMEWORK_PLUGIN` env var, a same-named constant, or
- * — for the bundled `.wp-env.json`, which mounts the pinned Gutenberg subtree
- * as the `gutenberg` plugin — the conventional `WP_PLUGIN_DIR/gutenberg`
- * path. Override the env var to point at a different Gutenberg checkout.
+ * the plugin's own bundled Gutenberg subtree (`gutenberg/gutenberg.php` at
+ * the repo root — the same copy the plugin loads at runtime). Override the
+ * env var to point at a different Gutenberg checkout.
  *
  * @package GutenbergSyncEngines
  */
@@ -40,8 +40,10 @@ tests_add_filter(
 			$framework = WP_SYNC_FRAMEWORK_PLUGIN;
 		}
 		if ( ! $framework ) {
-			// The bundled .wp-env.json mounts the Gutenberg subtree here.
-			$framework = WP_PLUGIN_DIR . '/gutenberg/gutenberg.php';
+			// The plugin's own bundled Gutenberg subtree (also what the
+			// plugin entry loads at runtime; requiring it here first keeps
+			// the framework-before-plugin order explicit).
+			$framework = dirname( __DIR__ ) . '/gutenberg/gutenberg.php';
 		}
 		if ( $framework && file_exists( $framework ) ) {
 			require $framework;

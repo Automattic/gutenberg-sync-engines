@@ -40,12 +40,13 @@ async function globalSetup( config: FullConfig ) {
 	// Authenticate and persist the storage state to disk.
 	await requestUtils.setupRest();
 
-	// wp-env does not reliably activate mapped plugins on the *tests* site,
-	// so ensure both the Gutenberg framework (the vendored subtree) and this
-	// plugin are active — collaboration is inert without them.
-	await requestUtils.activatePlugin( 'gutenberg' );
-
 	/*
+	 * The Gutenberg framework loads from the plugin's BUNDLED copy (there is
+	 * no standalone gutenberg plugin mounted anymore) — only this plugin
+	 * needs to be active. wp-env does not reliably activate mapped plugins
+	 * on the *tests* site, so ensure it here; collaboration is inert
+	 * without it.
+	 *
 	 * Worktree checkouts mount this plugin TWICE (the directory name via
 	 * `plugins: ["."]` plus the .wp-env.json mapping), and both copies share
 	 * one plugin name — the utils' name-keyed activatePlugin() can pick the
@@ -55,6 +56,22 @@ async function globalSetup( config: FullConfig ) {
 	const plugins = ( await requestUtils.rest( {
 		path: '/wp/v2/plugins',
 	} ) ) as Array< { plugin: string; status: string; name: string } >;
+
+	// The standalone-Gutenberg stub (mounted at wp-content/plugins/gutenberg
+	// for the precedence spec) must not linger active from an aborted run —
+	// while it is active, the bundled framework defers to it and every
+	// collaboration spec would time out.
+	const staleStub = plugins.find(
+		( { plugin, status } ) =>
+			plugin.startsWith( 'gutenberg/' ) && 'active' === status
+	);
+	if ( staleStub ) {
+		await requestUtils.rest( {
+			method: 'PUT',
+			path: `/wp/v2/plugins/${ staleStub.plugin }`,
+			data: { status: 'inactive' },
+		} );
+	}
 	const copies = plugins.filter(
 		( { name } ) => 'Gutenberg Sync Engines' === name
 	);

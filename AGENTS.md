@@ -128,7 +128,9 @@ The framework/plugin split is complete: the framework ships **neither** engines
   - `framework.ts` — unlocks `@wordpress/sync` private APIs once and re-exports
     the framework runtime the adapters use.
 - `gutenberg/` — a **pinned, squashed git subtree of Gutenberg** (source only;
-  see below). Mounted by `.wp-env.json` as the runtime framework.
+  see below). The BUNDLED runtime framework: the plugin entry loads
+  `gutenberg/gutenberg.php` itself whenever no standalone Gutenberg is
+  active (wp-env no longer mounts it as a separate plugin).
 - `tests/` — ALL tests, fixtures, and test tooling: `tests/phpunit/` (PHPUnit,
   boots via `tests/bootstrap.php`), `tests/js/` (Jest unit tests + setup files,
   mirroring `src/`; `tests/js/engines/intent-log/` is the frozen core's
@@ -170,10 +172,16 @@ The framework/plugin split is complete: the framework ships **neither** engines
 
 The plugin needs the exact Gutenberg framework it was built against, so a
 Gutenberg checkout is vendored as a **squashed git subtree** pinned to a
-specific framework commit, mounted via `.wp-env.json` (`plugins: ["./gutenberg",
-"."]`). It is committed **source-only** — its `node_modules/` and `build/` are
-gitignored (by Gutenberg's own nested `.gitignore`) and must be generated
-locally (see Setup).
+specific framework commit. The plugin entry **loads it directly**
+(`gutenberg/gutenberg.php`) whenever no standalone Gutenberg plugin is
+active — the same bundled-loading path the release zip uses; neither wp-env
+config mounts the subtree as its own plugin anymore. A standalone Gutenberg,
+when active, always wins (the loader defers; the
+`standalone-gutenberg-precedence` e2e spec certifies this with the
+`tests/e2e/plugins/gutenberg-stub` fixture, which the tests env mounts at
+`wp-content/plugins/gutenberg`). The subtree is committed **source-only** —
+its `node_modules/` and `build/` are gitignored (by Gutenberg's own nested
+`.gitignore`) and must be generated locally (see Setup).
 
 Bump the pin with a squashed subtree pull from the framework checkout:
 
@@ -208,8 +216,9 @@ Two SEPARATE wp-env configs (the split the env 11 deprecation asks for; both
 set `testsEnvironment: false`, so each starts a single site):
 
 ```bash
-npm run env start         # DEV env (.wp-env.json): Gutenberg subtree + this
-                          # plugin, http://localhost:8888. Its afterStart
+npm run env start         # DEV env (.wp-env.json): this plugin (which loads
+                          # the bundled Gutenberg subtree itself),
+                          # http://localhost:8888. Its afterStart
                           # lifecycle hook auto-starts the websocket sync
                           # daemon (detached, --mode=daemon: the site's
                           # transport selection is NOT touched).
@@ -283,8 +292,8 @@ tests site isn't on `:8889` (auto-port / override), pass
 `WP_BASE_URL=http://localhost:<tests-port>`. Beware: if ANOTHER project's
 wp-env holds `:8889`, Playwright's webServer check sees the port alive and
 silently reuses that foreign site (wp-env credentials are identical
-everywhere, so auth even succeeds); the first visible failure is
-`activatePlugin( 'gutenberg' )` in global-setup dying with
+everywhere, so auth even succeeds); the first visible failure is a
+global-setup REST call dying with
 "Unexpected end of JSON input". Always pass `WP_BASE_URL` in that case
 (`npm run doctor` detects this arrangement and prints the right URL).
 
@@ -436,10 +445,13 @@ they exist so a failure is observable without re-instrumenting:
   copy so fixtures resolve up to this plugin's. The runner is `playwright test`
   **directly** — NOT `wp-scripts test-e2e` (v30's is the jest+puppeteer runner).
 - **e2e global setup is plugin-local** (`tests/e2e/config/global-setup.ts`): auth,
-  clean state, and — critically — `activatePlugin('gutenberg')` +
-  `activatePlugin('gutenberg-sync-engines')`, because wp-env leaves both INACTIVE
-  on the *tests* site. Without that, collaboration never turns on
-  (`_wpCollaborationEnabled` stays false) and sessions time out. We deliberately
+  clean state, and — critically — activating `gutenberg-sync-engines` (by file
+  path, worktree-safe), because wp-env leaves mapped plugins INACTIVE on the
+  *tests* site. Without that, collaboration never turns on
+  (`_wpCollaborationEnabled` stays false) and sessions time out. The framework
+  itself needs no activation — the plugin loads its bundled Gutenberg — but the
+  setup DOES deactivate a stale `gutenberg-stub` activation left by an aborted
+  precedence-spec run (an active stub blocks the bundled framework). We deliberately
   do NOT reuse the subtree's global-setup (it deactivates a Gutenberg test
   plugin this env doesn't need touched). Ours also runs the WS-provider setup
   (`tests/e2e/config/rtc-websocket-setup.ts`), gated on
@@ -504,9 +516,16 @@ they exist so a failure is observable without re-instrumenting:
 - Do **not** open PRs / push to shared branches / take other outward-facing
   actions unless the user names that specific action.
 
-## Releasing
+## Releasing (HUMANS ONLY)
 
-Humans release via GitHub Actions: the **Create release PR** workflow
+Releasing is a **human-only** action. Agents must never run `npm run
+release`, trigger either release workflow, push a `release/*` branch, tag a
+version, or bump the plugin version — not even when a release "seems ready".
+An agent's entire involvement in releasing is: keep the changelog's
+Unreleased section accurate and use `@since n.e.x.t` in new code (the
+release tooling stamps the real version).
+
+How humans release, for context: the **Create release PR** workflow
 (workflow_dispatch; pick patch/minor/major) runs `npm run release`
 (`bin/release.mjs` — bumps the version everywhere, replaces `n.e.x.t`
 placeholders, dates the changelog) and opens a release PR. Merging it into
@@ -515,8 +534,8 @@ builds the plugin and the subtree, runs `npm run plugin-zip`
 (`bin/build-plugin-zip.sh`), and publishes `gutenberg-sync-engines.zip` as a
 GitHub release. The zip is self-contained — it bundles the built Gutenberg
 subtree, and the plugin entry loads that bundled copy on sites where no
-other Gutenberg is active. Use `@since n.e.x.t` in new code; the release
-script stamps the real version.
+other Gutenberg is active. The plugin sits at 0.0.0 until the first release;
+the first release should pick **minor**, producing v0.1.0.
 
 ## Known issues / out of scope
 
