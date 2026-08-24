@@ -42,6 +42,48 @@ if ( ! class_exists( 'WP_Sync_Room_Lock' ) ) {
 		const RETRY_SLEEP_MS = 5;
 
 		/**
+		 * A resolved substitute backend, null for the built-in options
+		 * implementation, or false while unresolved.
+		 *
+		 * @var WP_Sync_Lock_Backend|null|false
+		 */
+		private static $backend = false;
+
+		/**
+		 * Resolves the lock backend once per request.
+		 *
+		 * @return WP_Sync_Lock_Backend|null Substitute backend, or null for
+		 *                                   the built-in implementation.
+		 */
+		private static function backend(): ?WP_Sync_Lock_Backend {
+			if ( false === self::$backend ) {
+				/**
+				 * Filters the room-lock backend, so a drop-in plugin can
+				 * hold these locks somewhere other than the options table
+				 * (memcached, Redis). Return a WP_Sync_Lock_Backend; its
+				 * contract is documented on the interface.
+				 *
+				 * @since 0.4.0
+				 *
+				 * @param WP_Sync_Lock_Backend|null $backend Substitute
+				 *        backend, or null for the options-table default.
+				 */
+				$backend       = apply_filters( 'wp_sync_lock_backend', null );
+				self::$backend = $backend instanceof WP_Sync_Lock_Backend ? $backend : null;
+			}
+			return self::$backend;
+		}
+
+		/**
+		 * Clears the resolved backend. Test use only.
+		 *
+		 * @return void
+		 */
+		public static function reset_backend_for_testing(): void {
+			self::$backend = false;
+		}
+
+		/**
 		 * Attempts to acquire the named lock within the wait budget.
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
@@ -54,6 +96,11 @@ if ( ! class_exists( 'WP_Sync_Room_Lock' ) ) {
 		 */
 		public static function acquire( string $name, float $wait_seconds = 5.0 ) {
 			global $wpdb;
+
+			$backend = self::backend();
+			if ( null !== $backend ) {
+				return $backend->acquire( $name, $wait_seconds );
+			}
 
 			$token    = sprintf( '%.6F:%s', microtime( true ), wp_generate_password( 12, false ) );
 			$deadline = microtime( true ) + $wait_seconds;
@@ -116,6 +163,11 @@ if ( ! class_exists( 'WP_Sync_Room_Lock' ) ) {
 			global $wpdb;
 
 			if ( '' === $token ) {
+				return;
+			}
+			$backend = self::backend();
+			if ( null !== $backend ) {
+				$backend->release( $name, $token );
 				return;
 			}
 			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotSimple -- Token-checked lock release.

@@ -153,7 +153,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Rooms_CLI_Command' ) && defined( 'W
 				WP_CLI::error( "No storage room found for '{$room}' (rooms are only created once a client syncs; check `wp collaboration rooms list`)." );
 			}
 
-			$storage = new WP_Sync_Post_Meta_Storage();
+			$storage = gutenberg_sync_engines_storage();
 			// Safe now: the storage post exists, so reads cannot create it.
 			$all_rows = $storage->get_updates_after_cursor( $room, 0 );
 

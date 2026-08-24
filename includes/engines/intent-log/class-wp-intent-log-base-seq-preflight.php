@@ -151,7 +151,7 @@ if ( ! class_exists( 'WP_Intent_Log_Base_Seq_Preflight' ) ) {
 				return true;
 			}
 
-			$engine   = new WP_Intent_Log_Engine( new WP_Sync_Post_Meta_Storage() );
+			$engine   = new WP_Intent_Log_Engine( gutenberg_sync_engines_storage() );
 			$base_seq = (int) $postarr['intent_log_base_seq'];
 			$base_doc = $engine->document_at( $room, $base_seq );
 			if ( null === $base_doc ) {
@@ -231,42 +231,22 @@ if ( ! class_exists( 'WP_Intent_Log_Base_Seq_Preflight' ) ) {
 		}
 
 		/**
-		 * The room's engine lineage WITHOUT creating storage.
+		 * The room's engine lineage WITHOUT creating storage (the
+		 * framework storage's non-creating read).
 		 *
 		 * @since 0.5.0
-		 *
-		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
 		 * @param string $room Room identifier.
 		 * @return string|null Engine slug, or null.
 		 */
 		private static function room_engine( string $room ): ?string {
-			global $wpdb;
-
-			$storage_ids = get_posts(
-				array(
-					'post_type'      => 'wp_sync_storage',
-					'post_status'    => 'publish',
-					'name'           => md5( $room ),
-					'posts_per_page' => 1,
-					'orderby'        => 'ID',
-					'order'          => 'ASC',
-					'fields'         => 'ids',
-				)
-			);
-			if ( array() === $storage_ids ) {
+			$storage = gutenberg_sync_engines_storage();
+			if ( ! method_exists( $storage, 'peek_room_engine' ) ) {
+				// A storage without a non-creating read gives no safe way
+				// to look; treat the room as absent rather than create it.
 				return null;
 			}
-			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Cache-hygienic, matching the framework storage's accessor.
-			$engine = $wpdb->get_var(
-				$wpdb->prepare(
-					"SELECT meta_value FROM $wpdb->postmeta WHERE post_id = %d AND meta_key = %s ORDER BY meta_id ASC LIMIT 1",
-					(int) $storage_ids[0],
-					'wp_sync_engine'
-				)
-			);
-
-			return is_string( $engine ) && '' !== $engine ? $engine : null;
+			return $storage->peek_room_engine( $room );
 		}
 
 		/**

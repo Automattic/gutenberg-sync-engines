@@ -7,6 +7,36 @@
 
 if ( ! interface_exists( 'WP_Sync_Storage' ) ) {
 
+	/**
+	 * Room/update storage for collaborative editing.
+	 *
+	 * Obtain an instance through `wp_get_sync_storage()`; the
+	 * `__unstable_wp_sync_storage` filter substitutes a different backend. Any
+	 * implementation must uphold this contract — engines rely on every
+	 * clause:
+	 *
+	 * - Per-room cursors only ever grow and are never reused, INCLUDING
+	 *   across `remove_updates_before_cursor()` trims (engines keep a
+	 *   checkpoint row at the trim floor and bootstrap stale clients from
+	 *   it).
+	 * - `get_updates_after_cursor()` returns rows in cursor order, and the
+	 *   cursor it reports must never skip a row appended concurrently.
+	 * - Read-your-writes across web servers: an update acknowledged to one
+	 *   request must be visible to the next poll on ANY server. A backend
+	 *   with asynchronous replication must read from its primary.
+	 * - The engine lineage stamp (`set_room_engine`) is write-once; racing
+	 *   first writers must converge on a single winner.
+	 * - Durability matters: rooms hold unsaved collaborative content. An
+	 *   evicting cache is not an acceptable backend for update rows.
+	 *
+	 * Awareness is whole-array last-writer-wins (lossy is acceptable). The
+	 * default implementation also carries optional capabilities engines
+	 * feature-detect with `method_exists`: per-room key/value metadata
+	 * (`get_room_meta`/`set_room_meta` — checkpoints and trim floors ride
+	 * here, so a backend WITHOUT it cannot bound room growth), a
+	 * non-creating lineage read (`peek_room_engine`), and `reset_room`.
+	 * Substitute backends should implement these too.
+	 */
 	interface WP_Sync_Storage {
 		/**
 		 * Adds a sync update to a given room.

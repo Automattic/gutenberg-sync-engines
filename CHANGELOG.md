@@ -35,6 +35,22 @@ them under a version heading when a version ships.
     short-polling transport (1-25 seconds; 0 keeps the defaults). Sets how
     often each editor asks the server for updates while collaborating; solo
     editing keeps its slower default unless the chosen interval is longer.
+-   The storage backend is now swappable end to end. The framework gains a
+    `wp_get_sync_storage()` factory behind a `__unstable_wp_sync_storage` filter, and
+    every plugin code path obtains storage through it (via
+    `gutenberg_sync_engines_storage()`), so a drop-in plugin can substitute
+    Redis or another backend in one place. The framework storage also gains
+    a non-creating lookup (`peek_room_engine` — looking at a room no longer
+    creates it) and a real `reset_room()`; three plugin code paths that each
+    re-implemented the non-creating lookup by hand (including one raw SQL
+    delete) now use them. The storage interface documents the contract a
+    substitute must uphold.
+-   The per-room lock and the compare-and-swap primitive each gained a
+    drop-in backend seam: implement `WP_Sync_Lock_Backend` or
+    `WP_Sync_CAS_Backend` and return it from the `wp_sync_lock_backend` /
+    `wp_sync_cas_backend` filter (for example, memcached locks). The
+    interfaces document the correctness rules; the options-table
+    implementations remain the defaults.
 -   This changelog.
 
 ### Removed

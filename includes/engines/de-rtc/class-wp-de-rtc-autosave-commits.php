@@ -102,7 +102,7 @@ if ( ! class_exists( 'WP_De_RTC_Autosave_Commits' ) ) {
 				);
 			}
 
-			$engine    = new WP_De_RTC_Engine( new WP_Sync_Post_Meta_Storage() );
+			$engine    = new WP_De_RTC_Engine( gutenberg_sync_engines_storage() );
 			$client_id = (int) $client_id;
 
 			// Rows appended by THIS commit come back in the response: mark

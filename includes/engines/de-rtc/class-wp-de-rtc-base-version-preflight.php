@@ -167,7 +167,7 @@ if ( ! class_exists( 'WP_De_RTC_Base_Version_Preflight' ) ) {
 				return true;
 			}
 
-			$engine  = new WP_De_RTC_Engine( new WP_Sync_Post_Meta_Storage() );
+			$engine  = new WP_De_RTC_Engine( gutenberg_sync_engines_storage() );
 			$content = null !== $raw
 				? (string) wp_unslash( $raw )
 				: (string) wp_unslash( $postarr['post_content'] ?? '' );
