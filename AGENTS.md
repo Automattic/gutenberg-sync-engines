@@ -161,7 +161,10 @@ The framework/plugin split is complete: the framework ships **neither** engines
   both benchmark harnesses; deliberately number-free (run `npm run
   bench` for numbers) — keep the SHAPES current when engine
   capabilities or benchmarks change.
-- `PORTING.md` — historical record of the client-side split (mostly DONE).
+- `docs/plan/` — how we plan work. `README.md` (the rules, the labels, the
+  flow), `history.md` (why the code is shaped this way and what has
+  already been tried and failed), `wontfix.md` (looked at, set aside,
+  with reasons). The work itself lives in GitHub Issues, not here.
 
 ## The `gutenberg/` subtree
 
@@ -289,13 +292,15 @@ All suites are green at head; CI (`.github/workflows/ci.yml`) is the
 source of truth for exact test counts — it certifies every suite
 (including `composer lint`, the websocket e2e lane, and the subtree's
 collaboration-review-panel component Jest) on pushes to `main` and
-PRs. Known qualifications: e2e flakes occasionally under full-suite
-load — a save notice, a fixture login navigation, or
-`http-only/collaboration-sync-body-size` failing after a preceding
-engine-flip suite [verified pre-existing: the yjs suite followed by
-body-size reproduces it without de-rtc involved]; each spec is green
-solo, and the e2e CI job leans on the base config's 2-retries-in-CI to
-absorb them (stabilization is V1.md A2). The vendored libraries' own
+PRs. The v1 integration tree passed the full default e2e suite three
+consecutive times with retries disabled; the old login
+flake is closed by the plugin-local hardened fixtures
+(`tests/e2e/config/collaboration-fixtures.ts` — the root-cause subtree
+fixture fix remains upstream/human-owned). One known intermittent
+remains: the parked-A12 residual (intent-log mid-burst compaction
+splice, issue #37), firing ~1-2 of 8 under the repetition hammer; the
+e2e CI job keeps the base config's 2-retries-in-CI to absorb it. The
+vendored libraries' own
 conformance suites run separately:
 y-php (`composer --working-dir=includes/lib/y-php test`) and
 automerge-php (`php includes/lib/automerge-php/tests/run.php`).
@@ -501,12 +506,27 @@ they exist so a failure is observable without re-instrumenting:
 
 ## Known issues / out of scope
 
-Open work items live in `V1.md` at the repo root, each with acceptance
-criteria and a lane (autonomous vs human-review); this section carries
-the operational facts and cites V1.md items where one applies.
+Open work lives in **GitHub Issues** (`gh issue list --label "agent:ready"`).
+Anyone can file one; an agent investigates it and rewrites it into the
+shape defined by `.github/ISSUE_TEMPLATE/shaped-issue.md`. Read
+`docs/plan/README.md` for the rules and the label set before touching any of
+it. **Write plainly.** The rule is mechanical: if a word is defined in
+`docs/glossary.md`, it is one of our invented words and does not belong
+in an issue's title, problem, or example — only in its notes.
 
-- `composer lint` is clean (zero errors, zero warnings) since the v1
-  loop's A6 burn-down (branch `loop/a6`) — keep it that way; the
+Ideas we looked at and set aside are in `docs/plan/wontfix.md`.
+`docs/plan/history.md` records why the code is shaped the way it is and what
+has already been tried and failed — read it before a big change, and
+before re-attempting anything that looks obvious.
+
+`LOOP.md` is the working ledger when the issue loop is running
+(`/shape-issues` to work up what was filed, then `/loop /issue-cycle`).
+
+This section carries the operational facts and cites issues where one
+applies.
+
+- `composer lint` is clean (zero errors, zero warnings) — keep it
+  that way; the
   excludes (`gutenberg/`, frozen cores, vendored libraries) are by
   design and must not widen.
 - All three engines have **collaborative undo**: intent-log via inverse
@@ -536,15 +556,18 @@ the operational facts and cites V1.md items where one applies.
   (genesis refuses above `wp_sync_yjs_server_max_genesis_bytes`, 1 MB
   default; a room grown past `wp_sync_yjs_server_max_room_bytes`, 8 MB
   default, rejects further writes with 413 while reads/saves continue —
-  shrinking an over-limit room via epoch compaction stays post-v1), and
-  materialization still carries the Phase-2a wrapper simplification
-  (intent-log's was fixed by client-authored save markup; the yjs twin
-  needs framework changes — core-data owns the Yjs block writer —
-  V1.md B1; and its genesis wrongly stores stripped inner markup in the
-  first rich-text-source attribute, e.g. `<img>` in image `caption` —
-  V1.md A4). Genesis
-  blocks must set `isValid: true` or the editor renders them as
-  invalid-content recovery blocks (has bitten).
+  shrinking an over-limit room via epoch compaction stays post-v1).
+  Materialization fidelity is FIXED as of PR #35: every Y.Block carries
+  a `_save` mirror (its registered save() output, refreshed on attribute
+  merges; the subtree's `crdt-blocks.ts` writes it under the exported
+  `CRDT_BLOCK_SAVE_KEY`) and the engine prefers it over genesis
+  wrappers, so attribute-driven wrapper changes materialize. The genesis
+  rich-text defect (stripped inner markup landing in the first
+  rich-text-source attribute) was fixed separately by the selector-
+  sourced split. Genesis blocks must still set `isValid: true` or the
+  editor renders them as invalid-content recovery blocks (has bitten) —
+  and a container-shaped variant of exactly that symptom is open, see
+  issue #38.
 - **de-rtc known gaps** (docs/engine-comparison.md has the full list):
   truly concurrent SAME-block edits merge from their TRUE base
   (`blockBaseVersions`) or raise a contested pending item
@@ -571,7 +594,7 @@ the operational facts and cites V1.md items where one applies.
   one synthesized, never-stored snapshot. The active typist advances
   by hash and downloads nothing; row bytes no longer scale with
   document size (the hour soak's PHP-memory cliff, closed structurally;
-  the hour-scale re-measurement is V1.md A5).
+  re-measured at hour scale: request rate flat, peak PHP memory 9 MB).
   Stage 2 completes the Save/Sync inversion: sessions COMMIT through
   the ordinary autosave endpoint (`WP_De_RTC_Autosave_Commits`
   intercepts the commit shape; editor-native autosaves pass through),
@@ -624,7 +647,7 @@ the operational facts and cites V1.md items where one applies.
     loses them with the outbox: the undone edit (already accepted
     server-side) resurrects for everyone. The general unacked-edit-loss
     window, but undo makes it visible (the user watched the text vanish).
-  - FIXED (V1.md A1, branch `loop/a1`): an edit made DURING the join
+  - FIXED: an edit made DURING the join
     round trip used to stay local forever on an empty-genesis room
     (found 2026-08-17 as a reload straddling a block insert — update()
     dropped pre-init trees and the empty-genesis bootstrap pushes

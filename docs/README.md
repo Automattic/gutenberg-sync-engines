@@ -23,9 +23,13 @@ Start here if you want to:
   decisions worth revisiting, and what each change would cost.
 - **Look up a term** → [glossary.md](glossary.md) — the project's own
   vocabulary in plain words.
+- **See what we plan to build next** → [plan/](plan/README.md) — one
+  file per bug or feature, written in plain language with an example
+  and a way to tell when it is done.
 
-Open work items live in `V1.md` at the repo root, each with acceptance
-criteria. Notable shipped changes are recorded in `CHANGELOG.md`. To
+The docs above describe how things work today; `plan/` describes what
+we intend to change, and `docs/plan/history.md` says why things are the way
+they are. Notable shipped changes are recorded in `CHANGELOG.md`. To
 regenerate every number behind these docs on YOUR hardware, run
 `npm run bench` against a running tests env (see
 `tests/benchmarks/README.md`).
