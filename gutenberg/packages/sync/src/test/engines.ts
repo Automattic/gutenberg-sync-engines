@@ -43,7 +43,7 @@ describe( 'sync engine adapters', () => {
 		resetEngineAdaptersForTesting();
 		resetProviderCreatorsForTesting();
 		delete window._wpCollaborationSync;
-		delete window._wpCollaborationEnabled;
+		delete window.__experimentalEnableRealTimeCollaboration;
 	} );
 
 	describe( 'getEngineAdapters', () => {

@@ -26,7 +26,7 @@ describe( 'transport negotiation', () => {
 		removeFilter( 'sync.transports', FILTER_HOOK );
 		removeFilter( 'sync.providers', FILTER_HOOK );
 		resetProviderCreatorsForTesting();
-		delete window._wpCollaborationEnabled;
+		delete window.__experimentalEnableRealTimeCollaboration;
 		delete window._wpCollaborationSync;
 	} );
 
@@ -126,7 +126,7 @@ describe( 'transport negotiation', () => {
 	} );
 
 	it( 'lets the sync.providers filter override the negotiated list', () => {
-		window._wpCollaborationEnabled = '1';
+		window.__experimentalEnableRealTimeCollaboration = true;
 		const creator = ( async () => ( {
 			destroy: () => {},
 			on: () => {},
