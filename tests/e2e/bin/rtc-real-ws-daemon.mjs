@@ -187,6 +187,22 @@ console.log(
 	`[rtc-real-ws-daemon] transport → websocket (was ${ previous ?? 'unset' })`
 );
 
+/*
+ * Turn real-time collaboration on before starting the daemon. Playwright
+ * starts webServers BEFORE global setup, so the suite's own
+ * setCollaboration has not run yet — and `wp collaboration sync-server`
+ * refuses to start when collaboration is off. Since
+ * WordPress/gutenberg#80658 that means the
+ * `gutenberg-real-time-collaboration` experiment; other experiments are
+ * left alone. Global setup enables it again, harmlessly.
+ */
+wpCli( [
+	'eval',
+	"$experiments = get_option( 'gutenberg-experiments', array() ); $experiments['gutenberg-real-time-collaboration'] = true; update_option( 'gutenberg-experiments', $experiments );",
+] );
+// eslint-disable-next-line no-console
+console.log( '[rtc-real-ws-daemon] collaboration experiment enabled' );
+
 let restored = false;
 function restore() {
 	if ( restored ) {

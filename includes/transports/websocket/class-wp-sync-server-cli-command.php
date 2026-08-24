@@ -49,8 +49,8 @@ if ( ! class_exists( 'WP_Sync_Server_CLI_Command' ) && defined( 'WP_CLI' ) && WP
 		 * @param array $assoc_args Associative arguments.
 		 */
 		public function sync_server( $args, $assoc_args ) {
-			if ( ! function_exists( 'wp_is_collaboration_allowed' ) || ! wp_is_collaboration_allowed() ) {
-				WP_CLI::error( 'Real-time collaboration is not allowed on this site (WP_ALLOW_COLLABORATION).' );
+			if ( ! function_exists( 'wp_is_collaboration_enabled' ) || ! wp_is_collaboration_enabled() ) {
+				WP_CLI::error( 'Real-time collaboration is not enabled on this site (enable the Gutenberg real-time collaboration experiment).' );
 			}
 
 			$host = isset( $assoc_args['host'] ) ? (string) $assoc_args['host'] : '127.0.0.1';

@@ -2,6 +2,15 @@
 
 Operational guide for working in this repo. Read this first.
 
+## Language
+
+- IMPORTANT: Write clear, short sentences as if explaining things to a
+  less-technical friend. Avoid all technical jargon and self-invented terms.
+  Do not use abstract structural metaphors or shorthand arrow chains.
+- Practice "BLUF": Bottom Line Up Front. Start with the main point or
+  conclusion, then provide supporting details.
+- Be as concise as possible without omitting essential information.
+
 ## What this is
 
 `gutenberg-sync-engines` is a WordPress plugin that supplies the pluggable
@@ -456,10 +465,17 @@ they exist so a failure is observable without re-instrumenting:
   plugin this env doesn't need touched). Ours also runs the WS-provider setup
   (`tests/e2e/config/rtc-websocket-setup.ts`), gated on
   `GUTENBERG_RTC_TEST_WS_PROVIDER`.
-- **Collaboration gate:** `wp_is_collaboration_allowed() &&
-  get_option('wp_collaboration_enabled')`. Tests flip that option via the
-  writing-options form (the fixture's `setCollaboration`) and set `wp_sync_engine`
-  via `POST /wp/v2/settings` — both only work with the plugins active.
+- **Collaboration gate:** `wp_is_collaboration_enabled()`, which since
+  WordPress/gutenberg#80658 is just the Gutenberg experiment
+  `gutenberg-real-time-collaboration`. The old `wp_collaboration_enabled`
+  option and the Settings → Writing checkbox are GONE (Gutenberg deletes the
+  option on upgrade), and the client flag is
+  `window.__experimentalEnableRealTimeCollaboration`, not
+  `window._wpCollaborationEnabled`. Tests flip the experiment through
+  `gutenberg-experiments` in `POST /wp/v2/settings` (the fixture's
+  `setCollaboration`) and set `wp_sync_engine` the same way; the CLI tools
+  (`rtc-dev.mjs`, the fuzzer) flip it with a `wp eval` on that option. All of
+  it only works with the plugins active.
 - **Subtree build layout** (Gutenberg 23.x): built package JS lands at
   `gutenberg/build/scripts/<pkg>/`, not `gutenberg/build/<pkg>/`.
 - **Engine switches vs room lineage:** rooms are stamped with the engine
@@ -524,18 +540,6 @@ version, or bump the plugin version — not even when a release "seems ready".
 An agent's entire involvement in releasing is: keep the changelog's
 Unreleased section accurate and use `@since n.e.x.t` in new code (the
 release tooling stamps the real version).
-
-How humans release, for context: the **Create release PR** workflow
-(workflow_dispatch; pick patch/minor/major) runs `npm run release`
-(`bin/release.mjs` — bumps the version everywhere, replaces `n.e.x.t`
-placeholders, dates the changelog) and opens a release PR. Merging it into
-trunk changes the plugin-header version, which triggers `release.yml`: it
-builds the plugin and the subtree, runs `npm run plugin-zip`
-(`bin/build-plugin-zip.sh`), and publishes `gutenberg-sync-engines.zip` as a
-GitHub release. The zip is self-contained — it bundles the built Gutenberg
-subtree, and the plugin entry loads that bundled copy on sites where no
-other Gutenberg is active. The plugin sits at 0.0.0 until the first release;
-the first release should pick **minor**, producing v0.1.0.
 
 ## Known issues / out of scope
 
@@ -700,10 +704,9 @@ applies.
 
 ## Deep history
 
-The multi-month RTC effort (framework/plugin split, engine SPI, transports,
-benchmarks, the subtree/e2e work) is recorded in the **Gutenberg project's**
-agent memory at
-`/Users/zzz/.claude/projects/-Users-zzz-Code-gutenberg/memory/` — start at
-`MEMORY.md`, especially the `rtc-plugin-split` and `try-intent-log-engine`
-entries. A fresh session in *this* repo does not load that memory automatically;
-read it directly when you need the backstory.
+The backstory of the multi-month RTC effort (framework/plugin split, engine
+SPI, transports, benchmarks, the subtree/e2e work) lives in this repo:
+`docs/plan/history.md` records where the project came from, the decisions
+that shape the code today, and what has already been tried and failed;
+`docs/architecture-decisions.md` records the load-bearing early decisions
+still open to revisiting. Read both before a big change.

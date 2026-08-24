@@ -7,6 +7,16 @@ them under a version heading when a version ships.
 
 ## Unreleased
 
+### Changed
+
+-   Real-time collaboration is now turned on by the **Real-time
+    collaboration** Gutenberg experiment instead of the Settings → Writing
+    checkbox, following the framework
+    ([WordPress/gutenberg#80658](https://github.com/WordPress/gutenberg/pull/80658)).
+    Collaboration is off until that experiment is enabled, and the old
+    `wp_collaboration_enabled` option is deleted on upgrade. Settings →
+    Collaboration now says so when collaboration is off.
+
 ### Added
 
 -   Release automation: a "Create release PR" workflow (pick patch, minor, or

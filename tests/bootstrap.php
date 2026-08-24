@@ -52,6 +52,24 @@ tests_add_filter(
 		// Test fixture engine (naive opaque relay) used by the transport and
 		// registry machinery tests; registered per-test, never in production.
 		require __DIR__ . '/phpunit/fixtures/class-test-opaque-relay-engine.php';
+
+		/*
+		 * Turn real-time collaboration on for the whole suite. Since
+		 * WordPress/gutenberg#80658 the framework gates RTC on the
+		 * `gutenberg-real-time-collaboration` experiment (the old
+		 * `wp_collaboration_enabled` option is gone), and the gate is
+		 * consulted on `init` — when the `wp_sync_storage` post type and the
+		 * CRDT post meta register — and again on `rest_api_init` for the
+		 * transport routes. That is earlier than any test's set_up, so it has
+		 * to happen here. This matches the posture the suite always had: the
+		 * old option was registered with a default of true.
+		 */
+		$gse_experiments = get_option( 'gutenberg-experiments', array() );
+		if ( ! is_array( $gse_experiments ) ) {
+			$gse_experiments = array();
+		}
+		$gse_experiments['gutenberg-real-time-collaboration'] = true;
+		update_option( 'gutenberg-experiments', $gse_experiments );
 	}
 );
 

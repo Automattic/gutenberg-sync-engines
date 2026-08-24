@@ -201,11 +201,11 @@ test.describe( 'Collaboration - intent-log engine', () => {
 
 		// Both users type into the empty canvas at once.
 		await editor.canvas
-			.locator( 'role=button[name="Add default block"i]' )
+			.getByRole( 'document', { name: 'Add default block' } )
 			.click();
 		await page1.keyboard.type( 'First author paragraph' );
 		await editor2.canvas
-			.locator( 'role=button[name="Add default block"i]' )
+			.getByRole( 'document', { name: 'Add default block' } )
 			.click();
 		await page2.keyboard.type( 'Second author paragraph' );
 
@@ -286,7 +286,7 @@ test.describe( 'Collaboration - intent-log engine', () => {
 		} );
 
 		await editor.canvas
-			.locator( 'role=button[name="Add default block"i]' )
+			.getByRole( 'document', { name: 'Add default block' } )
 			.click();
 		await page1.keyboard.type( 'paragraph added by admin' );
 
@@ -330,7 +330,7 @@ test.describe( 'Collaboration - intent-log engine', () => {
 
 		// Editor1 (opened first) idles; editor2 (joined second) types.
 		await editor2.canvas
-			.locator( 'role=button[name="Add default block"i]' )
+			.getByRole( 'document', { name: 'Add default block' } )
 			.click();
 		await page2.keyboard.type( 'typed by the second user' );
 
@@ -364,7 +364,7 @@ test.describe( 'Collaboration - intent-log engine', () => {
 		const page1 = editor.page;
 
 		await editor.canvas
-			.locator( 'role=button[name="Add default block"i]' )
+			.getByRole( 'document', { name: 'Add default block' } )
 			.click();
 		await page1.keyboard.type( 'HelloWorld' );
 		await page1.keyboard.press( 'Enter' );
@@ -454,7 +454,7 @@ test.describe( 'Collaboration - intent-log engine', () => {
 		const page1 = editor.page;
 
 		await editor.canvas
-			.locator( 'role=button[name="Add default block"i]' )
+			.getByRole( 'document', { name: 'Add default block' } )
 			.click();
 		await page1.keyboard.type( 'HelloWorld' );
 		await page1.keyboard.press( 'Enter' );
@@ -503,7 +503,7 @@ test.describe( 'Collaboration - intent-log engine', () => {
 		const page1 = editor.page;
 
 		await editor.canvas
-			.locator( 'role=button[name="Add default block"i]' )
+			.getByRole( 'document', { name: 'Add default block' } )
 			.click();
 		await page1.keyboard.type( 'Durable paragraph' );
 

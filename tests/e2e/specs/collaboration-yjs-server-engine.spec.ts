@@ -137,11 +137,11 @@ test.describe( 'Collaboration - yjs-server engine', () => {
 		const page1 = editor.page;
 
 		await editor.canvas
-			.locator( 'role=button[name="Add default block"i]' )
+			.getByRole( 'document', { name: 'Add default block' } )
 			.click();
 		await page1.keyboard.type( 'First author paragraph' );
 		await editor2.canvas
-			.locator( 'role=button[name="Add default block"i]' )
+			.getByRole( 'document', { name: 'Add default block' } )
 			.click();
 		await page2.keyboard.type( 'Second author paragraph' );
 
@@ -295,7 +295,7 @@ test.describe( 'Collaboration - yjs-server engine', () => {
 			.getByRole( 'textbox', { name: 'Add title' } )
 			.fill( 'Solo reload title' );
 		await editor.canvas
-			.getByRole( 'button', { name: 'Add default block' } )
+			.getByRole( 'document', { name: 'Add default block' } )
 			.click();
 		await page.keyboard.type( 'Solo reload body' );
 
