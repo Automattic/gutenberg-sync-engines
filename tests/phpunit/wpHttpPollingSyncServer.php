@@ -43,10 +43,6 @@ class Tests_Collaboration_WpHttpPollingSyncServer extends WP_Test_REST_Controlle
 		self::$tag_id        = $factory->tag->create();
 		self::$comment_id    = $factory->comment->create( array( 'comment_post_ID' => self::$post_id ) );
 
-		// Enable the collaboration experiment in setUpBeforeClass to ensure
-		// REST routes are registered.
-		update_option( 'gutenberg-experiments', array( 'gutenberg-real-time-collaboration' => true ) );
-
 		// Make the fixture the active engine. Committed here (outside the
 		// per-test transaction) so it holds for every test in the class.
 		update_option( 'wp_sync_engine', Test_Opaque_Relay_Engine::SLUG );
@@ -55,7 +51,6 @@ class Tests_Collaboration_WpHttpPollingSyncServer extends WP_Test_REST_Controlle
 	public static function wpTearDownAfterClass() {
 		self::delete_user( self::$editor_id );
 		self::delete_user( self::$subscriber_id );
-		delete_option( 'gutenberg-experiments' );
 		delete_option( 'wp_sync_engine' );
 		wp_delete_post( self::$post_id, true );
 		wp_delete_term( self::$category_id, 'category' );
@@ -73,9 +68,6 @@ class Tests_Collaboration_WpHttpPollingSyncServer extends WP_Test_REST_Controlle
 		add_filter( 'wp_sync_engines', array( self::class, 'register_fixture_engine' ), 10, 2 );
 
 		parent::set_up();
-
-		// Enable the collaboration experiment for tests.
-		update_option( 'gutenberg-experiments', array( 'gutenberg-real-time-collaboration' => true ) );
 
 		// Reset storage post ID cache to ensure clean state after transaction rollback.
 		$reflection = new ReflectionProperty( 'WP_Sync_Post_Meta_Storage', 'storage_post_ids' );
