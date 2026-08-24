@@ -17,6 +17,10 @@
 # Playwright e2e output (traces, screenshots, reports)
 /artifacts
 
+# Release packaging output (npm run plugin-zip)
+/dist
+/gutenberg-sync-engines.zip
+
 # One-command benchmark runner output (npm run bench)
 /bench-results
 

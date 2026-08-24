@@ -309,9 +309,10 @@ async function ensurePluginsReady() {
 		);
 	}
 
+	// The Gutenberg framework loads from this plugin's BUNDLED copy (the
+	// subtree is no longer mounted as its own plugin), so only this plugin
+	// needs activating.
 	process.stdout.write( 'Activating plugins... ' );
-	await runWpCli( [ 'plugin', 'activate', 'gutenberg' ] );
-
 	const plugins = JSON.parse(
 		await runWpCli( [
 			'plugin',
@@ -610,12 +611,19 @@ async function runDoctorMode() {
 			continue;
 		}
 
+		// The framework comes from the plugin's BUNDLED Gutenberg copy; no
+		// standalone gutenberg plugin is mounted anymore. A standalone one
+		// (the tests env's precedence-spec stub, or a real install) takes
+		// precedence when active — expected for the spec, wrong as a
+		// steady state (the stub provides no framework).
 		const gutenberg = plugins.find( ( p ) => 'gutenberg' === p.name );
 		if ( gutenberg && 'active' === gutenberg.status ) {
-			ok( 'gutenberg plugin active' );
-		} else {
 			warn(
-				'gutenberg plugin inactive — collaboration framework absent. fix: wp plugin activate gutenberg (the e2e/fuzzer setups do this themselves)'
+				'a standalone gutenberg plugin is ACTIVE — the bundled framework defers to it. If this is the e2e stub left behind by an aborted run: wp plugin deactivate gutenberg'
+			);
+		} else {
+			ok(
+				'no standalone gutenberg active — the framework loads from the bundled copy'
 			);
 		}
 

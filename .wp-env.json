@@ -2,7 +2,6 @@
   "$schema": "./gutenberg/schemas/json/wp-env.json",
   "core": "WordPress/WordPress",
   "plugins": [
-    "./gutenberg",
     "."
   ],
   "themes": [
