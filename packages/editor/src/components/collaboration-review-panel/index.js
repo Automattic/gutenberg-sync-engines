@@ -3,7 +3,7 @@
  */
 import { useDispatch } from '@wordpress/data';
 import { __, _n, sprintf } from '@wordpress/i18n';
-import { Button, PanelBody } from '@wordpress/components';
+import { PanelBody } from '@wordpress/components';
 import { store as blockEditorStore } from '@wordpress/block-editor';
 
 /**
@@ -12,22 +12,21 @@ import { store as blockEditorStore } from '@wordpress/block-editor';
 import ReviewGroup from './review-group';
 import {
 	groupByUnit,
+	itemAnchorClientId,
 	useReviewData,
 	useResolveReviewItems,
 } from './review-data';
 
 /**
- * Lists edits that were set aside for review after a sync conflict (open
- * proposals), with actions to restore the lost content as a new edit or
- * discard it. Resolving either way closes the proposal for every
- * collaborator.
- *
- * The panel is an index: conflicts anchored to a live block link to it (the
- * in-canvas marker is the primary resolution surface); conflicts whose
- * block no longer exists are only resolvable here.
+ * A summary-only index of edits that were set aside for review after a
+ * sync conflict (open proposals). Resolution happens at the inline block
+ * card in the canvas — an anchored conflict here is a link that navigates
+ * to its block. Only conflicts whose block no longer exists carry their
+ * Adopt/Reject verbs in the panel, since they have no card to resolve at.
  */
 export default function CollaborationReviewPanel() {
-	const { postType, postId, items, clientIdByTarget } = useReviewData();
+	const { postType, postId, items, clientIdByTarget, clientIdByIndex } =
+		useReviewData();
 	const onResolve = useResolveReviewItems( postType, postId );
 	const { selectBlock, flashBlock } = useDispatch( blockEditorStore );
 
@@ -49,18 +48,22 @@ export default function CollaborationReviewPanel() {
 		>
 			<p className="editor-collaboration-review-panel__description">
 				{ _n(
-					'This edit conflicted with a collaborator’s changes and was set aside. Restore it as a new edit or discard it.',
-					'These edits conflicted with collaborators’ changes and were set aside. Restore them as new edits or discard them.',
+					'This edit conflicted with a collaborator’s changes and was set aside. Review it at its block.',
+					'These edits conflicted with collaborators’ changes and were set aside. Review them at their blocks.',
 					items.length
 				) }
 			</p>
 			{ groups.map( ( groupItems ) => {
-				const clientId = clientIdByTarget[ groupItems[ 0 ].targetId ];
+				const clientId = itemAnchorClientId( groupItems[ 0 ], {
+					clientIdByTarget,
+					clientIdByIndex,
+				} );
 				return (
 					<ReviewGroup
 						key={ groupItems[ 0 ].unitId }
 						items={ groupItems }
 						onResolve={ onResolve }
+						summaryOnly={ !! clientId }
 						onNavigate={
 							clientId
 								? () => {
@@ -74,17 +77,6 @@ export default function CollaborationReviewPanel() {
 					/>
 				);
 			} ) }
-			{ groups.length > 1 && (
-				<Button
-					__next40pxDefaultSize
-					className="editor-collaboration-review-panel__discard-all"
-					variant="secondary"
-					isDestructive
-					onClick={ () => onResolve( items, 'dismissed' ) }
-				>
-					{ __( 'Discard all' ) }
-				</Button>
-			) }
 		</PanelBody>
 	);
 }

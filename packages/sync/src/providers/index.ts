@@ -1,11 +1,4 @@
-/**
- * WordPress dependencies
- */
 import { applyFilters } from '@wordpress/hooks';
-
-/**
- * Internal dependencies
- */
 import { getAnnouncedSync } from '../engines';
 import type { ProviderCreator } from '../types';
 
@@ -148,8 +141,8 @@ export function getProviderCreators(): ProviderCreator[] {
 		return providerCreators;
 	}
 
-	// Check if real-time collaboration is enabled via WordPress setting.
-	if ( ! window._wpCollaborationEnabled ) {
+	// Check if real-time collaboration is enabled.
+	if ( ! window.__experimentalEnableRealTimeCollaboration ) {
 		return [];
 	}
 

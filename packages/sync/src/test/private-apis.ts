@@ -32,7 +32,7 @@ describe( 'sync private APIs (plugin registration surface)', () => {
 		resetEngineAdaptersForTesting();
 		resetProviderCreatorsForTesting();
 		delete window._wpCollaborationSync;
-		delete window._wpCollaborationEnabled;
+		delete window.__experimentalEnableRealTimeCollaboration;
 	} );
 
 	it( 'exposes registerSyncEngine / registerSyncTransport through the unlocked surface', () => {

@@ -1,17 +1,6 @@
-/**
- * External dependencies
- */
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-
-/**
- * WordPress dependencies
- */
 import { useMemo, useState } from '@wordpress/element';
-
-/**
- * Internal dependencies
- */
 import DataViewsPicker from '../index';
 import {
 	LAYOUT_PICKER_ACTIVITY,
@@ -675,7 +664,7 @@ describe( 'DataViews Picker', () => {
 
 			// Both "Grid" and "Table" picker layout options must appear in the menu.
 			expect(
-				screen.getByRole( 'menuitemradio', { name: 'Grid' } )
+				await screen.findByRole( 'menuitemradio', { name: 'Grid' } )
 			).toBeInTheDocument();
 			expect(
 				screen.getByRole( 'menuitemradio', { name: 'Table' } )

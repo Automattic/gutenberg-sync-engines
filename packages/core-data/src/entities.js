@@ -1,11 +1,4 @@
-/**
- * External dependencies
- */
 import { capitalCase, pascalCase } from 'change-case';
-
-/**
- * WordPress dependencies
- */
 import apiFetch from '@wordpress/api-fetch';
 import {
 	__unstableSerializeAndClean,
@@ -14,10 +7,6 @@ import {
 	parse,
 } from '@wordpress/blocks';
 import { __ } from '@wordpress/i18n';
-
-/**
- * Internal dependencies
- */
 import { PostEditorAwareness } from './awareness/post-editor-awareness';
 import { getSyncManager } from './sync';
 import {
@@ -151,7 +140,9 @@ export const rootEntitiesConfig = [
 		plural: 'comments',
 		label: __( 'Comment' ),
 		supportsPagination: true,
-		syncConfig: defaultCollectionSyncConfig,
+		...( globalThis.window?.__experimentalEnableRealTimeCollaboration
+			? { syncConfig: defaultCollectionSyncConfig }
+			: {} ),
 	},
 	{
 		name: 'menu',
@@ -327,7 +318,7 @@ export const prePersistPostType = async (
 	// saved post and CRDT snapshot are committed in the same request. We don't
 	// want a post save to fail but a CRDT update to succeed or vice versa.
 	// CRDT repair uses /wp-sync/v1/save to avoid post-save side effects.
-	if ( persistedRecord ) {
+	if ( window.__experimentalEnableRealTimeCollaboration && persistedRecord ) {
 		const objectType = `postType/${ name }`;
 		const objectId = persistedRecord.id;
 		const serializedDoc = await getSyncManager()?.createPersistedCRDTDoc(
@@ -353,7 +344,7 @@ export const prePersistPostType = async (
  */
 async function loadPostTypeEntities() {
 	const postTypesPromise = apiFetch( { path: '/wp/v2/types?context=view' } );
-	const taxonomiesPromise = window._wpCollaborationEnabled
+	const taxonomiesPromise = window.__experimentalEnableRealTimeCollaboration
 		? apiFetch( { path: '/wp/v2/taxonomies?context=view' } )
 		: Promise.resolve( {} );
 	const [ postTypes, taxonomies ] = await Promise.all( [
@@ -421,6 +412,10 @@ async function loadPostTypeEntities() {
 					? 'wp_id'
 					: DEFAULT_ENTITY_KEY,
 		};
+
+		if ( ! window.__experimentalEnableRealTimeCollaboration ) {
+			return entity;
+		}
 
 		/**
 		 * @type {import('@wordpress/sync').SyncConfig}
@@ -579,7 +574,9 @@ async function loadTaxonomyEntities() {
 			supportsPagination: true,
 		};
 
-		entity.syncConfig = defaultSyncConfig;
+		if ( window.__experimentalEnableRealTimeCollaboration ) {
+			entity.syncConfig = defaultSyncConfig;
+		}
 
 		return entity;
 	} );

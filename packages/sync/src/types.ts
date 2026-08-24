@@ -1,32 +1,13 @@
-/**
- * WordPress dependencies
- */
 import type { UndoManager as WPUndoManager } from '@wordpress/undo-manager';
-
-/**
- * External dependencies
- */
 import type * as Y from 'yjs';
 import type { Awareness } from 'y-protocols/awareness';
-
-/**
- * Internal dependencies
- */
 import type { EngineSessionCodec } from './engines/session';
 import type { ConnectionError } from './errors';
-
-export type {
-	AwarenessState,
-	EngineLocalUpdateListener,
-	EngineSessionCodec,
-	EngineUpdate,
-	LocalAwarenessState,
-} from './engines/session';
 
 /* globalThis */
 declare global {
 	interface Window {
-		_wpCollaborationEnabled?: string;
+		__experimentalEnableRealTimeCollaboration?: boolean;
 		_wpCollaborationUserId?: number;
 		_wpCollaborationWebSocketUrl?: string;
 		_wpCollaborationSync?: {
@@ -39,16 +20,9 @@ declare global {
 }
 
 export type CRDTDoc = Y.Doc;
-export type AwarenessID = string;
 export type EntityID = string;
 export type ObjectID = string;
 export type ObjectType = string;
-
-// An origin is a value passed by the transactor to identify the source of a
-// change. It can be any value, and is not used internally by Yjs. Origins are
-// preserved locally, while a remote change will have the provider instance as
-// its origin.
-export type Origin = any;
 
 // Object data represents any entity record. There are not any expectations that
 // can hold on its shape, beyond a record with string keys and unknown values.
@@ -166,6 +140,13 @@ export interface SyncReviewItem {
 	 * editor. Absent for document-level intents (e.g. entity properties).
 	 */
 	targetId?: string;
+	/**
+	 * The target block's TOP-LEVEL index in the document, for engines
+	 * whose review items address blocks positionally rather than by a
+	 * persistent identity (e.g. de-rtc contests). A UI anchor of last
+	 * resort: `targetId` wins when both are present.
+	 */
+	targetIndex?: number;
 	/**
 	 * For a parked NEW-block proposal (insert_block): the block it would
 	 * create, its readable content, and where it would land — so the
