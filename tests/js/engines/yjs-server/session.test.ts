@@ -141,23 +141,17 @@ describe( 'createYjsServerSessionCodec', () => {
 		expect( replica.getMap( 'document' ).get( 'title' ) ).toBe( 'Local' );
 	} );
 
-	it( 'answers recovery (and the never-expected compaction) with idempotent full state', () => {
+	it( 'answers recovery with idempotent full state', () => {
 		const doc = new Y.Doc();
 		doc.getMap( 'document' ).set( 'title', 'State' );
 		const session = createYjsServerSessionCodec( { doc } );
 
-		for ( const update of [
-			session.createRecoveryUpdate!(),
-			session.createCompactionUpdate!(),
-		] ) {
-			expect( update.type ).toBe( SyncUpdateType.UPDATE );
-			const replica = new Y.Doc();
-			Y.applyUpdateV2( replica, base64ToUint8Array( update.data ) );
-			// Idempotent: applying twice changes nothing.
-			Y.applyUpdateV2( replica, base64ToUint8Array( update.data ) );
-			expect( replica.getMap( 'document' ).get( 'title' ) ).toBe(
-				'State'
-			);
-		}
+		const update = session.createRecoveryUpdate!();
+		expect( update.type ).toBe( SyncUpdateType.UPDATE );
+		const replica = new Y.Doc();
+		Y.applyUpdateV2( replica, base64ToUint8Array( update.data ) );
+		// Idempotent: applying twice changes nothing.
+		Y.applyUpdateV2( replica, base64ToUint8Array( update.data ) );
+		expect( replica.getMap( 'document' ).get( 'title' ) ).toBe( 'State' );
 	} );
 } );

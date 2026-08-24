@@ -265,40 +265,6 @@ describe( 'de-rtc review lane (client)', () => {
 		).toHaveLength( 0 );
 	} );
 
-	it( 'modify-before-adopt: a reviewer-edited block replaces the parked original', () => {
-		const { entity, session, sent } = makeEntity();
-		session.receiveUpdate(
-			snapshotRow( 'v1', contentOf( BLOCK_A, BLOCK_B ) )
-		);
-		session.receiveUpdate(
-			parkedRow( 'p-9-1', 'manual-conflict-required', 9, [
-				{ index: 1, html: contentOf( BLOCK_C ) },
-			] )
-		);
-
-		const reviewed = {
-			name: 'core/paragraph',
-			attributes: { content: 'Gamma, softened by the reviewer' },
-		};
-		engine.review.restoreProposal( 'postType/book', '1', 'p-9-1', [
-			{ index: 1, html: contentOf( reviewed ) },
-		] );
-
-		// The reviewer's version — not the parked original — is what lands
-		// and what re-proposes (approval and content pinned together).
-		const changes = entity.getEditorChanges( { blocks: [] } as any ) as any;
-		expect( changes.blocks ).toEqual( [ BLOCK_A, reviewed ] );
-		const proposals = sent.filter(
-			( update ) => DE_RTC_PROPOSAL_TYPE === update.type
-		);
-		expect(
-			JSON.parse( JSON.parse( proposals[ 0 ].data ).proposedContent )
-		).toEqual( [ BLOCK_A, reviewed ] );
-		expect(
-			engine.review.getOpenItems( 'postType/book', '1' )
-		).toHaveLength( 0 );
-	} );
-
 	it( 'restore appends when the recorded index no longer matches by name', () => {
 		const { entity, session } = makeEntity();
 		session.receiveUpdate( snapshotRow( 'v1', contentOf( BLOCK_A ) ) );
@@ -317,13 +283,13 @@ describe( 'de-rtc review lane (client)', () => {
 		expect( changes.blocks ).toEqual( [ BLOCK_A, BLOCK_C ] );
 	} );
 
-	it( 'a subscription made BEFORE the entity exists still fires (the decorator subscribes during load)', () => {
+	it( 'a subscription made BEFORE the entity exists still fires (the manager subscribes during load)', () => {
 		const changed = jest.fn();
 		engine.review.subscribe( 'postType/book', '1', changed );
 
 		// The entity is created only after the subscription — the real
-		// ordering: decorateManagerWithReview captures handlers and
-		// subscribes before delegating to the inner manager's load().
+		// ordering: createSyncManager wires the review source before it
+		// asks the engine for the entity.
 		const { session } = makeEntity();
 		session.receiveUpdate(
 			parkedRow( 'p-9-1', 'manual-conflict-required', 9, [] )

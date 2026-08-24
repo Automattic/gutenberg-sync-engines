@@ -23,6 +23,49 @@ if ( ! class_exists( 'WP_Sync_Atomic_Option' ) ) {
 	class WP_Sync_Atomic_Option {
 
 		/**
+		 * A resolved substitute backend, null for the built-in options
+		 * implementation, or false while unresolved.
+		 *
+		 * @var WP_Sync_CAS_Backend|null|false
+		 */
+		private static $backend = false;
+
+		/**
+		 * Resolves the CAS backend once per request.
+		 *
+		 * @return WP_Sync_CAS_Backend|null Substitute backend, or null for
+		 *                                  the built-in implementation.
+		 */
+		private static function backend(): ?WP_Sync_CAS_Backend {
+			if ( false === self::$backend ) {
+				/**
+				 * Filters the compare-and-swap backend, so a drop-in plugin
+				 * can hold these rows somewhere other than the options
+				 * table. Return a WP_Sync_CAS_Backend; its contract —
+				 * including why memcached is unsuitable — is documented on
+				 * the interface.
+				 *
+				 * @since 0.4.0
+				 *
+				 * @param WP_Sync_CAS_Backend|null $backend Substitute
+				 *        backend, or null for the options-table default.
+				 */
+				$backend       = apply_filters( 'wp_sync_cas_backend', null );
+				self::$backend = $backend instanceof WP_Sync_CAS_Backend ? $backend : null;
+			}
+			return self::$backend;
+		}
+
+		/**
+		 * Clears the resolved backend. Test use only.
+		 *
+		 * @return void
+		 */
+		public static function reset_backend_for_testing(): void {
+			self::$backend = false;
+		}
+
+		/**
 		 * Atomically swaps the row from an expected value to the next one.
 		 *
 		 * A missing row is seeded with the expected value first (INSERT
@@ -38,6 +81,11 @@ if ( ! class_exists( 'WP_Sync_Atomic_Option' ) ) {
 		 */
 		public static function swap( string $name, string $expected, string $next ): bool {
 			global $wpdb;
+
+			$backend = self::backend();
+			if ( null !== $backend ) {
+				return $backend->swap( $name, $expected, $next );
+			}
 
 			for ( $attempt = 0; $attempt < 2; $attempt++ ) {
 				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotSimple -- Atomic CAS; deliberately bypasses the options cache.
@@ -78,6 +126,11 @@ if ( ! class_exists( 'WP_Sync_Atomic_Option' ) ) {
 		public static function swap_prefixed( string $name, string $expected_prefix, string $next ): bool {
 			global $wpdb;
 
+			$backend = self::backend();
+			if ( null !== $backend ) {
+				return $backend->swap_prefixed( $name, $expected_prefix, $next );
+			}
+
 			for ( $attempt = 0; $attempt < 2; $attempt++ ) {
 				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotSimple -- Atomic CAS; deliberately bypasses the options cache.
 				$swapped = $wpdb->query(
@@ -112,6 +165,11 @@ if ( ! class_exists( 'WP_Sync_Atomic_Option' ) ) {
 		public static function read( string $name ): ?string {
 			global $wpdb;
 
+			$backend = self::backend();
+			if ( null !== $backend ) {
+				return $backend->read( $name );
+			}
+
 			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotSimple -- Deliberately bypasses the options cache.
 			$value = $wpdb->get_var(
 				$wpdb->prepare( "SELECT option_value FROM `{$wpdb->options}` WHERE option_name = %s", $name ) // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotSimple
@@ -134,6 +192,12 @@ if ( ! class_exists( 'WP_Sync_Atomic_Option' ) ) {
 		 */
 		public static function reset( string $name, string $value ): void {
 			global $wpdb;
+
+			$backend = self::backend();
+			if ( null !== $backend ) {
+				$backend->reset( $name, $value );
+				return;
+			}
 
 			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotSimple -- Deliberately bypasses the options cache.
 			$wpdb->query(

@@ -60,7 +60,7 @@ if ( ! class_exists( 'WP_Sync_Server_CLI_Command' ) && defined( 'WP_CLI' ) && WP
 				WP_CLI::error( 'Invalid port.' );
 			}
 
-			$storage = new WP_Sync_Post_Meta_Storage();
+			$storage = gutenberg_sync_engines_storage();
 			$sync    = new WP_HTTP_Polling_Sync_Server( $storage );
 			$server  = new WP_WebSocket_Sync_Server( $sync, $host, $port );
 

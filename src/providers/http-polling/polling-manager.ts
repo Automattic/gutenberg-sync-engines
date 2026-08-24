@@ -764,16 +764,20 @@ function poll(): void {
 				// Respond to compaction requests from server. The server asks only one
 				// client at a time to compact (lowest active client ID). We encode our
 				// full document state to replace all prior updates on the server.
+				// (No current engine nominates a client — they all compact
+				// server-side — so codecs without the optional method are
+				// simply never asked, and a request to one is ignored.)
 				if ( room.should_compact ) {
 					roomState.log( 'Server requested compaction update' );
 					try {
-						// Create BEFORE clearing: a session that cannot
-						// compact (e.g. intent-log) throws here, and clearing
-						// first would destroy the queued updates for nothing.
+						// Create BEFORE clearing: a failed creation must not
+						// destroy the queued updates for nothing.
 						const compactionUpdate =
-							roomState.session.createCompactionUpdate();
-						roomState.updateQueue.clear();
-						roomState.updateQueue.add( compactionUpdate );
+							roomState.session.createCompactionUpdate?.();
+						if ( compactionUpdate ) {
+							roomState.updateQueue.clear();
+							roomState.updateQueue.add( compactionUpdate );
+						}
 					} catch ( error ) {
 						roomState.log(
 							'Failed to create compaction update',
@@ -782,14 +786,6 @@ function poll(): void {
 							true // force
 						);
 					}
-				} else if ( room.compaction_request ) {
-					// Deprecated
-					roomState.log( 'Server requested (old) compaction update' );
-					roomState.updateQueue.add(
-						roomState.session.createCompactionFromUpdates(
-							room.compaction_request
-						)
-					);
 				}
 			} );
 

@@ -24,8 +24,6 @@ export type { AwarenessState, LocalAwarenessState };
  */
 export enum SyncUpdateType {
 	COMPACTION = 'compaction',
-	SYNC_STEP_1 = 'sync_step1',
-	SYNC_STEP_2 = 'sync_step2',
 	UPDATE = 'update',
 }
 
@@ -56,7 +54,6 @@ interface SyncEnvelopeFromServer {
 	/** Engine diagnostics, present only when the request opted in. */
 	_debug?: Record< string, unknown >;
 	awareness: AwarenessState;
-	compaction_request?: SyncUpdate[]; // deprecated
 	dispositions?: EngineDisposition[];
 	end_cursor: number; // use as `after` in next request
 	should_compact?: boolean;

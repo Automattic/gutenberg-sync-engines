@@ -102,23 +102,34 @@ if ( ! function_exists( 'wp_get_collaboration_transport' ) ) {
 	}
 }
 
-if ( ! function_exists( 'wp_get_collaboration_transport_registry' ) ) {
+if ( ! function_exists( 'wp_get_sync_storage' ) ) {
 	/**
-	 * Builds a transport registry over the default storage and engine
-	 * registry. Built fresh per call: the storage keeps per-request in-memory
-	 * caches (room cursors, storage post ids) that must not outlive a
-	 * request, so this is never memoized.
+	 * The room/update storage the collaboration stack reads and writes.
 	 *
-	 * @since 7.2.0
+	 * Filterable so a plugin can substitute a different backend (an object
+	 * cache, Redis, a dedicated table, an external service) by returning
+	 * its own WP_Sync_Storage implementation. All framework and
+	 * engine-plugin access should obtain storage here rather than
+	 * instantiating WP_Sync_Post_Meta_Storage directly, so a substitution
+	 * applies everywhere at once. A substitute must uphold the storage
+	 * contract documented on the WP_Sync_Storage interface: per-room
+	 * cursors that only ever grow (and survive trims), a write
+	 * acknowledged to one request visible to the next on any server, and
+	 * a write-once engine lineage stamp.
 	 *
-	 * @return WP_Sync_Transport_Registry Transport registry.
+	 * Built fresh per call, like the registries: the default storage keeps
+	 * per-request in-memory caches that must not outlive a request.
+	 *
+	 * @since 7.4.0
+	 *
+	 * @return WP_Sync_Storage Storage implementation.
 	 */
-	function wp_get_collaboration_transport_registry(): WP_Sync_Transport_Registry {
+	function wp_get_sync_storage(): WP_Sync_Storage {
 		/**
 		 * Filters the sync storage implementation for collaborative editing.
 		 *
 		 * Allows plugins to replace the default post meta storage with alternative
-		 * backends. The primary use case is the realtime-collaboration plugin,
+		 * backends. One use case is the realtime-collaboration plugin,
 		 * which uses Presence API for awareness and a dedicated wp_collaboration
 		 * table for CRDT updates, eliminating cache side effects.
 		 *
@@ -136,6 +147,23 @@ if ( ! function_exists( 'wp_get_collaboration_transport_registry' ) ) {
 			$storage = new WP_Sync_Post_Meta_Storage();
 		}
 
+		return $storage;
+	}
+}
+
+if ( ! function_exists( 'wp_get_collaboration_transport_registry' ) ) {
+	/**
+	 * Builds a transport registry over the default storage and engine
+	 * registry. Built fresh per call: the storage keeps per-request in-memory
+	 * caches (room cursors, storage post ids) that must not outlive a
+	 * request, so this is never memoized.
+	 *
+	 * @since 7.2.0
+	 *
+	 * @return WP_Sync_Transport_Registry Transport registry.
+	 */
+	function wp_get_collaboration_transport_registry(): WP_Sync_Transport_Registry {
+		$storage = wp_get_sync_storage();
 		$engines = new WP_Sync_Engine_Registry( $storage );
 		return new WP_Sync_Transport_Registry( $storage, $engines );
 	}
@@ -303,7 +331,7 @@ function gutenberg_inject_collaboration_disabled_post_types() {
 	 * server-side by the 409 mismatch check; this announcement covers the
 	 * site default.
 	 */
-	$registry           = new WP_Sync_Engine_Registry( new WP_Sync_Post_Meta_Storage() );
+	$registry           = new WP_Sync_Engine_Registry( wp_get_sync_storage() );
 	$engine             = $registry->get_engine_for_room( '' );
 	$transport_registry = wp_get_collaboration_transport_registry();
 	$active_transport   = $transport_registry->get_transport( $transport_registry->get_active_slug() );

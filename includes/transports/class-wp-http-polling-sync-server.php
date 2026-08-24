@@ -5,10 +5,6 @@
  * @package GutenbergSyncEngines
  */
 
-if ( ! class_exists( 'WP_Sync_Config' ) ) {
-	require_once __DIR__ . '/class-wp-sync-config.php';
-}
-
 if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 
 	/**
@@ -96,43 +92,6 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 * @var int
 		 */
 		const MAX_UPDATE_DATA_SIZE = MB_IN_BYTES;
-
-		/**
-		 * Sync update type: compaction.
-		 *
-		 * @since 7.0.0
-		 * @deprecated 7.2.0 Update types are engine-owned.
-		 * @var string
-		 */
-		const UPDATE_TYPE_COMPACTION = 'compaction';
-
-		/**
-		 * Sync update type: sync step 1.
-		 *
-		 * @since 7.0.0
-		 * @deprecated 7.2.0 Update types are engine-owned.
-		 * @var string
-		 */
-		const UPDATE_TYPE_SYNC_STEP1 = 'sync_step1';
-
-		/**
-		 * Sync update type: sync step 2.
-		 *
-		 * @since 7.0.0
-		 * @deprecated 7.2.0 Update types are engine-owned.
-		 * @var string
-		 */
-		const UPDATE_TYPE_SYNC_STEP2 = 'sync_step2';
-
-		/**
-		 * Sync update type: regular update.
-		 *
-		 * @since 7.0.0
-		 * @deprecated 7.2.0 Update types are engine-owned. See
-		 *             WP_Yjs_Server_Engine::UPDATE_TYPE_UPDATE.
-		 * @var string
-		 */
-		const UPDATE_TYPE_UPDATE = 'update';
 
 		/**
 		 * Storage backend for sync updates.
@@ -640,17 +599,11 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 * - The room is not a per-post entity room (those can hold unsaved
 		 *   collaborative content and keep the strict fence). Collection and
 		 *   taxonomy rooms are rebuildable from durable database state.
-		 * - The storage supports a reset: either its own `reset_room()`
-		 *   (feature-detected for future backends) or the framework's
-		 *   postmeta storage, whose room state all lives as meta rows on a
-		 *   dedicated storage post keyed by md5(room). The rows are deleted
-		 *   directly (the storage class itself uses direct queries for these
-		 *   keys, bypassing meta caches) rather than deleting the storage
-		 *   post, which the storage caches per-request by id.
+		 * - The storage supports `reset_room()` (the framework storage
+		 *   does; feature-detected so a substitute backend without one
+		 *   keeps the fence instead).
 		 *
 		 * @since 0.2.0
-		 *
-		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
 		 * @param string               $room          Room identifier.
 		 * @param array<string, mixed> $room_request  The room's request payload.
@@ -667,42 +620,13 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 				return false;
 			}
 
+			// The framework storage implements reset_room; a substitute
+			// backend without one simply keeps the fence (no reset).
 			if ( method_exists( $this->storage, 'reset_room' ) ) {
 				return (bool) $this->storage->reset_room( $room );
 			}
 
-			if ( ! ( $this->storage instanceof WP_Sync_Post_Meta_Storage ) ) {
-				return false;
-			}
-
-			$storage_posts = get_posts(
-				array(
-					'post_type'      => WP_Sync_Post_Meta_Storage::POST_TYPE,
-					'post_status'    => 'publish',
-					'name'           => md5( $room ),
-					'posts_per_page' => 1,
-					'fields'         => 'ids',
-				)
-			);
-			$storage_post  = reset( $storage_posts );
-			if ( ! is_int( $storage_post ) || $storage_post <= 0 ) {
-				// No storage post: nothing stored, nothing to reset.
-				return true;
-			}
-
-			global $wpdb;
-			$deleted = $wpdb->query(
-				$wpdb->prepare(
-					"DELETE FROM {$wpdb->postmeta} WHERE post_id = %d AND ( meta_key IN ( %s, %s, %s ) OR meta_key LIKE %s )",
-					$storage_post,
-					WP_Sync_Post_Meta_Storage::SYNC_UPDATE_META_KEY,
-					WP_Sync_Post_Meta_Storage::ENGINE_META_KEY,
-					WP_Sync_Post_Meta_Storage::AWARENESS_META_KEY,
-					$wpdb->esc_like( 'wp_sync_room_meta_' ) . '%'
-				)
-			);
-
-			return false !== $deleted;
+			return false;
 		}
 
 		/**

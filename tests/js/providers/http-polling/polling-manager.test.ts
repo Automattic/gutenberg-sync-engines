@@ -102,10 +102,6 @@ function createMockSession( clientId = 1 ) {
 			data: '',
 			type: 'compaction',
 		} ) ),
-		createCompactionFromUpdates: jest.fn( () => ( {
-			data: '',
-			type: 'compaction',
-		} ) ),
 		destroy: jest.fn(),
 		getInitialUpdates: jest.fn( () => [
 			{ data: encodeMockData( 1 ), type: 'sync_step1' },

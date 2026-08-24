@@ -90,6 +90,27 @@ gutenberg_sync_engines_load_bundled_gutenberg();
 
 require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/class-gutenberg-sync-engines-plugin.php';
 
+if ( ! function_exists( 'gutenberg_sync_engines_storage' ) ) {
+	/**
+	 * The sync storage the plugin's engines, transports, and tools use.
+	 *
+	 * Prefers the framework's filterable factory (`wp_get_sync_storage`,
+	 * `__unstable_wp_sync_storage` filter) so a drop-in storage backend applies
+	 * everywhere at once; falls back to the post-meta default on a
+	 * framework build that predates the factory. Only called from
+	 * framework-gated code paths.
+	 *
+	 * @since 0.4.0
+	 *
+	 * @return WP_Sync_Storage Storage implementation.
+	 */
+	function gutenberg_sync_engines_storage() {
+		return function_exists( 'wp_get_sync_storage' )
+			? wp_get_sync_storage()
+			: new WP_Sync_Post_Meta_Storage();
+	}
+}
+
 if ( ! function_exists( 'gutenberg_sync_engines_bootstrap' ) ) {
 	/**
 	 * Boots the plugin once all plugins are loaded, so the collaborative-editing

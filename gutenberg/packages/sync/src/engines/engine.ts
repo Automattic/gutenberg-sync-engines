@@ -7,6 +7,7 @@ import type {
 	RecordHandlers,
 	SyncConfig,
 	SyncManagerUpdateOptions,
+	SyncReviewSource,
 	SyncUndoManager,
 } from '../types';
 
@@ -156,4 +157,13 @@ export interface SyncEngine {
 	 * to their own non-collaborative undo manager.
 	 */
 	createUndoManager?: () => SyncUndoManager | undefined;
+	/**
+	 * The engine's conflict-review surface, when it parks escalated edits
+	 * for human review. The generic manager drives the framework review UI
+	 * from it: it notifies the record handlers as items change and
+	 * delegates the manager's resolve/restore verbs to it. Optional: an
+	 * engine that never parks anything (e.g. a silently merging CRDT)
+	 * omits it, and the manager exposes no resolution verbs.
+	 */
+	readonly review?: SyncReviewSource;
 }

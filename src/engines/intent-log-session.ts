@@ -216,9 +216,6 @@ export interface IntentLogSession extends EngineSessionCodec {
 	/** The optimistic document (acked + pending), or null pre-snapshot. */
 	getDocument: () => EngineDocument | null;
 
-	/** The acked document, or null pre-snapshot. */
-	getBaseDocument: () => EngineDocument | null;
-
 	/** Escalated intents received for this room, in arrival order. */
 	getProposals: () => IntentLogProposal[];
 
@@ -717,20 +714,8 @@ export function createIntentLogSession(
 			}
 		},
 
-		createCompactionUpdate: (): EngineUpdate => {
-			// The server never nominates intent-log clients to compact
-			// (should_compact is always false); snapshotting is a server
-			// concern for this engine.
-			throw new Error(
-				'Intent-log sessions do not compact client-side.'
-			);
-		},
-
-		createCompactionFromUpdates: (): EngineUpdate => {
-			throw new Error(
-				'Intent-log sessions do not compact client-side.'
-			);
-		},
+		// No client-side compaction: snapshotting is a server concern for
+		// this engine, so the codec omits the optional compaction members.
 
 		onLocalUpdate: ( listener: EngineLocalUpdateListener ) => {
 			localUpdateListener = listener;
@@ -851,7 +836,6 @@ export function createIntentLogSession(
 		},
 
 		getDocument: () => replica?.doc ?? null,
-		getBaseDocument: () => replica?.baseDoc ?? null,
 		getProposals: () => [ ...proposals ],
 		getOpenProposals: () =>
 			proposals.filter(

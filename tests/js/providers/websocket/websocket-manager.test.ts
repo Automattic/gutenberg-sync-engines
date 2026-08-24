@@ -72,7 +72,6 @@ function fakeSession(
 		receiveDispositions: jest.fn(),
 		getLocalAwareness: () => ( {} ),
 		applyRemoteAwareness: jest.fn(),
-		createCompactionUpdate: () => ( { type: 'c', data: '' } ),
 		destroy: jest.fn(),
 		...overrides,
 	} as unknown as EngineSessionCodec;

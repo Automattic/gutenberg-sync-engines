@@ -230,12 +230,50 @@ if ( ! class_exists( 'WP_Sync_Post_Meta_Storage' ) ) {
 		 * @return string|null Engine slug, or null for a room with no lineage.
 		 */
 		public function get_room_engine( string $room ): ?string {
-			global $wpdb;
-
 			$post_id = $this->get_storage_post_id( $room );
 			if ( null === $post_id ) {
 				return null;
 			}
+
+			return $this->read_room_engine_for_post( $post_id );
+		}
+
+		/**
+		 * Reads a room's engine lineage WITHOUT creating storage for it.
+		 *
+		 * `get_room_engine()` creates the room's storage post when it is
+		 * missing (its callers are about to write). Read-only lanes —
+		 * save-path preflights, diagnostics, transports deciding whether a
+		 * room needs a reset — must be able to look without bringing a
+		 * room into existence.
+		 *
+		 * @since 7.4.0
+		 *
+		 * @param string $room Room identifier.
+		 * @return string|null Engine slug, or null when the room has no
+		 *                     storage or no lineage.
+		 */
+		public function peek_room_engine( string $room ): ?string {
+			$post_id = $this->peek_storage_post_id( $room );
+			if ( null === $post_id ) {
+				return null;
+			}
+
+			return $this->read_room_engine_for_post( $post_id );
+		}
+
+		/**
+		 * Reads the engine lineage stamp off a storage post.
+		 *
+		 * @since 7.4.0
+		 *
+		 * @global wpdb $wpdb WordPress database abstraction object.
+		 *
+		 * @param int $post_id Storage post ID.
+		 * @return string|null Engine slug, or null for no lineage.
+		 */
+		private function read_room_engine_for_post( int $post_id ): ?string {
+			global $wpdb;
 
 			// Use direct database operation to avoid priming the post meta
 			// cache (see the cache-hygiene notes on the other accessors).
@@ -375,6 +413,33 @@ if ( ! class_exists( 'WP_Sync_Post_Meta_Storage' ) ) {
 				),
 				array( '%d', '%s', '%s' )
 			);
+		}
+
+		/**
+		 * Finds the room's storage post WITHOUT creating one.
+		 *
+		 * The creating lookup below brings a room into existence on first
+		 * touch (its callers are about to write). Read-only lanes use this
+		 * instead, so that looking at a room never creates it.
+		 *
+		 * @since 7.4.0
+		 *
+		 * @param string $room Room identifier.
+		 * @return int|null Post ID, or null when the room has no storage.
+		 */
+		private function peek_storage_post_id( string $room ): ?int {
+			$room_hash = md5( $room );
+
+			if ( isset( self::$storage_post_ids[ $room_hash ] ) ) {
+				return self::$storage_post_ids[ $room_hash ];
+			}
+
+			$post_id = $this->find_canonical_storage_post_id( $room_hash );
+			if ( is_int( $post_id ) ) {
+				self::$storage_post_ids[ $room_hash ] = $post_id;
+			}
+
+			return $post_id;
 		}
 
 		/**
@@ -666,6 +731,48 @@ if ( ! class_exists( 'WP_Sync_Post_Meta_Storage' ) ) {
 			}
 
 			return true;
+		}
+
+		/**
+		 * Resets a room: deletes its update rows, engine lineage stamp,
+		 * awareness, and room meta, leaving the storage post empty and
+		 * reusable under a different engine. Never creates storage — a
+		 * room with none is already reset.
+		 *
+		 * Only safe for REBUILDABLE rooms (change feeds like global
+		 * collection/taxonomy rooms). A per-post entity room can hold
+		 * unsaved collaborative content; callers own that distinction (see
+		 * the polling transport's engine-switch reset).
+		 *
+		 * @since 7.4.0
+		 *
+		 * @global wpdb $wpdb WordPress database abstraction object.
+		 *
+		 * @param string $room Room identifier.
+		 * @return bool True when the room holds no data afterwards.
+		 */
+		public function reset_room( string $room ): bool {
+			global $wpdb;
+
+			$post_id = $this->peek_storage_post_id( $room );
+			if ( null === $post_id ) {
+				return true;
+			}
+
+			$deleted = $wpdb->query(
+				$wpdb->prepare(
+					"DELETE FROM {$wpdb->postmeta} WHERE post_id = %d AND ( meta_key IN ( %s, %s, %s ) OR meta_key LIKE %s )",
+					$post_id,
+					self::SYNC_UPDATE_META_KEY,
+					self::ENGINE_META_KEY,
+					self::AWARENESS_META_KEY,
+					$wpdb->esc_like( 'wp_sync_room_meta_' ) . '%'
+				)
+			);
+
+			unset( $this->room_cursors[ $room ], $this->room_update_counts[ $room ] );
+
+			return false !== $deleted;
 		}
 	}
 }

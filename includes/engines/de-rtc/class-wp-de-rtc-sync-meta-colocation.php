@@ -101,9 +101,9 @@ if ( ! class_exists( 'WP_De_RTC_Sync_Meta_Colocation' ) ) {
 
 		/**
 		 * Reads a room's canonical doc state WITHOUT creating storage.
-		 * (The framework storage API's own lookups create storage posts;
-		 * read-only lanes — this embed, the base-version preflight — must
-		 * never do that.)
+		 * The engine peek is the framework storage's non-creating read;
+		 * once it proves de-rtc lineage the room exists, so the ordinary
+		 * room-meta accessor is safe (it cannot create anything new).
 		 *
 		 * @since 0.5.0
 		 *
@@ -116,34 +116,12 @@ if ( ! class_exists( 'WP_De_RTC_Sync_Meta_Colocation' ) ) {
 		public static function room_doc_state( string $room ): ?array {
 			global $wpdb;
 
-			$storage_ids = get_posts(
-				array(
-					'post_type'      => 'wp_sync_storage',
-					'post_status'    => 'publish',
-					'name'           => md5( $room ),
-					'posts_per_page' => 1,
-					'orderby'        => 'ID',
-					'order'          => 'ASC',
-					'fields'         => 'ids',
-				)
-			);
-			if ( array() === $storage_ids ) {
-				return null;
-			}
-			$storage_id = (int) $storage_ids[0];
-
-			// Direct queries for cache hygiene, matching the framework
-			// storage's own accessors (oldest engine stamp wins; newest
-			// room-meta row wins).
-			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-			$engine = $wpdb->get_var(
-				$wpdb->prepare(
-					"SELECT meta_value FROM $wpdb->postmeta WHERE post_id = %d AND meta_key = %s ORDER BY meta_id ASC LIMIT 1",
-					$storage_id,
-					'wp_sync_engine'
-				)
-			);
-			if ( 'de-rtc' !== $engine ) {
+			$storage = gutenberg_sync_engines_storage();
+			if (
+				! method_exists( $storage, 'peek_room_engine' )
+				|| ! method_exists( $storage, 'get_room_meta' )
+				|| 'de-rtc' !== $storage->peek_room_engine( $room )
+			) {
 				return null;
 			}
 
@@ -152,31 +130,22 @@ if ( ! class_exists( 'WP_De_RTC_Sync_Meta_Colocation' ) ) {
 			 * (`<seq>|<json>`; the announce model's ordered store), with the
 			 * legacy `de_rtc_doc` room meta as the pre-chain fallback.
 			 */
-			$doc_json = null;
+			$doc = null;
 			if ( class_exists( 'WP_Sync_Atomic_Option' ) ) {
 				$chained = WP_Sync_Atomic_Option::read( $wpdb->prefix . 'sync_de_rtc_canonical_' . md5( $room ) );
 				if ( is_string( $chained ) ) {
 					$separator = strpos( $chained, '|' );
 					if ( false !== $separator ) {
-						$doc_json = substr( $chained, $separator + 1 );
+						$decoded = json_decode( substr( $chained, $separator + 1 ), true );
+						if ( is_array( $decoded ) ) {
+							$doc = $decoded;
+						}
 					}
 				}
 			}
-			if ( null === $doc_json ) {
-				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-				$doc_json = $wpdb->get_var(
-					$wpdb->prepare(
-						"SELECT meta_value FROM $wpdb->postmeta WHERE post_id = %d AND meta_key = %s ORDER BY meta_id DESC LIMIT 1",
-						$storage_id,
-						'wp_sync_room_meta_' . WP_De_RTC_Engine::META_DOC
-					)
-				);
+			if ( null === $doc ) {
+				$doc = $storage->get_room_meta( $room, WP_De_RTC_Engine::META_DOC );
 			}
-			if ( ! is_string( $doc_json ) || '' === $doc_json ) {
-				return null;
-			}
-
-			$doc = json_decode( $doc_json, true );
 			if ( ! is_array( $doc ) || ! is_string( $doc['version'] ?? null ) ) {
 				return null;
 			}

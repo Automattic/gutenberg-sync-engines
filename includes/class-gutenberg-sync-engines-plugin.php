@@ -95,7 +95,10 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			// The automerge-php support gate (tiny; the library itself stays lazy).
 			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/lib/automerge-php-loader.php';
 
-			// Shared concurrency primitives (Core-style lock + optimistic CAS).
+			// Shared concurrency primitives (Core-style lock + optimistic
+			// CAS), each with a filterable drop-in backend seam.
+			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/interface-wp-sync-lock-backend.php';
+			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/interface-wp-sync-cas-backend.php';
 			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/class-wp-sync-room-lock.php';
 			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/class-wp-sync-atomic-option.php';
 
@@ -302,7 +305,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 				);
 			}
 
-			$storage = new WP_Sync_Post_Meta_Storage();
+			$storage = gutenberg_sync_engines_storage();
 			$engines = new WP_Sync_Engine_Registry( $storage );
 			if ( 'intent-log' !== $engines->get_engine_slug_for_room( '' ) ) {
 				return;

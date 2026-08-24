@@ -91,9 +91,13 @@ export interface EngineSessionCodec {
 
 	/**
 	 * Creates a single update representing the full local state, replacing
-	 * all prior updates (compaction-on-request).
+	 * all prior updates (compaction-on-request). Optional: every current
+	 * engine compacts server-side and never nominates a client
+	 * (`should_compact` is always false), so codecs omit this; a transport
+	 * receiving a compaction request from an engine whose codec has no
+	 * answer simply ignores it.
 	 */
-	createCompactionUpdate: () => EngineUpdate;
+	createCompactionUpdate?: () => EngineUpdate;
 
 	/**
 	 * Creates the update the transport should send after a request whose
@@ -109,12 +113,13 @@ export interface EngineSessionCodec {
 
 	/**
 	 * Creates a compaction by merging the given server-provided updates,
-	 * preserving their operation metadata.
+	 * preserving their operation metadata. Optional and unused: no server
+	 * sends the old `compaction_request` field anymore; the member remains
+	 * only so an out-of-tree codec that still implements it stays type-valid.
 	 *
-	 * @deprecated The server is moving towards full state updates for
-	 *             compaction (`createCompactionUpdate`).
+	 * @deprecated Compaction is server-side for every current engine.
 	 */
-	createCompactionFromUpdates: ( updates: EngineUpdate[] ) => EngineUpdate;
+	createCompactionFromUpdates?: ( updates: EngineUpdate[] ) => EngineUpdate;
 
 	/**
 	 * Detaches the transport-facing subscriptions registered via

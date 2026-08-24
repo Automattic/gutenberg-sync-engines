@@ -161,6 +161,47 @@ export interface SyncReviewItem {
 	};
 }
 
+/**
+ * The review surface an engine with an escalation lane exposes: the open
+ * parked-conflict list per entity, a change subscription, and the two
+ * resolution verbs. When a {@link SyncEngine} supplies one (its optional
+ * `review` member), the generic manager presents the items through the
+ * record handlers (`onProposalsChange`/`onEscalation`) and delegates
+ * `SyncManager.resolveProposal`/`restoreProposal` to it — so any composed
+ * engine gets the framework review UI without its own plumbing.
+ */
+export interface SyncReviewSource {
+	getOpenItems: (
+		objectType: ObjectType,
+		objectId: ObjectID | null
+	) => SyncReviewItem[];
+	/** Returns an unsubscribe function. */
+	subscribe: (
+		objectType: ObjectType,
+		objectId: ObjectID | null,
+		listener: () => void
+	) => () => void;
+	/**
+	 * Closes a parked proposal. The `restored` resolution is sent AFTER
+	 * the recovered content was re-authored as ordinary edits.
+	 */
+	resolveProposal: (
+		objectType: ObjectType,
+		objectId: ObjectID | null,
+		proposalId: string,
+		resolution: 'restored' | 'dismissed'
+	) => void;
+	/**
+	 * Best-effort restore of the parked content as ordinary local edits
+	 * under the restorer's capability, then resolves as restored.
+	 */
+	restoreProposal: (
+		objectType: ObjectType,
+		objectId: ObjectID | null,
+		proposalId: string
+	) => void;
+}
+
 export interface SyncManagerUpdateOptions {
 	// Whether this update represents a user-facing entity save.
 	isSave?: boolean;
