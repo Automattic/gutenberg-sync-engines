@@ -36,8 +36,6 @@ describe( 'http-polling utils', () => {
 	describe( 'SyncUpdateType', () => {
 		it( 'has the expected enum values', () => {
 			expect( SyncUpdateType.COMPACTION ).toBe( 'compaction' );
-			expect( SyncUpdateType.SYNC_STEP_1 ).toBe( 'sync_step1' );
-			expect( SyncUpdateType.SYNC_STEP_2 ).toBe( 'sync_step2' );
 			expect( SyncUpdateType.UPDATE ).toBe( 'update' );
 		} );
 	} );
@@ -165,19 +163,11 @@ describe( 'http-polling utils', () => {
 			expect( result.data ).toBe( uint8ArrayToBase64( data ) );
 		} );
 
-		it( 'creates a typed update with SYNC_STEP_1 type', () => {
+		it( 'creates a typed update with UPDATE type', () => {
 			const data = new Uint8Array( [ 7, 8, 9 ] );
-			const result = createSyncUpdate( data, SyncUpdateType.SYNC_STEP_1 );
+			const result = createSyncUpdate( data, SyncUpdateType.UPDATE );
 
-			expect( result.type ).toBe( SyncUpdateType.SYNC_STEP_1 );
-			expect( result.data ).toBe( uint8ArrayToBase64( data ) );
-		} );
-
-		it( 'creates a typed update with SYNC_STEP_2 type', () => {
-			const data = new Uint8Array( [ 10, 11, 12 ] );
-			const result = createSyncUpdate( data, SyncUpdateType.SYNC_STEP_2 );
-
-			expect( result.type ).toBe( SyncUpdateType.SYNC_STEP_2 );
+			expect( result.type ).toBe( SyncUpdateType.UPDATE );
 			expect( result.data ).toBe( uint8ArrayToBase64( data ) );
 		} );
 
@@ -387,7 +377,7 @@ describe( 'http-polling utils', () => {
 				const updates = [
 					createSyncUpdate(
 						new Uint8Array( [ 1 ] ),
-						SyncUpdateType.SYNC_STEP_1
+						SyncUpdateType.UPDATE
 					),
 					createSyncUpdate(
 						new Uint8Array( [ 2 ] ),

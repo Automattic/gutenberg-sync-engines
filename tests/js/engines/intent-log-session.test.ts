@@ -454,10 +454,9 @@ describe( 'intent-log session codec', () => {
 	it( 'implements the codec edges: no announcements, no client-side compaction, awareness passthrough', () => {
 		const session = makeSession( 1, 11 );
 		expect( session.getInitialUpdates() ).toEqual( [] );
-		expect( () => session.createCompactionUpdate() ).toThrow( 'compact' );
-		expect( () => session.createCompactionFromUpdates( [] ) ).toThrow(
-			'compact'
-		);
+		// No client-side compaction: the optional members are absent.
+		expect( session.createCompactionUpdate ).toBeUndefined();
+		expect( session.createCompactionFromUpdates ).toBeUndefined();
 
 		session.setLocalAwareness( { user: 'alice' } );
 		expect( session.getLocalAwareness() ).toEqual( { user: 'alice' } );

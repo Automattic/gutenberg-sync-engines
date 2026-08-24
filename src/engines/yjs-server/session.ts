@@ -166,14 +166,11 @@ export function createYjsServerSessionCodec(
 		engineSlug: YJS_SERVER_ENGINE_SLUG,
 		engineProtocol: YJS_SERVER_ENGINE_PROTOCOL,
 		syncWhileSolo: true,
-		// The server compacts by itself and never nominates a client, so a
-		// compaction request should not occur — but the contract requires an
-		// answer, and a full-state update is the correct, idempotent one.
-		createCompactionUpdate: () => createFullStateUpdate( doc ),
-		// Unknown-outcome recovery re-sends full state; the server stores
-		// only what it was actually missing.
+		// The server compacts by itself and never nominates a client, so
+		// the optional compaction members are omitted. Unknown-outcome
+		// recovery re-sends full state; the server stores only what it was
+		// actually missing.
 		createRecoveryUpdate: () => createFullStateUpdate( doc ),
-		createCompactionFromUpdates: () => createFullStateUpdate( doc ),
 		destroy() {
 			if ( isDocListenerAttached ) {
 				doc.off( 'updateV2', onDocUpdate );

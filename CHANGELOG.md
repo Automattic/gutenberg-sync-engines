@@ -58,6 +58,13 @@ them under a version heading when a version ships.
 -   `restoreProposalWithChanges()` (modify-before-adopt): API-only, never
     called by anything. To return together with its review-panel UI when a
     "suggested edits" feature starts.
+-   Dead code from the retired client-compaction era: the client's handling
+    of the old `compaction_request` response field (no server sends it),
+    the four per-engine "this can never happen" compaction stubs (the
+    framework codec members are optional now), the `sync_step1`/`sync_step2`
+    update-type constants on both sides, a `require` of a file that does
+    not exist in the short-polling server, and the unused
+    `getBaseDocument()` session accessor.
 
 ## Pre-release history
 

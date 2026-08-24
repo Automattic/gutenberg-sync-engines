@@ -153,7 +153,8 @@ update queue.
 - **Every poll is a full WordPress REST request**, including idle polls; per
   active collaborator, expect roughly one request per second of load while a
   session is live.
-- Historical compaction fields (`should_compact`, `compaction_request`)
-  remain on the wire for compatibility but the policy is engine-owned now
-  (yjs-server and intent-log both checkpoint server-side; the retired
-  yjs-relay engine nominated a client compactor).
+- The historical `should_compact` field remains on the wire for
+  compatibility but every engine answers `false` — compaction is
+  engine-owned and server-side now (the retired yjs-relay engine
+  nominated a client compactor). The old `compaction_request` field is
+  gone from the client entirely.

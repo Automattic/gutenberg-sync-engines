@@ -809,14 +809,12 @@ export function createDeRtcSessionCodec(
 		clientId: doc.clientID,
 		engineSlug: DE_RTC_ENGINE_SLUG,
 		engineProtocol: DE_RTC_ENGINE_PROTOCOL,
-		// The server compacts by itself and never nominates a client, and
+		// The server compacts by itself (no client-side compaction), and
 		// unknown-outcome recovery is answered with an idempotent
 		// re-proposal of the doc's current state: if the lost send was
 		// applied, the merge settles as a no-op; if it was lost, this
 		// carries the same edits.
-		createCompactionUpdate: () => buildProposal(),
 		createRecoveryUpdate: () => buildProposal(),
-		createCompactionFromUpdates: () => buildProposal(),
 		destroy() {
 			if ( isDocListenerAttached ) {
 				doc.off( 'update', onDocUpdate );

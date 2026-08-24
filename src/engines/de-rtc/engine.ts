@@ -96,11 +96,10 @@ function createInertDeRtcCollectionCodec(
 		clientId: ydoc.clientID,
 		engineSlug: DE_RTC_ENGINE_SLUG,
 		engineProtocol: DE_RTC_ENGINE_PROTOCOL,
-		// Never sent: the server compacts by itself and this codec has no
-		// local updates whose outcome could need recovery.
-		createCompactionUpdate: noopUpdate,
+		// Never sent: this codec has no local updates whose outcome could
+		// need recovery (and the optional compaction members are omitted —
+		// the server compacts by itself).
 		createRecoveryUpdate: noopUpdate,
-		createCompactionFromUpdates: noopUpdate,
 		destroy() {},
 		getInitialUpdates: () => [],
 		getLocalAwareness: () => awareness?.getLocalState() ?? {},

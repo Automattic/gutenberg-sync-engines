@@ -4,6 +4,7 @@
 
 ### Breaking Changes
 
+-   `EngineSessionCodec.createCompactionUpdate` and `createCompactionFromUpdates` are now optional (every current engine compacts server-side and never nominates a client, so codecs omit them); transports must guard the call. `createCompactionFromUpdates` is additionally deprecated — no server sends the old `compaction_request` field anymore.
 -   This package no longer ships any built-in sync engine or transport. `getDefaultEngineAdapters()` and `getDefaultTransports()` are now empty; an engine/transport plugin must register implementations — via the private `registerSyncEngine` / `registerSyncTransport` APIs or the `sync.engines` / `sync.transports` filters — for real-time collaboration to work. Without one, a session finds nothing to negotiate and the editor falls back to the exclusive post lock. The Yjs relay engine (including its Yjs-backed undo manager) and the HTTP short-poll / long-poll / WebSocket transports moved out of this package (into the Gutenberg Sync Engines plugin); the package keeps only the engine-neutral manager shell, the two registries with negotiation, the engine SPI, and its shared Yjs export (`wp.sync.Y`).
 -   `resolveEngineAdapter()` and transport negotiation no longer fall back to the Yjs relay / HTTP polling when the server announces nothing. With no built-in to fall back to, a missing announcement resolves to no engine and declines to connect — the client/server handshake is now required.
 
