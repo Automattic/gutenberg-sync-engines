@@ -436,6 +436,19 @@ async function setOption( name, value ) {
 }
 
 /**
+ * Turns real-time collaboration on. Since WordPress/gutenberg#80658 the
+ * framework gates RTC on the `gutenberg-real-time-collaboration`
+ * experiment rather than the old `wp_collaboration_enabled` option. Other
+ * experiments are left alone.
+ */
+async function enableCollaborationExperiment() {
+	await runWpCli( [
+		'eval',
+		"$experiments = get_option( 'gutenberg-experiments', array() ); $experiments['gutenberg-real-time-collaboration'] = true; update_option( 'gutenberg-experiments', $experiments );",
+	] );
+}
+
+/**
  * Delete all wp_sync_storage posts on the tests site: every room's rows,
  * lineage, and meta. Rooms are rebuildable change-feeds; a fresh combo must
  * not inherit another engine's room lineage.
@@ -771,7 +784,7 @@ async function main() {
 			await fs.mkdir( comboDir, { recursive: true } );
 			log( `=== ${ comboKey } ===` );
 
-			await setOption( 'wp_collaboration_enabled', '1' );
+			await enableCollaborationExperiment();
 			await setOption( ENGINE_OPTION, combo.engine );
 			await setOption( TRANSPORT_OPTION, combo.transport );
 			const wiped = await wipeSyncRooms();

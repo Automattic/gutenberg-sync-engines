@@ -1,16 +1,5 @@
-/**
- * External dependencies
- */
 import { afterEach, describe, expect, it } from '@jest/globals';
-
-/**
- * WordPress dependencies
- */
 import { __dangerousOptInToUnstableAPIsOnlyForCoreModules } from '@wordpress/private-apis';
-
-/**
- * Internal dependencies
- */
 import { privateApis } from '../private-apis';
 import { getEngineAdapters, resetEngineAdaptersForTesting } from '../engines';
 import {
@@ -32,7 +21,7 @@ describe( 'sync private APIs (plugin registration surface)', () => {
 		resetEngineAdaptersForTesting();
 		resetProviderCreatorsForTesting();
 		delete window._wpCollaborationSync;
-		delete window._wpCollaborationEnabled;
+		delete window.__experimentalEnableRealTimeCollaboration;
 	} );
 
 	it( 'exposes registerSyncEngine / registerSyncTransport through the unlocked surface', () => {

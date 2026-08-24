@@ -134,6 +134,24 @@ function runWpCli( wpArgs, { allowFailure = false, configFile = null } = {} ) {
 }
 
 /**
+ * Turns real-time collaboration on. Since WordPress/gutenberg#80658 the
+ * framework gates RTC on the `gutenberg-real-time-collaboration`
+ * experiment rather than the old `wp_collaboration_enabled` option (which
+ * Gutenberg now deletes on upgrade). Other experiments are left alone.
+ */
+async function enableCollaborationExperiment( { configFile = null } = {} ) {
+	process.stdout.write( 'Enabling collaboration experiment... ' );
+	await runWpCli(
+		[
+			'eval',
+			"$experiments = get_option( 'gutenberg-experiments', array() ); $experiments['gutenberg-real-time-collaboration'] = true; update_option( 'gutenberg-experiments', $experiments );",
+		],
+		{ configFile }
+	);
+	process.stdout.write( 'done\n' );
+}
+
+/**
  * The wp-env work directory for this checkout, mirroring wp-env's own
  * naming: the legacy md5( config file path ) directory when it exists,
  * else `wp-env-<project-dir>[-<variant>]-<md5 short hash>` (the variant
@@ -368,12 +386,7 @@ async function runWebSocketsMode( mode ) {
 		process.stdout.write( 'done\n' );
 
 		process.stdout.write( 'Selecting the websocket transport... ' );
-		await runWpCli( [
-			'option',
-			'update',
-			'wp_collaboration_enabled',
-			'1',
-		] );
+		await enableCollaborationExperiment();
 		await runWpCli( [ 'option', 'update', TRANSPORT_OPTION, 'websocket' ] );
 		process.stdout.write( 'done\n' );
 	}
@@ -492,6 +505,8 @@ async function runHttpMode() {
 	process.stdout.write( 'Selecting the http-polling transport... ' );
 	await runWpCli( [ 'option', 'update', TRANSPORT_OPTION, 'http-polling' ] );
 	process.stdout.write( 'done\n' );
+
+	await enableCollaborationExperiment();
 
 	process.stdout.write( 'Stopping the websocket daemon (if running)... ' );
 	spawnSync( 'docker', [ 'rm', '-f', DAEMON_CONTAINER_NAME ], {
@@ -657,7 +672,10 @@ async function runDoctorMode() {
 		}
 
 		const options = await runWpCli(
-			[ 'option', 'get', 'wp_collaboration_enabled' ],
+			[
+				'eval',
+				"echo gutenberg_is_experiment_enabled( 'gutenberg-real-time-collaboration' ) ? '1' : '';",
+			],
 			{ configFile, allowFailure: true }
 		);
 		const engine = await runWpCli( [ 'option', 'get', 'wp_sync_engine' ], {

@@ -1,24 +1,13 @@
-/**
- * WordPress dependencies
- */
 import type { UndoManager as WPUndoManager } from '@wordpress/undo-manager';
-
-/**
- * External dependencies
- */
 import type * as Y from 'yjs';
 import type { Awareness } from 'y-protocols/awareness';
-
-/**
- * Internal dependencies
- */
 import type { EngineSessionCodec } from './engines/session';
 import type { ConnectionError } from './errors';
 
 /* globalThis */
 declare global {
 	interface Window {
-		_wpCollaborationEnabled?: string;
+		__experimentalEnableRealTimeCollaboration?: boolean;
 		_wpCollaborationUserId?: number;
 		_wpCollaborationWebSocketUrl?: string;
 		_wpCollaborationSync?: {

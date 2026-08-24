@@ -53,7 +53,6 @@ class Tests_Collaboration_WpDeRtcAutosaveCommits extends WP_UnitTestCase {
 	public function set_up() {
 		parent::set_up();
 		wp_set_current_user( self::$editor_id );
-		update_option( 'wp_collaboration_enabled', true );
 	}
 
 	private function room(): string {

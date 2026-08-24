@@ -27,6 +27,8 @@
 
 ### Internal
 
+-   Split tsconfig into a build project and a default dev project so dev files are type checked without publishing their declarations. ([#81514](https://github.com/WordPress/gutenberg/pull/81514))
+-   Gate transport negotiation on the Real-Time Collaboration experiment flag `window.__experimentalEnableRealTimeCollaboration`, replacing the `window._wpCollaborationEnabled` option flag ([#80658](https://github.com/WordPress/gutenberg/pull/80658)).
 -   Remove residue left behind by the engine/transport extraction: the debug inspector (`debug/inspector.ts`, an unreferenced byte-identical duplicate of the copy the Gutenberg Sync Engines plugin owns), six unused Yjs document-schema constants in `config.ts` (owned by the plugin's Yjs engine), the unused `AwarenessID` / `Origin` types, a redundant type re-export block, stale comments referencing the deleted `undo-manager.ts`, and the unused `lib0` / `@wordpress/api-fetch` dependencies.
 -   Extract the Yjs relay engine logic out of the HTTP polling transport into an engine session codec (`src/engines/yjs-relay/`). Transport providers now receive an engine-generic session codec via `ProviderCreatorOptions.session` instead of `ydoc`/`awareness`, so transports no longer depend on Yjs. No wire-format or behavior change.
 -   Session codecs stamp their engine identity (`engine` / `engine_protocol`) on every sync request so the server can fence a stale tab speaking the wrong engine before storing its updates, and the HTTP polling transport handles the server's 409 `rest_sync_engine_mismatch` by dropping the affected room into a disconnected state with the new `ENGINE_MISMATCH` connection error code instead of retrying.
@@ -42,6 +44,10 @@
 -   The intent-log capture layer moved from HTML-string diffing to RICH-TEXT coordinates: a vector-frozen codec (JS + PHP twin) converts inline HTML to plain text + format spans, text intents carry markup-free offsets, every registry-declared rich-text attribute becomes its own field, paragraph splits/merges derive as `split_block`/`merge_blocks`, and formatting changes derive as `format_text` — concurrent formatting and typing in one paragraph now merge cleanly instead of escalating or corrupting markup.
 -   Intent-log growth is now bounded on both sides: the server appends periodic compaction checkpoints, serves late joiners and stale cursors from the latest retained checkpoint (a reset snapshot the session re-bootstraps from, with the manager re-deriving unsent work from the editor tree), trims history behind the previous checkpoint while preserving parked proposals, and answers pure read polls without reconstructing engine state; the client replica trims its observed log below what replanning can ever need.
 -   Remove the vestigial `SyncEngineAdapter.createSessionCodec`. The engine's per-room core (`EngineEntity`/`EngineCollection`) owns the transport-facing session codec now (via `createSession()`), so the adapter field was dead.
+
+## 1.53.0 (2026-08-12)
+
+## 1.52.0 (2026-07-29)
 
 ## 1.51.0 (2026-07-14)
 

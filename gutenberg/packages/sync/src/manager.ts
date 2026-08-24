@@ -1,11 +1,4 @@
-/**
- * External dependencies
- */
 import type { Awareness } from 'y-protocols/awareness';
-
-/**
- * Internal dependencies
- */
 import type {
 	EngineCollection,
 	EngineEntity,

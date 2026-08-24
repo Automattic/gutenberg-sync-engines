@@ -82,7 +82,7 @@ if ( ! class_exists( 'WP_De_RTC_Autosave_Commits' ) ) {
 			if ( ! current_user_can( 'edit_post', $post_id ) ) {
 				return new WP_Error( 'rest_cannot_edit', __( 'Sorry, you are not allowed to edit this post.', 'gutenberg' ), array( 'status' => rest_authorization_required_code() ) );
 			}
-			if ( ! function_exists( 'wp_is_collaboration_allowed' ) || ! wp_is_collaboration_allowed() || ! get_option( 'wp_collaboration_enabled' ) ) {
+			if ( ! function_exists( 'wp_is_collaboration_enabled' ) || ! wp_is_collaboration_enabled() ) {
 				return new WP_Error( 'rest_sync_disabled', __( 'Collaboration is not enabled.', 'gutenberg' ), array( 'status' => 403 ) );
 			}
 			if ( ! class_exists( 'WP_Sync_Post_Meta_Storage' ) || ! class_exists( 'WP_De_RTC_Engine' ) ) {

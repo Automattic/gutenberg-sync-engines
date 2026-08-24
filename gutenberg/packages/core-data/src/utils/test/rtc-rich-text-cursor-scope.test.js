@@ -1,19 +1,10 @@
-/**
- * External dependencies
- */
 import { describe, expect, it, jest } from '@jest/globals';
-
-/**
- * WordPress dependencies
- */
 import { Y } from '@wordpress/sync';
-
 /**
  * Mock block schemas and sync providers.
  */
 jest.mock( '@wordpress/blocks', () => {
 	const actual = jest.requireActual( '@wordpress/blocks' );
-
 	return {
 		...actual,
 		getBlockTypes: () => [
@@ -27,10 +18,6 @@ jest.mock( '@wordpress/blocks', () => {
 		],
 	};
 } );
-
-/**
- * Internal dependencies
- */
 import { CRDT_RECORD_MAP_KEY } from '../../sync';
 import { applyPostChangesToCRDTDoc } from '../crdt';
 import { deserializeBlockAttributes, mergeCrdtBlocks } from '../crdt-blocks';

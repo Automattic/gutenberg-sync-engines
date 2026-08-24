@@ -13,6 +13,9 @@ export const PASS = process.env.WP_PASSWORD ?? 'password';
 export const SETTINGS_PAGE =
 	'/wp-admin/options-general.php?page=gutenberg-sync-engines';
 
+// The Gutenberg experiment that turns real-time collaboration on.
+export const COLLABORATION_EXPERIMENT = 'gutenberg-real-time-collaboration';
+
 /**
  * Parses bare `key=value` CLI tokens (the engine benchmark's convention).
  *
@@ -241,25 +244,42 @@ export async function restoreSettings( page, previous ) {
 }
 
 /**
- * Ensures the framework's collaboration option is enabled (writing
- * settings checkbox), as the e2e fixtures do.
+ * Ensures real-time collaboration is on, as the e2e fixtures do. Since
+ * WordPress/gutenberg#80658 the framework gates RTC on the
+ * `gutenberg-real-time-collaboration` experiment rather than a Settings →
+ * Writing checkbox, so this flips that experiment through the REST
+ * settings endpoint and leaves the other experiments alone.
  *
  * @param {import('@playwright/test').Page} page Logged-in admin page.
  */
 export async function ensureCollaborationEnabled( page ) {
-	await page.goto( `${ BASE }/wp-admin/options-writing.php` );
-	const checkbox = page.locator( '#wp_collaboration_enabled' );
-	if ( ! ( await checkbox.count() ) ) {
+	const rest = await makeRestClient( page );
+	if ( ! rest ) {
 		throw new Error(
-			'The collaboration checkbox is missing from Settings → Writing. ' +
-				'Is the Gutenberg framework active and collaboration allowed ' +
-				'(wp_is_collaboration_allowed)?'
+			'Could not obtain a REST nonce for the admin session, so the ' +
+				'collaboration experiment cannot be enabled.'
 		);
 	}
-	if ( ! ( await checkbox.isChecked() ) ) {
-		await checkbox.check();
-		await page.click( '#submit' );
-		await page.waitForURL( /settings-updated=true/ );
+	const { status, data } = await rest.get( '/wp/v2/settings' );
+	if ( 200 !== status || ! data ) {
+		throw new Error(
+			`GET /wp/v2/settings returned ${ status }. Are the gutenberg and ` +
+				`gutenberg-sync-engines plugins active on ${ BASE }?`
+		);
+	}
+	const experiments = { ...( data[ 'gutenberg-experiments' ] || {} ) };
+	if ( experiments[ COLLABORATION_EXPERIMENT ] ) {
+		return;
+	}
+	experiments[ COLLABORATION_EXPERIMENT ] = true;
+	const updated = await rest.post( '/wp/v2/settings', {
+		body: { 'gutenberg-experiments': experiments },
+	} );
+	if ( 200 !== updated.status ) {
+		throw new Error(
+			`Enabling the ${ COLLABORATION_EXPERIMENT } experiment failed ` +
+				`(POST /wp/v2/settings returned ${ updated.status }).`
+		);
 	}
 }
 

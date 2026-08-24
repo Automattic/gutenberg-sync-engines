@@ -1,16 +1,5 @@
-/**
- * External dependencies
- */
 import { afterEach, describe, expect, it } from '@jest/globals';
-
-/**
- * WordPress dependencies
- */
 import { addFilter, removeFilter } from '@wordpress/hooks';
-
-/**
- * Internal dependencies
- */
 import {
 	getAnnouncedSync,
 	getEngineAdapters,
@@ -43,7 +32,7 @@ describe( 'sync engine adapters', () => {
 		resetEngineAdaptersForTesting();
 		resetProviderCreatorsForTesting();
 		delete window._wpCollaborationSync;
-		delete window._wpCollaborationEnabled;
+		delete window.__experimentalEnableRealTimeCollaboration;
 	} );
 
 	describe( 'getEngineAdapters', () => {

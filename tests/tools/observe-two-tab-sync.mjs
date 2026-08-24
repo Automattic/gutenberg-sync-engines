@@ -92,7 +92,7 @@ async function main() {
 
 	const typeTwoParagraphs = async () => {
 		await canvas( pageA )
-			.locator( 'role=button[name="Add default block"i]' )
+			.getByRole( 'document', { name: 'Add default block' } )
 			.click();
 		await pageA.keyboard.type( 'HelloWorld' );
 		await pageA.keyboard.press( 'Enter' );
@@ -130,11 +130,11 @@ async function main() {
 			break;
 		case 'empty-race':
 			await canvas( pageA )
-				.locator( 'role=button[name="Add default block"i]' )
+				.getByRole( 'document', { name: 'Add default block' } )
 				.click();
 			await pageA.keyboard.type( 'From tab A' );
 			await canvas( pageB )
-				.locator( 'role=button[name="Add default block"i]' )
+				.getByRole( 'document', { name: 'Add default block' } )
 				.click();
 			await pageB.keyboard.type( 'From tab B' );
 			break;
