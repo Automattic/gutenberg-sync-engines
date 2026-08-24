@@ -148,9 +148,11 @@ const load = (
 
 describe( 'createSyncManager review wiring', () => {
 	beforeEach( () => {
+		// The real-time-collaboration experiment gate, stamped by the
+		// framework's editor settings at runtime.
 		(
-			window as { _wpCollaborationEnabled?: boolean }
-		 )._wpCollaborationEnabled = true;
+			window as { __experimentalEnableRealTimeCollaboration?: boolean }
+		 ).__experimentalEnableRealTimeCollaboration = true;
 		resetProviderCreatorsForTesting();
 		// One inert provider so loadEntity proceeds past its provider guard.
 		addFilter( 'sync.providers', 'tests/framework-review', () => [
