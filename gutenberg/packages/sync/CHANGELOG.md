@@ -9,6 +9,7 @@
 
 ### New Features
 
+-   Conflict review is now first-class in the engine SPI. A `SyncEngine` may supply a `review` source (`SyncReviewSource`: the open parked-conflict list per entity, a change subscription, and resolve/restore verbs); `createSyncManager` drives the record handlers' `onEscalation`/`onProposalsChange` from it (previously the manager's handler rewrap silently dropped both) and exposes `SyncManager.resolveProposal`/`restoreProposal` by delegation. Any composed engine now gets the review panel, inline conflict cards, and notices without plugin-side manager decoration.
 -   Add the engine SPI so a plugin can implement a sync engine and compose it with the generic manager: `SyncEngine` (a factory of per-entity/collection cores plus the session-scoped, sync-aware undo manager via `createUndoManager`) → `EngineEntity` / `EngineCollection` (which own the document model — local-change application, hydration, snapshot, undo scope, remote-change observation) → the existing `EngineSessionCodec` (transport-facing), all exported as public types. The private API adds `registerSyncEngine` / `registerSyncTransport` (imperative registration) and `getProviderCreators`, plus registry test-support helpers.
 
 ### Enhancements

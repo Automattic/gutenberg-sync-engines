@@ -129,6 +129,81 @@ export function createSyncManager(
 	}
 
 	/**
+	 * Wire one loaded entity's review notifications to the engine's review
+	 * source, when the engine has one. The discipline: a microtask-coalesced
+	 * `onProposalsChange` with the full open list (so a bootstrap replay of
+	 * long-resolved conflicts notifies once, with the settled list), then
+	 * `onEscalation` once per newly seen proposal id, with a console fallback
+	 * when no escalation handler was provided.
+	 *
+	 * @param {ObjectType}                          objectType        Object type.
+	 * @param {ObjectID|null}                       objectId          Object ID.
+	 * @param {RecordHandlers['onEscalation']}      onEscalation      Escalation handler, if any.
+	 * @param {RecordHandlers['onProposalsChange']} onProposalsChange Review-list handler, if any.
+	 * @return {() => void} A detach function (a no-op without a review source).
+	 */
+	function attachEntityReview(
+		objectType: ObjectType,
+		objectId: ObjectID | null,
+		onEscalation: RecordHandlers[ 'onEscalation' ],
+		onProposalsChange: RecordHandlers[ 'onProposalsChange' ]
+	): () => void {
+		const review = engine.review;
+
+		if ( ! review ) {
+			return () => {};
+		}
+
+		let detached = false;
+		let notifyScheduled = false;
+		const notifiedIds = new Set< string >();
+
+		const notify = () => {
+			if ( notifyScheduled ) {
+				return;
+			}
+			notifyScheduled = true;
+			void Promise.resolve().then( () => {
+				notifyScheduled = false;
+				if ( detached ) {
+					return;
+				}
+				const items = review.getOpenItems( objectType, objectId );
+				onProposalsChange?.( items );
+				for ( const item of items ) {
+					if ( notifiedIds.has( item.id ) ) {
+						continue;
+					}
+					notifiedIds.add( item.id );
+					if ( onEscalation ) {
+						onEscalation( {
+							reason: item.reason,
+							isLocal: item.isLocal,
+							proposalId: item.id,
+							summary: item.summary,
+							excerpt: item.excerpt,
+						} );
+					} else {
+						// eslint-disable-next-line no-console
+						console.warn(
+							'[Sync] An edit was escalated for review (%s): %s',
+							item.reason,
+							item.id
+						);
+					}
+				}
+			} );
+		};
+
+		const unsubscribe = review.subscribe( objectType, objectId, notify );
+
+		return () => {
+			detached = true;
+			unsubscribe();
+		};
+	}
+
+	/**
 	 * Load an entity for syncing and manage its lifecycle.
 	 *
 	 * @param {SyncConfig}     syncConfig Sync configuration for the object type.
@@ -164,6 +239,16 @@ export function createSyncManager(
 
 		log( 'loadEntity', 'loading', entityId );
 
+		// The rewrap below carries only the handlers the manager itself
+		// consumes; the review handlers are driven from the engine's review
+		// source instead, so capture them before the rewrap drops them.
+		const detachReview = attachEntityReview(
+			objectType,
+			objectId,
+			handlers.onEscalation,
+			handlers.onProposalsChange
+		);
+
 		handlers = {
 			addUndoMeta: debugWrap( handlers.addUndoMeta ),
 			editRecord: debugWrap( handlers.editRecord ),
@@ -194,6 +279,7 @@ export function createSyncManager(
 		const unload = (): void => {
 			log( 'loadEntity', 'unloading', entityId );
 			isEntityUnloaded = true;
+			detachReview();
 			providerResults?.forEach( ( result ) => result.destroy() );
 			handlers.onStatusChange( null );
 			core.destroy();
@@ -707,5 +793,17 @@ export function createSyncManager(
 		unloadAll: debugWrap( unloadAll ),
 		update: debugWrap( updateOrDefer ),
 		retry: debugWrap( retry ),
+		// The resolution verbs exist only when the engine parks conflicts
+		// (see SyncEngine.review); both delegate to its review source.
+		...( engine.review
+			? {
+					resolveProposal: debugWrap(
+						engine.review.resolveProposal.bind( engine.review )
+					),
+					restoreProposal: debugWrap(
+						engine.review.restoreProposal.bind( engine.review )
+					),
+			  }
+			: {} ),
 	};
 }

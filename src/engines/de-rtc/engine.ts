@@ -12,6 +12,7 @@ import type {
 	EngineCollection,
 	EngineEntity,
 	SyncEngine,
+	SyncReviewSource,
 } from '@wordpress/sync';
 
 /**
@@ -34,7 +35,6 @@ import {
 import { createDeRtcCommitAdapter, hasDeRtcCommitRoute } from './commit';
 import { registerSaveBaseVersion } from './save-base-version';
 import { applyServerAwarenessStates } from '../awareness-sync';
-import type { EngineReviewSource } from '../review-manager-decorator';
 import {
 	createDeRtcDocBridge,
 	DE_RTC_REMOTE_ORIGIN,
@@ -138,9 +138,10 @@ function createInertDeRtcCollectionCodec(
  * Conflict review: a proposal the server escalates parks as a durable
  * `proposal-parked` row; the entity's review registry presents it
  * through the framework's review surface (panel, notices) via the
- * review-manager decorator, and a reviewer restores (overlaying the
- * parked blocks as an ordinary local edit under their own capability,
- * which re-proposes) or dismisses it.
+ * engine's `review` source (createSyncManager drives the handlers and
+ * the resolution verbs from it), and a reviewer restores (overlaying
+ * the parked blocks as an ordinary local edit under their own
+ * capability, which re-proposes) or dismisses it.
  *
  * Entity properties (title, scalars, taxonomies, meta) ride the
  * proposal wire beside the content as a full flattened register map;
@@ -150,7 +151,7 @@ function createInertDeRtcCollectionCodec(
  * @return The de-rtc engine, carrying its review source.
  */
 export function createDeRtcEngine(): SyncEngine & {
-	review: EngineReviewSource;
+	review: SyncReviewSource;
 	authorship: {
 		getBlockAuthorship: (
 			objectType: string,
@@ -160,11 +161,8 @@ export function createDeRtcEngine(): SyncEngine & {
 } {
 	interface EntityReviewHandle {
 		review: DeRtcReviewState;
-		getItems: () => ReturnType< EngineReviewSource[ 'getOpenItems' ] >;
-		restore: (
-			proposalId: string,
-			modifiedBlocks?: Array< { index: number; html: string } >
-		) => void;
+		getItems: () => ReturnType< SyncReviewSource[ 'getOpenItems' ] >;
+		restore: ( proposalId: string ) => void;
 		/** Adopt a contested block's latest canonical form. */
 		adoptContested: ( index: number ) => boolean;
 		/** Reject a contest, keeping the local block. */
@@ -189,18 +187,17 @@ export function createDeRtcEngine(): SyncEngine & {
 
 	/*
 	 * Review-source subscriptions are keyed at the ENGINE level, not the
-	 * entity: the review-manager decorator subscribes while the entity is
-	 * still being created (its `load()` captures handlers BEFORE
-	 * delegating to the inner manager, which is what creates the entity),
-	 * so a subscription must be valid before — and survive across — the
-	 * entity's lifetime. Each entity's ledger notifies its key's
-	 * listeners.
+	 * entity: the framework manager subscribes while the entity is still
+	 * being created (createSyncManager wires the review source BEFORE it
+	 * asks the engine for the entity), so a subscription must be valid
+	 * before — and survive across — the entity's lifetime. Each entity's
+	 * ledger notifies its key's listeners.
 	 */
 	const keyListeners = new Map< string, Set< () => void > >();
 	const notifyKey = ( key: string ) =>
 		keyListeners.get( key )?.forEach( ( listener ) => listener() );
 
-	const reviewSource: EngineReviewSource = {
+	const reviewSource: SyncReviewSource = {
 		getOpenItems: ( objectType, objectId ) =>
 			entityReviews
 				.get( reviewKey( objectType, objectId ) )
@@ -226,12 +223,7 @@ export function createDeRtcEngine(): SyncEngine & {
 			}
 			handle?.review.resolve( proposalId, resolution );
 		},
-		restoreProposal: (
-			objectType,
-			objectId,
-			proposalId,
-			modifiedBlocks
-		) => {
+		restoreProposal: ( objectType, objectId, proposalId ) => {
 			const handle = entityReviews.get(
 				reviewKey( objectType, objectId )
 			);
@@ -241,7 +233,7 @@ export function createDeRtcEngine(): SyncEngine & {
 				handle?.adoptContested( index );
 				return;
 			}
-			handle?.restore( proposalId, modifiedBlocks );
+			handle?.restore( proposalId );
 		},
 	};
 
@@ -353,20 +345,9 @@ export function createDeRtcEngine(): SyncEngine & {
 			 * origin reaches the editor like a remote change AND marks the
 			 * doc dirty so the restored state re-proposes.
 			 *
-			 * Modify-before-adopt (upstream's
-			 * `reviewed_block_source`): `modifiedBlocks` supplies the
-			 * reviewer's edited replacement for specific parked blocks,
-			 * keyed by the parked block's index — what the reviewer
-			 * supplies is exactly what applies, so approval and content
-			 * stay pinned together by construction.
-			 *
-			 * @param parked         The parked proposal.
-			 * @param modifiedBlocks Reviewer-edited replacements by index.
+			 * @param parked The parked proposal.
 			 */
-			const overlayParkedBlocks = (
-				parked: DeRtcParkedProposal,
-				modifiedBlocks?: Array< { index: number; html: string } >
-			) => {
+			const overlayParkedBlocks = ( parked: DeRtcParkedProposal ) => {
 				// A parked PROPERTY register restores by re-applying the
 				// losing value as a local edit — the next proposal carries
 				// it and wins the three-way merge (canonical now agrees
@@ -380,18 +361,10 @@ export function createDeRtcEngine(): SyncEngine & {
 					);
 					return;
 				}
-				const replacements = new Map< number, string >();
-				for ( const modified of modifiedBlocks ?? [] ) {
-					replacements.set(
-						Number( modified.index ),
-						String( modified.html )
-					);
-				}
 				const next = localBlocks().slice();
 				for ( const changed of parked.changedBlocks ?? [] ) {
 					const parsed = parseCanonicalBlocks(
-						replacements.get( Number( changed.index ) ) ??
-							String( changed?.html ?? '' )
+						String( changed?.html ?? '' )
 					);
 					parsed.forEach( ( block, offset ) => {
 						const index = Number( changed.index ) + offset;
@@ -489,7 +462,7 @@ export function createDeRtcEngine(): SyncEngine & {
 						} )
 					),
 				],
-				restore: ( proposalId, modifiedBlocks ) => {
+				restore: ( proposalId ) => {
 					const parked = review
 						.getOpen()
 						.find(
@@ -499,7 +472,7 @@ export function createDeRtcEngine(): SyncEngine & {
 						return;
 					}
 					if ( bridge.isBootstrapped() ) {
-						overlayParkedBlocks( parked, modifiedBlocks );
+						overlayParkedBlocks( parked );
 					}
 					review.resolve( proposalId, 'restored' );
 				},

@@ -16,6 +16,11 @@ them under a version heading when a version ships.
     Collaboration is off until that experiment is enabled, and the old
     `wp_collaboration_enabled` option is deleted on upgrade. Settings →
     Collaboration now says so when collaboration is off.
+-   Conflict review plumbing moved into the framework: an engine now hands
+    `createSyncManager` a `review` source and the manager drives the review
+    panel, cards, and notices from it. The plugin's review-manager decorator
+    (a workaround for the manager dropping the review handlers) is deleted;
+    the de-rtc adapter composes the plain manager.
 
 ### Added
 
@@ -31,6 +36,12 @@ them under a version heading when a version ships.
     often each editor asks the server for updates while collaborating; solo
     editing keeps its slower default unless the chosen interval is longer.
 -   This changelog.
+
+### Removed
+
+-   `restoreProposalWithChanges()` (modify-before-adopt): API-only, never
+    called by anything. To return together with its review-panel UI when a
+    "suggested edits" feature starts.
 
 ## Pre-release history
 
