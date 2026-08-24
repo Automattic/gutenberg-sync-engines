@@ -2,6 +2,15 @@
 
 Operational guide for working in this repo. Read this first.
 
+## Language
+
+- IMPORTANT: Write clear, short sentences as if explaining things to a
+  less-technical friend. Avoid all technical jargon and self-invented terms.
+  Do not use abstract structural metaphors or shorthand arrow chains.
+- Practice "BLUF": Bottom Line Up Front. Start with the main point or
+  conclusion, then provide supporting details.
+- Be as concise as possible without omitting essential information.
+
 ## What this is
 
 `gutenberg-sync-engines` is a WordPress plugin that supplies the pluggable
