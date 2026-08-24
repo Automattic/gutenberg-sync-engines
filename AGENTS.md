@@ -439,15 +439,22 @@ they exist so a failure is observable without re-instrumenting:
   clean state, and — critically — `activatePlugin('gutenberg')` +
   `activatePlugin('gutenberg-sync-engines')`, because wp-env leaves both INACTIVE
   on the *tests* site. Without that, collaboration never turns on
-  (`_wpCollaborationEnabled` stays false) and sessions time out. We deliberately
-  do NOT reuse the subtree's global-setup (it deactivates a Gutenberg test
-  plugin this env doesn't need touched). Ours also runs the WS-provider setup
+  (`__experimentalEnableRealTimeCollaboration` stays false) and sessions time
+  out. We deliberately do NOT reuse the subtree's global-setup (it deactivates
+  a Gutenberg test plugin this env doesn't need touched). Ours also runs the WS-provider setup
   (`tests/e2e/config/rtc-websocket-setup.ts`), gated on
   `GUTENBERG_RTC_TEST_WS_PROVIDER`.
-- **Collaboration gate:** `wp_is_collaboration_allowed() &&
-  get_option('wp_collaboration_enabled')`. Tests flip that option via the
-  writing-options form (the fixture's `setCollaboration`) and set `wp_sync_engine`
-  via `POST /wp/v2/settings` — both only work with the plugins active.
+- **Collaboration gate:** `wp_is_collaboration_enabled()`, which since
+  WordPress/gutenberg#80658 is just the Gutenberg experiment
+  `gutenberg-real-time-collaboration`. The old `wp_collaboration_enabled`
+  option and the Settings → Writing checkbox are GONE (Gutenberg deletes the
+  option on upgrade), and the client flag is
+  `window.__experimentalEnableRealTimeCollaboration`, not
+  `window._wpCollaborationEnabled`. Tests flip the experiment through
+  `gutenberg-experiments` in `POST /wp/v2/settings` (the fixture's
+  `setCollaboration`) and set `wp_sync_engine` the same way; the CLI tools
+  (`rtc-dev.mjs`, the fuzzer) flip it with a `wp eval` on that option. All of
+  it only works with the plugins active.
 - **Subtree build layout** (Gutenberg 23.x): built package JS lands at
   `gutenberg/build/scripts/<pkg>/`, not `gutenberg/build/<pkg>/`.
 - **Engine switches vs room lineage:** rooms are stamped with the engine
