@@ -452,6 +452,31 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			}
 			echo '<div class="wrap">';
 			echo '<h1>' . esc_html( get_admin_page_title() ) . '</h1>';
+
+			/*
+			 * Nothing on this screen does anything while real-time
+			 * collaboration is off, and since WordPress/gutenberg#80658 it is
+			 * off by default and lives behind a Gutenberg experiment rather
+			 * than a Settings → Writing checkbox. Say so, and link there,
+			 * instead of leaving an engine picker that quietly has no effect.
+			 */
+			if ( function_exists( 'wp_is_collaboration_enabled' ) && ! wp_is_collaboration_enabled() ) {
+				printf(
+					'<div class="notice notice-warning"><p>%1$s</p></div>',
+					wp_kses(
+						sprintf(
+							/* translators: %s: link to the Gutenberg experiments screen. */
+							__( 'Real-time collaboration is turned off, so these settings have no effect yet. Enable the <strong>Real-time collaboration</strong> experiment on the %s screen.', 'gutenberg-sync-engines' ),
+							'<a href="' . esc_url( admin_url( 'admin.php?page=gutenberg-experiments' ) ) . '">' . esc_html__( 'Gutenberg experiments', 'gutenberg-sync-engines' ) . '</a>'
+						),
+						array(
+							'strong' => array(),
+							'a'      => array( 'href' => array() ),
+						)
+					)
+				);
+			}
+
 			echo '<form action="options.php" method="post">';
 			settings_fields( self::PAGE );
 			do_settings_sections( self::PAGE );
