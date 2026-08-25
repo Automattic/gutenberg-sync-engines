@@ -129,6 +129,70 @@ describe( 'de-rtc commit lane', () => {
 		expect( bridge.lastVersion() ).toBe( 'v2' );
 	} );
 
+	it( 'a poll-failure recovery while a commit is in flight must not orphan the commit', async () => {
+		let resolveCommit: ( response: DeRtcCommitResponse ) => void = () => {};
+		const commits: any[] = [];
+		const { edit, bridge, session } = makeCommitSession( ( update ) => {
+			commits.push( JSON.parse( update.data ) );
+			return new Promise( ( resolve ) => {
+				resolveCommit = resolve;
+			} );
+		} );
+
+		edit( [ BLOCK_B ] );
+		await flush();
+		expect( commits ).toHaveLength( 1 );
+		const proposal = commits[ 0 ];
+
+		/*
+		 * The polling transport lost a request that carried this session's
+		 * advisory rows (a fetch) and asks for a recovery update. The
+		 * in-flight commit rides the autosave endpoint, NOT the failed
+		 * poll — recovery must not disturb it. (Refusing — throwing or
+		 * not offering the hook — is fine: the transport then restores
+		 * the exact lost rows, which are idempotent.)
+		 */
+		try {
+			( session as any ).createRecoveryUpdate?.();
+		} catch {
+			// A refusal is a valid implementation.
+		}
+
+		// The commit's own response settles it as usual.
+		resolveCommit( {
+			updates: [
+				{
+					type: DE_RTC_ANNOUNCE_TYPE,
+					data: JSON.stringify( {
+						version: 'v2',
+						baseVersion: 'v1',
+						contentHash: hashDeRtcContent(
+							proposal.proposedContent
+						),
+						authorClientId: Number(
+							proposal.proposalId.split( '-' )[ 1 ]
+						),
+						proposalId: proposal.proposalId,
+					} ),
+				},
+			],
+			dispositions: [
+				{
+					intentId: proposal.proposalId,
+					status: 'applied',
+					version: 'v2',
+				} as any,
+			],
+		} );
+		await flush();
+		expect( bridge.lastVersion() ).toBe( 'v2' );
+
+		// The session is still live: the next edit commits.
+		edit( [ BLOCK_A, BLOCK_B ] );
+		await flush();
+		expect( commits ).toHaveLength( 2 );
+	} );
+
 	it( 'a failed commit retries without losing edits', async () => {
 		jest.useFakeTimers();
 		let attempts = 0;

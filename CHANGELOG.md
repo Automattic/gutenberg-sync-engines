@@ -7,6 +7,15 @@ them under a version heading when a version ships.
 
 ## Unreleased
 
+### Fixed
+
+-   De-rtc sessions could silently stop syncing after a failed network
+    request: the polling transport's recovery step seized the slot of a
+    save that was still in flight on the separate save lane, and the
+    session froze — no further saves, no incoming content — leaving the
+    two editors permanently showing different posts
+    ([#39](https://github.com/Automattic/gutenberg-sync-engines/issues/39)).
+
 ### Changed
 
 -   Real-time collaboration is now turned on by the **Real-time

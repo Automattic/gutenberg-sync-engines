@@ -814,7 +814,22 @@ export function createDeRtcSessionCodec(
 		// re-proposal of the doc's current state: if the lost send was
 		// applied, the merge settles as a no-op; if it was lost, this
 		// carries the same edits.
-		createRecoveryUpdate: () => buildProposal(),
+		//
+		// Recovery re-proposal is TRANSPORT-LANE ONLY. A commit-lane
+		// session's proposals ride the autosave endpoint, so a failed
+		// poll can only have carried advisory rows (fetches, review
+		// resolutions) — all idempotent, so the transport's fallback
+		// (restoring the exact lost rows) is the right recovery. Offering
+		// buildProposal() here instead seized the in-flight slot
+		// (inFlightProposalId, lastProposedContent) from a commit riding
+		// the OTHER lane: the commit's announce and disposition then
+		// settled nothing, inFlight never cleared, and the session froze —
+		// no further commits, no canonical applies — quietly diverging
+		// from its peers (issue #39, found by the fuzzer's fault
+		// injection).
+		...( options.commit
+			? {}
+			: { createRecoveryUpdate: () => buildProposal() } ),
 		destroy() {
 			if ( isDocListenerAttached ) {
 				doc.off( 'update', onDocUpdate );
