@@ -457,11 +457,10 @@ test.describe( 'Collaboration - de-rtc engine', () => {
 				.first()
 		).toBeVisible();
 
-		// Resolutions are MUTATIONS and must travel over the REST review
-		// lane (B5), not the advisory transport. Arm the listener BEFORE
-		// rejecting: a broken route would otherwise be masked by the
-		// client's silent transport-row fallback and this spec would
-		// still pass.
+		// Resolutions are MUTATIONS and travel ONLY over the REST review
+		// lane (B5) — the transport-row fallback is gone. Arm the
+		// listener BEFORE rejecting so the spec proves the route really
+		// ran.
 		const resolveResponse = noticePage.waitForResponse(
 			( response ) =>
 				decodeURIComponent( response.url() ).includes(

@@ -73,8 +73,9 @@ export const DE_RTC_SNAPSHOT_TYPE = 'snapshot';
 export const DE_RTC_PROPOSAL_PARKED_TYPE = 'proposal-parked';
 
 /**
- * Row type closing a parked proposal (client-sent; the server relays its
- * stamped copy). Matches WP_De_RTC_Engine::UPDATE_TYPE_RESOLVED.
+ * Server-emitted row type closing a parked proposal (the server stamps
+ * one when a resolution POSTs to the REST review route). Matches
+ * WP_De_RTC_Engine::UPDATE_TYPE_RESOLVED. Receive-only.
  */
 export const DE_RTC_RESOLVED_TYPE = 'resolved';
 
@@ -848,7 +849,6 @@ export function createDeRtcSessionCodec(
 				cadenceTimer = null;
 			}
 			deferredSnapshotRow = null;
-			review?.setEmitter( null );
 			localUpdateListener = null;
 		},
 		// The server's snapshot row bootstraps a fresh client; nothing to
@@ -862,11 +862,6 @@ export function createDeRtcSessionCodec(
 				doc.on( 'update', onDocUpdate );
 				isDocListenerAttached = true;
 			}
-			// Resolutions ride the same outbound lane as proposals.
-			review?.setEmitter(
-				( update ) =>
-					localUpdateListener?.( update, update.data.length )
-			);
 			bridge.onBootstrap( () => maybePropose() );
 		},
 		receiveUpdate: ( update ) => processRow( update ),
