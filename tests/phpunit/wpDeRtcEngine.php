@@ -453,7 +453,8 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Builds a resolution update the way the client review ledger does.
+	 * Builds a resolution row the way the RETIRED transport lane did —
+	 * kept only to prove handle_updates() rejects it.
 	 *
 	 * @param string $proposal_id Parked proposal id.
 	 * @param string $resolution  restored|dismissed.
@@ -697,19 +698,13 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 	public function test_resolution_lifecycle_is_idempotent() {
 		$this->escalate_conflict();
 
-		$result = $this->engine()->handle_updates(
-			$this->room(),
-			2,
-			0,
-			array( $this->resolution( 'p-b', 'dismissed' ) ),
-			array()
-		);
+		$result = $this->engine()->resolve_proposal( $this->room(), 'p-b', 'dismissed', 2 );
 		$this->assertSame(
 			array(
 				'intentId' => 'p-b',
 				'status'   => 'resolved',
 			),
-			$result['dispositions'][0]
+			$result
 		);
 
 		$response = $this->engine()->get_updates_since( $this->room(), 3, 0, array() );
@@ -720,14 +715,8 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 		$this->assertSame( self::$editor_id, $resolved[0]['resolvedBy'] );
 
 		// A redelivered (or concurrent) resolution acks without a new row.
-		$again = $this->engine()->handle_updates(
-			$this->room(),
-			2,
-			0,
-			array( $this->resolution( 'p-b', 'dismissed' ) ),
-			array()
-		);
-		$this->assertSame( 'resolved', $again['dispositions'][0]['status'] );
+		$again = $this->engine()->resolve_proposal( $this->room(), 'p-b', 'dismissed', 2 );
+		$this->assertSame( 'resolved', $again['status'] );
 		$resolved = $this->rows_of_type(
 			$this->engine()->get_updates_since( $this->room(), 3, 0, array() ),
 			WP_De_RTC_Engine::UPDATE_TYPE_RESOLVED
@@ -735,37 +724,36 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 		$this->assertCount( 1, $resolved );
 
 		// An unknown id (trimmed long ago, or never parked) acks too.
-		$unknown = $this->engine()->handle_updates(
-			$this->room(),
-			2,
-			0,
-			array( $this->resolution( 'p-nonexistent', 'restored' ) ),
-			array()
-		);
-		$this->assertSame( 'resolved', $unknown['dispositions'][0]['status'] );
+		$unknown = $this->engine()->resolve_proposal( $this->room(), 'p-nonexistent', 'restored', 2 );
+		$this->assertSame( 'resolved', $unknown['status'] );
 	}
 
 	public function test_malformed_resolution_is_rejected() {
-		$this->engine()->get_updates_since( $this->room(), 1, 0, array() );
+		$result = $this->engine()->resolve_proposal( $this->room(), 'p-b', 'shredded', 2 );
+		$this->assertWPError( $result );
+		$this->assertSame( 'rest_sync_invalid_intent', $result->get_error_code() );
+	}
+
+	public function test_client_sent_resolution_row_is_rejected() {
+		$this->escalate_conflict();
+
+		// The old transport lane for Adopt/Reject decisions is gone: a
+		// client-sent resolved row fails the whole request, and the
+		// proposal stays parked.
 		$result = $this->engine()->handle_updates(
 			$this->room(),
 			2,
 			0,
-			array(
-				array(
-					'data' => wp_json_encode(
-						array(
-							'proposalId' => 'p-b',
-							'resolution' => 'shredded',
-						)
-					),
-					'type' => WP_De_RTC_Engine::UPDATE_TYPE_RESOLVED,
-				),
-			),
+			array( $this->resolution( 'p-b', 'dismissed' ) ),
 			array()
 		);
 		$this->assertWPError( $result );
-		$this->assertSame( 'rest_sync_invalid_intent', $result->get_error_code() );
+		$this->assertSame( 'rest_invalid_update_type', $result->get_error_code() );
+		$resolved = $this->rows_of_type(
+			$this->engine()->get_updates_since( $this->room(), 3, 0, array() ),
+			WP_De_RTC_Engine::UPDATE_TYPE_RESOLVED
+		);
+		$this->assertCount( 0, $resolved );
 	}
 
 	/**
@@ -980,13 +968,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 				array( $this->proposal( 'p-c', $genesis['version'], $genesis['content'], $c_proposed ) ),
 				array()
 			);
-			$this->engine()->handle_updates(
-				$this->room(),
-				4,
-				0,
-				array( $this->resolution( 'p-c', 'dismissed' ) ),
-				array()
-			);
+			$this->engine()->resolve_proposal( $this->room(), 'p-c', 'dismissed', 4 );
 
 			// Drive enough accepted proposals for multiple checkpoints/trims.
 			$state   = $this->latest_from_response( $this->engine()->get_updates_since( $this->room(), 1, 0, array() ) );

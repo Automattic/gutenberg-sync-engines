@@ -32,7 +32,7 @@ import {
 	createDeRtcUndoFeed,
 	type DeRtcRevertUndoManager,
 } from './revert-undo';
-import { createDeRtcCommitAdapter, hasDeRtcCommitRoute } from './commit';
+import { createDeRtcCommitAdapter } from './commit';
 import { registerSaveBaseVersion } from './save-base-version';
 import { applyServerAwarenessStates } from '../awareness-sync';
 import {
@@ -256,28 +256,24 @@ export function createDeRtcEngine(): SyncEngine & {
 			const bridge = createDeRtcDocBridge( ydoc, syncConfig );
 			const review = createDeRtcReviewState();
 			// The REST review lane (B5): resolutions are mutations, so they
-			// POST to the plugin's authenticated route; review.ts falls back
-			// to the transport row when the POST rejects (older servers 404
-			// here, and the row path stays accepted for legacy clients). It
-			// follows the commit split — types without a commit route keep
-			// the transport lane for resolutions too. The room string
+			// POST to the plugin's authenticated route — for EVERY entity
+			// type; the transport's resolution-row lane is gone and the
+			// server rejects client-sent resolved rows. The room string
 			// mirrors the providers' convention.
-			if ( hasDeRtcCommitRoute( objectType ) ) {
-				review.setRestResolver( ( proposalId, resolution ) =>
-					apiFetch( {
-						data: {
-							client_id: ydoc.clientID,
-							proposalId,
-							resolution,
-							room: objectId
-								? `${ objectType }:${ objectId }`
-								: objectType,
-						},
-						method: 'POST',
-						path: '/wp-sync/v1/de-rtc/resolve',
-					} )
-				);
-			}
+			review.setRestResolver( ( proposalId, resolution ) =>
+				apiFetch( {
+					data: {
+						client_id: ydoc.clientID,
+						proposalId,
+						resolution,
+						room: objectId
+							? `${ objectType }:${ objectId }`
+							: objectType,
+					},
+					method: 'POST',
+					path: '/wp-sync/v1/de-rtc/resolve',
+				} )
+			);
 			const undoFeed = createDeRtcUndoFeed();
 			const authorship = createDeRtcAuthorship( undoFeed );
 			// Save-through-the-room: this post's REST saves carry

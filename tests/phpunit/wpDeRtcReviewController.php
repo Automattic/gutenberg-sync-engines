@@ -1,10 +1,9 @@
 <?php
 /**
  * Unit tests covering WP_De_RTC_Review_Controller (the B5 REST review
- * lane): review resolutions POST to an authenticated route instead of
- * riding the advisory transport; the stamped `resolved` row the engine
- * appends still broadcasts to peers through ordinary room reads, and
- * the legacy transport row path stays accepted.
+ * lane): review resolutions POST to an authenticated route — the only
+ * way clients send them; the stamped `resolved` row the engine appends
+ * still broadcasts to peers through ordinary room reads.
  *
  * @package GutenbergSyncEngines
  */

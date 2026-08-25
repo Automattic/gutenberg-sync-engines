@@ -321,10 +321,13 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			}
 
 			foreach ( $updates as $update ) {
-				if ( ! in_array( $update['type'], array( self::UPDATE_TYPE_PROPOSAL, self::UPDATE_TYPE_RESOLVED, self::UPDATE_TYPE_FETCH ), true ) ) {
+				// Review resolutions are NOT accepted here: they are
+				// mutations and travel only over the REST review lane
+				// (WP_De_RTC_Review_Controller).
+				if ( ! in_array( $update['type'], array( self::UPDATE_TYPE_PROPOSAL, self::UPDATE_TYPE_FETCH ), true ) ) {
 					return new WP_Error(
 						'rest_invalid_update_type',
-						__( 'Clients may only send proposal, resolution, or fetch updates to a de-rtc room.', 'gutenberg' ),
+						__( 'Clients may only send proposal or fetch updates to a de-rtc room.', 'gutenberg' ),
 						array( 'status' => 400 )
 					);
 				}
@@ -352,8 +355,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				return $state;
 			}
 
-			$resolutions = array();
-			$proposals   = array();
+			$proposals = array();
 			foreach ( $updates as $update ) {
 				if ( self::UPDATE_TYPE_FETCH === $update['type'] ) {
 					/*
@@ -370,27 +372,11 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 						: '';
 					continue;
 				}
-				if ( self::UPDATE_TYPE_RESOLVED === $update['type'] ) {
-					$resolution = json_decode( (string) $update['data'], true );
-					if (
-						! is_array( $resolution ) ||
-						! is_string( $resolution['proposalId'] ?? null ) || '' === $resolution['proposalId'] ||
-						! in_array( $resolution['resolution'] ?? null, array( 'restored', 'dismissed' ), true )
-					) {
-						return new WP_Error(
-							'rest_sync_invalid_intent',
-							__( 'Malformed proposal resolution.', 'gutenberg' ),
-							array( 'status' => 400 )
-						);
-					}
-					$resolutions[] = $resolution;
-					continue;
-				}
 				$proposals[] = $update;
 			}
 
 			// The open/resolved review ledger, derived lazily from retained
-			// rows only when this request escalates or resolves something.
+			// rows only when this request escalates something.
 			$review = null;
 
 			$dispositions = array();
@@ -430,23 +416,6 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					return $disposition;
 				}
 				$disposition    = array_merge( array( 'intentId' => $proposal_id ), $disposition );
-				$dispositions[] = $disposition;
-			}
-
-			/*
-			 * Resolutions, after proposals: close open parked proposals.
-			 * Idempotent by proposalId — a redelivered, concurrent, or
-			 * trimmed-and-resolved (unknown) id acks as resolved without a
-			 * new row; only a currently-open proposal appends one.
-			 */
-			foreach ( $resolutions as $resolution ) {
-				if ( null === $review ) {
-					$review = $this->load_review_ledger( $room );
-				}
-				$disposition = $this->apply_resolution( $room, $resolution, $client_id, $review );
-				if ( is_wp_error( $disposition ) ) {
-					return $disposition;
-				}
 				$dispositions[] = $disposition;
 			}
 
@@ -1403,8 +1372,8 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * Applies one proposal resolution against the room's review ledger:
 		 * an OPEN, un-resolved proposal gets a stamped `resolved` row (the
 		 * broadcastable advisory peers and late joiners replay); anything
-		 * else acks idempotently. Shared by the transport row path and the
-		 * REST review lane.
+		 * else acks idempotently. Reached only through resolve_proposal()
+		 * (the REST review lane).
 		 *
 		 * @since 0.3.0
 		 *
@@ -1450,7 +1419,8 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * review lane (B5): resolutions are MUTATIONS and belong on an
 		 * authenticated REST route; the transport stays advisory (the
 		 * stamped `resolved` row this appends still broadcasts through it).
-		 * The transport row path remains accepted for legacy clients.
+		 * This is the ONLY way clients resolve — handle_updates() rejects
+		 * client-sent resolution rows.
 		 *
 		 * @since 0.3.0
 		 *

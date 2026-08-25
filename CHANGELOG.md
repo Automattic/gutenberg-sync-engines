@@ -18,6 +18,12 @@ them under a version heading when a version ships.
 
 ### Changed
 
+-   Adopt and Reject decisions now travel only over their own REST route,
+    for every content type. The server rejects the older way (folded in
+    with ordinary sync messages) and the browser no longer falls back to
+    it; a decision that fails to send reopens in the review panel so it
+    can be retried
+    ([#40](https://github.com/Automattic/gutenberg-sync-engines/issues/40)).
 -   Real-time collaboration is now turned on by the **Real-time
     collaboration** Gutenberg experiment instead of the Settings → Writing
     checkbox, following the framework
