@@ -106,13 +106,60 @@ export function ensureProps( doc ) {
 }
 
 /**
+ * Deep-clones one plain-JSON value: objects made with `{}`, arrays,
+ * strings, numbers, booleans, null, and nothing else.
+ *
+ * @param {*} value Plain-JSON value.
+ * @return {*} Clone.
+ */
+function clonePlain( value ) {
+	if ( null === value || 'object' !== typeof value ) {
+		return value;
+	}
+	if ( Array.isArray( value ) ) {
+		const length = value.length;
+		const clone = new Array( length );
+		for ( let index = 0; index < length; index++ ) {
+			clone[ index ] = clonePlain( value[ index ] );
+		}
+		return clone;
+	}
+	const clone = {};
+	for ( const key in value ) {
+		if ( Object.prototype.hasOwnProperty.call( value, key ) ) {
+			clone[ key ] = clonePlain( value[ key ] );
+		}
+	}
+	return clone;
+}
+
+/**
  * Deep-clones a document.
+ *
+ * This is a hand-rolled walk instead of `structuredClone`, on purpose.
+ * Documents are plain JSON data by contract — they cross the wire as JSON,
+ * and the PHP twin holds the same document as nested arrays — so the
+ * general clone algorithm is not needed. And in wp-admin the global
+ * `structuredClone` is not the browser's fast built-in: WordPress's
+ * `wp-polyfill` (core-js) replaces it everywhere with a slow script
+ * implementation, because core-js judges every browser's error-cloning
+ * behavior non-compliant. This function runs once per applied intent, so
+ * with that replacement in place a fast typing burst froze the editor's
+ * main thread for 15+ seconds (issue #37). The plain walk avoids the
+ * global entirely and is faster than even the native function for this
+ * data.
+ *
+ * WARNING: the walk only understands plain JSON shapes. A Map, Set, Date,
+ * RegExp, typed array, or class instance inside a document would come back
+ * as an empty or hollow `{}`, and a cyclic reference would recurse without
+ * end. Keep every attr, field, and property value JSON-shaped; do not
+ * introduce such types into documents.
  *
  * @param {Object} doc Document.
  * @return {Object} Clone.
  */
 export function cloneDocument( doc ) {
-	return structuredClone( doc );
+	return clonePlain( doc );
 }
 
 function walk( siblings, parentId, visitor ) {

@@ -9,6 +9,16 @@ them under a version heading when a version ships.
 
 ### Fixed
 
+-   Fast typing under the intent-log engine could freeze the typist's
+    browser tab for many seconds — table cells and captions made it
+    worst — so the other person's window stopped receiving the end of
+    what was typed, and tests timed out clicking elements that were
+    plainly on screen. The engine deep-copied its document once per
+    received change through the page's `structuredClone`, which
+    WordPress's script polyfill replaces with a far slower version; the
+    engine now uses its own plain-data copy and never touches the global
+    ([#37](https://github.com/Automattic/gutenberg-sync-engines/issues/37)).
+
 -   De-rtc sessions could silently stop syncing after a failed network
     request: the polling transport's recovery step seized the slot of a
     save that was still in flight on the separate save lane, and the
