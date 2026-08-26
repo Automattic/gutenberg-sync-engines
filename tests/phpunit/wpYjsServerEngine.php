@@ -325,6 +325,85 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 	}
 
 	/**
+	 * REGRESSION (issue #38, fuzzer seed 8): genesis blocks seeded only the
+	 * comment-delimiter attributes, so registered defaults were missing from
+	 * the doc. Clients adopt doc blocks verbatim (no parse, no createBlock —
+	 * nothing re-fills defaults), and core/group's save() renders its wrapper
+	 * from the `tagName` attribute: with it missing, the group serialized to
+	 * an EMPTY string, landed in post_content as a void `<!-- wp:group /-->`
+	 * with every child dropped, and the next reload showed the invalid-content
+	 * recovery screen with an empty recovery copy. Genesis must fill unsourced
+	 * attribute defaults; materialize strips them again (the roundtrip test
+	 * above certifies that half).
+	 */
+	public function test_genesis_fills_unsourced_attribute_defaults() {
+		$nested_content = implode(
+			"\n",
+			array(
+				'<!-- wp:group {"layout":{"type":"constrained"}} -->',
+				'<div class="wp-block-group"><!-- wp:paragraph -->',
+				'<p>Inside the group</p>',
+				'<!-- /wp:paragraph --></div>',
+				'<!-- /wp:group -->',
+			)
+		);
+		$nested_post_id = self::factory()->post->create(
+			array( 'post_content' => $nested_content )
+		);
+		$room           = 'postType/post:' . $nested_post_id;
+
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( $room, 101, 0, array() );
+		$doc      = $this->client_doc_from_response( $response );
+
+		$group = $doc->getMap( 'document' )->get( 'blocks' )->get( 0 );
+		$this->assertSame( 'core/group', $group->get( 'name' ) );
+		$attributes = $group->get( 'attributes' );
+		$this->assertSame(
+			'div',
+			$attributes->get( 'tagName' ),
+			'genesis must fill the registered tagName default the comment delimiters omit'
+		);
+		$this->assertSame(
+			array( 'type' => 'constrained' ),
+			(array) $attributes->get( 'layout' ),
+			'comment-delimiter attributes must survive alongside the filled defaults'
+		);
+
+		/*
+		 * ORDER is part of the contract: the editor's convergence checks
+		 * compare block state as serialized JSON, and parse/createBlock emit
+		 * attributes in schema registration order — registered keys first
+		 * (rich-text content at its own schema slot), extras appended.
+		 * A doc-adopted `{dropCap, content}` against a peer's parsed
+		 * `{content, dropCap}` never compares equal (e2e late-joiner-paste
+		 * failure on the first version of this fix).
+		 */
+		$this->assertSame(
+			array( 'tagName', 'layout' ),
+			array_keys( (array) $attributes->toJSON() ),
+			'group attributes must sit in schema order with extras appended'
+		);
+		$paragraph = $group->get( 'innerBlocks' )->get( 0 );
+		$this->assertSame( 'core/paragraph', $paragraph->get( 'name' ) );
+		$this->assertSame(
+			array( 'content', 'dropCap' ),
+			array_keys( (array) $paragraph->get( 'attributes' )->toJSON() ),
+			'the rich-text content attribute must occupy its schema position, not be appended last'
+		);
+
+		// The materialized content must NOT carry the filled defaults back
+		// into the comment delimiters.
+		$this->assertSame(
+			get_post( $nested_post_id )->post_content,
+			$engine->materialize( $room ),
+			'filled defaults must strip back out of materialized content'
+		);
+
+		wp_delete_post( $nested_post_id, true );
+	}
+
+	/**
 	 * REGRESSION (V1.md A4): genesis put a block's whole stripped inner
 	 * markup into its FIRST rich-text-source attribute — for core/image
 	 * the `<img …>` markup landed in `caption`. Self-consistent for byte

@@ -213,4 +213,5 @@ The runner sets these; direct `npx playwright test
 | `RTC_FUZZ_DISABLE_SYNC_FAULTS` / `RTC_FUZZ_DISABLE_RELOAD` | unset | Noise reduction |
 | `RTC_FUZZ_CONVERGENCE_TIMEOUT_MS` | 20000 | Per-step convergence budget |
 | `RTC_FUZZ_TRACE` | `off` | Playwright trace mode |
+| `RTC_FUZZ_CPU_THROTTLE` | unset | Slow every editor page N× via devtools CPU emulation (reproduces busy-machine races on an idle machine; issue #38 needed 5) |
 | `RTC_FUZZ_JSON_REPORT` / `RTC_FUZZ_OUTPUT_DIR` | unset | Runner's result channels |

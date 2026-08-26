@@ -72,6 +72,21 @@ interface ActionContext {
 }
 
 const SEED_START = getEnvInt( 'RTC_FUZZ_SEED_START', 1 );
+
+// RTC_FUZZ_CPU_THROTTLE=<rate> slows every editor page through Chrome's
+// devtools CPU emulation, mirroring the e2e fixtures' RTC_E2E_CPU_THROTTLE
+// knob (issue #37): busy-machine races reproduce on an idle machine. Off
+// unless set.
+const CPU_THROTTLE = getEnvInt( 'RTC_FUZZ_CPU_THROTTLE', 0 );
+async function maybeThrottlePage( page: Page ): Promise< void > {
+	if ( CPU_THROTTLE <= 1 ) {
+		return;
+	}
+	const session = await page.context().newCDPSession( page );
+	await session.send( 'Emulation.setCPUThrottlingRate', {
+		rate: CPU_THROTTLE,
+	} );
+}
 const SEED_COUNT = getEnvInt( 'RTC_FUZZ_SEED_COUNT', 3 );
 const SEEDS = getEnvIntList( 'RTC_FUZZ_SEEDS' );
 const STEP_COUNT = getEnvInt( 'RTC_FUZZ_STEPS', 12 );
@@ -1517,6 +1532,8 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 				tapConsole( participants[ 1 ].page, 1 );
 				tapSyncWire( participants[ 0 ].page, 0 );
 				tapSyncWire( participants[ 1 ].page, 1 );
+				await maybeThrottlePage( participants[ 0 ].page );
+				await maybeThrottlePage( participants[ 1 ].page );
 				const activePages = () =>
 					participants.map( ( entry ) => entry.page );
 				await waitForDiscovery( collaborationUtils, activePages() );
@@ -1686,6 +1703,7 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 						} );
 						tapConsole( third.page, participants.length - 1 );
 						tapSyncWire( third.page, participants.length - 1 );
+						await maybeThrottlePage( third.page );
 						await waitForDiscovery(
 							collaborationUtils,
 							activePages()
@@ -1746,6 +1764,7 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 						} );
 						tapConsole( rejoined.page, 1 );
 						tapSyncWire( rejoined.page, 1 );
+						await maybeThrottlePage( rejoined.page );
 						departed = false;
 						await waitForDiscovery(
 							collaborationUtils,

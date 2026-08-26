@@ -9,6 +9,18 @@ them under a version heading when a version ships.
 
 ### Fixed
 
+-   Under the yjs-server engine, a Group block (or other container) could
+    come back after a reload as WordPress's "unexpected or invalid
+    content" recovery screen with nothing to recover, its contents gone
+    from the saved post. The room's starting snapshot only carried the
+    attributes written in the block markup, omitting registered defaults
+    like the Group wrapper's tag name; an editor that adopted those
+    blocks then saved the Group as an empty self-closing block, dropping
+    every child. The snapshot now fills those defaults in (and strips
+    them back out when rebuilding post content, so saved content is
+    unchanged)
+    ([#38](https://github.com/Automattic/gutenberg-sync-engines/issues/38)).
+
 -   Fast typing under the intent-log engine could freeze the typist's
     browser tab for many seconds — table cells and captions made it
     worst — so the other person's window stopped receiving the end of
