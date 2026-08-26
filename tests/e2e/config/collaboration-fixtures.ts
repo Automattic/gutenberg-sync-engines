@@ -22,6 +22,106 @@ import CollaborationUtils, {
 	setCollaboration,
 } from '../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures/collaboration-utils';
 
+/**
+ * Diagnostic CPU throttle (issue #37): the burst-timing failures only fire
+ * on busy machines, so `RTC_E2E_CPU_THROTTLE=<rate>` slows every editor
+ * page by that factor (Chrome devtools emulation) to reproduce them on an
+ * otherwise idle machine. Off (no-op) unless the variable is set above 1.
+ *
+ * @param page The page to slow down.
+ */
+async function applyCpuThrottle(
+	page: import('@playwright/test').Page
+): Promise< void > {
+	const rate = Number( process.env.RTC_E2E_CPU_THROTTLE );
+	if ( ! ( rate > 1 ) ) {
+		return;
+	}
+	const session = await page.context().newCDPSession( page );
+	await session.send( 'Emulation.setCPUThrottlingRate', { rate } );
+}
+
+/**
+ * Companion probe for the throttle: records main-thread stalls (long
+ * tasks) so a failed run shows WHEN each editor page stopped servicing
+ * its event loop — the suspected mechanism behind locators that match
+ * nothing while the element sits in the DOM. Buffered, so entries from
+ * before installation are kept too. Read back at teardown.
+ *
+ * @param page The page to observe.
+ */
+async function installLongTaskProbe(
+	page: import('@playwright/test').Page
+): Promise< void > {
+	if ( ! ( Number( process.env.RTC_E2E_CPU_THROTTLE ) > 1 ) ) {
+		return;
+	}
+	await page
+		.evaluate( () => {
+			const store = ( (
+				window as Window & {
+					__rtcLongTasks?: Array< { s: number; d: number } >;
+				}
+			 ).__rtcLongTasks = [] as Array< { s: number; d: number } > );
+			new PerformanceObserver( ( list ) => {
+				for ( const entry of list.getEntries() ) {
+					store.push( {
+						s: Math.round( entry.startTime ),
+						d: Math.round( entry.duration ),
+					} );
+				}
+			} ).observe( { type: 'longtask', buffered: true } );
+		} )
+		.catch( () => {} );
+}
+
+/**
+ * Optional CPU profiler for the joined (typing) page, to NAME the code
+ * inside a main-thread stall the long-task probe can only time. Set
+ * `RTC_E2E_CPU_PROFILE=1` alongside the throttle; the profile of user
+ * B's whole editing session attaches to the test as
+ * `cpu-profile-page2.cpuprofile` (open in Chrome devtools > Performance).
+ */
+const cpuProfilers = new WeakMap<
+	import('@playwright/test').Page,
+	import('playwright-core').CDPSession
+>();
+
+async function startCpuProfile(
+	page: import('@playwright/test').Page
+): Promise< void > {
+	if ( '1' !== process.env.RTC_E2E_CPU_PROFILE ) {
+		return;
+	}
+	const session = await page.context().newCDPSession( page );
+	await session.send( 'Profiler.enable' );
+	await session.send( 'Profiler.start' );
+	cpuProfilers.set( page, session );
+}
+
+async function stopCpuProfile(
+	page: import('@playwright/test').Page,
+	label: string,
+	testInfo: import('@playwright/test').TestInfo
+): Promise< void > {
+	const session = cpuProfilers.get( page );
+	if ( ! session ) {
+		return;
+	}
+	cpuProfilers.delete( page );
+	try {
+		const { profile } = ( await session.send( 'Profiler.stop' ) ) as {
+			profile: unknown;
+		};
+		await testInfo.attach( `cpu-profile-${ label }.cpuprofile`, {
+			body: JSON.stringify( profile ),
+			contentType: 'application/json',
+		} );
+	} catch {
+		// The page may already be gone; losing one profile is fine.
+	}
+}
+
 class HardenedCollaborationUtils extends CollaborationUtils {
 	/**
 	 * The subtree fixture logs joining users in through wp-login.php,
@@ -42,11 +142,16 @@ class HardenedCollaborationUtils extends CollaborationUtils {
 	async joinUser(
 		...args: Parameters< CollaborationUtils[ 'joinUser' ] >
 	): ReturnType< CollaborationUtils[ 'joinUser' ] > {
+		let joined;
 		try {
-			return await super.joinUser( ...args );
+			joined = await super.joinUser( ...args );
 		} catch {
-			return await super.joinUser( ...args );
+			joined = await super.joinUser( ...args );
 		}
+		await applyCpuThrottle( joined.page );
+		await installLongTaskProbe( joined.page );
+		await startCpuProfile( joined.page );
+		return joined;
 	}
 
 	/**
@@ -109,7 +214,8 @@ type Fixtures = {
 export const test = base.extend< Fixtures >( {
 	collaborationUtils: async (
 		{ admin, editor, requestUtils, page },
-		use
+		use,
+		testInfo
 	) => {
 		const utils = new HardenedCollaborationUtils( {
 			admin,
@@ -117,6 +223,26 @@ export const test = base.extend< Fixtures >( {
 			requestUtils,
 			page,
 		} );
+		await applyCpuThrottle( page );
+		if ( Number( process.env.RTC_E2E_CPU_THROTTLE ) > 1 ) {
+			// The primary page navigates after this, so the probe installs
+			// as an init script instead of a one-shot evaluate.
+			await page.context().addInitScript( () => {
+				const store = ( (
+					window as Window & {
+						__rtcLongTasks?: Array< { s: number; d: number } >;
+					}
+				 ).__rtcLongTasks = [] as Array< { s: number; d: number } > );
+				new PerformanceObserver( ( list ) => {
+					for ( const entry of list.getEntries() ) {
+						store.push( {
+							s: Math.round( entry.startTime ),
+							d: Math.round( entry.duration ),
+						} );
+					}
+				} ).observe( { type: 'longtask', buffered: true } );
+			} );
+		}
 		// Clean up any leftover users from previous runs before creating.
 		await requestUtils.deleteAllUsers();
 		await requestUtils.createUser( SECOND_USER );
@@ -124,6 +250,40 @@ export const test = base.extend< Fixtures >( {
 		try {
 			await use( utils );
 		} finally {
+			if ( Number( process.env.RTC_E2E_CPU_THROTTLE ) > 1 ) {
+				const pages: Array<
+					[ string, import('@playwright/test').Page ]
+				> = [ [ 'page1', page ] ];
+				const sessions = (
+					utils as unknown as {
+						sessions?: Array< {
+							page: import('@playwright/test').Page;
+						} >;
+					}
+				 ).sessions;
+				( sessions ?? [] ).forEach( ( session, index ) =>
+					pages.push( [ `page${ index + 2 }`, session.page ] )
+				);
+				for ( const [ label, target ] of pages ) {
+					await stopCpuProfile( target, label, testInfo );
+					const tasks = await target
+						.evaluate(
+							() =>
+								(
+									window as Window & {
+										__rtcLongTasks?: unknown;
+									}
+								 ).__rtcLongTasks ?? null
+						)
+						.catch( () => null );
+					if ( tasks ) {
+						await testInfo.attach( `long-tasks-${ label }`, {
+							body: JSON.stringify( tasks ),
+							contentType: 'application/json',
+						} );
+					}
+				}
+			}
 			try {
 				await utils.teardown();
 			} finally {
