@@ -1383,6 +1383,24 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		 * @return \Yjs\Types\YMap YBlock.
 		 */
 		private static function make_yblock( string $client_id, string $name, array $attrs, string $content, array $children ): \Yjs\Types\YMap {
+			/*
+			 * Fill registered attribute DEFAULTS the comment delimiters omit.
+			 * Blocks the editor itself creates always carry them (parse and
+			 * createBlock both apply schema defaults), and save() functions
+			 * rely on that: core/group renders its wrapper element from the
+			 * `tagName` attribute (default "div"), so a joiner that adopts a
+			 * genesis block WITHOUT it serializes the group to an EMPTY
+			 * string — the block lands in post_content as a void
+			 * `<!-- wp:group /-->` with every child silently dropped, and the
+			 * next reload shows the invalid-content recovery screen (issue
+			 * #38; same family as the isValid line below). Markup-sourced
+			 * attributes stay excluded: their live values ride in the wrapper
+			 * records and `_save` mirrors, not in the attribute map.
+			 * Deterministic (registry defaults + fixed order), so racing
+			 * genesis writers still produce byte-identical rows.
+			 */
+			$attrs = array_merge( self::attribute_defaults( $name ), $attrs );
+
 			$attributes = new \Yjs\Types\YMap();
 			foreach ( $attrs as $key => $value ) {
 				$attributes->set( (string) $key, $value );
@@ -1408,6 +1426,34 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 			}
 
 			return $yblock;
+		}
+
+		/**
+		 * The registered default values for a block type's UNSOURCED
+		 * attributes (the ones comment delimiters carry). Markup-sourced
+		 * attributes are excluded: the doc deliberately keeps their live
+		 * values in wrapper records and `_save` mirrors instead of the
+		 * attribute map, and injecting defaults there could contradict the
+		 * real markup.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param string $name Block name.
+		 * @return array Attribute key => default value.
+		 */
+		private static function attribute_defaults( string $name ): array {
+			$block_type = WP_Block_Type_Registry::get_instance()->get_registered( $name );
+			if ( null === $block_type || ! is_array( $block_type->attributes ) ) {
+				return array();
+			}
+			$defaults = array();
+			foreach ( $block_type->attributes as $key => $schema ) {
+				if ( ! is_array( $schema ) || ! array_key_exists( 'default', $schema ) || isset( $schema['source'] ) ) {
+					continue;
+				}
+				$defaults[ (string) $key ] = $schema['default'];
+			}
+			return $defaults;
 		}
 
 		/**
@@ -1482,6 +1528,16 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 			if ( null !== $content_attr && array_key_exists( $content_attr, $attrs ) ) {
 				$text = (string) $attrs[ $content_attr ];
 				unset( $attrs[ $content_attr ] );
+			}
+
+			// Drop attributes equal to their registered default before
+			// serializing, mirroring the client serializer: comment
+			// delimiters never carry default values, so the defaults genesis
+			// fills (see make_yblock) round-trip out again byte-identically.
+			foreach ( self::attribute_defaults( $name ) as $default_key => $default_value ) {
+				if ( array_key_exists( $default_key, $attrs ) && $attrs[ $default_key ] == $default_value ) { // phpcs:ignore Universal.Operators.StrictComparisons.LooseEqual -- Mirrors the client serializer's value comparison; JSON round-trips may swap int/float or array key order.
+					unset( $attrs[ $default_key ] );
+				}
 			}
 
 			// Classic content serializes bare (no comment delimiters).
