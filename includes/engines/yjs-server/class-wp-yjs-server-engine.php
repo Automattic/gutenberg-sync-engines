@@ -1398,15 +1398,30 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 			 * records and `_save` mirrors, not in the attribute map.
 			 * Deterministic (registry defaults + fixed order), so racing
 			 * genesis writers still produce byte-identical rows.
+			 *
+			 * ORDER matters as much as presence: the editor compares block
+			 * state as serialized JSON in places (the collaboration e2e
+			 * convergence check among them), and parse/createBlock both emit
+			 * attributes in schema registration order. A defaults-first
+			 * merge made a doc-adopted block report `{dropCap, content}`
+			 * while its peer's own parse reported `{content, dropCap}` —
+			 * identical values, permanently "unconverged". Build the map in
+			 * schema order instead, appending unregistered extras behind —
+			 * including the rich-text content value, which must sit at its
+			 * schema position (first, for a paragraph), not be appended last.
 			 */
-			$attrs = array_merge( self::attribute_defaults( $name ), $attrs );
+			$content_attr = self::rich_text_attribute( $name );
+			$attrs        = self::ordered_attributes( $name, $attrs, $content_attr );
 
 			$attributes = new \Yjs\Types\YMap();
 			foreach ( $attrs as $key => $value ) {
+				if ( $key === $content_attr ) {
+					$attributes->set( (string) $key, new \Yjs\Types\YText( $content ) );
+					continue;
+				}
 				$attributes->set( (string) $key, $value );
 			}
-			$content_attr = self::rich_text_attribute( $name );
-			if ( null !== $content_attr ) {
+			if ( null !== $content_attr && ! array_key_exists( $content_attr, $attrs ) ) {
 				$attributes->set( $content_attr, new \Yjs\Types\YText( $content ) );
 			}
 
@@ -1454,6 +1469,54 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 				$defaults[ (string) $key ] = $schema['default'];
 			}
 			return $defaults;
+		}
+
+		/**
+		 * A block's attributes in SCHEMA REGISTRATION ORDER, with registered
+		 * defaults woven in for missing unsourced attributes and any
+		 * unregistered extras appended behind in their given order.
+		 *
+		 * This is the order parse and createBlock produce client-side, and
+		 * order is observable: the editor (and the collaboration e2e
+		 * convergence check) compares block state as serialized JSON, so a
+		 * doc-adopted block whose keys sit in a different order than a
+		 * peer's own parse never compares equal even with identical values.
+		 *
+		 * @since 0.4.0
+		 *
+		 * @param string      $name        Block name.
+		 * @param array       $attrs       Comment-delimiter attributes.
+		 * @param string|null $reserve_key Rich-text content attribute to hold
+		 *                                 a slot for at its schema position
+		 *                                 (the caller supplies its value).
+		 * @return array Ordered attributes with defaults filled.
+		 */
+		private static function ordered_attributes( string $name, array $attrs, ?string $reserve_key = null ): array {
+			$block_type = WP_Block_Type_Registry::get_instance()->get_registered( $name );
+			if ( null === $block_type || ! is_array( $block_type->attributes ) ) {
+				return $attrs;
+			}
+			$ordered = array();
+			foreach ( $block_type->attributes as $key => $schema ) {
+				$key = (string) $key;
+				if ( $key === $reserve_key ) {
+					$ordered[ $key ] = null;
+					continue;
+				}
+				if ( array_key_exists( $key, $attrs ) ) {
+					$ordered[ $key ] = $attrs[ $key ];
+					continue;
+				}
+				if ( is_array( $schema ) && array_key_exists( 'default', $schema ) && ! isset( $schema['source'] ) ) {
+					$ordered[ $key ] = $schema['default'];
+				}
+			}
+			foreach ( $attrs as $key => $value ) {
+				if ( ! array_key_exists( (string) $key, $ordered ) ) {
+					$ordered[ (string) $key ] = $value;
+				}
+			}
+			return $ordered;
 		}
 
 		/**

@@ -370,6 +370,28 @@ class Tests_Collaboration_WpYjsServerEngine extends WP_UnitTestCase {
 			'comment-delimiter attributes must survive alongside the filled defaults'
 		);
 
+		/*
+		 * ORDER is part of the contract: the editor's convergence checks
+		 * compare block state as serialized JSON, and parse/createBlock emit
+		 * attributes in schema registration order — registered keys first
+		 * (rich-text content at its own schema slot), extras appended.
+		 * A doc-adopted `{dropCap, content}` against a peer's parsed
+		 * `{content, dropCap}` never compares equal (e2e late-joiner-paste
+		 * failure on the first version of this fix).
+		 */
+		$this->assertSame(
+			array( 'tagName', 'layout' ),
+			array_keys( (array) $attributes->toJSON() ),
+			'group attributes must sit in schema order with extras appended'
+		);
+		$paragraph = $group->get( 'innerBlocks' )->get( 0 );
+		$this->assertSame( 'core/paragraph', $paragraph->get( 'name' ) );
+		$this->assertSame(
+			array( 'content', 'dropCap' ),
+			array_keys( (array) $paragraph->get( 'attributes' )->toJSON() ),
+			'the rich-text content attribute must occupy its schema position, not be appended last'
+		);
+
 		// The materialized content must NOT carry the filled defaults back
 		// into the comment delimiters.
 		$this->assertSame(
