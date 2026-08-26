@@ -35,9 +35,7 @@ const richDoc = () =>
 				fields: {
 					content: {
 						text: 'Cell 1Cell 2',
-						formats: [
-							{ start: 0, end: 6, format: 'core/bold' },
-						],
+						formats: [ { start: 0, end: 6, format: 'core/bold' } ],
 					},
 					caption: { text: 'A table', formats: [] },
 				},
