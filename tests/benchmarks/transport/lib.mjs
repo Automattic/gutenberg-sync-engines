@@ -18,6 +18,10 @@ export const COLLABORATION_EXPERIMENT = 'gutenberg-real-time-collaboration';
 
 /**
  * Parses bare `key=value` CLI tokens (the engine benchmark's convention).
+ * Leading dashes are accepted and stripped — `--poll=3` means `poll=3`,
+ * and a bare `--headed` means `headed` — because the dashed habit is too
+ * strong to fight and silently ignoring a mistyped flag costs a whole
+ * benchmark run.
  *
  * @param {string[]} argv Argument vector (defaults to process.argv).
  * @return {Object} Parsed options.
@@ -25,10 +29,11 @@ export const COLLABORATION_EXPERIMENT = 'gutenberg-real-time-collaboration';
 export function parseCliOptions( argv = process.argv.slice( 2 ) ) {
 	return Object.fromEntries(
 		argv.map( ( token ) => {
-			const eq = token.indexOf( '=' );
+			const bare = token.replace( /^--?/, '' );
+			const eq = bare.indexOf( '=' );
 			return eq === -1
-				? [ token, true ]
-				: [ token.slice( 0, eq ), token.slice( eq + 1 ) ];
+				? [ bare, true ]
+				: [ bare.slice( 0, eq ), bare.slice( eq + 1 ) ];
 		} )
 	);
 }

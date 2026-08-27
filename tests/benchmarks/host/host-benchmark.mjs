@@ -104,7 +104,7 @@ Environment: WP_BASE_URL (default http://localhost:8889),
 WP_USERNAME/WP_PASSWORD (default admin/password).
 `;
 
-if ( opts[ '--help' ] || opts[ '-h' ] || opts.help ) {
+if ( opts.help || opts.h ) {
 	process.stdout.write( HELP );
 	process.exit( 0 );
 }

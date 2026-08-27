@@ -54,11 +54,18 @@ import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
+// Arguments are bare key=value tokens (wp-cli would claim --flags on the
+// engines suite), but leading dashes are such a strong habit that they
+// are accepted and stripped: --suite=engines means suite=engines.
+const TOKENS = process.argv
+	.slice( 2 )
+	.map( ( token ) =>
+		token.includes( '=' ) ? token.replace( /^--?/, '' ) : token
+	);
 const args = Object.fromEntries(
-	process.argv
-		.slice( 2 )
-		.filter( ( a ) => a.includes( '=' ) )
-		.map( ( a ) => a.split( /=(.*)/s ).slice( 0, 2 ) )
+	TOKENS.filter( ( a ) => a.includes( '=' ) ).map( ( a ) =>
+		a.split( /=(.*)/s ).slice( 0, 2 )
+	)
 );
 
 const HELP = `npm run bench -- [suite=<name>] [key=value …]
@@ -95,9 +102,11 @@ Suites (suite=; default: host):
   replay     Replay a captured session as HTTP load
              (tests/benchmarks/replay/README.md).
 
-Arguments after suite= are forwarded to the suite's script; each script's
-header documents its full list. Environment: WP_BASE_URL (default
-http://localhost:8889), WP_USERNAME/WP_PASSWORD.
+Arguments are key=value tokens; leading dashes are accepted and stripped
+(--suite=engines means suite=engines). Arguments after suite= are
+forwarded to the suite's script; each script's header documents its full
+list. Environment: WP_BASE_URL (default http://localhost:8889),
+WP_USERNAME/WP_PASSWORD.
 
 Examples:
   npm run bench
@@ -154,9 +163,10 @@ if ( 'engines' !== SUITE ) {
 		);
 		process.exit( 1 );
 	}
-	const forwarded = process.argv
-		.slice( 2 )
-		.filter( ( token ) => ! token.startsWith( 'suite=' ) );
+	// Forward the NORMALIZED tokens (dashes stripped), minus suite=.
+	const forwarded = TOKENS.filter(
+		( token ) => ! token.startsWith( 'suite=' )
+	);
 	const child = spawnSync( 'node', [ script, ...forwarded ], {
 		stdio: 'inherit',
 	} );
