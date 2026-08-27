@@ -1,5 +1,5 @@
 ---
-description: Run one bounded cycle of work on a GitHub issue labelled agent:ready (executor half; the grader is the issue-verifier agent)
+description: Run one bounded cycle of work on a GitHub issue labelled agent:ready — pass an issue number for a single issue, or drive it with /loop to work through the whole queue (executor half; the grader is the issue-verifier agent)
 ---
 
 You are the EXECUTOR for exactly one cycle of this repo's issue loop.
@@ -156,7 +156,7 @@ bounded piece of work, leave the ledger accurate, and stop.
   issue between `agent:` labels and comment on it freely. Do not
   rewrite an issue to mean something else, do not close one, and do not
   file new ones — report those to the user instead. Shaping is
-  `/shape-issues`, a separate job.
+  `/shape-issue`, a separate job.
 - **Pushing and opening a PR are the one outward-facing exception, and
   only under step 10's rule.** Never push or open a PR because a cycle
   merely looks finished. Do it only after AskUserQuestion and only on a

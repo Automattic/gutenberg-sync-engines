@@ -139,9 +139,12 @@ gh label create "agent:parked"        -c "#5319E7" -d "Cannot move forward; the 
 ## Working through them
 
 ```
-/shape-issues          # investigate what was filed, write it up properly
-/loop /issue-cycle     # work through everything labelled agent:ready
+/loop /shape-issue     # investigate what was filed, write it up properly
+/loop /solve-issue     # work through everything labelled agent:ready
 ```
+
+Either also takes a single issue number directly (e.g.
+`/shape-issue #60`) to work one issue without starting a loop.
 
 `LOOP.md` is the ledger while the loop runs. The queue itself is
 GitHub:

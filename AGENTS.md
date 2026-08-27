@@ -557,7 +557,8 @@ has already been tried and failed — read it before a big change, and
 before re-attempting anything that looks obvious.
 
 `LOOP.md` is the working ledger when the issue loop is running
-(`/shape-issues` to work up what was filed, then `/loop /issue-cycle`).
+(`/loop /shape-issue` to work up what was filed, then `/loop /solve-issue`;
+either also takes a single issue number directly).
 
 This section carries the operational facts and cites issues where one
 applies.
