@@ -1,32 +1,46 @@
 ---
-description: Investigate issues labelled agent:needs shaping and rewrite them into the shaped-issue format
+description: Investigate one issue labelled agent:needs shaping and rewrite it into the shaped-issue format — pass an issue number for a single issue, or drive it with /loop to work through the whole queue
 ---
 
 You are shaping issues for this repo. Someone filed a report in their
 own words. Your job is to work out what is actually going on and
 rewrite it so that anyone could pick it up.
 
-## What to shape
-
-If you were given issue numbers, use those. Otherwise list what is
-waiting and ask the human ONCE, with AskUserQuestion, whether to shape
-all of them or specific ones:
-
-```bash
-gh issue list --label "agent:needs shaping" --state open
-```
-
-Note that this list already excludes anything someone else is shaping,
-because a claimed issue carries `agent:in progress`.
-
 Read `docs/plan/README.md` for the rules and
 `.github/ISSUE_TEMPLATE/shaped-issue.md` for the shape.
 
-## For each issue
+## Work out what you are working on
 
-**1. Claim it, then read it.** Claim one issue at a time, as you get to
-it — never the whole batch up front, or you block others from work you
-may not reach:
+1. If you were given an issue number, use it.
+2. Otherwise, anything already assigned to you and not finished:
+   ```bash
+   gh issue list --assignee "@me" --label "agent:needs shaping" --label "agent:in progress" --state open
+   ```
+3. Otherwise, ask the human ONCE, with AskUserQuestion: every issue
+   waiting on shaping, or specific ones they name. Show them the list
+   first:
+   ```bash
+   gh issue list --label "agent:needs shaping" --state open
+   ```
+   Then **assign their answer to yourself immediately**
+   (`gh issue edit <n> --add-assignee "@me"`, one call per issue). That
+   is what makes this a one-time question: from the next invocation on,
+   the assignment above answers it and you must not ask again.
+
+Note that the list in step 3 already excludes anything someone else is
+shaping, because a claimed issue carries `agent:in progress`. Never take
+an issue labelled `agent:in progress` that is assigned to someone else —
+someone is on it. If nothing is left, say so and stop rather than
+scheduling another wakeup.
+
+## Shape it
+
+Do ONE bounded issue per invocation — under `/loop`, the next
+invocation picks up the next one. Anything you learn about a
+*different* issue along the way is reported at the end, never acted on
+in passing.
+
+**1. Claim it, then read it.**
 
 ```bash
 gh issue edit <n> --add-label "agent:in progress" --add-assignee "@me"
@@ -115,6 +129,16 @@ Then add a short comment saying what you found and what changed, so the
 reporter sees a human-readable answer rather than silently rewritten
 text. Two or three sentences.
 
+## Report and pace
+
+Report what you did, in plain sentences: what you found, what you
+decided (shaped, closed, parked, duplicate, or a question asked), and
+why. Say which of the checks in step 5 you ran, and which you skipped.
+An issue you could not reproduce is a finding, not a failure — say so.
+
+Under `/loop` pacing, schedule the next wakeup — soon when there is
+more waiting to be shaped, and stop entirely when the queue runs out.
+
 ## Rules
 
 - **Editing issues is allowed. Creating them is not**, unless the user
@@ -127,18 +151,11 @@ text. Two or three sentences.
 - **Do not invent reproduction steps.** If you did not run them, say
   which parts are inferred.
 - **Do not fix the bug.** Shaping and fixing are different jobs, and
-  mixing them means nobody reviewed the shape. The fix happens in a
-  loop cycle, on a branch, against the issue you just wrote.
+  mixing them means nobody reviewed the shape. The fix happens in
+  `/solve-issue`, on a branch, against the issue you just wrote.
 - **Write plainly.** Same rule as everything else here: if the word is
   in `docs/glossary.md`, it does not go above the notes section.
 - **Never leave a claim behind.** Whatever the outcome — shaped,
   closed, parked, or a question asked — take `agent:in progress` back
   off before you move on. If you stop early, release everything you had
   claimed and say so in your report.
-
-## At the end
-
-Report what you did, in plain sentences: how many you shaped, which
-ones you closed and why, which need a decision from the user and what
-that decision is. Anything you could not reproduce, say so — an
-unreproducible report is a finding, not a failure.
