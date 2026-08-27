@@ -165,6 +165,15 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		const META_FLOOR = 'de_rtc_floor';
 
 		/**
+		 * Room meta key: pinned fingerprints of restored (approved)
+		 * unfiltered-html blocks.
+		 *
+		 * @since n.e.x.t
+		 * @var string
+		 */
+		const META_APPROVED_BLOCKS = 'de_rtc_approved_blocks';
+
+		/**
 		 * Sync storage backend.
 		 *
 		 * @since 0.3.0
@@ -1166,6 +1175,60 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		}
 
 		/**
+		 * Loads the room's pinned block-approval fingerprints.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $room Room identifier.
+		 * @return array<string, array{by: int, at: int}> Fingerprint hash
+		 *                                                 (see wp_de_rtc_hash_content())
+		 *                                                 to approval record; empty
+		 *                                                 when the storage backend has
+		 *                                                 no room-meta support.
+		 */
+		private function get_approved_blocks( string $room ): array {
+			if ( ! method_exists( $this->storage, 'get_room_meta' ) ) {
+				return array();
+			}
+			$approved = $this->storage->get_room_meta( $room, self::META_APPROVED_BLOCKS );
+			return is_array( $approved ) ? $approved : array();
+		}
+
+		/**
+		 * Pins a fingerprint of each given block's exact bytes as approved,
+		 * so a later proposal carrying the same bytes — from any author —
+		 * passes the unfiltered_html gate in sequester_unfiltered_blocks()
+		 * without re-parking. Called only when a `requires-unfiltered-html`
+		 * park is RESTORED (see apply_resolution()); restoring is the
+		 * approval act. An edited approved block has new bytes and no pin
+		 * match, so it re-parks — that boundary is deliberate policy (#41).
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $room           Room identifier.
+		 * @param array  $changed_blocks The parked row's changedBlocks ({index, html}).
+		 * @return void
+		 */
+		private function record_approved_blocks( string $room, array $changed_blocks ): void {
+			if ( ! method_exists( $this->storage, 'get_room_meta' ) || ! method_exists( $this->storage, 'set_room_meta' ) ) {
+				return;
+			}
+			$approved = $this->get_approved_blocks( $room );
+			$by       = get_current_user_id();
+			$at       = time();
+			foreach ( $changed_blocks as $block ) {
+				if ( ! is_array( $block ) || ! is_string( $block['html'] ?? null ) || '' === $block['html'] ) {
+					continue;
+				}
+				$approved[ wp_de_rtc_hash_content( $block['html'] ) ] = array(
+					'by' => $by,
+					'at' => $at,
+				);
+			}
+			$this->storage->set_room_meta( $room, self::META_APPROVED_BLOCKS, $approved );
+		}
+
+		/**
 		 * Sequesters the kses-risky blocks out of a filtered author's
 		 * proposal: each risky changed block reverts to its base-version
 		 * form (a risky NEW block drops), the reverted blocks park for
@@ -1194,13 +1257,23 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			}
 
 			$base_set  = array_fill_keys( $base_records, true );
+			$approved  = $this->get_approved_blocks( $room );
 			$laundered = array();
 			$risky     = array();
 			foreach ( $proposed_records as $index => $serialized ) {
 				// A block byte-identical to a base block was not written by
 				// this author here; a changed block that kses round-trips is
-				// safe. Both pass through.
-				if ( isset( $base_set[ $serialized ] ) || wp_kses_post( $serialized ) === $serialized ) {
+				// safe; a block whose exact bytes were previously RESTORED
+				// (approved) by someone with unfiltered_html is vetted even
+				// though it is neither base-identical here nor kses-clean on
+				// its own — an author re-carrying it in a later proposal, or
+				// re-inserting it after a deletion, should not re-park it.
+				// All three pass through.
+				if (
+					isset( $base_set[ $serialized ] ) ||
+					wp_kses_post( $serialized ) === $serialized ||
+					isset( $approved[ wp_de_rtc_hash_content( $serialized ) ] )
+				) {
 					$laundered[] = $serialized;
 					continue;
 				}
@@ -1218,8 +1291,17 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			}
 
 			if ( array() === $risky ) {
-				// kses flagged something block extraction cannot attribute.
-				return null;
+				/*
+				 * The whole-document kses check (the caller) flagged
+				 * something the per-block pass above cannot see: every
+				 * block here parsed cleanly and passed on its own
+				 * (base-identical, kses-clean, or pinned). Nothing in this
+				 * proposal is actually risky, so the laundered content is
+				 * the proposal verbatim — treating "nothing to attribute"
+				 * as "cannot attribute" escalated the whole document over a
+				 * false alarm.
+				 */
+				return implode( "\n\n", $laundered );
 			}
 
 			$this->park_changed_blocks( $room, $client_id, (string) $proposal['proposalId'], 'requires-unfiltered-html', (string) $proposal['baseVersion'], $risky, $review, true );
@@ -1386,6 +1468,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		private function apply_resolution( string $room, array $resolution, int $client_id, array &$review ) {
 			$proposal_id = $resolution['proposalId'];
 			if ( isset( $review['open'][ $proposal_id ] ) && ! isset( $review['resolved'][ $proposal_id ] ) ) {
+				$parked = $review['open'][ $proposal_id ];
 				$stored = $this->add_row(
 					$room,
 					$client_id,
@@ -1407,6 +1490,23 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					);
 				}
 				$review['resolved'][ $proposal_id ] = true;
+
+				/*
+				 * Restoring a block parked for `requires-unfiltered-html` is
+				 * the approval act: pin its exact bytes so a later proposal
+				 * carrying the same content — from ANY author — passes the
+				 * capability gate instead of re-parking every time it rides
+				 * along in someone else's edit. See sequester_unfiltered_blocks().
+				 */
+				if (
+					'restored' === $resolution['resolution'] &&
+					'requires-unfiltered-html' === ( $parked['reason'] ?? null )
+				) {
+					$this->record_approved_blocks(
+						$room,
+						is_array( $parked['changedBlocks'] ?? null ) ? $parked['changedBlocks'] : array()
+					);
+				}
 			}
 			return array(
 				'intentId' => $proposal_id,

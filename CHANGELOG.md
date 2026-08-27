@@ -9,6 +9,19 @@ them under a version heading when a version ships.
 
 ### Fixed
 
+-   Under the de-rtc engine, once a reviewer approved content an
+    unprivileged author's edit would otherwise have stripped (a script
+    tag, a custom embed), that author's later edits anywhere else in the
+    post were thrown away and set aside for review instead of landing —
+    the whole post froze for them. Every submitted proposal is checked
+    document-wide, and a false-alarm mismatch between that whole-document
+    check and each block's own individually-clean check was being treated
+    as "cannot tell what's risky here", escalating harmless edits along
+    with it. Approving content now also pins the exact bytes as approved,
+    so later edits that carry it along recognize it instead of re-parking
+    it every time
+    ([#64](https://github.com/Automattic/gutenberg-sync-engines/issues/64)).
+
 -   Under the yjs-server engine, a Group block (or other container) could
     come back after a reload as WordPress's "unexpected or invalid
     content" recovery screen with nothing to recover, its contents gone

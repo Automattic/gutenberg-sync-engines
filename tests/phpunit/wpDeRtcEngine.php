@@ -1006,4 +1006,170 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 			remove_filter( 'wp_sync_de_rtc_checkpoint_interval', $interval_filter );
 		}
 	}
+
+	/**
+	 * Creates a fresh, isolated post/room for the #64 approval-pin tests:
+	 * this scenario needs precise parked-row counts, which the rest of
+	 * this file's shared, cumulative room cannot give a test appended at
+	 * the end (its history already carries every earlier test's parked
+	 * rows).
+	 *
+	 * @return string Room identifier for the new post.
+	 */
+	private function approval_pin_room(): string {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_author'  => self::$editor_id,
+				'post_title'   => 'DE-RTC approval-pin test post',
+				'post_content' => "<!-- wp:paragraph -->\n<p>Paragraph A.</p>\n<!-- /wp:paragraph -->\n\n<!-- wp:paragraph -->\n<p>Paragraph B.</p>\n<!-- /wp:paragraph -->",
+			)
+		);
+		return 'postType/post:' . $post_id;
+	}
+
+	/**
+	 * Drives the #64 approval flow up through the reviewer's restore, on a
+	 * dedicated room: the filtered author risk-edits paragraph B (parking
+	 * it), then the editor (unfiltered_html) restores and resolves it.
+	 * Returns the post-restore canonical content/version so callers can
+	 * drive further edits against it.
+	 *
+	 * @param string $room Room identifier.
+	 * @return array{content: string, version: string} Canonical state
+	 *                                                  right after the
+	 *                                                  restore landed.
+	 */
+	private function approve_unfiltered_html_scenario( string $room ): array {
+		$engine = $this->engine();
+		$state  = $this->latest_from_response( $engine->get_updates_since( $room, 1, 0, array() ) );
+
+		// Step 1-2: the author (no unfiltered_html) edits paragraph B to
+		// include something WordPress would strip. It is set aside for
+		// review; paragraph B itself stays at its prior, unedited text.
+		wp_set_current_user( self::$author_id );
+		$risky        = str_replace( 'Paragraph B.', 'Paragraph B <script>bad()</script>.', $state['content'] );
+		$risky_result = $engine->handle_updates(
+			$room,
+			3,
+			0,
+			array( $this->proposal( 'p-risky-approval', $state['version'], $state['content'], $risky, false ) ),
+			array()
+		);
+		$this->assertSame( 'applied', $risky_result['dispositions'][0]['status'] );
+		$after_risky = (string) $this->engine()->materialize( $room );
+		$this->assertStringContainsString( 'Paragraph B.', $after_risky );
+		$this->assertStringNotContainsString( '<script>', $after_risky );
+
+		$parked = $this->rows_of_type(
+			$this->engine()->get_updates_since( $room, 4, 0, array() ),
+			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+		);
+		$this->assertCount( 1, $parked );
+		$this->assertSame( 'p-risky-approval', $parked[0]['proposalId'] );
+		$this->assertSame( 'requires-unfiltered-html', $parked[0]['reason'] );
+
+		// Step 3: the administrator (the editor role here has
+		// unfiltered_html) approves it. Client-side this re-proposes the
+		// parked bytes under the restorer's own capability — landing them
+		// in canonical — and THEN resolves the parked row as `restored`.
+		wp_set_current_user( self::$editor_id );
+		$approved_state = $this->latest_from_response( $this->engine()->get_updates_since( $room, 1, 0, array() ) );
+		$restore_result = $this->engine()->handle_updates(
+			$room,
+			2,
+			0,
+			array( $this->proposal( 'p-restore-approval', $approved_state['version'], $approved_state['content'], $risky, false ) ),
+			array()
+		);
+		$this->assertSame( 'applied', $restore_result['dispositions'][0]['status'] );
+		$approved_version = $restore_result['dispositions'][0]['version'];
+		$this->assertStringContainsString( '<script>bad()</script>', (string) $this->engine()->materialize( $room ) );
+
+		$this->engine()->resolve_proposal( $room, 'p-risky-approval', 'restored', 2 );
+
+		return array(
+			'content' => (string) $this->engine()->materialize( $room ),
+			'version' => $approved_version,
+		);
+	}
+
+	/**
+	 * The #64 repro: once a privileged reviewer restores content a
+	 * filtered author's edit would otherwise strip, a LATER edit by any
+	 * filtered author elsewhere in the post must land normally instead of
+	 * re-escalating every time it re-carries the approved bytes.
+	 */
+	public function test_restored_unfiltered_html_approval_lets_other_edits_land() {
+		$room     = $this->approval_pin_room();
+		$approved = $this->approve_unfiltered_html_scenario( $room );
+
+		// Step 4: as the SAME filtered author, a plain edit to paragraph A —
+		// nothing WordPress would strip.
+		wp_set_current_user( self::$author_id );
+		$plain_edit   = str_replace( 'Paragraph A.', 'Paragraph A, plain edit.', $approved['content'] );
+		$plain_result = $this->engine()->handle_updates(
+			$room,
+			3,
+			0,
+			array( $this->proposal( 'p-plain-after-approval', $approved['version'], $approved['content'], $plain_edit, false ) ),
+			array()
+		);
+
+		// The plain edit lands normally…
+		$this->assertSame( 'applied', $plain_result['dispositions'][0]['status'] );
+		$final = (string) $this->engine()->materialize( $room );
+		$this->assertStringContainsString( 'Paragraph A, plain edit.', $final );
+		// …and the approved content is untouched, not stripped again.
+		$this->assertStringContainsString( '<script>bad()</script>', $final );
+
+		// Nothing new needed a human this time: no second parked row.
+		$parked_after = $this->rows_of_type(
+			$this->engine()->get_updates_since( $room, 4, 0, array() ),
+			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+		);
+		$this->assertCount( 1, $parked_after, 'the plain edit must not create a second parked row' );
+	}
+
+	/**
+	 * The companion policy case for #64: the approval pin is tied to exact
+	 * bytes. A filtered author who edits the previously-approved block
+	 * itself — even slightly — produces content with no recorded
+	 * fingerprint, so it goes back to review instead of riding along.
+	 */
+	public function test_editing_previously_approved_content_still_requires_review() {
+		$room  = $this->approval_pin_room();
+		$state = $this->approve_unfiltered_html_scenario( $room );
+
+		wp_set_current_user( self::$author_id );
+		$reedited = str_replace(
+			'Paragraph B <script>bad()</script>.',
+			'Paragraph B <script>worse()</script>.',
+			$state['content']
+		);
+		$this->assertNotSame( $state['content'], $reedited, 'the previously approved block must be present to re-edit' );
+
+		$result = $this->engine()->handle_updates(
+			$room,
+			3,
+			0,
+			array( $this->proposal( 'p-reedit-approved', $state['version'], $state['content'], $reedited, false ) ),
+			array()
+		);
+		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
+
+		// The new bytes have no pinned fingerprint, so they revert to the
+		// last approved text instead of landing.
+		$materialized = (string) $this->engine()->materialize( $room );
+		$this->assertStringContainsString( '<script>bad()</script>', $materialized );
+		$this->assertStringNotContainsString( 'worse()', $materialized );
+
+		$parked = $this->rows_of_type(
+			$this->engine()->get_updates_since( $room, 4, 0, array() ),
+			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+		);
+		$this->assertCount( 2, $parked, 'the re-edit of approved content must park a second review row' );
+		$this->assertSame( 'p-reedit-approved', $parked[1]['proposalId'] );
+		$this->assertSame( 'requires-unfiltered-html', $parked[1]['reason'] );
+		$this->assertStringContainsString( 'worse()', $parked[1]['changedBlocks'][0]['html'] );
+	}
 }
