@@ -115,6 +115,25 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 		private static $registered = false;
 
 		/**
+		 * Armed whole-request measurement (see capture_whole_request), or
+		 * null. Static because the mu-plugin arms it before the plugin's
+		 * own instance registers the REST hooks — both must see it.
+		 *
+		 * @since 0.5.0
+		 * @var array|null
+		 */
+		private static $whole = null;
+
+		/**
+		 * Guard so the whole-request row is inserted exactly once (the
+		 * shutdown hook and a direct test call must not both insert).
+		 *
+		 * @since 0.5.0
+		 * @var bool
+		 */
+		private static $whole_flushed = false;
+
+		/**
 		 * Hooks the measurement filters and REST routes. Idempotent: only
 		 * the first instance registers.
 		 *
@@ -131,6 +150,123 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 			add_filter( 'rest_pre_dispatch', array( $this, 'pre_dispatch' ), 5, 3 );
 			add_filter( 'rest_post_dispatch', array( $this, 'post_dispatch' ), 99, 3 );
 			add_action( 'rest_api_init', array( $this, 'register_routes' ) );
+		}
+
+		/**
+		 * Measures the WHOLE current request — any route: page loads,
+		 * admin-ajax, REST — when it carries the measurement tag. Called by
+		 * the benchmark mu-plugin at mu-plugin load (the community
+		 * harness's MU-plugin model), so it works with the plugin itself
+		 * DEACTIVATED — which is what gives the host benchmark a real
+		 * no-plugin baseline for CPU, memory, and worker occupancy.
+		 *
+		 * Cooperation with the REST lane: when this is armed, a tagged
+		 * REST dispatch stores its dispatch-detail columns instead of
+		 * inserting its own row, and the shutdown flush merges the two
+		 * into ONE row whose totals cover the whole request.
+		 *
+		 * Untagged requests pay one $_SERVER read and return.
+		 *
+		 * @since 0.5.0
+		 *
+		 * @return void
+		 */
+		public function capture_whole_request(): void {
+			if ( null !== self::$whole || '1' !== self::server_tag( 'HTTP_X_RTC_TEST', '_rtctest' ) ) {
+				return;
+			}
+
+			global $wpdb;
+
+			self::ensure_table();
+			self::$whole_flushed = false;
+			self::$whole         = array(
+				'concurrent' => $this->increment_concurrent(),
+				'queries'    => (int) $wpdb->num_queries,
+				'db_time'    => $this->db_time_so_far(),
+				'memory'     => memory_get_usage( true ),
+				'cpu_us'     => $this->cpu_us(),
+				'dispatch'   => null,
+			);
+			register_shutdown_function( array( __CLASS__, 'flush_whole_request' ) );
+			register_shutdown_function( array( $this, 'decrement_concurrent' ) );
+		}
+
+		/**
+		 * Inserts the whole-request row at shutdown (or directly from a
+		 * test). Starts from the REST lane's stored dispatch detail when
+		 * there is one, then overrides every whole-request column.
+		 *
+		 * @since 0.5.0
+		 *
+		 * @return void
+		 */
+		public static function flush_whole_request(): void {
+			if ( null === self::$whole || self::$whole_flushed ) {
+				return;
+			}
+			self::$whole_flushed = true;
+
+			global $wpdb;
+
+			$whole    = self::$whole;
+			$instance = new self();
+
+			$row = is_array( $whole['dispatch'] ) ? $whole['dispatch'] : array(
+				'ts'              => time(),
+				'approach'        => self::server_approach_label(),
+				'scenario'        => self::server_tag( 'HTTP_X_RTC_SCENARIO', '_rtcscenario', 'unknown' ),
+				'poll_delay'      => self::server_poll_delay(),
+				'update_size'     => self::server_update_size(),
+				'ms'              => 0.0,
+				'total_ms'        => 0.0,
+				'cpu_ms'          => 0.0,
+				'total_cpu_ms'    => 0.0,
+				'db_queries'      => 0,
+				'db_time_ms'      => 0.0,
+				'memory_delta'    => 0,
+				'peak_memory'     => 0,
+				'status'          => 200,
+				'rooms'           => 0,
+				'updates_in'      => 0,
+				'updates_out'     => 0,
+				'response_bytes'  => 0,
+				'awareness_count' => 0,
+				'should_compact'  => 0,
+				'total_updates'   => 0,
+				'concurrent'      => 0,
+			);
+
+			$request_start = isset( $_SERVER['REQUEST_TIME_FLOAT'] ) ? (float) $_SERVER['REQUEST_TIME_FLOAT'] : 0.0;
+
+			$row['total_ms']     = $request_start > 0 ? round( ( microtime( true ) - $request_start ) * 1000, 2 ) : 0.0;
+			$row['total_cpu_ms'] = round( ( $instance->cpu_us() - $whole['cpu_us'] ) / 1000, 2 );
+			$row['db_queries']   = (int) $wpdb->num_queries - $whole['queries'];
+			$row['db_time_ms']   = round( ( $instance->db_time_so_far() - $whole['db_time'] ) * 1000, 2 );
+			$row['memory_delta'] = memory_get_usage( true ) - $whole['memory'];
+			$row['peak_memory']  = memory_get_peak_usage( true );
+			$row['concurrent']   = $whole['concurrent'];
+			$status              = (int) http_response_code();
+			if ( $status > 0 ) {
+				$row['status'] = $status;
+			}
+
+			self::insert_row( $row );
+			self::$whole = null;
+		}
+
+		/**
+		 * Clears any armed whole-request measurement without inserting.
+		 * Test isolation hook: the shutdown-driven lifecycle never needs
+		 * it.
+		 *
+		 * @since 0.5.0
+		 *
+		 * @return void
+		 */
+		public static function reset_whole_request(): void {
+			self::$whole         = null;
+			self::$whole_flushed = false;
 		}
 
 		/**
@@ -251,15 +387,25 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 
 			self::ensure_table();
 
+			// When the whole-request lane is armed (mu-plugin), it already
+			// incremented the concurrent counter and owns its decrement —
+			// this dispatch measurement only supplies the dispatch-detail
+			// columns of the same row.
+			$concurrent = null !== self::$whole
+				? self::$whole['concurrent']
+				: $this->increment_concurrent();
+
 			$this->wall_start = microtime( true );
 			$this->start      = array(
-				'concurrent' => $this->increment_concurrent(),
+				'concurrent' => $concurrent,
 				'queries'    => (int) $wpdb->num_queries,
 				'db_time'    => $this->db_time_so_far(),
 				'memory'     => memory_get_usage( true ),
 				'cpu_us'     => $this->cpu_us(),
 			);
-			register_shutdown_function( array( $this, 'decrement_concurrent' ) );
+			if ( null === self::$whole ) {
+				register_shutdown_function( array( $this, 'decrement_concurrent' ) );
+			}
 
 			return $result;
 		}
@@ -338,6 +484,40 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 				'total_updates'   => isset( $first_out['total_updates'] ) ? (int) $first_out['total_updates'] : 0,
 				'concurrent'      => $this->start['concurrent'],
 			);
+
+			$response->header( 'X-RTC-Test-Active', '1' );
+
+			if ( null !== self::$whole ) {
+				// Whole-request lane armed: hand the dispatch detail to the
+				// shutdown flush, which inserts the one merged row.
+				self::$whole['dispatch'] = $row;
+				$response->header( 'X-RTC-DB-Insert', 'deferred' );
+			} else {
+				$inserted = self::insert_row( $row );
+				// Diagnostic header, mirroring the community harness
+				// (visible in curl -D output): whether the row landed.
+				$response->header( 'X-RTC-DB-Insert', false !== $inserted ? '1' : '0' );
+			}
+
+			$this->wall_start = null;
+			$this->start      = array();
+
+			return $response;
+		}
+
+		/**
+		 * Inserts one log row, recreating the table and retrying once when
+		 * the insert fails (most likely: the table was dropped while the
+		 * version option survived).
+		 *
+		 * @since 0.5.0
+		 *
+		 * @param array $row Row in table-column order.
+		 * @return int|false Rows inserted, or false.
+		 */
+		private static function insert_row( array $row ) {
+			global $wpdb;
+
 			$fmt = array(
 				'%d',
 				'%s',
@@ -366,23 +546,12 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Diagnostics-only table.
 			$inserted = $wpdb->insert( self::table(), $row, $fmt );
 			if ( false === $inserted ) {
-				// Most likely: the table was dropped while the version option
-				// survived. Recreate and retry once.
 				delete_option( self::DB_VERSION_OPTION );
 				self::ensure_table();
 				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Diagnostics-only table.
 				$inserted = $wpdb->insert( self::table(), $row, $fmt );
 			}
-
-			// Diagnostic headers, mirroring the community harness (visible in
-			// curl -D output): the hook ran, and whether the row landed.
-			$response->header( 'X-RTC-Test-Active', '1' );
-			$response->header( 'X-RTC-DB-Insert', false !== $inserted ? '1' : '0' );
-
-			$this->wall_start = null;
-			$this->start      = array();
-
-			return $response;
+			return $inserted;
 		}
 
 		// -----------------------------------------------------------------
@@ -478,6 +647,78 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 		 */
 		private function update_size_value( WP_REST_Request $request ): string {
 			$raw = strtolower( $this->tag_value( $request, 'X-RTC-Update-Size', '_rtcupdatesize', '' ) );
+			return in_array( $raw, array( 'small', 'medium', 'large' ), true ) ? $raw : '';
+		}
+
+		/**
+		 * Reads a tag straight from the server environment (header first,
+		 * query fallback) — for the whole-request lane, which runs with no
+		 * WP_REST_Request in sight.
+		 *
+		 * @since 0.5.0
+		 *
+		 * @param string $server_key    $_SERVER key of the header.
+		 * @param string $param         Query-parameter fallback name.
+		 * @param string $default_value Value when neither is present.
+		 * @return string Sanitized tag value.
+		 */
+		private static function server_tag( string $server_key, string $param, string $default_value = '' ): string {
+			// phpcs:disable WordPress.Security.NonceVerification.Recommended -- Read-only measurement tags on a diagnostics-only lane.
+			$raw = isset( $_SERVER[ $server_key ] ) ? wp_unslash( $_SERVER[ $server_key ] ) : '';
+			if ( '' === $raw && isset( $_GET[ $param ] ) ) {
+				$raw = wp_unslash( $_GET[ $param ] );
+			}
+			// phpcs:enable WordPress.Security.NonceVerification.Recommended
+			if ( '' === $raw || ! is_string( $raw ) ) {
+				return $default_value;
+			}
+			return sanitize_text_field( $raw );
+		}
+
+		/**
+		 * The whole-request lane's approach label: the tagged value, else
+		 * the engine/transport auto-label from site options.
+		 *
+		 * @since 0.5.0
+		 *
+		 * @return string Approach label.
+		 */
+		private static function server_approach_label(): string {
+			$tagged = self::server_tag( 'HTTP_X_RTC_APPROACH', '_rtcapproach' );
+			if ( '' !== $tagged ) {
+				return $tagged;
+			}
+			$engine = (string) get_option( 'wp_sync_engine', '' );
+			if ( '' === $engine && class_exists( 'WP_Sync_Engine_Registry' ) ) {
+				$engine = WP_Sync_Engine_Registry::DEFAULT_ENGINE;
+			}
+			return $engine . '/' . (string) get_option( 'gutenberg_sync_engines_transport', 'http-polling' );
+		}
+
+		/**
+		 * The whole-request lane's poll-delay tag (-1 = not provided).
+		 *
+		 * @since 0.5.0
+		 *
+		 * @return int Poll delay in seconds, or -1.
+		 */
+		private static function server_poll_delay(): int {
+			$raw = self::server_tag( 'HTTP_X_RTC_POLL_DELAY', '_rtcpolldelay' );
+			if ( '' === $raw || ! is_numeric( $raw ) ) {
+				return -1;
+			}
+			return max( -1, min( 86400, (int) $raw ) );
+		}
+
+		/**
+		 * The whole-request lane's update-size tag ('' = not provided).
+		 *
+		 * @since 0.5.0
+		 *
+		 * @return string One of small|medium|large or ''.
+		 */
+		private static function server_update_size(): string {
+			$raw = strtolower( self::server_tag( 'HTTP_X_RTC_UPDATE_SIZE', '_rtcupdatesize' ) );
 			return in_array( $raw, array( 'small', 'medium', 'large' ), true ) ? $raw : '';
 		}
 

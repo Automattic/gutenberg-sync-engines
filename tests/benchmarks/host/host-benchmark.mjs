@@ -1,44 +1,47 @@
 /**
  * The host cost report: what activating this plugin adds to a server,
  * measured as the difference against the SAME site with the plugin
- * deactivated.
+ * deactivated, printed as one baseline/sync/delta table per engine.
  *
  *   npm run bench                            # this report, defaults
- *   npm run bench -- engine=de-rtc windows=3 edit=180 idle=180
+ *   npm run bench -- engines=intent-log,yjs-server,de-rtc windows=3
  *   npm run bench -- metrics=requests,cpu json=host.json
  *
- * Two phases, same scripted editing session, real browser windows:
+ * Phases, all real browser windows against a live site:
  *
  *   1. BASELINE — the plugin is deactivated (every active copy, via the
  *      REST plugins endpoint) and one window edits a draft post in the
  *      block editor for `edit` seconds, then sits idle for `idle`
- *      seconds. Every HTTP request the window makes is counted
- *      client-side. This is the site a host runs today.
- *   2. WITH THE PLUGIN — the plugin is reactivated, real-time
- *      collaboration is enabled, and `windows` browser windows co-edit
- *      an identical draft (each typing into its own paragraph) on the
- *      chosen engine and transport, same durations. Client-side
- *      counting again, plus the plugin's own sync requests are tagged
- *      (community-harness headers) so the diagnostics request log
- *      records their server cost: CPU, wall time, memory, DB queries.
+ *      seconds. This is the site a host runs today.
+ *   2. PER ENGINE — the plugin is reactivated, real-time collaboration
+ *      is enabled, and `windows` browser windows co-edit an identical
+ *      draft (each typing into its own paragraph) on that engine and
+ *      the chosen transport, same durations.
  *
- * The report is the per-editor difference: extra requests per minute,
- * extra network traffic, server CPU spent on sync, the share of a PHP
- * worker the sync traffic holds, and peak PHP memory per sync request.
- * Because the baseline site serves no sync endpoints at all, the
- * plugin's server-side cost IS the measured cost of its sync requests;
- * the client-side request delta additionally catches any change to
- * ordinary editor traffic. A caveat the numbers cannot see: any extra
- * server cost the plugin adds INSIDE ordinary requests (page loads,
- * saves) shows up only in the client-side counts, not in the CPU
- * figures — profiling those needs site-level tooling (the community
- * harness's MU-plugin approach).
+ * Every request each window makes is counted client-side (requests,
+ * bytes). Server-side, EVERY request from the windows is tagged with
+ * the community harness's headers, and the whole-request measurement
+ * mu-plugin (tests/benchmarks/host/mu-bench-log.php — this repo's
+ * wp-env configs map it into mu-plugins) records each tagged PHP
+ * request from load to shutdown: wall time, CPU, DB queries, peak
+ * memory, concurrency. Because the mu-plugin works with the plugin
+ * DEACTIVATED, the baseline phase gets real server-side numbers too,
+ * so CPU, worker share, and memory are true baseline/sync/delta
+ * comparisons — not sync-requests-only. Without the mu-plugin the
+ * server columns fall back to the plugin's own sync requests and the
+ * baseline server column reads "—".
+ *
+ * Each engine's table reports, per person, for editing and idle spans:
+ * requests per minute, network traffic, server CPU per minute, the
+ * share of one PHP worker held, and peak PHP memory per request —
+ * columns baseline | sync | delta.
  *
  * Arguments (bare key=value, like every benchmark here):
  *
- *   engine=     intent-log | yjs-server | de-rtc | current (default)
+ *   engines=    comma list of engines to measure (default: the site's
+ *               current engine); engine= is an alias for a single one
  *   transport=  http-polling | http-long-polling | websocket | current
- *   windows=    collaborator windows in phase 2 (default 2)
+ *   windows=    collaborator windows per engine phase (default 2)
  *   edit=       editing seconds per phase (default 120, min 30)
  *   idle=       idle seconds per phase (default 120; 0 skips)
  *   metrics=    comma list to report: requests,traffic,cpu,workers,memory
@@ -47,7 +50,8 @@
  *   headed=1    visible browser (debugging)
  *
  * Requires a running environment with the plugin active at start (the
- * tests env: npm run env:tests start), Playwright's chromium installed,
+ * tests env: npm run env:tests start — restart it once after pulling
+ * this change so the mu-plugin mapping mounts), Playwright's chromium,
  * and — for the server-side columns — the diagnostics request log
  * (local/development sites, or GUTENBERG_SYNC_ENGINES_DIAGNOSTICS).
  * Environment: WP_BASE_URL / WP_USERNAME / WP_PASSWORD as usual.
@@ -63,7 +67,6 @@ import {
 	configureSettings,
 	dismissWelcomeGuide,
 	ensureCollaborationEnabled,
-	installScenarioTagging,
 	login,
 	makeRestClient,
 	observeTransport,
@@ -74,7 +77,10 @@ import {
 
 const opts = parseCliOptions();
 
-const ENGINE = String( opts.engine ?? 'current' );
+const ENGINES = String( opts.engines ?? opts.engine ?? 'current' )
+	.split( ',' )
+	.map( ( slug ) => slug.trim() )
+	.filter( Boolean );
 const TRANSPORT = String( opts.transport ?? 'current' );
 const WINDOWS = Math.max( 1, Number( opts.windows ?? 2 ) );
 const EDIT_SECONDS = Number( opts.edit ?? 120 );
@@ -102,10 +108,10 @@ const jitter = ( step, min, max ) =>
 	( ( ( step * 2654435761 ) % 4294967296 ) / 4294967296 ) * ( max - min );
 
 /**
- * Counts EVERY HTTP request a page makes (any route, any host), unlike
- * lib.mjs's attachCounters, which counts sync traffic only. The baseline
- * phase has no sync traffic at all, so the host comparison needs the
- * whole wire. Counters are cumulative; phases diff snapshot() results.
+ * Counts EVERY HTTP request a page makes (any route), unlike lib.mjs's
+ * attachCounters, which counts sync traffic only. The baseline phase
+ * has no sync traffic at all, so the host comparison needs the whole
+ * wire. Counters are cumulative; phases diff snapshot() results.
  *
  * @param {import('@playwright/test').Page} page Target page.
  * @return {Object} Counter handle with a snapshot() method.
@@ -127,37 +133,38 @@ function attachAllTrafficCounters( page ) {
 }
 
 /**
- * Tags commit-shaped autosave requests (de-rtc commits carry a
- * proposal_id through the ordinary autosave endpoint) so the request
- * log measures their server cost under the current phase label.
- * Editor-native autosaves stay untagged and unmeasured — the baseline
- * pays those too, so measuring them only on one side would skew the
- * comparison.
+ * Tags EVERY same-site request from a MEASURED page with the community
+ * harness's measurement headers, labeled with the current phase's
+ * scenario and approach. The whole-request mu-plugin measures every
+ * tagged PHP request server-side — page loads and admin-ajax included,
+ * with the plugin active or not. Only pages in the `measured` set are
+ * tagged: the admin chore page's own heartbeat must not pollute the
+ * per-person numbers.
  *
- * @param {import('@playwright/test').BrowserContext} context Browser context.
- * @param {{ value: string }}                         phase   Mutable phase label.
+ * @param {import('@playwright/test').BrowserContext} context  Browser context.
+ * @param {{ scenario: string, approach: string }}    tag      Mutable labels.
+ * @param {Set<Object>}                               measured Pages to tag.
  */
-async function installCommitTagging( context, phase ) {
-	const isAutosave = ( url ) => {
-		try {
-			return decodeURIComponent( url ).includes( '/autosaves' );
-		} catch {
-			return url.includes( '/autosaves' );
-		}
-	};
+async function installGlobalTagging( context, tag, measured ) {
+	const origin = new URL( BASE ).origin;
 	await context.route(
-		( url ) => isAutosave( url.href ),
+		( url ) => url.origin === origin,
 		async ( route ) => {
-			const isCommit =
-				route.request().postData()?.includes( 'proposal_id' ) ?? false;
-			if ( ! isCommit ) {
+			let page = null;
+			try {
+				page = route.request().frame().page();
+			} catch {
+				// Service-worker or detached-frame request: not measured.
+			}
+			if ( ! page || ! measured.has( page ) ) {
 				return route.continue();
 			}
 			await route.continue( {
 				headers: {
 					...route.request().headers(),
 					'x-rtc-test': '1',
-					'x-rtc-scenario': phase.value,
+					'x-rtc-scenario': tag.scenario,
+					'x-rtc-approach': tag.approach,
 				},
 			} );
 		}
@@ -210,7 +217,7 @@ async function editingDriver( win, deadline, stats ) {
  * involved.
  *
  * @param {Object} rest  REST client.
- * @param {string} label Title suffix distinguishing the two phases.
+ * @param {string} label Title suffix distinguishing the phases.
  * @return {Promise<number>} Post id.
  */
 async function createDraft( rest, label ) {
@@ -272,17 +279,20 @@ async function setPluginStatus( rest, plugin, wantStatus ) {
 
 /**
  * Opens one editor window on a post and waits for the editor to be
- * ready. Counter attachment happens before navigation so the page-load
- * requests are countable (they are excluded by snapshotting after
- * settle).
+ * ready. The page joins the measured set before navigating, so its
+ * page load is tagged (under the setup scenario) like everything else
+ * it sends.
  *
- * @param {import('@playwright/test').BrowserContext} context Browser context.
- * @param {number}                                    postId  Post to open.
- * @param {number}                                    index   Window index.
+ * @param {import('@playwright/test').BrowserContext} context  Browser context.
+ * @param {Set<Object>}                               measured Measured pages.
+ * @param {number}                                    postId   Post to open.
+ * @param {number}                                    index    Window index.
  * @return {Promise<Object>} Window record.
  */
-async function openEditorWindow( context, postId, index ) {
+async function openEditorWindow( context, measured, postId, index ) {
 	const page = await context.newPage();
+	measured.add( page );
+	page.on( 'close', () => measured.delete( page ) );
 	const all = attachAllTrafficCounters( page );
 	const sync = attachCounters( page );
 	await page.goto(
@@ -300,18 +310,16 @@ async function openEditorWindow( context, postId, index ) {
 /**
  * Runs one phase's editing + idle measurement over a set of windows.
  *
- * @param {Object[]} wins      Window records.
- * @param {Object}   phase     Mutable scenario label { value } for tagging.
- * @param {string}   editLabel Scenario label for the editing span.
- * @param {string}   idleLabel Scenario label for the idle span.
+ * @param {Object[]} wins Window records.
+ * @param {Object}   tag  Mutable { scenario, approach } labels.
  * @return {Promise<Object>} Per-window counter deltas and durations.
  */
-async function measurePhase( wins, phase, editLabel, idleLabel ) {
+async function measurePhase( wins, tag ) {
 	// Let the just-loaded pages settle so page-load assets and session
 	// setup stay out of the rates.
 	await wins[ 0 ].page.waitForTimeout( 3000 );
 
-	phase.value = editLabel;
+	tag.scenario = 'host-editing';
 	const editStats = wins.map( () => ( { tokensTyped: 0, bursts: 0 } ) );
 	const editStart = Date.now();
 	const startAll = wins.map( ( win ) => win.all.snapshot() );
@@ -326,7 +334,7 @@ async function measurePhase( wins, phase, editLabel, idleLabel ) {
 	const editAll = wins.map( ( win ) => win.all.snapshot() );
 	const editSync = wins.map( ( win ) => win.sync.snapshot() );
 
-	phase.value = idleLabel;
+	tag.scenario = 'host-idle';
 	const idleStart = Date.now();
 	if ( IDLE_SECONDS > 0 ) {
 		await wins[ 0 ].page.waitForTimeout( IDLE_SECONDS * 1000 );
@@ -334,6 +342,7 @@ async function measurePhase( wins, phase, editLabel, idleLabel ) {
 	const idleMs = Date.now() - idleStart;
 	const idleAll = wins.map( ( win ) => win.all.snapshot() );
 	const idleSync = wins.map( ( win ) => win.sync.snapshot() );
+	tag.scenario = 'setup';
 
 	const span = ( before, after ) => {
 		const delta = {};
@@ -363,40 +372,42 @@ async function measurePhase( wins, phase, editLabel, idleLabel ) {
 }
 
 /**
- * Mean per-minute rate of one counter across a phase's windows.
+ * Mean per-minute rate of one client counter across a phase's windows.
  *
  * @param {Object} phase   measurePhase result.
  * @param {string} spanKey 'editing' or 'idle'.
- * @param {string} kind    'all' or 'sync'.
  * @param {string} counter Counter name.
  * @return {number} Mean per-window rate per minute.
  */
-function ratePerMinute( phase, spanKey, kind, counter ) {
+function clientRatePerMinute( phase, spanKey, counter ) {
 	const ms = 'editing' === spanKey ? phase.editMs : phase.idleMs;
 	if ( ms <= 0 ) {
 		return 0;
 	}
 	const sum = phase.perWindow.reduce(
-		( total, win ) => total + win[ spanKey ][ kind ][ counter ],
+		( total, win ) => total + win[ spanKey ].all[ counter ],
 		0
 	);
 	return ( sum / phase.perWindow.length / ms ) * 60000;
 }
 
 /**
- * Aggregates raw request-log rows for one scenario label.
+ * Aggregates request-log rows for one approach + scenario.
  *
  * @param {Array<Object>} rows     Raw log rows.
+ * @param {string}        approach Approach label to keep.
  * @param {string}        scenario Scenario label to keep.
  * @return {Object} Sums, count, and memory extremes.
  */
-function aggregateServerRows( rows, scenario ) {
-	const kept = rows.filter( ( row ) => row.scenario === scenario );
+function aggregateServerRows( rows, approach, scenario ) {
+	const kept = rows.filter(
+		( row ) => row.approach === approach && row.scenario === scenario
+	);
 	const sum = ( key ) =>
 		kept.reduce( ( total, row ) => total + ( row[ key ] ?? 0 ), 0 );
 	return {
 		n: kept.length,
-		cpuMsSum: sum( 'cpu_ms' ),
+		cpuMsSum: sum( 'total_cpu_ms' ),
 		totalMsSum: sum( 'total_ms' ),
 		dbQueriesSum: sum( 'db_queries' ),
 		peakMemoryMax: kept.reduce(
@@ -407,8 +418,87 @@ function aggregateServerRows( rows, scenario ) {
 	};
 }
 
-const round1 = ( value ) => Math.round( value * 10 ) / 10;
-const round3 = ( value ) => Math.round( value * 1000 ) / 1000;
+/**
+ * Server-side per-person-per-minute figures for one measured span.
+ *
+ * @param {Object} agg     aggregateServerRows result.
+ * @param {number} ms      Span duration.
+ * @param {number} persons Windows sharing the span's traffic.
+ * @return {Object|null} Rates, or null when the span has no rows.
+ */
+function serverRates( agg, ms, persons ) {
+	if ( ! agg || 0 === agg.n || ms <= 0 ) {
+		return null;
+	}
+	const minutes = ms / 60000;
+	return {
+		requestsPerMinute: agg.n / minutes / persons,
+		cpuMsPerMinute: agg.cpuMsSum / minutes / persons,
+		workerShare: agg.totalMsSum / ms / persons,
+		dbQueriesPerMinute: agg.dbQueriesSum / minutes / persons,
+		peakMemoryMaxMb: agg.peakMemoryMax / 1048576,
+		peakMemoryMeanMb: agg.peakMemoryMean / 1048576,
+	};
+}
+
+/**
+ * Builds one engine's summary from its phase + the shared baseline.
+ *
+ * @param {Object} phase    The engine's measurePhase result.
+ * @param {Object} baseline The baseline measurePhase result.
+ * @param {Array}  rows     All server rows (may be empty).
+ * @param {string} engine   Engine slug (the approach label).
+ * @return {Object} Per-span baseline/sync/delta metric rows.
+ */
+function summarize( phase, baseline, rows, engine ) {
+	const spans = {};
+	for ( const spanKey of [ 'editing', 'idle' ] ) {
+		const ms = 'editing' === spanKey ? phase.editMs : phase.idleMs;
+		const baseMs =
+			'editing' === spanKey ? baseline.editMs : baseline.idleMs;
+		const client = {
+			requestsPerMinute: clientRatePerMinute(
+				phase,
+				spanKey,
+				'requests'
+			),
+			kbPerMinute:
+				( clientRatePerMinute( phase, spanKey, 'requestBytes' ) +
+					clientRatePerMinute( phase, spanKey, 'responseBytes' ) ) /
+				1024,
+		};
+		const baseClient = {
+			requestsPerMinute: clientRatePerMinute(
+				baseline,
+				spanKey,
+				'requests'
+			),
+			kbPerMinute:
+				( clientRatePerMinute( baseline, spanKey, 'requestBytes' ) +
+					clientRatePerMinute(
+						baseline,
+						spanKey,
+						'responseBytes'
+					) ) /
+				1024,
+		};
+		spans[ spanKey ] = {
+			client,
+			baseClient,
+			server: serverRates(
+				aggregateServerRows( rows, engine, `host-${ spanKey }` ),
+				ms,
+				WINDOWS
+			),
+			baseServer: serverRates(
+				aggregateServerRows( rows, 'baseline', `host-${ spanKey }` ),
+				baseMs,
+				1
+			),
+		};
+	}
+	return spans;
+}
 
 async function main() {
 	if ( ! Number.isFinite( EDIT_SECONDS ) || EDIT_SECONDS < 30 ) {
@@ -427,11 +517,12 @@ async function main() {
 
 	const browser = await chromium.launch( { headless: ! HEADED } );
 	const context = await browser.newContext();
-	const phase = { value: 'setup' };
-	await installScenarioTagging( context, phase );
-	await installCommitTagging( context, phase );
+	const tag = { scenario: 'setup', approach: 'baseline' };
+	const measuredPages = new Set();
+	await installGlobalTagging( context, tag, measuredPages );
 
-	let settings = null;
+	let originalSettings = null;
+	let lastActive = null;
 	let deactivated = [];
 	let experimentWasOn = null;
 	let adminPage = null;
@@ -445,7 +536,7 @@ async function main() {
 
 		// The plugin must be active at start: its settings screen is how
 		// engine/transport are chosen, and its diagnostics log is how the
-		// server side is measured. When no copy is active (a PHPUnit run
+		// server side is read out. When no copy is active (a PHPUnit run
 		// wipes the tests-env database, activation included), activate one
 		// — in a worktree the plugin is mounted twice, and the safe copy
 		// is the directory-name one (wp-env re-activates it on every
@@ -473,9 +564,14 @@ async function main() {
 			);
 		}
 
-		// Choose engine/transport and remember what to restore; record
+		// Record the site's engine/transport to restore at the end, and
 		// whether the collaboration experiment was already on.
-		settings = await configureSettings( adminPage, ENGINE, TRANSPORT );
+		originalSettings = await configureSettings(
+			adminPage,
+			'current',
+			'current'
+		);
+		lastActive = originalSettings.active;
 		const settingsBefore = await rest.get( '/wp/v2/settings' );
 		experimentWasOn = Boolean(
 			settingsBefore.data?.[ 'gutenberg-experiments' ]?.[
@@ -483,11 +579,10 @@ async function main() {
 			]
 		);
 		await ensureCollaborationEnabled( adminPage );
-
-		const baselinePost = await createDraft( rest, 'baseline' );
-		const pluginPost = await createDraft( rest, 'with-plugin' );
+		await rest.del( '/rtc-test/v1/log' ).catch( () => null );
 
 		// ---------------- Phase 1: baseline (plugin deactivated) --------
+		const baselinePost = await createDraft( rest, 'baseline' );
 		console.log(
 			`baseline phase: deactivating ${ activeCopies
 				.map( ( copy ) => copy.plugin )
@@ -501,13 +596,13 @@ async function main() {
 			deactivated.push( copy.plugin );
 		}
 
-		const baselineWin = await openEditorWindow( context, baselinePost, 0 );
-		const baseline = await measurePhase(
-			[ baselineWin ],
-			phase,
-			'host-baseline-editing',
-			'host-baseline-idle'
+		const baselineWin = await openEditorWindow(
+			context,
+			measuredPages,
+			baselinePost,
+			0
 		);
+		const baseline = await measurePhase( [ baselineWin ], tag );
 		await baselineWin.page.close();
 
 		if ( baseline.perWindow[ 0 ].editing.sync.requests > 0 ) {
@@ -516,206 +611,109 @@ async function main() {
 			);
 		}
 
-		// ---------------- Phase 2: with the plugin ----------------------
 		for ( const plugin of deactivated ) {
 			await setPluginStatus( rest, plugin, 'active' );
 		}
 		deactivated = [];
 
-		console.log(
-			`plugin phase: ${ WINDOWS } window(s) on post ${ pluginPost }, ` +
-				`engine=${ settings.active.engine } transport=${ settings.active.transport }…`
-		);
-		await rest.del( '/rtc-test/v1/log' ).catch( () => null );
-
-		phase.value = 'setup-join';
-		const wins = [];
-		for ( let index = 0; index < WINDOWS; index++ ) {
-			const win = await openEditorWindow( context, pluginPost, index );
-			await waitForSyncTraffic( win.page, win.sync, String( index ) );
-			wins.push( win );
-		}
-		const observed = observeTransport( wins[ 0 ].sync );
-		if (
-			'current' !== TRANSPORT &&
-			observed !== settings.active.transport
-		) {
-			throw new Error(
-				`requested transport "${ settings.active.transport }" but the session negotiated "${ observed }"`
+		// ---------------- Phase 2: one measurement per engine -----------
+		const engines = [];
+		for ( const requested of ENGINES ) {
+			const settings = await configureSettings(
+				adminPage,
+				requested,
+				TRANSPORT
 			);
-		}
+			lastActive = settings.active;
+			const engine = settings.active.engine;
+			tag.approach = engine;
 
-		const withPlugin = await measurePhase(
-			wins,
-			phase,
-			'host-editing',
-			'host-idle'
-		);
-		for ( const win of wins ) {
-			// A window whose editing span produced no sync data traffic
-			// had a dead session; its rates would understate the cost.
-			const edited = win.sync
-				? withPlugin.perWindow[ win.index ].editing.sync
-				: null;
+			const post = await createDraft( rest, engine );
+			console.log(
+				`${ engine } phase: ${ WINDOWS } window(s) on post ${ post }, ` +
+					`transport=${ settings.active.transport }…`
+			);
+
+			const wins = [];
+			for ( let index = 0; index < WINDOWS; index++ ) {
+				const win = await openEditorWindow(
+					context,
+					measuredPages,
+					post,
+					index
+				);
+				await waitForSyncTraffic( win.page, win.sync, String( index ) );
+				wins.push( win );
+			}
+			const observed = observeTransport( wins[ 0 ].sync );
 			if (
-				edited &&
-				0 === edited.dataRequests &&
-				0 === edited.wsFramesSent + edited.wsFramesReceived
+				'current' !== TRANSPORT &&
+				observed !== settings.active.transport
 			) {
 				throw new Error(
-					`window ${ win.index } made no sync data traffic while editing — dead session, numbers unusable`
+					`requested transport "${ settings.active.transport }" but the session negotiated "${ observed }"`
 				);
 			}
-			await win.page.close();
+
+			const phase = await measurePhase( wins, tag );
+			for ( const win of wins ) {
+				const edited = phase.perWindow[ win.index ].editing.sync;
+				if (
+					0 === edited.dataRequests &&
+					0 === edited.wsFramesSent + edited.wsFramesReceived
+				) {
+					throw new Error(
+						`${ engine } window ${ win.index } made no sync data traffic while editing — dead session, numbers unusable`
+					);
+				}
+				await win.page.close();
+			}
+			tag.approach = 'baseline';
+
+			engines.push( {
+				engine,
+				transport: observed,
+				postId: post,
+				phase,
+			} );
 		}
 
-		phase.value = 'post';
+		// ---------------- Collect and report ----------------------------
 		const logResponse = await rest.get( '/rtc-test/v1/log' );
 		const serverRows =
 			200 === logResponse.status && Array.isArray( logResponse.data )
 				? logResponse.data
-				: null;
+				: [];
 		const envResponse = await rest.get( '/rtc-test/v1/env' );
 		const serverEnv = 200 === envResponse.status ? envResponse.data : null;
 
-		// ---------------- The report ------------------------------------
-		const minutes = ( ms ) => ms / 60000;
-		const serverEditing = serverRows
-			? aggregateServerRows( serverRows, 'host-editing' )
-			: null;
-		const serverIdle = serverRows
-			? aggregateServerRows( serverRows, 'host-idle' )
-			: null;
-
-		const clientDelta = ( spanKey ) => ( {
-			requestsPerMinute: round1(
-				ratePerMinute( withPlugin, spanKey, 'all', 'requests' ) -
-					ratePerMinute( baseline, spanKey, 'all', 'requests' )
-			),
-			kbPerMinute: round1(
-				( ratePerMinute( withPlugin, spanKey, 'all', 'requestBytes' ) +
-					ratePerMinute(
-						withPlugin,
-						spanKey,
-						'all',
-						'responseBytes'
-					) -
-					ratePerMinute( baseline, spanKey, 'all', 'requestBytes' ) -
-					ratePerMinute(
-						baseline,
-						spanKey,
-						'all',
-						'responseBytes'
-					) ) /
-					1024
-			),
-		} );
-		const serverPerMinute = ( agg, ms ) =>
-			agg && ms > 0
-				? {
-						cpuMsPerMinute: round1(
-							agg.cpuMsSum / minutes( ms ) / WINDOWS
-						),
-						workerShare: round3( agg.totalMsSum / ms / WINDOWS ),
-						dbQueriesPerMinute: round1(
-							agg.dbQueriesSum / minutes( ms ) / WINDOWS
-						),
-						requestsPerMinute: round1(
-							agg.n / minutes( ms ) / WINDOWS
-						),
-				  }
-				: null;
+		const muPresent = serverRows.some(
+			( row ) => 'baseline' === row.approach
+		);
 
 		const report = {
 			environment: {
 				date: new Date().toISOString(),
 				baseUrl: BASE,
-				engine: settings.active.engine,
-				transportRequested: settings.active.transport,
-				transportObserved: observed,
 				windows: WINDOWS,
-				editSeconds: Math.round( withPlugin.editMs / 1000 ),
-				idleSeconds: Math.round( withPlugin.idleMs / 1000 ),
+				editSeconds: EDIT_SECONDS,
+				idleSeconds: IDLE_SECONDS,
+				muMeasurement: muPresent,
 				server: serverEnv,
 			},
-			baseline: {
-				postId: baselinePost,
-				windows: 1,
-				editing: {
-					requestsPerMinute: round1(
-						ratePerMinute( baseline, 'editing', 'all', 'requests' )
-					),
-					kbPerMinute: round1(
-						( ratePerMinute(
-							baseline,
-							'editing',
-							'all',
-							'requestBytes'
-						) +
-							ratePerMinute(
-								baseline,
-								'editing',
-								'all',
-								'responseBytes'
-							) ) /
-							1024
-					),
-				},
-				idle: {
-					requestsPerMinute: round1(
-						ratePerMinute( baseline, 'idle', 'all', 'requests' )
-					),
-					kbPerMinute: round1(
-						( ratePerMinute(
-							baseline,
-							'idle',
-							'all',
-							'requestBytes'
-						) +
-							ratePerMinute(
-								baseline,
-								'idle',
-								'all',
-								'responseBytes'
-							) ) /
-							1024
-					),
-				},
-				detail: baseline,
-			},
-			withPlugin: {
-				postId: pluginPost,
-				detail: withPlugin,
-			},
-			perEditor: {
-				editing: {
-					...clientDelta( 'editing' ),
-					server: serverPerMinute( serverEditing, withPlugin.editMs ),
-				},
-				idle: {
-					...clientDelta( 'idle' ),
-					server: serverPerMinute( serverIdle, withPlugin.idleMs ),
-				},
-				peakSyncMemoryMb:
-					serverRows && serverEditing.n + serverIdle.n > 0
-						? {
-								max: round1(
-									Math.max(
-										serverEditing.peakMemoryMax,
-										serverIdle.peakMemoryMax
-									) / 1048576
-								),
-								mean: round1(
-									( serverEditing.peakMemoryMean *
-										serverEditing.n +
-										serverIdle.peakMemoryMean *
-											serverIdle.n ) /
-										( serverEditing.n + serverIdle.n ) /
-										1048576
-								),
-						  }
-						: null,
-			},
+			baseline: { postId: baselinePost, detail: baseline },
+			engines: engines.map( ( entry ) => ( {
+				engine: entry.engine,
+				transport: entry.transport,
+				postId: entry.postId,
+				spans: summarize(
+					entry.phase,
+					baseline,
+					serverRows,
+					entry.engine
+				),
+				detail: entry.phase,
+			} ) ),
 			serverRows,
 		};
 
@@ -736,12 +734,13 @@ async function main() {
 			);
 		}
 		if (
-			settings &&
+			originalSettings &&
 			adminPage &&
-			( settings.previous.engine !== settings.active.engine ||
-				settings.previous.transport !== settings.active.transport )
+			lastActive &&
+			( originalSettings.previous.engine !== lastActive.engine ||
+				originalSettings.previous.transport !== lastActive.transport )
 		) {
-			await restoreSettings( adminPage, settings.previous ).catch(
+			await restoreSettings( adminPage, originalSettings.previous ).catch(
 				( error ) =>
 					console.warn(
 						`WARNING: failed to restore settings: ${ error }`
@@ -765,86 +764,114 @@ async function main() {
 }
 
 /**
- * Renders the host report to the console: one small table of deltas, a
- * context block, honest caveats.
+ * Renders one baseline/sync/delta table per engine.
  *
  * @param {Object} report Assembled report.
  */
 function printReport( report ) {
 	const env = report.environment;
-	console.log( '' );
-	console.log(
-		`── what real-time collaboration adds, per person editing ──`
-	);
-	console.log(
-		`engine ${ env.engine }, transport ${ env.transportObserved }, ` +
-			`${ env.windows } collaborator(s), ${ env.editSeconds }s editing + ${ env.idleSeconds }s idle`
-	);
-	console.log(
-		`baseline: the same site with the plugin deactivated (1 editor)`
-	);
-	console.log( '' );
+	const fmt = ( value, decimals ) =>
+		null === value || undefined === value ? '—' : value.toFixed( decimals );
+	const delta = ( base, sync, decimals ) =>
+		null === base || undefined === base || null === sync
+			? '—'
+			: `${ sync - base >= 0 ? '+' : '' }${ ( sync - base ).toFixed(
+					decimals
+			  ) }`;
 
-	const rows = [];
-	const editing = report.perEditor.editing;
-	const idle = report.perEditor.idle;
-	if ( METRICS.includes( 'requests' ) ) {
-		rows.push( [
-			'extra requests per minute',
-			`+${ editing.requestsPerMinute }`,
-			`+${ idle.requestsPerMinute }`,
-		] );
-	}
-	if ( METRICS.includes( 'traffic' ) ) {
-		rows.push( [
-			'extra network traffic (KB/min)',
-			`+${ editing.kbPerMinute }`,
-			`+${ idle.kbPerMinute }`,
-		] );
-	}
-	if ( METRICS.includes( 'cpu' ) && editing.server ) {
-		rows.push( [
-			'server CPU on sync (ms/min)',
-			String( editing.server.cpuMsPerMinute ),
-			String( idle.server?.cpuMsPerMinute ?? 0 ),
-		] );
-	}
-	if ( METRICS.includes( 'workers' ) && editing.server ) {
-		rows.push( [
-			'share of one PHP worker held',
-			String( editing.server.workerShare ),
-			String( idle.server?.workerShare ?? 0 ),
-		] );
-	}
-	if ( METRICS.includes( 'memory' ) && report.perEditor.peakSyncMemoryMb ) {
-		rows.push( [
-			'peak PHP memory per sync request',
-			`${ report.perEditor.peakSyncMemoryMb.mean } MB`,
-			`(max ${ report.perEditor.peakSyncMemoryMb.max } MB)`,
-		] );
-	}
+	for ( const entry of report.engines ) {
+		const rows = [];
+		const push = ( metric, label, spanKey, base, sync, decimals ) => {
+			if ( METRICS.includes( metric ) ) {
+				rows.push( [
+					`${ label } — ${ spanKey }`,
+					fmt( base, decimals ),
+					fmt( sync, decimals ),
+					delta( base, sync, decimals ),
+				] );
+			}
+		};
+		for ( const spanKey of [ 'editing', 'idle' ] ) {
+			const span = entry.spans[ spanKey ];
+			push(
+				'requests',
+				'requests/min',
+				spanKey,
+				span.baseClient.requestsPerMinute,
+				span.client.requestsPerMinute,
+				1
+			);
+			push(
+				'traffic',
+				'network KB/min',
+				spanKey,
+				span.baseClient.kbPerMinute,
+				span.client.kbPerMinute,
+				1
+			);
+			push(
+				'cpu',
+				'server CPU ms/min',
+				spanKey,
+				span.baseServer?.cpuMsPerMinute ?? null,
+				span.server?.cpuMsPerMinute ?? null,
+				1
+			);
+			push(
+				'workers',
+				'PHP worker share',
+				spanKey,
+				span.baseServer?.workerShare ?? null,
+				span.server?.workerShare ?? null,
+				3
+			);
+		}
+		if ( METRICS.includes( 'memory' ) ) {
+			const base = entry.spans.editing.baseServer;
+			const sync = entry.spans.editing.server;
+			rows.push( [
+				'peak PHP memory MB/request',
+				base ? fmt( base.peakMemoryMaxMb, 1 ) : '—',
+				sync ? fmt( sync.peakMemoryMaxMb, 1 ) : '—',
+				base && sync
+					? delta( base.peakMemoryMaxMb, sync.peakMemoryMaxMb, 1 )
+					: '—',
+			] );
+		}
 
-	const width = Math.max( ...rows.map( ( row ) => row[ 0 ].length ), 30 );
-	console.log( `${ ''.padEnd( width ) }   while editing   tab open, idle` );
-	for ( const row of rows ) {
-		console.log(
-			`${ row[ 0 ].padEnd( width ) }   ${ row[ 1 ].padEnd( 13 ) }   ${
-				row[ 2 ]
-			}`
+		const labelWidth = Math.max(
+			...rows.map( ( row ) => row[ 0 ].length ),
+			26
 		);
+		const col = 12;
+		console.log( '' );
+		console.log(
+			`── ${ entry.engine } over ${ entry.transport } — per person ` +
+				`(${ env.windows } collaborating vs 1 baseline editor, ` +
+				`${ env.editSeconds }s editing + ${ env.idleSeconds }s idle) ──`
+		);
+		console.log(
+			`${ ''.padEnd( labelWidth ) }   ${ 'baseline'.padEnd(
+				col
+			) }${ 'sync'.padEnd( col ) }delta`
+		);
+		for ( const row of rows ) {
+			console.log(
+				`${ row[ 0 ].padEnd( labelWidth ) }   ${ row[ 1 ].padEnd(
+					col
+				) }${ row[ 2 ].padEnd( col ) }${ row[ 3 ] }`
+			);
+		}
 	}
 
 	console.log( '' );
-	console.log(
-		`baseline for context: ${ report.baseline.editing.requestsPerMinute } requests/min ` +
-			`and ${ report.baseline.editing.kbPerMinute } KB/min while editing; ` +
-			`${ report.baseline.idle.requestsPerMinute }/min and ${ report.baseline.idle.kbPerMinute } KB/min idle`
-	);
-	if ( ! editing.server ) {
+	if ( ! env.muMeasurement ) {
 		console.log(
-			'server-side columns unavailable: this site has no diagnostics ' +
-				'request log (local/development sites, or define ' +
-				'GUTENBERG_SYNC_ENGINES_DIAGNOSTICS) — client-side deltas only'
+			'baseline server columns unavailable: the whole-request ' +
+				'measurement mu-plugin recorded nothing — map ' +
+				'tests/benchmarks/host/mu-bench-log.php into mu-plugins ' +
+				'(this repo’s wp-env configs do; restart the env once) ' +
+				'and rerun'
 		);
 	}
 	if ( report.environment.server ) {
@@ -855,9 +882,9 @@ function printReport( report ) {
 		);
 	}
 	console.log(
-		'server CPU/worker/memory figures cover the plugin’s own sync ' +
-			'requests; cost added inside ordinary requests appears only in ' +
-			'the request/traffic deltas'
+		'server rows cover every tagged PHP request from the editor ' +
+			'windows (page loads, heartbeat, autosaves, sync); static ' +
+			'files never reach PHP and appear only in the client-side rows'
 	);
 }
 

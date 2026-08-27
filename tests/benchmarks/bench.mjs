@@ -15,8 +15,10 @@
  *
  * Every suite other than `engines` forwards the remaining arguments to
  * its own script (see each script's header for its argument list). The
- * engines-suite arguments `engines=`, `scenarios=`, `certify=`, and
- * `concurrency=` keep working without `suite=engines` — they imply it.
+ * engines-suite arguments `scenarios=`, `certify=`, and `concurrency=`
+ * keep working without `suite=engines` — they imply it. `engines=` is
+ * the HOST report's list (one table per engine); it selects the
+ * engines suite only alongside one of those three.
  *
  * The engines suite: the whole engine-decision matrix, or an
  * invariant-certification sweep, from a single invocation.
@@ -71,8 +73,10 @@ const SUITE_SCRIPTS = {
 	soak: 'tests/benchmarks/transport/soak-transport.mjs',
 	replay: 'tests/benchmarks/replay/replay.mjs',
 };
-const impliesEngines =
-	args.certify || args.concurrency || args.engines || args.scenarios;
+// engines= deliberately does NOT imply the engines suite: it is the
+// host report's per-engine-table list. scenarios=/certify=/concurrency=
+// are unambiguous engines-suite modes and keep working without suite=.
+const impliesEngines = args.certify || args.concurrency || args.scenarios;
 const SUITE = String( args.suite ?? ( impliesEngines ? 'engines' : 'host' ) );
 if ( 'engines' !== SUITE ) {
 	const script = SUITE_SCRIPTS[ SUITE ];

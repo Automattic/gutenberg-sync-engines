@@ -12,29 +12,33 @@ the difference against the SAME site with the plugin deactivated:
 
 - extra requests per minute, per person editing (and per idle open tab);
 - extra network traffic (KB/min);
-- server CPU spent on the plugin's sync requests (ms/min);
-- the share of one PHP worker that traffic holds;
-- peak PHP memory per sync request.
+- extra server CPU per minute;
+- the extra share of one PHP worker held;
+- peak PHP memory per request.
 
 It runs two real-browser phases against a live site (the tests env:
 `npm run env:tests start`): a scripted editing session with the plugin
 deactivated (the baseline a host runs today), then the same session
-with the plugin active and `windows=` people collaborating on the
-chosen engine and transport. Arguments target what you need:
-`engine=`, `transport=`, `windows=`, `edit=`/`idle=` durations,
-`metrics=` to print only some rows, `json=` for the full data — the
-complete list is in `tests/benchmarks/host/host-benchmark.mjs`'s
-header. Two honest limits, printed with the report: the CPU/worker/
-memory figures cover the plugin's own sync requests (cost added inside
-ordinary requests appears only in the request/traffic deltas), and
-runs are only comparable across identical environments.
+with the plugin active and `windows=` people collaborating on each
+requested engine — one baseline/sync/delta table per engine. Arguments
+target what you need: `engines=` (comma list; `engine=` for one),
+`transport=`, `windows=`, `edit=`/`idle=` durations, `metrics=` to
+print only some rows, `json=` for the full data — the complete list is
+in `tests/benchmarks/host/host-benchmark.mjs`'s header. The server-side
+columns come from the whole-request measurement mu-plugin
+(`tests/benchmarks/host/mu-bench-log.php`, mapped into mu-plugins by
+this repo's wp-env configs — restart the env once after pulling this),
+which measures every tagged request even with the plugin deactivated;
+that is what makes CPU, worker, and memory true over-baseline deltas. Two honest limits, printed with the report: server rows cover
+requests that reach PHP (static files appear only in the client-side
+rows), and runs are only comparable across identical environments.
 
 Everything else in this directory is a **debugging and analysis tool**
 for this repo's developers, selected with `suite=`:
 
 | Suite              | What it is                                                    |
 | ------------------ | ------------------------------------------------------------- |
-| `suite=engines`    | The engine-decision matrix and invariant sweeps — the harness documented in the rest of this README. `engines=`, `scenarios=`, `certify=`, and `concurrency=` imply it, so documented invocations keep working without `suite=`. |
+| `suite=engines`    | The engine-decision matrix and invariant sweeps — the harness documented in the rest of this README. `scenarios=`, `certify=`, and `concurrency=` imply it, so documented invocations keep working without `suite=`. (`engines=` alone belongs to the host report — its one-table-per-engine list.) |
 | `suite=transport`  | Two-browser edit-to-visible latency + wire traffic per transport (`transport/README.md`). |
 | `suite=soak`       | N-window hour-scale co-editing soak (`transport/README.md`).  |
 | `suite=replay`     | Record real sessions and replay them as HTTP load (`replay/README.md`). |
@@ -66,10 +70,14 @@ Divergences, each deliberate:
   commit through the ordinary autosave endpoint, so their merge cost
   lives on that route; the community harness's relay had no such path.
   Untagged requests are unaffected.
-- **Measurement starts at plugin load, not MU-plugin load**, so
-  `total_cpu_ms` slightly understates full-request CPU compared to the
-  community MU-plugin. Chosen so measuring needs no MU-plugin install;
-  `cpu_ms` (dispatch only) is unaffected.
+- **The MU-plugin is optional.** With
+  `tests/benchmarks/host/mu-bench-log.php` in mu-plugins (this repo's
+  wp-env configs map it), measurement covers the whole request from
+  mu-plugin load — the community model — for ANY tagged request, even
+  with the plugin deactivated. Without it, the REST lane alone
+  measures, starting at plugin load, so `total_cpu_ms` slightly
+  understates full-request CPU; `cpu_ms` (dispatch only) is unaffected
+  either way.
 - **The host report's baseline is "the same site with the plugin
   deactivated"**, not the community's ambient baseline of tagged empty
   polls — a host evaluates against a site without the plugin. The

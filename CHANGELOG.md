@@ -10,14 +10,20 @@ them under a version heading when a version ships.
 ### Added
 
 -   `npm run bench` is now the single entry point for every benchmark,
-    and by default prints a host cost report: the handful of numbers a
-    hosting provider needs (extra requests per minute, extra network
-    traffic, server CPU, PHP worker share, peak PHP memory), each
-    measured against the same site with the plugin deactivated. The
-    existing harnesses remain as debugging tools behind `suite=engines`,
-    `suite=transport`, `suite=soak`, and `suite=replay`, and the
-    community-harness compatibility statement (what matches, what
-    diverges and why) is in `tests/benchmarks/README.md`
+    and by default prints a host cost report: one baseline/sync/delta
+    table per engine with the handful of numbers a hosting provider
+    needs (requests per minute, network traffic, server CPU, PHP worker
+    share, peak PHP memory), each measured against the same site with
+    the plugin deactivated. A whole-request measurement mu-plugin
+    (community-harness model, mapped by the wp-env configs) measures
+    every request the editor windows make — page loads, heartbeat,
+    autosaves, sync — even while the plugin is deactivated, which is
+    what makes the CPU/worker/memory columns true over-baseline deltas.
+    The existing harnesses remain as debugging tools behind
+    `suite=engines`, `suite=transport`, `suite=soak`, and
+    `suite=replay`, and the community-harness compatibility statement
+    (what matches, what diverges and why) is in
+    `tests/benchmarks/README.md`
     ([#60](https://github.com/Automattic/gutenberg-sync-engines/issues/60)).
 
 ### Fixed
