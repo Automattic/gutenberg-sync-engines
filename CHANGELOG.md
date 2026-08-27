@@ -16,7 +16,8 @@ them under a version heading when a version ships.
     and the block's content is read-only until the conflict is reviewed.
     The action opens a dialog comparing "Your version" with the "Current
     version", each highlighted against the shared text both started
-    from; either can be restored into an editable merged result, and
+    from; either can be restored into the merged result, which is edited
+    in its own small block editor with text formatting controls, and
     Accept writes that result into the block and clears the set-aside
     items. Escalations no longer raise editor notices; the in-place card
     and the sidebar panel are the only surfaces. The compared texts are

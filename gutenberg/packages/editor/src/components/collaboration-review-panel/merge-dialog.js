@@ -1,10 +1,36 @@
 import { useState } from '@wordpress/element';
 import { __ } from '@wordpress/i18n';
 import { Button, Modal } from '@wordpress/components';
-import { TextareaControl } from '@wordpress/ui';
+import { createBlock } from '@wordpress/blocks';
 import { diffWordsWithSpace } from 'diff';
 import DiffText from './diff-text';
+import MergedResultEditor from './merged-result-editor';
 import { MOCK_CONFLICT } from './mock-conflict';
+
+/**
+ * The merged result as blocks, seeded from one version's text.
+ *
+ * @param {string} text The version's text.
+ * @return {Array} A single paragraph block holding the text.
+ */
+function mergedBlocksFrom( text ) {
+	return [ createBlock( 'core/paragraph', { content: text } ) ];
+}
+
+/**
+ * The merged result's rich-text content as an HTML string, the shape the
+ * resolution writes back into the conflicted block. The paragraph's
+ * content attribute stringifies to its inner HTML whether it is still the
+ * seeded string or a rich-text value produced by editing.
+ *
+ * @param {Array} blocks The merged editor's blocks.
+ * @return {string} The merged content.
+ */
+function mergedHtmlFrom( blocks ) {
+	return blocks
+		.map( ( block ) => String( block.attributes?.content ?? '' ) )
+		.join( '\n\n' );
+}
 
 /**
  * One version pane: a heading, the diff-highlighted text, and a button
@@ -41,8 +67,10 @@ function Pane( { label, parts, onRestore } ) {
  * The merge dialog's content: your version and the current version side by
  * side, each word-diffed against the SHARED BASE both started from (so
  * each pane highlights only that side's own changes), and each restorable
- * into the editable merged result below them. Accept hands the merged
- * result back; Cancel closes without changing anything.
+ * into the merged result below them. The merged result is a paragraph
+ * edited in its own small block editor (text and formatting only), so the
+ * paragraph block type must be registered. Accept hands the merged
+ * result's HTML back; Cancel closes without changing anything.
  *
  * Position-independent so it can be unit-tested without the modal.
  *
@@ -61,8 +89,11 @@ export function MergeDialogBody( {
 	onCancel,
 } ) {
 	// The merged result starts as the current version. Either pane's
-	// "Restore this version" replaces it, and it stays hand-editable.
-	const [ merged, setMerged ] = useState( currentText );
+	// "Restore this version" reseeds it, and it stays hand-editable in
+	// the merged block editor below the panes.
+	const [ merged, setMerged ] = useState( () =>
+		mergedBlocksFrom( currentText )
+	);
 
 	return (
 		<div className="editor-collaboration-merge-dialog__body">
@@ -75,23 +106,29 @@ export function MergeDialogBody( {
 				<Pane
 					label={ __( 'Your version' ) }
 					parts={ diffWordsWithSpace( baseText, yourText ) }
-					onRestore={ () => setMerged( yourText ) }
+					onRestore={ () =>
+						setMerged( mergedBlocksFrom( yourText ) )
+					}
 				/>
 				<Pane
 					label={ __( 'Current version' ) }
 					parts={ diffWordsWithSpace( baseText, currentText ) }
-					onRestore={ () => setMerged( currentText ) }
+					onRestore={ () =>
+						setMerged( mergedBlocksFrom( currentText ) )
+					}
 				/>
 			</div>
-			<TextareaControl
-				label={ __( 'Merged result' ) }
-				description={ __(
-					'This text replaces the conflicted content when you accept.'
-				) }
-				value={ merged }
-				onValueChange={ setMerged }
-				rows={ 4 }
-			/>
+			<div className="editor-collaboration-merge-dialog__merged">
+				<h3 className="editor-collaboration-merge-dialog__pane-label">
+					{ __( 'Merged result' ) }
+				</h3>
+				<MergedResultEditor blocks={ merged } onChange={ setMerged } />
+				<p className="editor-collaboration-merge-dialog__help">
+					{ __(
+						'This text replaces the conflicted content when you accept.'
+					) }
+				</p>
+			</div>
 			<div className="editor-collaboration-merge-dialog__actions">
 				<Button
 					__next40pxDefaultSize
@@ -103,7 +140,7 @@ export function MergeDialogBody( {
 				<Button
 					__next40pxDefaultSize
 					variant="primary"
-					onClick={ () => onAccept( merged ) }
+					onClick={ () => onAccept( mergedHtmlFrom( merged ) ) }
 				>
 					{ __( 'Accept' ) }
 				</Button>

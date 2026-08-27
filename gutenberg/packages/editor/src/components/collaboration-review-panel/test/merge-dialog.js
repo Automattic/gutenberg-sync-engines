@@ -1,5 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { getBlockTypes, unregisterBlockType } from '@wordpress/blocks';
+import { registerCoreBlocks } from '@wordpress/block-library';
 import { MergeDialogBody } from '../merge-dialog';
 
 const props = {
@@ -8,8 +10,18 @@ const props = {
 	currentText: 'This is my paragraph.',
 };
 
-const mergedResult = () =>
-	screen.getByRole( 'textbox', { name: 'Merged result' } );
+// The merged result is a real paragraph block in the dialog's own block
+// editor, so the block type must be registered.
+beforeAll( () => {
+	registerCoreBlocks();
+} );
+
+afterAll( () => {
+	getBlockTypes().forEach( ( { name } ) => unregisterBlockType( name ) );
+} );
+
+const mergedParagraph = () =>
+	screen.getByRole( 'document', { name: 'Block: Paragraph' } );
 
 describe( 'MergeDialogBody', () => {
 	it( 'shows both versions, with the merged result seeded from the current version', () => {
@@ -26,7 +38,7 @@ describe( 'MergeDialogBody', () => {
 		expect(
 			screen.getAllByRole( 'button', { name: 'Restore this version' } )
 		).toHaveLength( 2 );
-		expect( mergedResult() ).toHaveValue( props.currentText );
+		expect( mergedParagraph() ).toHaveTextContent( props.currentText );
 	} );
 
 	it( 'diffs each version against the shared base, not against each other', () => {
@@ -55,7 +67,7 @@ describe( 'MergeDialogBody', () => {
 		expect( screen.queryAllByRole( 'deletion' ) ).toHaveLength( 0 );
 	} );
 
-	it( 'Restore this version copies that version into the merged result', async () => {
+	it( 'Restore this version copies that version into the merged editor', async () => {
 		const user = userEvent.setup();
 		render(
 			<MergeDialogBody
@@ -72,30 +84,13 @@ describe( 'MergeDialogBody', () => {
 		);
 
 		await user.click( restoreYours );
-		expect( mergedResult() ).toHaveValue( props.yourText );
+		expect( mergedParagraph() ).toHaveTextContent( props.yourText );
 
 		await user.click( restoreCurrent );
-		expect( mergedResult() ).toHaveValue( props.currentText );
+		expect( mergedParagraph() ).toHaveTextContent( props.currentText );
 	} );
 
-	it( 'Accept hands back the merged result, hand edits included', async () => {
-		const user = userEvent.setup();
-		const onAccept = jest.fn();
-		render(
-			<MergeDialogBody
-				{ ...props }
-				onAccept={ onAccept }
-				onCancel={ () => {} }
-			/>
-		);
-
-		await user.clear( mergedResult() );
-		await user.type( mergedResult(), 'merged by hand' );
-		await user.click( screen.getByRole( 'button', { name: 'Accept' } ) );
-		expect( onAccept ).toHaveBeenCalledWith( 'merged by hand' );
-	} );
-
-	it( 'Accept after a restore hands back that version', async () => {
+	it( 'Accept hands back the merged result', async () => {
 		const user = userEvent.setup();
 		const onAccept = jest.fn();
 		render(
