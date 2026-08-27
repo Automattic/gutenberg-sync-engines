@@ -72,15 +72,16 @@ bounded piece of work, leave the ledger accurate, and stop.
    commands, exactly as written. Never run the PHP tests while browser
    tests are in flight; they wipe the same database.
 
-6. **Commit** on the issue branch with `--no-verify`. Never merge,
-   never push, never open a pull request. Merging is the human's move.
+6. **Commit** on the issue branch with `--no-verify`. Never merge, never
+   push, never open a pull request on your own initiative — pushing and
+   opening a PR only happen in step 10, and only for a verified complete
+   fix, and only after the human says yes.
 
 7. **Ask for verification.** When the issue's stated checks pass, spawn
    the `issue-verifier` agent with ONLY the issue number, the branch
    name, and the base ref. Do not send your reasoning or a summary — it
-   judges the work, not the story about the work. PASS means the work
-   is done: leave the issue open with `agent:in progress` for the human
-   to close on merge, and record the verdict. FAIL means you record its
+   judges the work, not the story about the work. PASS means the work is
+   done — see step 10 for what happens next. FAIL means you record its
    reasons word for word in the ledger, and the next cycle deals with
    them.
 
@@ -109,17 +110,32 @@ bounded piece of work, leave the ledger accurate, and stop.
    - weakening or deleting a test to get a pass
    - a product decision that is genuinely the human's to make
 
-10. **Write the cycle up on the issue, not in a file.** Every cycle
-    ends with a comment on the issue saying what you did, what you ran
-    and what it said, and the verdict if there was one:
+10. **Report the cycle — a complete fix goes to the human first, not to
+    the issue.**
 
-    ```bash
-    gh issue comment <n> --body-file cycle.md
-    ```
+    - **Verifier PASS (a complete fix):** do not comment on the issue.
+      Print the cycle summary directly to the user instead — what you
+      did, what you ran and what it said, and the PASS verdict — then
+      ask, with AskUserQuestion, whether to open a pull request. This is
+      the one point in the loop where that question belongs: opening a
+      PR is an outward-facing action, and this is the human naming it,
+      specifically, for this branch. "Yes" means push the branch and
+      open the PR yourself (normal title/body conventions, base branch
+      as target); leave `agent:in progress` on the issue for the human
+      to close on merge. "No" or no answer means leave the branch and
+      the label exactly as they are — do not comment on the issue on
+      their behalf, and do not push anything.
+    - **Anything else — FAIL, parked, escalated, or a cycle that changed
+      nothing:** write it up as a comment on the issue, as before:
 
-    That is the ledger. It lives where the next person looks, and two
-    agents on two machines can write it at the same time without
-    conflicting. A cycle that changed nothing still comments why.
+      ```bash
+      gh issue comment <n> --body-file cycle.md
+      ```
+
+      That is the ledger for unfinished work. It lives where the next
+      person looks, and two agents on two machines can write it at the
+      same time without conflicting. A cycle that changed nothing still
+      comments why.
 
     `LOOP.md` is only for lessons that outlive one issue. Touch it when
     you learn something durable, not every cycle — it is a shared file
@@ -141,6 +157,10 @@ bounded piece of work, leave the ledger accurate, and stop.
   rewrite an issue to mean something else, do not close one, and do not
   file new ones — report those to the user instead. Shaping is
   `/shape-issues`, a separate job.
+- **Pushing and opening a PR are the one outward-facing exception, and
+  only under step 10's rule.** Never push or open a PR because a cycle
+  merely looks finished. Do it only after AskUserQuestion and only on a
+  "yes" to that specific question, for that specific branch.
 - **An issue that is not `agent:ready` is not ready.** If you find
   yourself deciding what the issue should have said, stop: that is
   shaping, and it needs to happen before the work, not during it.
