@@ -61,6 +61,60 @@ const args = Object.fromEntries(
 		.map( ( a ) => a.split( /=(.*)/s ).slice( 0, 2 ) )
 );
 
+const HELP = `npm run bench -- [suite=<name>] [key=value …]
+
+Suites (suite=; default: host):
+  host       The host cost report: what the plugin adds to a server, as one
+             baseline/sync/delta/delta-% table per engine, measured with real
+             browser sessions against the same site with the plugin
+             deactivated. Arguments:
+               engines=    comma list of engines to measure, one table each
+                           (intent-log | yjs-server | de-rtc | current;
+                           default: the site's current engine; engine= is an
+                           alias for a single one)
+               transport=  http-polling | http-long-polling | websocket
+                           (default: the site's current transport)
+               windows=    collaborator windows per engine phase (default 2)
+               edit=       editing seconds per phase (default 120, min 30)
+               idle=       idle seconds per phase (default 120; 0 skips)
+               poll=       override the HTTP short-polling interval for the
+                           run, in seconds 1-25 (0 = the plugin's defaults;
+                           default: leave the site's setting alone)
+               metrics=    comma list of table rows to print:
+                           requests,traffic,cpu,workers,memory (default all)
+               json=       write full results as JSON to this path
+               headed=1    visible browser (debugging)
+  engines    The engine-decision matrix and invariant sweeps (in-process,
+             wp-env cli). Arguments: engines=, scenarios=, seed=, out=,
+             certify=N (invariant sweep across N seeds), concurrency=N
+             (multi-process latency probe; requests=, paragraphs=).
+             scenarios=/certify=/concurrency= imply suite=engines.
+  transport  Two-browser edit-to-visible latency + wire traffic for one
+             transport (tests/benchmarks/transport/README.md).
+  soak       N-window hour-scale co-editing soak (same README).
+  replay     Replay a captured session as HTTP load
+             (tests/benchmarks/replay/README.md).
+
+Arguments after suite= are forwarded to the suite's script; each script's
+header documents its full list. Environment: WP_BASE_URL (default
+http://localhost:8889), WP_USERNAME/WP_PASSWORD.
+
+Examples:
+  npm run bench
+  npm run bench -- engines=intent-log,de-rtc windows=3 poll=2
+  npm run bench -- suite=engines scenarios=editorial-session
+  npm run bench -- certify=10
+`;
+
+if (
+	process.argv
+		.slice( 2 )
+		.some( ( token ) => [ '--help', '-h', 'help' ].includes( token ) )
+) {
+	process.stdout.write( HELP );
+	process.exit( 0 );
+}
+
 // ---------------------------------------------------------------------
 // Suite dispatch: this file is the single benchmark entry point. The
 // default suite is the host cost report; the engine matrix and the
@@ -78,6 +132,16 @@ const SUITE_SCRIPTS = {
 // are unambiguous engines-suite modes and keep working without suite=.
 const impliesEngines = args.certify || args.concurrency || args.scenarios;
 const SUITE = String( args.suite ?? ( impliesEngines ? 'engines' : 'host' ) );
+// Say which suite is running and why, so a surprising suite selection is
+// visible in the first line rather than minutes into the wrong run.
+const suiteReason = args.suite
+	? `suite=${ SUITE }`
+	: `${
+			impliesEngines
+				? 'implied by scenarios=/certify=/concurrency='
+				: 'default'
+	  } — npm run bench -- --help for arguments`;
+console.log( `suite: ${ SUITE } (${ suiteReason })` );
 if ( 'engines' !== SUITE ) {
 	const script = SUITE_SCRIPTS[ SUITE ];
 	if ( ! script ) {

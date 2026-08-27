@@ -44,10 +44,14 @@
  *   windows=    collaborator windows per engine phase (default 2)
  *   edit=       editing seconds per phase (default 120, min 30)
  *   idle=       idle seconds per phase (default 120; 0 skips)
+ *   poll=       override the HTTP short-polling interval for the run, in
+ *               seconds 0-25 (0 = the plugin's defaults; default: leave
+ *               the site's setting alone; restored afterwards)
  *   metrics=    comma list to report: requests,traffic,cpu,workers,memory
  *               (default all)
  *   json=       write full results as JSON to this path
  *   headed=1    visible browser (debugging)
+ *   --help      print the argument list and exit
  *
  * Requires a running environment with the plugin active at start (the
  * tests env: npm run env:tests start — restart it once after pulling
@@ -77,6 +81,34 @@ import {
 
 const opts = parseCliOptions();
 
+const HELP = `node tests/benchmarks/host/host-benchmark.mjs [key=value …]
+(or: npm run bench -- [key=value …])
+
+  engines=    comma list of engines to measure, one table each
+              (intent-log | yjs-server | de-rtc | current; default: the
+              site's current engine; engine= is an alias for one)
+  transport=  http-polling | http-long-polling | websocket
+              (default: the site's current transport)
+  windows=    collaborator windows per engine phase (default 2)
+  edit=       editing seconds per phase (default 120, min 30)
+  idle=       idle seconds per phase (default 120; 0 skips)
+  poll=       override the HTTP short-polling interval for the run, in
+              seconds 1-25 (0 = the plugin's defaults; default: leave
+              the site's setting alone; restored afterwards)
+  metrics=    comma list of table rows to print:
+              requests,traffic,cpu,workers,memory (default all)
+  json=       write full results as JSON to this path
+  headed=1    visible browser (debugging)
+
+Environment: WP_BASE_URL (default http://localhost:8889),
+WP_USERNAME/WP_PASSWORD (default admin/password).
+`;
+
+if ( opts[ '--help' ] || opts[ '-h' ] || opts.help ) {
+	process.stdout.write( HELP );
+	process.exit( 0 );
+}
+
 const ENGINES = String( opts.engines ?? opts.engine ?? 'current' )
 	.split( ',' )
 	.map( ( slug ) => slug.trim() )
@@ -85,6 +117,10 @@ const TRANSPORT = String( opts.transport ?? 'current' );
 const WINDOWS = Math.max( 1, Number( opts.windows ?? 2 ) );
 const EDIT_SECONDS = Number( opts.edit ?? 120 );
 const IDLE_SECONDS = Number( opts.idle ?? 120 );
+const POLL_OVERRIDE =
+	undefined === opts.poll
+		? null
+		: Math.max( 0, Math.min( 25, Number( opts.poll ) ) );
 const JSON_PATH = opts.json ? String( opts.json ) : null;
 const HEADED = Boolean( opts.headed );
 const ALL_METRICS = [ 'requests', 'traffic', 'cpu', 'workers', 'memory' ];
@@ -94,6 +130,8 @@ const METRICS = opts.metrics
 			.map( ( metric ) => metric.trim() )
 			.filter( Boolean )
 	: ALL_METRICS;
+
+const POLLING_INTERVAL_SETTING = 'gutenberg_sync_engines_polling_interval';
 
 /**
  * Deterministic jitter (the soak's convention — reruns pace the same).
@@ -165,6 +203,9 @@ async function installGlobalTagging( context, tag, measured ) {
 					'x-rtc-test': '1',
 					'x-rtc-scenario': tag.scenario,
 					'x-rtc-approach': tag.approach,
+					...( null !== POLL_OVERRIDE
+						? { 'x-rtc-poll-delay': String( POLL_OVERRIDE ) }
+						: {} ),
 				},
 			} );
 		}
@@ -504,6 +545,9 @@ async function main() {
 	if ( ! Number.isFinite( EDIT_SECONDS ) || EDIT_SECONDS < 30 ) {
 		throw new Error( 'edit must be at least 30 seconds' );
 	}
+	if ( null !== POLL_OVERRIDE && ! Number.isFinite( POLL_OVERRIDE ) ) {
+		throw new Error( 'poll must be a number of seconds (0-25)' );
+	}
 	const unknownMetrics = METRICS.filter(
 		( metric ) => ! ALL_METRICS.includes( metric )
 	);
@@ -525,6 +569,8 @@ async function main() {
 	let lastActive = null;
 	let deactivated = [];
 	let experimentWasOn = null;
+	let originalPoll = 0;
+	let pollChanged = false;
 	let adminPage = null;
 	let rest = null;
 	try {
@@ -578,8 +624,70 @@ async function main() {
 				COLLABORATION_EXPERIMENT
 			]
 		);
+		originalPoll = Number(
+			settingsBefore.data?.[ POLLING_INTERVAL_SETTING ] ?? 0
+		);
+		if ( null !== POLL_OVERRIDE && POLL_OVERRIDE !== originalPoll ) {
+			const updated = await rest.post( '/wp/v2/settings', {
+				body: { [ POLLING_INTERVAL_SETTING ]: POLL_OVERRIDE },
+			} );
+			if ( 200 !== updated.status ) {
+				throw new Error(
+					`setting the polling interval to ${ POLL_OVERRIDE }s failed (${ updated.status })`
+				);
+			}
+			pollChanged = true;
+		}
 		await ensureCollaborationEnabled( adminPage );
 		await rest.del( '/rtc-test/v1/log' ).catch( () => null );
+
+		// Say exactly what this run will measure, and where each choice
+		// came from, before spending minutes measuring it.
+		const provided = ( key ) => undefined !== opts[ key ];
+		const engineLabels = ENGINES.map( ( slug ) =>
+			'current' === slug
+				? `current → ${ originalSettings.active.engine } (site setting; engines= to target)`
+				: slug
+		);
+		console.log( 'configuration:' );
+		console.log(
+			`  engines    ${ engineLabels.join( ', ' ) }${
+				provided( 'engines' ) || provided( 'engine' )
+					? ''
+					: ' (default)'
+			}`
+		);
+		console.log(
+			`  transport  ${
+				'current' === TRANSPORT
+					? `current → ${ originalSettings.active.transport } (site setting; transport= to override)`
+					: `${ TRANSPORT } (transport=)`
+			}`
+		);
+		console.log(
+			`  windows    ${ WINDOWS }${
+				provided( 'windows' ) ? '' : ' (default)'
+			}`
+		);
+		console.log(
+			`  editing    ${ EDIT_SECONDS } s${
+				provided( 'edit' ) ? '' : ' (default)'
+			}, idle ${ IDLE_SECONDS } s${
+				provided( 'idle' ) ? '' : ' (default)'
+			}`
+		);
+		console.log(
+			`  polling    ${
+				null === POLL_OVERRIDE
+					? `site setting, ${ originalPoll } s (0 = plugin defaults; poll= to override)`
+					: `${ POLL_OVERRIDE } s (poll=; restored afterwards)`
+			}`
+		);
+		console.log(
+			`  metrics    ${ METRICS.join( ',' ) }${
+				provided( 'metrics' ) ? '' : ' (default: all)'
+			}${ JSON_PATH ? `, json ${ JSON_PATH }` : '' }`
+		);
 
 		// ---------------- Phase 1: baseline (plugin deactivated) --------
 		const baselinePost = await createDraft( rest, 'baseline' );
@@ -733,6 +841,17 @@ async function main() {
 				)
 			);
 		}
+		if ( pollChanged && rest ) {
+			await rest
+				.post( '/wp/v2/settings', {
+					body: { [ POLLING_INTERVAL_SETTING ]: originalPoll },
+				} )
+				.catch( ( error ) =>
+					console.warn(
+						`WARNING: failed to restore the polling interval: ${ error }`
+					)
+				);
+		}
 		if (
 			originalSettings &&
 			adminPage &&
@@ -778,6 +897,16 @@ function printReport( report ) {
 			: `${ sync - base >= 0 ? '+' : '' }${ ( sync - base ).toFixed(
 					decimals
 			  ) }`;
+	const pct = ( base, sync ) => {
+		if ( null === base || undefined === base || null === sync ) {
+			return '—';
+		}
+		if ( 0 === base ) {
+			return 0 === sync ? '+0%' : '—';
+		}
+		const value = Math.round( ( ( sync - base ) / base ) * 100 );
+		return `${ value >= 0 ? '+' : '' }${ value }%`;
+	};
 
 	for ( const entry of report.engines ) {
 		const rows = [];
@@ -788,6 +917,7 @@ function printReport( report ) {
 					fmt( base, decimals ),
 					fmt( sync, decimals ),
 					delta( base, sync, decimals ),
+					pct( base, sync ),
 				] );
 			}
 		};
@@ -836,6 +966,9 @@ function printReport( report ) {
 				base && sync
 					? delta( base.peakMemoryMaxMb, sync.peakMemoryMaxMb, 1 )
 					: '—',
+				base && sync
+					? pct( base.peakMemoryMaxMb, sync.peakMemoryMaxMb )
+					: '—',
 			] );
 		}
 
@@ -853,13 +986,15 @@ function printReport( report ) {
 		console.log(
 			`${ ''.padEnd( labelWidth ) }   ${ 'baseline'.padEnd(
 				col
-			) }${ 'sync'.padEnd( col ) }delta`
+			) }${ 'sync'.padEnd( col ) }${ 'delta'.padEnd( col ) }delta %`
 		);
 		for ( const row of rows ) {
 			console.log(
 				`${ row[ 0 ].padEnd( labelWidth ) }   ${ row[ 1 ].padEnd(
 					col
-				) }${ row[ 2 ].padEnd( col ) }${ row[ 3 ] }`
+				) }${ row[ 2 ].padEnd( col ) }${ row[ 3 ].padEnd( col ) }${
+					row[ 4 ]
+				}`
 			);
 		}
 	}

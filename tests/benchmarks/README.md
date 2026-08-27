@@ -20,11 +20,14 @@ It runs two real-browser phases against a live site (the tests env:
 `npm run env:tests start`): a scripted editing session with the plugin
 deactivated (the baseline a host runs today), then the same session
 with the plugin active and `windows=` people collaborating on each
-requested engine — one baseline/sync/delta table per engine. Arguments
-target what you need: `engines=` (comma list; `engine=` for one),
-`transport=`, `windows=`, `edit=`/`idle=` durations, `metrics=` to
-print only some rows, `json=` for the full data — the complete list is
-in `tests/benchmarks/host/host-benchmark.mjs`'s header. The server-side
+requested engine — one baseline/sync/delta/delta-% table per engine.
+The run opens by stating the configuration it resolved (engine,
+transport, durations, polling), marking defaults. Arguments target
+what you need: `engines=` (comma list; `engine=` for one),
+`transport=`, `windows=`, `edit=`/`idle=` durations, `poll=` to
+override the HTTP short-polling interval for the run (restored
+afterwards), `metrics=` to print only some rows, `json=` for the full
+data — `npm run bench -- --help` prints the complete list. The server-side
 columns come from the whole-request measurement mu-plugin
 (`tests/benchmarks/host/mu-bench-log.php`, mapped into mu-plugins by
 this repo's wp-env configs — restart the env once after pulling this),
