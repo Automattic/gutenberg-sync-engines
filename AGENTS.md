@@ -151,11 +151,16 @@ The framework/plugin split is complete: the framework ships **neither** engines
   framework, `plugins/` holds the test WebSocket provider fixture plugin,
   `bin/` the y-websocket sync-server daemon + the `rtc:ws`/`rtc:http` dev
   switcher for the real websocket transport; see Testing),
-  `tests/benchmarks/` (the sync-engine benchmark harness, run via `wp
-  eval-file tests/benchmarks/benchmark.php`, the browser-driven
-  transport benchmark in `tests/benchmarks/transport/`, and the
+  `tests/benchmarks/` (ALL benchmarks behind one command, `npm run
+  bench` — by default the HOST COST REPORT in `tests/benchmarks/host/`,
+  what the plugin adds to a server vs the same site with the plugin
+  deactivated; `suite=engines` is the engine-decision matrix (`wp
+  eval-file tests/benchmarks/benchmark.php` per run), `suite=transport`
+  / `suite=soak` the browser-driven lanes in
+  `tests/benchmarks/transport/`, `suite=replay` the
   capture→sanitize→replay session tools in `tests/benchmarks/replay/` —
-  community-harness fixture format; see their READMEs),
+  community-harness fixture format; every non-default suite is a
+  debugging/analysis tool for this repo's developers; see the READMEs),
   `tests/fuzzer/` (the seeded browser fuzzer swept across every
   engine × transport combo — `npm run fuzz`; see its README for strategy,
   replay, and triage), and
@@ -590,7 +595,8 @@ applies.
 - **yjs-server known gaps** (docs/engine-comparison.md has the full list):
   ingest cost is real y-php CPU — the canonical doc is
   decoded/merged/re-encoded per request, the most expensive per-ingest
-  path of the three engines (run `npm run bench` for numbers), no
+  path of the three engines (run `npm run bench -- suite=engines` for
+  numbers), no
   review lane
   (register conflicts LWW silently), kses is sanitize-and-compensate (no
   human review of stripped markup), rooms are size-gated at both ends

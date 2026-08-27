@@ -1,8 +1,27 @@
 /**
- * One-command benchmark runner: the whole engine-decision matrix, or an
+ * One-command benchmark runner — the single front door to every
+ * benchmark in this repo, selected with `suite=`:
+ *
+ *   npm run bench                        # DEFAULT: the host cost report —
+ *                                        # what the plugin adds to a server,
+ *                                        # measured against the same site
+ *                                        # with the plugin deactivated
+ *                                        # (tests/benchmarks/host/)
+ *   npm run bench -- engine=de-rtc windows=3     # host report, targeted
+ *   npm run bench -- suite=engines       # engine-decision matrix (below)
+ *   npm run bench -- suite=transport transport=http-polling trials=30
+ *   npm run bench -- suite=soak engine=de-rtc soak=3600
+ *   npm run bench -- suite=replay my-session.json speed=1
+ *
+ * Every suite other than `engines` forwards the remaining arguments to
+ * its own script (see each script's header for its argument list). The
+ * engines-suite arguments `engines=`, `scenarios=`, `certify=`, and
+ * `concurrency=` keep working without `suite=engines` — they imply it.
+ *
+ * The engines suite: the whole engine-decision matrix, or an
  * invariant-certification sweep, from a single invocation.
  *
- *   npm run bench                        # every engine x the decision matrix
+ *   npm run bench -- suite=engines       # every engine x the decision matrix
  *   npm run bench -- engines=de-rtc scenarios=editorial-session
  *   npm run bench -- certify=10          # invariant sweep across 10 seeds
  *
@@ -39,6 +58,42 @@ const args = Object.fromEntries(
 		.filter( ( a ) => a.includes( '=' ) )
 		.map( ( a ) => a.split( /=(.*)/s ).slice( 0, 2 ) )
 );
+
+// ---------------------------------------------------------------------
+// Suite dispatch: this file is the single benchmark entry point. The
+// default suite is the host cost report; the engine matrix and the
+// browser-driven lanes are selected with suite= (legacy engines-suite
+// arguments imply suite=engines so documented invocations keep working).
+// ---------------------------------------------------------------------
+const SUITE_SCRIPTS = {
+	host: 'tests/benchmarks/host/host-benchmark.mjs',
+	transport: 'tests/benchmarks/transport/benchmark-transport.mjs',
+	soak: 'tests/benchmarks/transport/soak-transport.mjs',
+	replay: 'tests/benchmarks/replay/replay.mjs',
+};
+const impliesEngines =
+	args.certify || args.concurrency || args.engines || args.scenarios;
+const SUITE = String( args.suite ?? ( impliesEngines ? 'engines' : 'host' ) );
+if ( 'engines' !== SUITE ) {
+	const script = SUITE_SCRIPTS[ SUITE ];
+	if ( ! script ) {
+		console.error(
+			`unknown suite "${ SUITE }" — known: host (default), engines, ${ Object.keys(
+				SUITE_SCRIPTS
+			)
+				.filter( ( name ) => 'host' !== name )
+				.join( ', ' ) }`
+		);
+		process.exit( 1 );
+	}
+	const forwarded = process.argv
+		.slice( 2 )
+		.filter( ( token ) => ! token.startsWith( 'suite=' ) );
+	const child = spawnSync( 'node', [ script, ...forwarded ], {
+		stdio: 'inherit',
+	} );
+	process.exit( child.status ?? 1 );
+}
 
 const ENV_CONFIG = process.env.BENCH_WPENV_CONFIG ?? '.wp-env.tests.json';
 const ENV_CWD = `wp-content/plugins/${ path.basename( process.cwd() ) }`;

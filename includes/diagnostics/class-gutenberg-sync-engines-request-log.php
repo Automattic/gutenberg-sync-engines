@@ -8,7 +8,8 @@
 if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 
 	/**
-	 * Per-request server-side metrics for tagged `/wp-sync/` REST requests,
+	 * Per-request server-side metrics for tagged `/wp-sync/` REST requests
+	 * (plus tagged autosave requests — de-rtc commits travel there),
 	 * following the conventions of the community RTC performance harness
 	 * (WordPress/distributed-rtc-performance-testing) so numbers line up with
 	 * community-published tables:
@@ -236,7 +237,13 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 		 * @return mixed Unmodified $result.
 		 */
 		public function pre_dispatch( $result, $server, $request ) {
-			if ( ! $this->is_tagged( $request ) || false === strpos( $request->get_route(), '/wp-sync/' ) ) {
+			$route = $request->get_route();
+			// Tagged autosave requests are measured too: de-rtc sessions
+			// commit through the ordinary autosave endpoint (the Save/Sync
+			// inversion), so its merge cost lives on that route. Only a
+			// client that explicitly tags an autosave (the host benchmark
+			// tags commit-shaped ones) opts it into the log.
+			if ( ! $this->is_tagged( $request ) || ( false === strpos( $route, '/wp-sync/' ) && false === strpos( $route, '/autosaves' ) ) ) {
 				return $result;
 			}
 

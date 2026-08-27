@@ -7,6 +7,19 @@ them under a version heading when a version ships.
 
 ## Unreleased
 
+### Added
+
+-   `npm run bench` is now the single entry point for every benchmark,
+    and by default prints a host cost report: the handful of numbers a
+    hosting provider needs (extra requests per minute, extra network
+    traffic, server CPU, PHP worker share, peak PHP memory), each
+    measured against the same site with the plugin deactivated. The
+    existing harnesses remain as debugging tools behind `suite=engines`,
+    `suite=transport`, `suite=soak`, and `suite=replay`, and the
+    community-harness compatibility statement (what matches, what
+    diverges and why) is in `tests/benchmarks/README.md`
+    ([#60](https://github.com/Automattic/gutenberg-sync-engines/issues/60)).
+
 ### Fixed
 
 -   Under the de-rtc engine, a long-running collaboration session could

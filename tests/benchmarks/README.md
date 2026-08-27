@@ -1,4 +1,87 @@
-# Sync-engine benchmark harness
+# Benchmarks
+
+One command runs everything here:
+
+```bash
+npm run bench
+```
+
+By default that prints **the host cost report** — the small set of
+numbers someone hosting this plugin actually needs, each measured as
+the difference against the SAME site with the plugin deactivated:
+
+- extra requests per minute, per person editing (and per idle open tab);
+- extra network traffic (KB/min);
+- server CPU spent on the plugin's sync requests (ms/min);
+- the share of one PHP worker that traffic holds;
+- peak PHP memory per sync request.
+
+It runs two real-browser phases against a live site (the tests env:
+`npm run env:tests start`): a scripted editing session with the plugin
+deactivated (the baseline a host runs today), then the same session
+with the plugin active and `windows=` people collaborating on the
+chosen engine and transport. Arguments target what you need:
+`engine=`, `transport=`, `windows=`, `edit=`/`idle=` durations,
+`metrics=` to print only some rows, `json=` for the full data — the
+complete list is in `tests/benchmarks/host/host-benchmark.mjs`'s
+header. Two honest limits, printed with the report: the CPU/worker/
+memory figures cover the plugin's own sync requests (cost added inside
+ordinary requests appears only in the request/traffic deltas), and
+runs are only comparable across identical environments.
+
+Everything else in this directory is a **debugging and analysis tool**
+for this repo's developers, selected with `suite=`:
+
+| Suite              | What it is                                                    |
+| ------------------ | ------------------------------------------------------------- |
+| `suite=engines`    | The engine-decision matrix and invariant sweeps — the harness documented in the rest of this README. `engines=`, `scenarios=`, `certify=`, and `concurrency=` imply it, so documented invocations keep working without `suite=`. |
+| `suite=transport`  | Two-browser edit-to-visible latency + wire traffic per transport (`transport/README.md`). |
+| `suite=soak`       | N-window hour-scale co-editing soak (`transport/README.md`).  |
+| `suite=replay`     | Record real sessions and replay them as HTTP load (`replay/README.md`). |
+
+## Community-harness compatibility
+
+The measurement plumbing deliberately speaks the community RTC
+performance harness's conventions
+([WordPress/distributed-rtc-performance-testing](https://github.com/WordPress/distributed-rtc-performance-testing)),
+so numbers and fixtures travel between the two toolchains:
+
+- the same request tags (`X-RTC-Test`, `X-RTC-Scenario`,
+  `X-RTC-Approach`, `X-RTC-Poll-Delay`, `X-RTC-Update-Size`, with query
+  fallbacks), the same server-side log columns, and the same
+  `rtc-test/v1` REST surface (`/log`, `/env`, `/report`,
+  `/report-all`) with the same report table layout — the community
+  repo's report tooling reads a site running this plugin natively;
+- the same capture fixture format in `replay/` (our additive keys —
+  `engine`, `transport`, `base_title`, `base_content` — are dropped by
+  the community sanitizer and preserved by ours).
+
+Divergences, each deliberate:
+
+- **Approach auto-label.** When a client sends no `X-RTC-Approach`,
+  rows are labeled `<engine>/<transport>` — the axis this plugin
+  compares — instead of the community's storage-approach labels.
+  Additive: an explicit label always wins.
+- **Tagged autosave requests are measured too.** De-rtc sessions
+  commit through the ordinary autosave endpoint, so their merge cost
+  lives on that route; the community harness's relay had no such path.
+  Untagged requests are unaffected.
+- **Measurement starts at plugin load, not MU-plugin load**, so
+  `total_cpu_ms` slightly understates full-request CPU compared to the
+  community MU-plugin. Chosen so measuring needs no MU-plugin install;
+  `cpu_ms` (dispatch only) is unaffected.
+- **The host report's baseline is "the same site with the plugin
+  deactivated"**, not the community's ambient baseline of tagged empty
+  polls — a host evaluates against a site without the plugin. The
+  transport suite still runs the community-convention baseline phase,
+  so its server-side tables normalize the community way.
+- **The engines suite has no community equivalent.** It measures the
+  engine seam in-process (below); its JSON reports are this repo's own
+  format.
+
+---
+
+# The engines suite (`suite=engines`)
 
 Compares server sync engines **through the production seam** — the same
 `WP_Sync_Engine::handle_updates()` / `get_updates_since()` calls the polling
@@ -300,7 +383,7 @@ The fastest way to the whole decision picture is the one-command runner
 subtree built; it activates the plugins itself):
 
 ```bash
-npm run bench                        # every engine x the decision matrix
+npm run bench -- suite=engines       # every engine x the decision matrix
                                      # (steady concurrency, deep-lag
                                      #  settlement, structural churn, remove
                                      #  contention, field-sync registers, a
@@ -450,7 +533,7 @@ request payloads (the whole document travels in every proposal — both its
 merge time and its wire/storage bytes scale with document size);
 yjs-server ~36 ms (the canonical-doc rebuild dominates regardless of edit
 size). The `laggy-newsroom` scenario (one client reading every 10th round;
-part of the `npm run bench` matrix, at mixed-newsroom size) settles
+part of the engines-suite matrix, at mixed-newsroom size) settles
 differently per engine and loses nothing on any of them: intent-log
 absorbs stale bases with deeper transforms (~24% escalated, 38 benign
 voids, 13 floor-reset re-authoring follow-ups, heavier catch-up reads —

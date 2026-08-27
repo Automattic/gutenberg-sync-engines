@@ -16,7 +16,8 @@ concrete situations through all three engines;
 choice.
 
 This guide carries no measured numbers, because they go stale and
-mislead. To produce them on your own hardware, run `npm run bench`
+mislead. To produce them on your own hardware, run
+`npm run bench -- suite=engines`
 against a running tests env. It prints the whole decision matrix — a
 comparison table per scenario, plus hosting cost cards — and fails loudly
 if any engine loses work. `npm run bench -- certify=10` re-checks the
@@ -198,7 +199,8 @@ each pay for it differently:
 ### Why this guide has no numbers
 
 Numbers vary by machine, PHP build, and code revision, and stale numbers
-mislead harder than no numbers at all. Run `npm run bench` for figures
+mislead harder than no numbers at all. Run `npm run bench -- suite=engines`
+for figures
 from your own hardware. What follows are the stable shapes those figures
 make concrete.
 
