@@ -162,3 +162,138 @@ describe( 'de-rtc doc bridge per-block base honesty', () => {
 		expect( bridge.blockBaseVersions() ).toEqual( {} );
 	} );
 } );
+
+describe( 'de-rtc doc bridge contest base recording (merge view)', () => {
+	let doc: Y.Doc;
+	let bridge: ReturnType< typeof createDeRtcDocBridge >;
+
+	beforeEach( () => {
+		doc = new Y.Doc();
+		bridge = createDeRtcDocBridge( doc, makeSyncConfig() );
+	} );
+
+	function setLocalBlocks( ...blocks: unknown[] ) {
+		doc.getMap( CRDT_RECORD_MAP_KEY ).set( 'blocks', blocks );
+	}
+
+	it( 'a contest event carries the base block from the prior canonical', () => {
+		const events: Array< Record< string, unknown > > = [];
+		bridge.onContested( ( event ) => events.push( event ) );
+		bridge.applyCanonical( 'v1', contentOf( A, B ) );
+		setLocalBlocks( A_LOCAL_NEWER, B );
+
+		bridge.incorporateCanonicalPreservingLocalEdits(
+			'v2',
+			contentOf( A_PEER, B ),
+			contentOf( A_LOCAL, B )
+		);
+
+		expect( events ).toHaveLength( 1 );
+		expect( events[ 0 ] ).toMatchObject( {
+			index: 0,
+			version: 'v2',
+			baseHtml: JSON.stringify( [ A ] ),
+		} );
+	} );
+
+	it( 'refreshes keep the FIRST recorded base (oldest base wins, like the version label)', () => {
+		const events: Array< Record< string, unknown > > = [];
+		bridge.onContested( ( event ) => events.push( event ) );
+		bridge.applyCanonical( 'v1', contentOf( A, B ) );
+		setLocalBlocks( A_LOCAL_NEWER, B );
+		bridge.incorporateCanonicalPreservingLocalEdits(
+			'v2',
+			contentOf( A_PEER, B ),
+			contentOf( A_LOCAL, B )
+		);
+		bridge.incorporateCanonicalPreservingLocalEdits(
+			'v3',
+			contentOf( B_PEER, B ),
+			contentOf( A_LOCAL, B )
+		);
+
+		expect( events ).toHaveLength( 2 );
+		// The refreshed event still carries v1's block as the base.
+		expect( events[ 1 ] ).toMatchObject( {
+			index: 0,
+			version: 'v3',
+			baseHtml: JSON.stringify( [ A ] ),
+		} );
+	} );
+
+	it( 'a version-only advance without content leaves later contests base-less', () => {
+		const events: Array< Record< string, unknown > > = [];
+		bridge.onContested( ( event ) => events.push( event ) );
+		bridge.applyCanonical( 'v1', contentOf( A, B ) );
+		// The own round-trip advance, without its content string.
+		bridge.advanceVersion( 'v2' );
+		setLocalBlocks( A_LOCAL_NEWER, B );
+
+		bridge.incorporateCanonicalPreservingLocalEdits(
+			'v3',
+			contentOf( A_PEER, B ),
+			contentOf( A_LOCAL, B )
+		);
+
+		expect( events ).toHaveLength( 1 );
+		expect( events[ 0 ].baseHtml ).toBeUndefined();
+	} );
+
+	it( 'an advance WITH content records the base for later contests', () => {
+		const events: Array< Record< string, unknown > > = [];
+		bridge.onContested( ( event ) => events.push( event ) );
+		bridge.applyCanonical( 'v1', contentOf( A, B ) );
+		bridge.advanceVersion( 'v2', contentOf( A_LOCAL, B ) );
+		setLocalBlocks( A_LOCAL_NEWER, B );
+
+		bridge.incorporateCanonicalPreservingLocalEdits(
+			'v3',
+			contentOf( A_PEER, B ),
+			contentOf( A_LOCAL, B )
+		);
+
+		expect( events[ 0 ] ).toMatchObject( {
+			baseHtml: JSON.stringify( [ A_LOCAL ] ),
+		} );
+	} );
+
+	it( 'resolveContestedBlockWithMerged writes the merged block, clears the base, and resolves', () => {
+		const resolved: number[] = [];
+		bridge.onContestResolved( ( index ) => resolved.push( index ) );
+		bridge.applyCanonical( 'v1', contentOf( A, B ) );
+		setLocalBlocks( A_LOCAL_NEWER, B );
+		bridge.incorporateCanonicalPreservingLocalEdits(
+			'v2',
+			contentOf( A_PEER, B ),
+			contentOf( A_LOCAL, B )
+		);
+		expect( bridge.blockBaseVersions() ).toEqual( { 0: 'v1' } );
+
+		const A_MERGED = {
+			name: 'core/paragraph',
+			attributes: { content: 'Alpha merged by hand' },
+		};
+		const applied = bridge.resolveContestedBlockWithMerged(
+			0,
+			contentOf( A_MERGED )
+		);
+
+		expect( applied ).toBe( true );
+		expect( resolved ).toEqual( [ 0 ] );
+		// The merged text was written against the contest's canonical, so
+		// the recorded true base clears.
+		expect( bridge.blockBaseVersions() ).toEqual( {} );
+		expect(
+			(
+				doc.getMap( CRDT_RECORD_MAP_KEY ).get( 'blocks' ) as unknown[]
+			 )[ 0 ]
+		).toEqual( A_MERGED );
+	} );
+
+	it( 'resolveContestedBlockWithMerged is a no-op without a contest', () => {
+		bridge.applyCanonical( 'v1', contentOf( A, B ) );
+		expect(
+			bridge.resolveContestedBlockWithMerged( 0, contentOf( A_PEER ) )
+		).toBe( false );
+	} );
+} );

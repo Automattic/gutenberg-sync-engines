@@ -2927,3 +2927,570 @@ describe( 'intent-log manager awareness', () => {
 		manager.unload( 'postType/post', '1' );
 	} );
 } );
+
+describe( 'intent-log manager merge review (describe and resolve groups)', () => {
+	beforeEach( () => {
+		jest.useFakeTimers();
+	} );
+
+	afterEach( () => {
+		jest.clearAllTimers();
+		jest.useRealTimers();
+		removeFilter( FILTER, HOOK );
+		resetEngineAdaptersForTesting();
+		resetProviderCreatorsForTesting();
+		delete window.__experimentalEnableRealTimeCollaboration;
+		delete window._wpCollaborationSync;
+	} );
+
+	const paragraphTree = ( content: string ) => [
+		{
+			name: 'core/paragraph',
+			attributes: { content, metadata: { syncId: 'p1' } },
+			innerBlocks: [],
+		},
+	];
+
+	const paragraphSpec = {
+		syncId: 'p1',
+		blockType: 'core/paragraph',
+		text: 'Hello world',
+	};
+
+	/**
+	 * Builds the plan's motivating scenario against the REAL frozen
+	 * server: the local author types " 123" at the end of "Hello world"
+	 * while a peer's "abc " start-insert lands first. The first keystroke
+	 * merges; the remaining three park (frame-conflict, then
+	 * dependent-on-escalated).
+	 *
+	 * @return Handles plus the parked proposal ids.
+	 */
+	async function loadMotivatingScenario() {
+		const transport = makeFakeTransport();
+		window.__experimentalEnableRealTimeCollaboration = true;
+		addFilter( FILTER, HOOK, () => [ transport.creator ] );
+
+		const manager = createIntentLogManager();
+		const itemsHistory: Array< Array< Record< string, unknown > > > = [];
+		const handlers = makeHandlers();
+		handlers.onProposalsChange = ( ( proposals: unknown ) =>
+			itemsHistory.push(
+				proposals as Array< Record< string, unknown > >
+			) ) as RecordHandlers[ 'onProposalsChange' ];
+		handlers.onEscalation = jest.fn() as RecordHandlers[ 'onEscalation' ];
+		await manager.load( {} as never, 'postType/post', '1', {}, handlers );
+
+		const session = transport.captured.session!;
+		session.receiveUpdate( snapshotRow( [ paragraphSpec ] ) );
+		// The editor renders the snapshot and testifies.
+		manager.update(
+			'postType/post',
+			'1',
+			{ blocks: paragraphTree( 'Hello world' ) },
+			'gutenberg'
+		);
+
+		// The burst: one keystroke per capture, " 123" at the field end.
+		for ( const content of [
+			'Hello world ',
+			'Hello world 1',
+			'Hello world 12',
+			'Hello world 123',
+		] ) {
+			manager.update(
+				'postType/post',
+				'1',
+				{ blocks: paragraphTree( content ) },
+				'gutenberg'
+			);
+		}
+		const authored = transport.captured.sent.map(
+			( update ) => JSON.parse( update.data ) as Record< string, unknown >
+		);
+		expect( authored.map( ( intent ) => intent.type ) ).toEqual( [
+			'insert_text',
+			'insert_text',
+			'insert_text',
+			'insert_text',
+		] );
+
+		// The real server: the peer's start-insert lands first, then the
+		// burst plans over it.
+		const server = rebaseCreateServer(
+			createDocument( [ paragraphSpec ] )
+		);
+		serverIngestBatch( server, [
+			{
+				intentId: 'peer-1',
+				actorId: 'u9c9',
+				baseSeq: 0,
+				txnId: null,
+				type: 'insert_text',
+				payload: {
+					syncId: 'p1',
+					field: 'content',
+					offset: 0,
+					text: 'abc ',
+				},
+			},
+		] );
+		const dispositions = serverIngestBatch(
+			server,
+			authored as never
+		) as Array< { status: string; reason?: string } >;
+		expect(
+			dispositions.map( ( disposition ) => disposition.status )
+		).toEqual( [ 'applied', 'escalated', 'escalated', 'escalated' ] );
+
+		// Feed the settlement back: accepted rows, proposals, then the ack
+		// (the transport's guaranteed ordering).
+		for ( const entry of server.log ) {
+			session.receiveUpdate( {
+				data: JSON.stringify( entry ),
+				type: INTENT_LOG_UPDATE_TYPES.INTENT,
+			} );
+		}
+		for ( const parked of server.proposals ) {
+			session.receiveUpdate( {
+				data: JSON.stringify( parked ),
+				type: INTENT_LOG_UPDATE_TYPES.PROPOSAL,
+			} );
+		}
+		session.receiveDispositions!(
+			authored.map( ( intent, index ) => ( {
+				intentId: intent.intentId as string,
+				...dispositions[ index ],
+			} ) ) as never
+		);
+
+		const parkedIds = (
+			server.proposals as Array< {
+				intent: { intentId: string };
+			} >
+		 ).map( ( parked ) => parked.intent.intentId );
+		expect( parkedIds ).toHaveLength( 3 );
+
+		return {
+			manager,
+			handlers,
+			transport,
+			session,
+			itemsHistory,
+			parkedIds,
+		};
+	}
+
+	it( 'maps parked text edits with the merge-view grouping key', async () => {
+		const { itemsHistory } = await loadMotivatingScenario();
+		// The review-list notification is microtask-coalesced.
+		await Promise.resolve();
+		const items = itemsHistory.at( -1 )!;
+		expect( items ).toHaveLength( 3 );
+		for ( const item of items ) {
+			expect( item ).toMatchObject( {
+				isLocal: true,
+				targetId: 'p1',
+				targetField: 'content',
+				supportsMergeView: true,
+			} );
+		}
+		expect( items.map( ( item ) => item.reason ) ).toEqual( [
+			'frame-conflict',
+			'dependent-on-escalated',
+			'dependent-on-escalated',
+		] );
+	} );
+
+	it( 'describes the group: base, the replayed intended text, changeset-free current, and one combined run', async () => {
+		const { manager, parkedIds } = await loadMotivatingScenario();
+		const description = manager.describeReviewGroup!(
+			'postType/post',
+			'1',
+			parkedIds
+		);
+		expect( description ).toEqual( {
+			baseText: 'Hello world',
+			proposedText: 'Hello world 123',
+			// Current excludes the author's OWN changeset: the burst's
+			// accepted first keystroke (the trailing space) is factored
+			// out, so the pane reads base plus the peer's work only.
+			currentText: 'abc Hello world',
+			// The run covers the WHOLE changeset, merged fragment
+			// included: " 123", never "123".
+			runs: [ { kind: 'insert', text: ' 123' } ],
+		} );
+	} );
+
+	it( 'restore-mine authors ONE whole-field rewrite and resolves every member as restored', async () => {
+		const { manager, transport, session, parkedIds } =
+			await loadMotivatingScenario();
+		transport.captured.sent.length = 0;
+
+		manager.resolveReviewGroup!(
+			'postType/post',
+			'1',
+			parkedIds,
+			'restored'
+		);
+
+		const sent = transport.captured.sent.map( ( update ) => ( {
+			type: update.type,
+			data: JSON.parse( update.data ) as Record< string, unknown >,
+		} ) );
+		const rewrites = sent.filter(
+			( row ) => 'replace_attr_content' === row.data.type
+		);
+		expect( rewrites ).toHaveLength( 1 );
+		expect( rewrites[ 0 ].data.payload ).toMatchObject( {
+			syncId: 'p1',
+			field: 'content',
+			newText: 'Hello world 123',
+		} );
+		const resolved = sent.filter(
+			( row ) => INTENT_LOG_UPDATE_TYPES.RESOLVED === row.type
+		);
+		expect( resolved.map( ( row ) => row.data ) ).toEqual(
+			parkedIds.map( ( proposalId ) => ( {
+				proposalId,
+				resolution: 'restored',
+			} ) )
+		);
+		// The review list is empty and the optimistic document holds the
+		// restored field.
+		expect(
+			( session as IntentLogSession ).getOpenProposals()
+		).toHaveLength( 0 );
+		expect(
+			( session as IntentLogSession ).getDocument()!.root[ 0 ].fields
+				.content.text
+		).toBe( 'Hello world 123' );
+	} );
+
+	it( 'keep-current discards the WHOLE changeset: the merged fragment is removed with the parked remainder', async () => {
+		const { manager, transport, session, parkedIds } =
+			await loadMotivatingScenario();
+		transport.captured.sent.length = 0;
+
+		manager.resolveReviewGroup!(
+			'postType/post',
+			'1',
+			parkedIds,
+			'dismissed'
+		);
+
+		// The burst's accepted first keystroke (the trailing space) is
+		// part of the discarded changeset: keep-current rewrites the field
+		// to the fragment-free current the dialog showed, then dismisses.
+		const sent = transport.captured.sent.map( ( update ) => ( {
+			type: update.type,
+			data: JSON.parse( update.data ) as Record< string, unknown >,
+		} ) );
+		const rewrites = sent.filter(
+			( row ) => 'replace_attr_content' === row.data.type
+		);
+		expect( rewrites ).toHaveLength( 1 );
+		expect( rewrites[ 0 ].data.payload ).toMatchObject( {
+			syncId: 'p1',
+			field: 'content',
+			newText: 'abc Hello world',
+		} );
+		const resolved = sent.filter(
+			( row ) => INTENT_LOG_UPDATE_TYPES.RESOLVED === row.type
+		);
+		expect( resolved ).toHaveLength( 3 );
+		expect(
+			resolved.every( ( row ) => 'dismissed' === row.data.resolution )
+		).toBe( true );
+		expect(
+			( session as IntentLogSession ).getOpenProposals()
+		).toHaveLength( 0 );
+		expect(
+			( session as IntentLogSession ).getDocument()!.root[ 0 ].fields
+				.content.text
+		).toBe( 'abc Hello world' );
+	} );
+
+	it( 'a hand-merged result is authored verbatim', async () => {
+		const { manager, transport, parkedIds } =
+			await loadMotivatingScenario();
+		transport.captured.sent.length = 0;
+
+		manager.resolveReviewGroup!(
+			'postType/post',
+			'1',
+			parkedIds,
+			'restored',
+			'abc Hello world 123'
+		);
+
+		const rewrites = transport.captured.sent
+			.map( ( update ) => JSON.parse( update.data ) )
+			.filter( ( row ) => 'replace_attr_content' === row.type );
+		expect( rewrites ).toHaveLength( 1 );
+		expect( rewrites[ 0 ].payload.newText ).toBe( 'abc Hello world 123' );
+	} );
+
+	it( 'REGRESSION: a start-of-paragraph burst reads as ONE changeset, merged fragment included', async () => {
+		/*
+		 * The user-reported shape: base "paragraph two", the author types
+		 * "abc " at the START while a peer's " 123" end-insert lands
+		 * first. The burst's first keystroke ("a") merges and "b c ",
+		 * shown per keystroke, parked, so the canvas read
+		 * "aparagraph two 123" with a pending card for "b c ". The whole
+		 * burst is one changeset: the current pane excludes the merged
+		 * "a", the combined summary is the full "abc ", and keep-current
+		 * discards the "a" together with the parked remainder.
+		 */
+		const transport = makeFakeTransport();
+		window.__experimentalEnableRealTimeCollaboration = true;
+		addFilter( FILTER, HOOK, () => [ transport.creator ] );
+
+		const manager = createIntentLogManager();
+		const itemsHistory: Array< Array< Record< string, unknown > > > = [];
+		const handlers = makeHandlers();
+		handlers.onProposalsChange = ( ( proposals: unknown ) =>
+			itemsHistory.push(
+				proposals as Array< Record< string, unknown > >
+			) ) as RecordHandlers[ 'onProposalsChange' ];
+		handlers.onEscalation = jest.fn() as RecordHandlers[ 'onEscalation' ];
+		await manager.load( {} as never, 'postType/post', '1', {}, handlers );
+
+		const session = transport.captured.session!;
+		const spec = {
+			syncId: 'p1',
+			blockType: 'core/paragraph',
+			text: 'paragraph two',
+		};
+		session.receiveUpdate( snapshotRow( [ spec ] ) );
+		manager.update(
+			'postType/post',
+			'1',
+			{ blocks: paragraphTree( 'paragraph two' ) },
+			'gutenberg'
+		);
+
+		// The start-of-paragraph burst, one keystroke per capture.
+		for ( const content of [
+			'aparagraph two',
+			'abparagraph two',
+			'abcparagraph two',
+			'abc paragraph two',
+		] ) {
+			manager.update(
+				'postType/post',
+				'1',
+				{ blocks: paragraphTree( content ) },
+				'gutenberg'
+			);
+		}
+		const authored = transport.captured.sent.map(
+			( update ) => JSON.parse( update.data ) as Record< string, unknown >
+		);
+
+		// The real server: the peer's end-insert lands first.
+		const server = rebaseCreateServer( createDocument( [ spec ] ) );
+		serverIngestBatch( server, [
+			{
+				intentId: 'peer-1',
+				actorId: 'u9c9',
+				baseSeq: 0,
+				txnId: null,
+				type: 'insert_text',
+				payload: {
+					syncId: 'p1',
+					field: 'content',
+					offset: 'paragraph two'.length,
+					text: ' 123',
+				},
+			},
+		] );
+		const dispositions = serverIngestBatch(
+			server,
+			authored as never
+		) as Array< { status: string; reason?: string } >;
+		expect(
+			dispositions.map( ( disposition ) => disposition.status )
+		).toEqual( [ 'applied', 'escalated', 'escalated', 'escalated' ] );
+
+		for ( const entry of server.log ) {
+			session.receiveUpdate( {
+				data: JSON.stringify( entry ),
+				type: INTENT_LOG_UPDATE_TYPES.INTENT,
+			} );
+		}
+		for ( const parked of server.proposals ) {
+			session.receiveUpdate( {
+				data: JSON.stringify( parked ),
+				type: INTENT_LOG_UPDATE_TYPES.PROPOSAL,
+			} );
+		}
+		session.receiveDispositions!(
+			authored.map( ( intent, index ) => ( {
+				intentId: intent.intentId as string,
+				...dispositions[ index ],
+			} ) ) as never
+		);
+		const parkedIds = (
+			server.proposals as Array< { intent: { intentId: string } } >
+		 ).map( ( parked ) => parked.intent.intentId );
+
+		// Every parked keystroke carries the WHOLE changeset's summary
+		// ("abc ", never "b c ").
+		await Promise.resolve();
+		const items = itemsHistory.at( -1 )!;
+		expect( items ).toHaveLength( 3 );
+		for ( const item of items ) {
+			expect( item.groupSummary ).toBe( 'abc ' );
+		}
+
+		// The panes: intended text, and current WITHOUT the merged "a".
+		const description = manager.describeReviewGroup!(
+			'postType/post',
+			'1',
+			parkedIds
+		);
+		expect( description ).toEqual( {
+			baseText: 'paragraph two',
+			proposedText: 'abc paragraph two',
+			currentText: 'paragraph two 123',
+			runs: [ { kind: 'insert', text: 'abc ' } ],
+		} );
+
+		// Keep-current discards the whole changeset: the stray "a" leaves
+		// with the parked remainder.
+		transport.captured.sent.length = 0;
+		manager.resolveReviewGroup!(
+			'postType/post',
+			'1',
+			parkedIds,
+			'dismissed'
+		);
+		expect(
+			( session as IntentLogSession ).getDocument()!.root[ 0 ].fields
+				.content.text
+		).toBe( 'paragraph two 123' );
+		expect(
+			( session as IntentLogSession ).getOpenProposals()
+		).toHaveLength( 0 );
+	} );
+
+	it( 'degrades to two panes after a horizon reset (base below the floor, intended text from the editor tree)', async () => {
+		const { manager, session, parkedIds } = await loadMotivatingScenario();
+		// A compaction checkpoint far past the parked baseSeq: the replica
+		// re-bootstraps and the retained history below it is gone.
+		session.receiveUpdate( {
+			data: JSON.stringify( {
+				seq: 100,
+				doc: createDocument( [
+					{ ...paragraphSpec, text: 'abc Hello world ' },
+				] ),
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.SNAPSHOT,
+		} );
+
+		const description = manager.describeReviewGroup!(
+			'postType/post',
+			'1',
+			parkedIds
+		);
+		expect( description ).toMatchObject( {
+			baseText: null,
+			// The last editor tree still holds the intended text.
+			proposedText: 'Hello world 123',
+			currentText: 'abc Hello world ',
+		} );
+	} );
+
+	it( 'a lost property register gets the two-pane variant and restores its value', async () => {
+		const transport = makeFakeTransport();
+		window.__experimentalEnableRealTimeCollaboration = true;
+		addFilter( FILTER, HOOK, () => [ transport.creator ] );
+
+		const manager = createIntentLogManager();
+		const handlers = makeHandlers();
+		handlers.onEscalation = jest.fn() as RecordHandlers[ 'onEscalation' ];
+		await manager.load( {} as never, 'postType/post', '1', {}, handlers );
+		const session = transport.captured.session!;
+		const initialDoc = createDocument( [ paragraphSpec ], {
+			title: 'Original',
+		} );
+		session.receiveUpdate( {
+			data: JSON.stringify( { doc: initialDoc } ),
+			type: INTENT_LOG_UPDATE_TYPES.SNAPSHOT,
+		} );
+
+		// The local title edit…
+		manager.update( 'postType/post', '1', { title: 'Mine' }, 'gutenberg' );
+		const authored = transport.captured.sent.map(
+			( update ) => JSON.parse( update.data ) as Record< string, unknown >
+		);
+		expect( authored.map( ( intent ) => intent.type ) ).toEqual( [
+			'set_property',
+		] );
+
+		// …loses the register race on the real server.
+		const server = rebaseCreateServer(
+			createDocument( [ paragraphSpec ], { title: 'Original' } )
+		);
+		serverIngestBatch( server, [
+			{
+				intentId: 'peer-title',
+				actorId: 'u9c9',
+				baseSeq: 0,
+				txnId: null,
+				type: 'set_property',
+				payload: { name: 'title', value: 'Theirs', observedVersion: 0 },
+			},
+		] );
+		const dispositions = serverIngestBatch(
+			server,
+			authored as never
+		) as Array< { status: string; reason?: string } >;
+		expect( dispositions[ 0 ] ).toMatchObject( {
+			status: 'escalated',
+			reason: 'property-conflict',
+		} );
+		for ( const entry of server.log ) {
+			session.receiveUpdate( {
+				data: JSON.stringify( entry ),
+				type: INTENT_LOG_UPDATE_TYPES.INTENT,
+			} );
+		}
+		for ( const parked of server.proposals ) {
+			session.receiveUpdate( {
+				data: JSON.stringify( parked ),
+				type: INTENT_LOG_UPDATE_TYPES.PROPOSAL,
+			} );
+		}
+
+		const proposalId = authored[ 0 ].intentId as string;
+		const description = manager.describeReviewGroup!(
+			'postType/post',
+			'1',
+			[ proposalId ]
+		);
+		expect( description ).toEqual( {
+			baseText: null,
+			proposedText: 'Mine',
+			currentText: 'Theirs',
+		} );
+
+		transport.captured.sent.length = 0;
+		manager.resolveReviewGroup!(
+			'postType/post',
+			'1',
+			[ proposalId ],
+			'restored'
+		);
+		const sent = transport.captured.sent.map( ( update ) =>
+			JSON.parse( update.data )
+		);
+		expect(
+			sent.filter( ( row ) => 'set_property' === row.type )
+		).toHaveLength( 1 );
+		expect(
+			sent.find( ( row ) => 'set_property' === row.type ).payload
+		).toMatchObject( { name: 'title', value: 'Mine' } );
+	} );
+} );

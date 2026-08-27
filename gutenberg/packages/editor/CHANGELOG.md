@@ -4,6 +4,8 @@
 
 ### Enhancements
 
+-   Collaboration: Add a merge dialog for conflicting edits. One dialog per conflicted field compares the author's intended text with the current text (word-diffed, against the base text when the engine can recover it), and resolves with Keep current, Restore mine, or a hand-merged result. It opens from the inline pending-edit card, the sidebar conflict panel, and escalation notices, for review items the active sync engine declares it can serve. Pane contents freeze while the dialog is open; confirming against a document that changed meanwhile refreshes the panes and asks again.
+-   Collaboration: The inline pending-edit card and the sidebar conflict panel show ONE lost-content summary per changeset (an item group's engine-stamped `groupSummary`), so a parked typing burst reads as its combined text instead of per-keystroke fragments joined with spaces.
 -   Commands: Add a command palette entry that opens the current post on the front end once it is published, labelled with the post type's `view_item` label ([#66720](https://github.com/WordPress/gutenberg/pull/66720)).
 -   Pre-publish panel: Remove the "Visibility" and "Publish" headings that repeated the title of the panel containing them. The publish date's reset action, which lived in the removed header, becomes a "Reset" button below the date picker, disabled but still focusable while the post is set to publish immediately ([#81806](https://github.com/WordPress/gutenberg/pull/81806)).
 

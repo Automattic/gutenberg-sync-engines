@@ -10,7 +10,10 @@ import {
 	canRestoreItems,
 	groupByUnit,
 	itemAnchorClientId,
+	itemSummaries,
+	mergeViewGroupItems,
 	REASON_LABELS,
+	useOpenMergeView,
 	useReviewData,
 	useResolveReviewItems,
 } from './review-data';
@@ -26,10 +29,12 @@ const { PrivateBlockPopover: BlockPopover } = unlock( blockEditorPrivateApis );
  * popover.
  *
  * @param {Object}   props
- * @param {Array}    props.groups    Every review group targeting the block.
- * @param {Function} props.onResolve ( items, resolution ) => void.
+ * @param {Array}    props.groups        Every review group targeting the block.
+ * @param {Function} props.onResolve     ( items, resolution ) => void.
+ * @param {Function} [props.onOpenMerge] Open the merge view for the block's
+ *                                       items (present when they qualify).
  */
-export function BlockCardBody( { groups, onResolve } ) {
+export function BlockCardBody( { groups, onResolve, onOpenMerge } ) {
 	const items = groups.flat();
 	const allLocal = items.every( ( item ) => item.isLocal );
 	const restorable = canRestoreItems( items );
@@ -40,9 +45,7 @@ export function BlockCardBody( { groups, onResolve } ) {
 				.filter( Boolean )
 		)
 	);
-	const summaries = items
-		.map( ( item ) => item.summary ?? item.excerpt )
-		.filter( Boolean );
+	const summaries = itemSummaries( items );
 
 	return (
 		<div className="editor-collaboration-pending-card__body">
@@ -64,6 +67,16 @@ export function BlockCardBody( { groups, onResolve } ) {
 				</p>
 			) }
 			<div className="editor-collaboration-pending-card__actions">
+				{ onOpenMerge && (
+					<Button
+						__next40pxDefaultSize
+						size="compact"
+						variant="secondary"
+						onClick={ onOpenMerge }
+					>
+						{ __( 'Open merge view' ) }
+					</Button>
+				) }
 				{ restorable ? (
 					<Button
 						__next40pxDefaultSize
@@ -94,7 +107,7 @@ export function BlockCardBody( { groups, onResolve } ) {
 	);
 }
 
-function BlockCard( { clientId, groups, onResolve, contentRef } ) {
+function BlockCard( { clientId, groups, onResolve, onOpenMerge, contentRef } ) {
 	return (
 		<BlockPopover
 			clientId={ clientId }
@@ -103,7 +116,11 @@ function BlockCard( { clientId, groups, onResolve, contentRef } ) {
 			className="editor-collaboration-pending-card"
 			__unstableContentRef={ contentRef }
 		>
-			<BlockCardBody groups={ groups } onResolve={ onResolve } />
+			<BlockCardBody
+				groups={ groups }
+				onResolve={ onResolve }
+				onOpenMerge={ onOpenMerge }
+			/>
 		</BlockPopover>
 	);
 }
@@ -209,6 +226,7 @@ export default function CollaborationConflictMarkers( { contentRef } ) {
 	const { postType, postId, items, clientIdByTarget, clientIdByIndex } =
 		useReviewData();
 	const onResolve = useResolveReviewItems( postType, postId );
+	const openMergeView = useOpenMergeView( postType, postId );
 	const firstRootClientId = useSelect(
 		( select ) => select( blockEditorStore ).getBlockOrder()[ 0 ] ?? null,
 		[]
@@ -264,15 +282,36 @@ export default function CollaborationConflictMarkers( { contentRef } ) {
 	return (
 		<>
 			{ Array.from( groupsByClientId.entries() ).map(
-				( [ clientId, groups ] ) => (
-					<BlockCard
-						key={ clientId }
-						clientId={ clientId }
-						groups={ groups }
-						onResolve={ onResolve }
-						contentRef={ contentRef }
-					/>
-				)
+				( [ clientId, groups ] ) => {
+					/*
+					 * The merge view settles ONE local group (this author,
+					 * this field): offer it whenever the block's items
+					 * contain one. The card's Adopt/Reject verbs remain for
+					 * everything else on the block (a collaborator's items,
+					 * kses approvals), and for the whole card as before.
+					 */
+					const blockItems = groups.flat();
+					const seed = blockItems.find(
+						( item ) => item.supportsMergeView
+					);
+					const mergeGroup = seed
+						? mergeViewGroupItems( blockItems, [ seed.id ] )
+						: [];
+					const onOpenMerge =
+						mergeGroup.length > 0
+							? () => openMergeView( mergeGroup )
+							: undefined;
+					return (
+						<BlockCard
+							key={ clientId }
+							clientId={ clientId }
+							groups={ groups }
+							onResolve={ onResolve }
+							onOpenMerge={ onOpenMerge }
+							contentRef={ contentRef }
+						/>
+					);
+				}
 			) }
 			{ insertions.map( ( insertion ) => (
 				<InsertionCard

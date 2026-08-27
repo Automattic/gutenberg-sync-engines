@@ -25,6 +25,16 @@ use these terms freely; none of them is standard outside this project
   instead.
 - **Review lane** — the whole path a parked edit travels: durable
   storage, the editor's review panel, and the restore/dismiss verbs.
+- **Merge view / merge dialog** — one dialog for a whole conflicted
+  paragraph (or block): your intended text next to the current text,
+  compared word by word, resolved by keeping the current version,
+  restoring yours, or hand-editing a merged result. One decision closes
+  every parked edit in that group.
+- **Changeset** — everything one person changed on one field during a
+  conflict, treated as a unit: the parked keystrokes, any keystrokes of
+  the same burst that already merged, and any still in flight. The merge
+  view shows and settles the whole changeset together, so a burst never
+  half-merges from the reviewer's point of view.
 - **Register** — one named field of the post that syncs separately from
   the body: title, status, a taxonomy, one meta key.
 - **LWW (last writer wins)** — the later change silently replaces the

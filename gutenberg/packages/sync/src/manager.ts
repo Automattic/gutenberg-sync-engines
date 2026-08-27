@@ -805,5 +805,21 @@ export function createSyncManager(
 					),
 			  }
 			: {} ),
+		// The merge-view surface is optional even for engines with a review
+		// source; it exists on the manager only when the engine supplies it.
+		...( engine.review?.describeReviewGroup
+			? {
+					describeReviewGroup: debugWrap(
+						engine.review.describeReviewGroup.bind( engine.review )
+					),
+			  }
+			: {} ),
+		...( engine.review?.resolveReviewGroup
+			? {
+					resolveReviewGroup: debugWrap(
+						engine.review.resolveReviewGroup.bind( engine.review )
+					),
+			  }
+			: {} ),
 	};
 }

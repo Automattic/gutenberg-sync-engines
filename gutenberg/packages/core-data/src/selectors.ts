@@ -52,6 +52,12 @@ export interface State {
 	editorAssets: Record< string, any > | null;
 	syncConnectionStatuses?: Record< string, ConnectionStatus >;
 	syncReviewItems?: Record< string, Array< Record< string, unknown > > >;
+	syncReviewMergeRequest?: {
+		kind: string;
+		name: string;
+		recordId: EntityRecordKey;
+		itemIds: string[];
+	} | null;
 	collaborationSupported: boolean;
 	viewConfigs: Record< string, Record< string, any > >;
 }

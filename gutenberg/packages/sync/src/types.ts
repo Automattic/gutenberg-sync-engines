@@ -141,6 +141,28 @@ export interface SyncReviewItem {
 	 */
 	targetId?: string;
 	/**
+	 * The conflicted field on the target block (a rich-text attribute
+	 * name), or the conflicted entity property's name for property items.
+	 * Completes the merge-view grouping key (author, block, field): all of
+	 * an author's open items on one field resolve together. Absent for
+	 * whole-block items and items with no field to merge on.
+	 */
+	targetField?: string;
+	/**
+	 * Whether the engine's describeReviewGroup/resolveReviewGroup pair can
+	 * serve this item, i.e. whether the UI may offer the merge view for
+	 * its group. Engines stamp it; the UI never guesses from reasons.
+	 */
+	supportsMergeView?: boolean;
+	/**
+	 * The whole changeset's lost content in ONE string (a parked burst's
+	 * combined text, any already-merged fragment included), stamped
+	 * identically on every member of the group. UIs presenting several
+	 * items show it once per group instead of joining member summaries,
+	 * so a burst reads "abc ", never "b c ".
+	 */
+	groupSummary?: string;
+	/**
 	 * The target block's TOP-LEVEL index in the document, for engines
 	 * whose review items address blocks positionally rather than by a
 	 * persistent identity (e.g. de-rtc contests). A UI anchor of last
@@ -159,6 +181,44 @@ export interface SyncReviewItem {
 		afterSiblingId?: string;
 		parentId?: string;
 	};
+}
+
+/**
+ * One coalesced change inside a merge-view group, for display: a stretch
+ * of text the author added or removed, read as one change rather than one
+ * item per keystroke.
+ */
+export interface SyncReviewRun {
+	kind: 'insert' | 'delete';
+	text: string;
+}
+
+/**
+ * The texts the merge view needs for one group of review items (one
+ * author's open items on one conflicted field or block).
+ *
+ * Every member is best-effort except `currentText`: `baseText` is null
+ * when the state the author typed against is no longer recoverable (the
+ * view degrades to two panes), and `proposedText` is null when the
+ * author's intended text cannot be reconstructed either (the view lists
+ * the `runs` as lost content instead). The html twins carry the same
+ * texts in serialized-block form for engines whose merge unit is a whole
+ * block; when `currentHtml` is present, a hand-merged resolution is
+ * expressed in that form too.
+ */
+export interface SyncReviewGroupDescription {
+	/** The field as the author saw it when they typed, or null. */
+	baseText: string | null;
+	/** The field as the author intended it (their edits applied), or null. */
+	proposedText: string | null;
+	/** Serialized-block form of the intended content, when the engine has one. */
+	proposedHtml?: string;
+	/** The field as the live document has it now. */
+	currentText: string;
+	/** Serialized-block form of the current content, when the engine has one. */
+	currentHtml?: string;
+	/** Coalesced display runs of the parked changes. */
+	runs?: SyncReviewRun[];
 }
 
 /**
@@ -199,6 +259,32 @@ export interface SyncReviewSource {
 		objectType: ObjectType,
 		objectId: ObjectID | null,
 		proposalId: string
+	) => void;
+	/**
+	 * The merge view's data supplier: the base/intended/current texts for
+	 * one group of review items (see SyncReviewGroupDescription). Optional;
+	 * without it the framework offers no merge view for this engine's
+	 * items. Returns null when the group cannot be described at all.
+	 */
+	describeReviewGroup?: (
+		objectType: ObjectType,
+		objectId: ObjectID | null,
+		itemIds: string[]
+	) => SyncReviewGroupDescription | null;
+	/**
+	 * Resolves a whole merge-view group with one decision. `dismissed`
+	 * closes every item, authoring nothing. `restored` first re-authors
+	 * content as an ordinary local edit (`mergedContent` verbatim when
+	 * given: a hand-merged result, as plain text or serialized blocks when
+	 * the description carried `currentHtml`; the reconstructed intended
+	 * content otherwise), then closes every item as restored.
+	 */
+	resolveReviewGroup?: (
+		objectType: ObjectType,
+		objectId: ObjectID | null,
+		itemIds: string[],
+		resolution: 'restored' | 'dismissed',
+		mergedContent?: string
 	) => void;
 }
 
@@ -358,6 +444,26 @@ export interface SyncManager {
 		objectType: ObjectType,
 		objectId: ObjectID | null,
 		proposalId: string
+	) => void;
+	/**
+	 * The merge view's data supplier (engines with an escalation lane;
+	 * see SyncReviewSource.describeReviewGroup).
+	 */
+	describeReviewGroup?: (
+		objectType: ObjectType,
+		objectId: ObjectID | null,
+		itemIds: string[]
+	) => SyncReviewGroupDescription | null;
+	/**
+	 * Resolves a whole merge-view group with one decision (see
+	 * SyncReviewSource.resolveReviewGroup).
+	 */
+	resolveReviewGroup?: (
+		objectType: ObjectType,
+		objectId: ObjectID | null,
+		itemIds: string[],
+		resolution: 'restored' | 'dismissed',
+		mergedContent?: string
 	) => void;
 	unload: ( objectType: ObjectType, objectId: ObjectID ) => void;
 	unloadAll: () => void;

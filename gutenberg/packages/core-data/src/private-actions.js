@@ -224,6 +224,82 @@ export const restoreSyncProposal =
 		);
 	};
 
+/**
+ * Asks the active sync engine for the merge-view texts of one review
+ * group (base, intended, and current content; see the sync package's
+ * SyncReviewGroupDescription). Returns null when the engine has no merge
+ * supplier or cannot describe the group.
+ *
+ * @param {string}        kind     Entity kind.
+ * @param {string}        name     Entity name.
+ * @param {string|number} recordId Record ID.
+ * @param {string[]}      itemIds  The group's review item ids.
+ *
+ * @return {Object|null} The group description, or null.
+ */
+export const describeSyncReviewGroup =
+	( kind, name, recordId, itemIds ) => () =>
+		getSyncManager()?.describeReviewGroup?.(
+			`${ kind }/${ name }`,
+			recordId,
+			itemIds
+		) ?? null;
+
+/**
+ * Resolves a whole merge-view group with one decision. `dismissed`
+ * closes every item without authoring; `restored` re-authors content
+ * first (the hand-merged content when given, the reconstructed intended
+ * content otherwise), then closes every item.
+ *
+ * @param {string}        kind            Entity kind.
+ * @param {string}        name            Entity name.
+ * @param {string|number} recordId        Record ID.
+ * @param {string[]}      itemIds         The group's review item ids.
+ * @param {string}        resolution      'restored' or 'dismissed'.
+ * @param {string}        [mergedContent] Hand-merged content to author.
+ */
+export const resolveSyncReviewGroup =
+	( kind, name, recordId, itemIds, resolution, mergedContent ) => () => {
+		getSyncManager()?.resolveReviewGroup?.(
+			`${ kind }/${ name }`,
+			recordId,
+			itemIds,
+			resolution,
+			mergedContent
+		);
+	};
+
+/**
+ * Opens the merge view for a group of sync review items. The stored ids
+ * are a SEED: the merge view recomputes the full group (one author, one
+ * field) from the open items when it opens.
+ *
+ * @param {string}        kind     Entity kind.
+ * @param {string}        name     Entity name.
+ * @param {string|number} recordId Record ID.
+ * @param {string[]}      itemIds  Seed review item ids.
+ *
+ * @return {Object} Action object.
+ */
+export function openSyncReviewMerge( kind, name, recordId, itemIds ) {
+	return {
+		type: 'OPEN_SYNC_REVIEW_MERGE',
+		kind,
+		name,
+		recordId,
+		itemIds,
+	};
+}
+
+/**
+ * Closes the merge view.
+ *
+ * @return {Object} Action object.
+ */
+export function closeSyncReviewMerge() {
+	return { type: 'CLOSE_SYNC_REVIEW_MERGE' };
+}
+
 export const setCollaborationSupported =
 	( supported ) =>
 	( { dispatch } ) => {

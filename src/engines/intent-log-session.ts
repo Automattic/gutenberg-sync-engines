@@ -189,6 +189,41 @@ export interface IntentLogSession extends EngineSessionCodec {
 	setUndoRetainSeq: ( seq: number | null ) => void;
 
 	/**
+	 * Pins the replica's log retention for the review lane: the smallest
+	 * baseSeq among open LOCAL proposals the merge view may still need to
+	 * reconstruct (base document plus own-row replay). Independent of the
+	 * observed seq and the undo pin; the effective floor is the minimum of
+	 * all three. `null` releases the pin.
+	 */
+	setReviewRetainSeq: ( seq: number | null ) => void;
+
+	/**
+	 * The retained accepted rows from an absolute seq (clamped to the
+	 * retained floor) up to the cursor, with each row's landing seq:
+	 * read-only, for the merge view's own-row replay.
+	 */
+	getRetainedEntries: (
+		fromSeq: number
+	) => Array< { seq: number; entry: IntentEnvelope } >;
+
+	/**
+	 * The position of an intent in this session's own authoring order, or
+	 * null for intents this session did not author (peers' rows, own rows
+	 * authored before a reload). The merge view's replay interleaves own
+	 * accepted rows and parked payloads by it.
+	 */
+	getAuthoredOrder: ( intentId: string ) => number | null;
+
+	/**
+	 * The ORIGINAL envelope of an intent this session authored, or null
+	 * (peers' rows, own rows authored before a reload). The log holds
+	 * server-TRANSFORMED forms; the merge view's replay substitutes the
+	 * originals so the intended text reconstructs in its own frame,
+	 * exactly.
+	 */
+	getAuthoredIntent: ( intentId: string ) => IntentEnvelope | null;
+
+	/**
 	 * The document at an absolute log position within the retained window —
 	 * the "state before/after row N" an inverse-intent derivation reads.
 	 * Read-only. Null pre-snapshot or below the retained floor.
@@ -240,6 +275,13 @@ export interface IntentLogSession extends EngineSessionCodec {
 
 	/** Number of authored intents not yet settled by the server. */
 	getPendingCount: () => number;
+
+	/**
+	 * The authored intents not yet settled by the server (the outbox), in
+	 * authoring order. The in-flight tail of a burst the merge view's
+	 * intended-text replay must not miss. Read-only copies.
+	 */
+	getPendingIntents: () => IntentEnvelope[];
 
 	/**
 	 * Cancels a set of authored intents that are ALL still unacked —
@@ -378,6 +420,36 @@ export function createIntentLogSession(
 	 * other's retention.
 	 */
 	let undoRetainSeq: number | null = null;
+	/*
+	 * The review lane's retention pin (see setReviewRetainSeq): keeps the
+	 * log sliceable from the oldest open local proposal's baseSeq so the
+	 * merge view can reconstruct its base and replay.
+	 */
+	let reviewRetainSeq: number | null = null;
+	/*
+	 * This session's own authored intents: the position in authoring
+	 * order AND the ORIGINAL envelope, by intentId (see getAuthoredOrder
+	 * and getAuthoredIntent). The log keeps the server's TRANSFORMED
+	 * forms; the merge view's replay needs the payloads as authored, in
+	 * their own frame, to reconstruct the intended text exactly. Bounded
+	 * FIFO: entries far older than any open proposal are useless, and
+	 * the merge view degrades cleanly when one is missing.
+	 */
+	const authoredIntents = new Map<
+		string,
+		{ order: number; intent: IntentEnvelope }
+	>();
+	let authoredCount = 0;
+	const noteAuthored = ( intent: IntentEnvelope ): void => {
+		authoredIntents.set( intent.intentId, {
+			order: authoredCount++,
+			intent,
+		} );
+		if ( authoredIntents.size > 512 ) {
+			const oldest = authoredIntents.keys().next().value as string;
+			authoredIntents.delete( oldest );
+		}
+	};
 
 	const notifyChange = () => {
 		changeListeners.forEach( ( listener ) => listener() );
@@ -414,10 +486,14 @@ export function createIntentLogSession(
 	 */
 	const applyRetention = (): void => {
 		if ( replica ) {
-			replica.retainFrom =
-				null === undoRetainSeq
-					? observedSeq
-					: Math.min( observedSeq, undoRetainSeq );
+			let floor = observedSeq;
+			if ( null !== undoRetainSeq ) {
+				floor = Math.min( floor, undoRetainSeq );
+			}
+			if ( null !== reviewRetainSeq ) {
+				floor = Math.min( floor, reviewRetainSeq );
+			}
+			replica.retainFrom = floor;
 		}
 	};
 
@@ -749,6 +825,7 @@ export function createIntentLogSession(
 				baseSeq: replica.cursor,
 				txnId: authorOptions.txnId,
 			} );
+			noteAuthored( intent );
 			authorIntent( replica, intent );
 			emitIntent( intent );
 			notifyChange();
@@ -784,6 +861,7 @@ export function createIntentLogSession(
 					baseSeq,
 					txnId: batchOptions.txnId,
 				} );
+				noteAuthored( intent );
 				authorIntent( replica!, intent );
 				emitIntent( intent );
 				return intent;
@@ -815,6 +893,32 @@ export function createIntentLogSession(
 			undoRetainSeq = seq;
 			applyRetention();
 		},
+
+		setReviewRetainSeq: ( seq ) => {
+			reviewRetainSeq = seq;
+			applyRetention();
+		},
+
+		getRetainedEntries: ( fromSeq ) => {
+			if ( ! replica ) {
+				return [];
+			}
+			const start = Math.max( fromSeq, replica.firstSeq );
+			const entries: Array< { seq: number; entry: IntentEnvelope } > = [];
+			for ( let seq = start; seq < replica.cursor; seq++ ) {
+				entries.push( {
+					seq,
+					entry: replica.log[ seq - replica.firstSeq ],
+				} );
+			}
+			return entries;
+		},
+
+		getAuthoredOrder: ( intentId ) =>
+			authoredIntents.get( intentId )?.order ?? null,
+
+		getAuthoredIntent: ( intentId ) =>
+			authoredIntents.get( intentId )?.intent ?? null,
 
 		getDocumentAt: ( seq ) => {
 			if ( ! replica || seq < replica.firstSeq || seq > replica.cursor ) {
@@ -860,6 +964,8 @@ export function createIntentLogSession(
 			proposalsChangeListeners.add( listener );
 		},
 		getPendingCount: () => replica?.outbox.length ?? 0,
+
+		getPendingIntents: () => [ ...( replica?.outbox ?? [] ) ],
 
 		cancelPendingIntents: ( intentIds: string[] ) => {
 			if ( ! replica || 0 === intentIds.length ) {

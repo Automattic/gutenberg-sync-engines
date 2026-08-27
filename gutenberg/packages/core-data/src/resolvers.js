@@ -226,20 +226,193 @@ export const getEntityRecord =
 				/*
 				 * Escalation notice bookkeeping shared between the
 				 * onProposalsChange and onEscalation handlers below. A burst
-				 * of conflicts (e.g. two collaborators typing in the same
-				 * paragraph) would stack one notice per parked edit; past
-				 * AGGREGATE_NOTICE_THRESHOLD open items the per-item notices
-				 * are swept and replaced by a single counter notice pointing
-				 * at the review panel. onProposalsChange always fires before
-				 * the same batch's onEscalation calls, so the flag reliably
-				 * suppresses per-item notices while aggregated.
+				 * of same-paragraph typing parks one proposal per keystroke;
+				 * notices GROUP those the way the merge view does (one
+				 * conflict per author, block, and field), so the user sees
+				 * one combined notice per conflict instead of one per
+				 * character. Past AGGREGATE_NOTICE_THRESHOLD open conflicts
+				 * the per-conflict notices are swept and replaced by a single
+				 * counter notice pointing at the review panel.
+				 * onProposalsChange always fires before the same batch's
+				 * onEscalation calls, so a grouped item's per-item notice is
+				 * reliably suppressed.
 				 */
 				const AGGREGATE_NOTICE_THRESHOLD = 3;
-				const escalationNoticeId = ( proposalId ) =>
-					`core-data-sync-escalation-${ kind }-${ name }-${ key }-${ proposalId }`;
+				const escalationNoticeId = ( unitId ) =>
+					`core-data-sync-escalation-${ kind }-${ name }-${ key }-${ unitId }`;
 				const aggregateNoticeId = `core-data-sync-review-aggregate-${ kind }-${ name }-${ key }`;
 				let aggregateNoticeActive = false;
-				let knownProposalIds = [];
+				// Active per-conflict notice units (grouped-conflict keys
+				// and solo proposal ids), for sweeping.
+				let knownNoticeIds = [];
+				/*
+				 * Per-group membership signatures: a group notice refreshes
+				 * only when its members change (another keystroke parked, a
+				 * member resolved), so a notice the user dismissed is not
+				 * re-created by unrelated change events.
+				 */
+				let groupSignatures = new Map();
+				// The latest open items by id, so an escalation notice can
+				// tell whether its item qualifies for the merge view.
+				let openItemsById = new Map();
+
+				/*
+				 * The notice-level grouping key: one conflict per author,
+				 * block, and field (the merge view's grouping), applied to
+				 * any parked text or property conflict, local or remote.
+				 * Kses approvals and parked insertions keep their per-item
+				 * notices: different semantics, and they already arrive one
+				 * per action, not one per keystroke.
+				 */
+				const noticeGroupKey = ( item ) => {
+					if (
+						item.proposedInsertion ||
+						! item.targetField ||
+						'requires-approval' === item.reason
+					) {
+						return null;
+					}
+					let anchor = 'doc';
+					if ( item.targetId ) {
+						anchor = item.targetId;
+					} else if ( undefined !== item.targetIndex ) {
+						anchor = `i${ item.targetIndex }`;
+					}
+					return `group-${ item.actorId }-${ anchor }-${ item.targetField }`;
+				};
+
+				/**
+				 * Creates (or refreshes) the ONE combined notice for a
+				 * grouped conflict. The lost-content preview is the engine's
+				 * coalesced merge-view runs when the group can open the
+				 * merge view (so a burst reads as its combined text, not per
+				 * keystroke), the items' own summaries otherwise. Review
+				 * opens the merge view; Restore/Discard settle every member.
+				 *
+				 * @param {string} groupKey   The group's notice unit key.
+				 * @param {Array}  groupItems The group's open review items.
+				 */
+				const showGroupNotice = ( groupKey, groupItems ) => {
+					const [ first ] = groupItems;
+					const ids = groupItems.map( ( item ) => item.id );
+					const mergeable = groupItems.every(
+						( item ) => item.supportsMergeView
+					);
+					let lost = '';
+					let haveRuns = false;
+					if ( mergeable && syncManager?.describeReviewGroup ) {
+						const description = syncManager.describeReviewGroup(
+							objectType,
+							objectId,
+							ids
+						);
+						if ( description?.runs ) {
+							// Deletions have no content to quote; the base
+							// message alone covers them.
+							haveRuns = true;
+							lost = description.runs
+								.filter( ( run ) => 'insert' === run.kind )
+								.map( ( run ) => run.text )
+								.join( ' ' );
+						} else if (
+							'string' === typeof description?.proposedText
+						) {
+							// The two-pane property variant: the lost value.
+							lost = description.proposedText;
+						}
+					}
+					if ( ! lost && ! haveRuns ) {
+						// The engine-stamped changeset summary (a peer's
+						// burst as one string) beats joining member
+						// summaries, which reads "b c " for a burst.
+						if ( undefined !== first.groupSummary ) {
+							lost = first.groupSummary;
+						} else {
+							lost = groupItems
+								.map( ( item ) => item.summary ?? item.excerpt )
+								.filter( Boolean )
+								.join( ' ' );
+						}
+					}
+					if ( lost.length > 80 ) {
+						lost = `${ lost.slice( 0, 79 ) }…`;
+					}
+					let base;
+					if ( first.isLocal ) {
+						base = _n(
+							"One of your recent edits conflicted with a collaborator's change and was set aside.",
+							"Your recent edits conflicted with a collaborator's change and were set aside.",
+							groupItems.length
+						);
+					} else {
+						base = _n(
+							"A collaborator's edit conflicted with recent changes and was set aside.",
+							"A collaborator's edits conflicted with recent changes and were set aside.",
+							groupItems.length
+						);
+					}
+					const content = lost
+						? sprintf(
+								/* translators: 1: conflict description. 2: the lost content. */
+								__( '%1$s Lost content: “%2$s”' ),
+								base,
+								lost
+						  )
+						: base;
+					const noticeId = escalationNoticeId( groupKey );
+					const closeAll = ( resolution ) => {
+						for ( const proposalId of ids ) {
+							if ( 'restored' === resolution ) {
+								dispatch.restoreSyncProposal(
+									kind,
+									name,
+									key,
+									proposalId
+								);
+							} else {
+								dispatch.resolveSyncProposal(
+									kind,
+									name,
+									key,
+									proposalId,
+									'dismissed'
+								);
+							}
+						}
+						registry
+							.dispatch( noticesStore )
+							.removeNotice( noticeId );
+					};
+					const primaryAction =
+						mergeable && first.isLocal
+							? {
+									label: __( 'Review' ),
+									onClick: () =>
+										dispatch.openSyncReviewMerge(
+											kind,
+											name,
+											key,
+											ids
+										),
+							  }
+							: {
+									label: __( 'Restore' ),
+									onClick: () => closeAll( 'restored' ),
+							  };
+					registry
+						.dispatch( noticesStore )
+						.createNotice( 'warning', content, {
+							id: noticeId,
+							isDismissible: true,
+							actions: [
+								primaryAction,
+								{
+									label: __( 'Discard' ),
+									onClick: () => closeAll( 'dismissed' ),
+								},
+							],
+						} );
+				};
 
 				// Load the entity record for syncing. Do not await promise.
 				// NOTE: when this resolver runs before block types register,
@@ -296,23 +469,41 @@ export const getEntityRecord =
 								key,
 								items
 							);
+							openItemsById = new Map(
+								items.map( ( item ) => [ item.id, item ] )
+							);
 
 							const notices = registry.dispatch( noticesStore );
-							const openIds = new Set(
-								items.map( ( item ) => item.id )
-							);
+
+							// Partition into grouped conflicts (one notice
+							// unit per author/block/field) and solo items.
+							const groups = new Map();
+							const unitIds = new Set();
+							for ( const item of items ) {
+								const groupKey = noticeGroupKey( item );
+								if ( null === groupKey ) {
+									unitIds.add( item.id );
+									continue;
+								}
+								unitIds.add( groupKey );
+								if ( ! groups.has( groupKey ) ) {
+									groups.set( groupKey, [] );
+								}
+								groups.get( groupKey ).push( item );
+							}
 							const useAggregate =
-								items.length > AGGREGATE_NOTICE_THRESHOLD;
+								unitIds.size > AGGREGATE_NOTICE_THRESHOLD;
 
 							if ( useAggregate && ! aggregateNoticeActive ) {
-								// Entering aggregate mode: sweep per-item
+								// Entering aggregate mode: sweep per-conflict
 								// notices so they don't stack under the
 								// counter notice.
-								for ( const id of knownProposalIds ) {
+								for ( const id of knownNoticeIds ) {
 									notices.removeNotice(
 										escalationNoticeId( id )
 									);
 								}
+								groupSignatures = new Map();
 							}
 							aggregateNoticeActive = useAggregate;
 
@@ -320,13 +511,13 @@ export const getEntityRecord =
 								notices.createNotice(
 									'warning',
 									sprintf(
-										/* translators: %d: number of edits set aside for review. */
+										/* translators: %d: number of conflicts set aside for review. */
 										_n(
-											'%d edit was set aside because of conflicting changes. Review it in the Collaboration panel of the document settings.',
-											'%d edits were set aside because of conflicting changes. Review them in the Collaboration panel of the document settings.',
-											items.length
+											'%d edit conflict was set aside for review. Find it in the Collaboration panel of the document settings.',
+											'%d edit conflicts were set aside for review. Find them in the Collaboration panel of the document settings.',
+											unitIds.size
 										),
-										items.length
+										unitIds.size
 									),
 									{
 										id: aggregateNoticeId,
@@ -335,25 +526,63 @@ export const getEntityRecord =
 								);
 							} else {
 								notices.removeNotice( aggregateNoticeId );
-								// Remove notices for proposals resolved
+								// Remove notices whose conflict closed
 								// elsewhere (another collaborator, the review
-								// panel, or another tab).
-								for ( const id of knownProposalIds ) {
-									if ( ! openIds.has( id ) ) {
+								// panel or merge view, or another tab).
+								for ( const id of knownNoticeIds ) {
+									if ( ! unitIds.has( id ) ) {
 										notices.removeNotice(
 											escalationNoticeId( id )
 										);
 									}
 								}
+								// One combined notice per grouped conflict,
+								// refreshed in place as its membership
+								// changes (a burst's later keystrokes fold
+								// into the one notice).
+								for ( const [
+									groupKey,
+									groupItems,
+								] of groups ) {
+									const signature = groupItems
+										.map( ( item ) => item.id )
+										.join();
+									if (
+										groupSignatures.get( groupKey ) ===
+										signature
+									) {
+										continue;
+									}
+									groupSignatures.set( groupKey, signature );
+									showGroupNotice( groupKey, groupItems );
+								}
+								for ( const groupKey of [
+									...groupSignatures.keys(),
+								] ) {
+									if ( ! groups.has( groupKey ) ) {
+										groupSignatures.delete( groupKey );
+									}
+								}
 							}
 
-							knownProposalIds = items.map( ( item ) => item.id );
+							knownNoticeIds = [ ...unitIds ];
 						},
 						onEscalation: ( { isLocal, proposalId, summary } ) => {
 							// While aggregated, the counter notice and the
 							// review panel carry the information; skip the
 							// per-item notice.
 							if ( aggregateNoticeActive ) {
+								return;
+							}
+							// A grouped conflict already has its combined
+							// notice (created by the onProposalsChange that
+							// precedes this call); one notice per keystroke
+							// is exactly what grouping removes.
+							const groupedItem = openItemsById.get( proposalId );
+							if (
+								groupedItem &&
+								null !== noticeGroupKey( groupedItem )
+							) {
 								return;
 							}
 							const base = isLocal
@@ -393,16 +622,36 @@ export const getEntityRecord =
 									.dispatch( noticesStore )
 									.removeNotice( noticeId );
 							};
+							/*
+							 * An item the engine can serve through the merge
+							 * view gets a Review action opening that dialog
+							 * (resolving there sweeps this notice); other
+							 * items keep the direct Restore verb.
+							 */
+							const item = openItemsById.get( proposalId );
+							const primaryAction =
+								item?.supportsMergeView && item?.isLocal
+									? {
+											label: __( 'Review' ),
+											onClick: () =>
+												dispatch.openSyncReviewMerge(
+													kind,
+													name,
+													key,
+													[ proposalId ]
+												),
+									  }
+									: {
+											label: __( 'Restore' ),
+											onClick: () => close( 'restored' ),
+									  };
 							registry
 								.dispatch( noticesStore )
 								.createNotice( 'warning', content, {
 									id: noticeId,
 									isDismissible: true,
 									actions: [
-										{
-											label: __( 'Restore' ),
-											onClick: () => close( 'restored' ),
-										},
+										primaryAction,
 										{
 											label: __( 'Discard' ),
 											onClick: () => close( 'dismissed' ),

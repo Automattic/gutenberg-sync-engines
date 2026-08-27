@@ -527,4 +527,146 @@ test.describe( 'Collaboration - de-rtc engine', () => {
 			expect( blocks1 ).toEqual( blocks2 );
 		} ).toPass( { timeout: 20000 } );
 	} );
+
+	test( 'the merge view resolves a parked proposal with a hand-merged result', async ( {
+		collaborationUtils,
+		requestUtils,
+		editor,
+	} ) => {
+		test.setTimeout( 120_000 );
+
+		const post = await requestUtils.createPost( {
+			title: 'DE-RTC Merge View Test',
+			status: 'draft',
+			content:
+				'<!-- wp:paragraph -->\n<p>Contested paragraph words</p>\n<!-- /wp:paragraph -->',
+		} );
+
+		await openSession( collaborationUtils, post.id );
+		const { editor2, page2 } = collaborationUtils;
+		const page1 = editor.page;
+
+		// The review-lane spec's deterministic provocation: hold user two's
+		// SYNC polls so their rewrite proposes from the stale base while
+		// user one's rewrite lands. The same-block overlap parks, authored
+		// by user two.
+		const paragraph1 = editor.canvas
+			.locator( '[data-type="core/paragraph"]' )
+			.first();
+		const paragraph2 = editor2.canvas
+			.locator( '[data-type="core/paragraph"]' )
+			.first();
+		const isSyncPoll = ( url: URL ) =>
+			decodeURIComponent( url.href ).includes( '/wp-sync/v1/updates' );
+		const isAutosaveCommit = ( response: {
+			url: () => string;
+			request: () => { method: () => string };
+		} ) =>
+			decodeURIComponent( response.url() ).includes(
+				`/wp/v2/posts/${ post.id }/autosaves`
+			) && 'POST' === response.request().method();
+
+		const heldPolls: Array< { continue: () => Promise< void > } > = [];
+		await page2.route( isSyncPoll, ( route ) => {
+			heldPolls.push( route );
+		} );
+
+		const userOneCommit = page1.waitForResponse( isAutosaveCommit, {
+			timeout: 30000,
+		} );
+		await paragraph1.click( { clickCount: 3 } );
+		await page1.keyboard.type( 'Rewrite by user one', { delay: 50 } );
+		expect( ( await userOneCommit ).ok() ).toBe( true );
+
+		const userTwoCommit = page2.waitForResponse( isAutosaveCommit, {
+			timeout: 30000,
+		} );
+		await paragraph2.click( { clickCount: 3 } );
+		// ONE input event (insertText replaces the whole selection), so the
+		// whole rewrite rides ONE proposal and the parked row stores it
+		// complete. Per-keystroke typing would commit and park only the
+		// first coalesced slice.
+		await page2.keyboard.insertText( 'Rewrite by user two' );
+		expect( ( await userTwoCommit ).ok() ).toBe( true );
+
+		for ( const route of heldPolls.splice( 0 ) ) {
+			await route.continue().catch( () => {} );
+		}
+		await page2.unroute( isSyncPoll );
+
+		// Let the room settle (the parked row travels on the next poll and
+		// the dialog freezes its panes on open).
+		await page2.waitForTimeout( 3000 );
+
+		// The parked row is user two's own work, so THEIR inline card
+		// offers the merge view.
+		const mergeButton = page2
+			.locator( '.editor-collaboration-pending-card__body' )
+			.getByRole( 'button', { name: 'Open merge view' } )
+			.first();
+		await expect( mergeButton ).toBeVisible( { timeout: 20000 } );
+		await mergeButton.click();
+
+		// One dialog: the stored proposed blocks beside the live canonical
+		// block.
+		const dialog = page2.getByRole( 'dialog', {
+			name: 'Review conflicting edits',
+		} );
+		await expect( dialog ).toBeVisible();
+		await expect(
+			dialog.getByRole( 'heading', { name: 'Your version' } )
+		).toBeVisible();
+		await expect(
+			dialog.locator( '.editor-collaboration-merge-dialog__pane' ).first()
+		).toContainText( 'Rewrite by user two' );
+		await expect(
+			dialog.locator( '.editor-collaboration-merge-dialog__pane' ).last()
+		).toContainText( 'Rewrite by user one' );
+
+		// Hand-merge: de-rtc's merge unit is the serialized block, so the
+		// editor surface holds block markup.
+		await dialog
+			.getByRole( 'button', { name: 'Edit a merged result' } )
+			.click();
+		const textarea = dialog.getByRole( 'textbox', {
+			name: 'Merged result',
+		} );
+		await expect( textarea ).toBeVisible();
+		await textarea.fill(
+			'<!-- wp:paragraph -->\n<p>Merged by hand</p>\n<!-- /wp:paragraph -->'
+		);
+		// A confirm racing a late-arriving folded revision refreshes the
+		// panes and asks again (by design), so allow a second click.
+		await expect( async () => {
+			const apply = dialog.getByRole( 'button', {
+				name: 'Apply merged result',
+			} );
+			if ( ( await apply.count() ) > 0 ) {
+				await apply.click();
+			}
+			await expect( dialog ).toBeHidden( { timeout: 3000 } );
+		} ).toPass( { timeout: 20000 } );
+
+		// The merged block lands on the resolver's canvas, re-proposes as
+		// an ordinary change, and converges on the peer.
+		await expect( paragraph2 ).toContainText( 'Merged by hand', {
+			timeout: 15000,
+		} );
+		await expect( paragraph1 ).toContainText( 'Merged by hand', {
+			timeout: 20000,
+		} );
+
+		// The parked item closed for both users.
+		await expect( async () => {
+			const counts = await Promise.all( [
+				page1
+					.locator( '.editor-collaboration-pending-card__body' )
+					.count(),
+				page2
+					.locator( '.editor-collaboration-pending-card__body' )
+					.count(),
+			] );
+			expect( counts[ 0 ] + counts[ 1 ] ).toBe( 0 );
+		} ).toPass( { timeout: 20000 } );
+	} );
 } );

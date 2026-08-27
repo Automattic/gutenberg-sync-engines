@@ -7,6 +7,32 @@ them under a version heading when a version ships.
 
 ## Unreleased
 
+### Added
+
+-   A merge dialog for conflicting edits, shared by the intent-log and
+    de-rtc engines. When a burst of typing is set aside because it
+    conflicted with a collaborator's change, one dialog now covers the
+    whole conflicted paragraph instead of one card per keystroke: it
+    shows the full text you meant to write next to the current text
+    (compared word by word, and against the text you originally saw when
+    the engine can still recover it), and resolves with Keep current,
+    Restore mine, or a hand-edited merged result. It opens from the
+    inline conflict card, the sidebar conflict panel, and the conflict
+    notice. Intent-log serves parked text edits and lost title or other
+    property values; de-rtc serves its parked proposals, lost property
+    values, and contested blocks (which now also record the text both
+    sides started from, so their dialog always has all three versions).
+    Conflict notices group the same way: a parked typing burst raises
+    one notice with its combined lost content instead of one notice per
+    character, and the notice's Review action opens the merge dialog.
+    A burst is treated as ONE changeset even when its first keystroke
+    already merged: the dialog's current pane shows the document
+    without that stray fragment, the pending-content summaries show
+    the burst's full text ("abc ", not "b c "), choosing to keep the
+    current version removes the fragment along with the parked
+    remainder, and the intended text is rebuilt from the keystrokes
+    exactly as they were typed.
+
 ### Fixed
 
 -   De-rtc sessions could silently stop syncing after a failed network

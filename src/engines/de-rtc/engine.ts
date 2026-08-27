@@ -40,6 +40,7 @@ import {
 	DE_RTC_REMOTE_ORIGIN,
 	DE_RTC_RESTORE_ORIGIN,
 	parseCanonicalBlocks,
+	serializeCanonicalBlocks,
 	unflattenProperties,
 } from './doc-bridge';
 import {
@@ -66,6 +67,60 @@ const REVIEW_REASON_MAP: Record< string, string > = {
 	'manual-conflict-required': 'frame-conflict',
 	'property-conflict': 'frame-conflict',
 };
+
+/**
+ * The plain text of serialized block content, for merge-view panes:
+ * block comments and tags stripped, whitespace collapsed.
+ *
+ * @param html Serialized block content.
+ * @return Plain text.
+ */
+function blockTextOf( html: string ): string {
+	return html
+		.replace( /<!--[\s\S]*?-->/g, ' ' )
+		.replace( /<[^>]*>/g, ' ' )
+		.replace( /\s+/g, ' ' )
+		.trim();
+}
+
+/**
+ * A property register value as merge-view pane text: strings verbatim,
+ * everything else in JSON form.
+ *
+ * @param value Register value.
+ * @return Display text.
+ */
+function propertyDisplayText( value: unknown ): string {
+	if ( undefined === value ) {
+		return '';
+	}
+	if ( 'string' === typeof value ) {
+		return value;
+	}
+	return JSON.stringify( value );
+}
+
+/**
+ * A hand-merged property value in the register's own shape: strings stay
+ * strings; other register types round-trip through JSON when possible.
+ *
+ * @param originalValue The register's parked value.
+ * @param mergedContent The hand-merged text.
+ * @return The value to re-apply.
+ */
+function mergedPropertyValue(
+	originalValue: unknown,
+	mergedContent: string
+): unknown {
+	if ( 'string' === typeof originalValue ) {
+		return mergedContent;
+	}
+	try {
+		return JSON.parse( mergedContent );
+	} catch {
+		return mergedContent;
+	}
+}
 
 /**
  * An awareness-only codec for de-rtc collection rooms: presence flows,
@@ -166,6 +221,20 @@ export function createDeRtcEngine(): SyncEngine & {
 		adoptContested: ( index: number ) => boolean;
 		/** Reject a contest, keeping the local block. */
 		rejectContested: ( index: number ) => boolean;
+		/** The merge view's data supplier for this entity's items. */
+		describeGroup: (
+			itemIds: string[]
+		) => NonNullable<
+			ReturnType<
+				NonNullable< SyncReviewSource[ 'describeReviewGroup' ] >
+			>
+		> | null;
+		/** The merge view's resolution verb for this entity's items. */
+		resolveGroup: (
+			itemIds: string[],
+			resolution: 'restored' | 'dismissed',
+			mergedContent?: string
+		) => void;
 	}
 
 	/** The contested-item id convention on the review surface. */
@@ -233,6 +302,21 @@ export function createDeRtcEngine(): SyncEngine & {
 				return;
 			}
 			handle?.restore( proposalId );
+		},
+		describeReviewGroup: ( objectType, objectId, itemIds ) =>
+			entityReviews
+				.get( reviewKey( objectType, objectId ) )
+				?.describeGroup( itemIds ) ?? null,
+		resolveReviewGroup: (
+			objectType,
+			objectId,
+			itemIds,
+			resolution,
+			mergedContent
+		) => {
+			entityReviews
+				.get( reviewKey( objectType, objectId ) )
+				?.resolveGroup( itemIds, resolution, mergedContent );
 		},
 	};
 
@@ -392,13 +476,21 @@ export function createDeRtcEngine(): SyncEngine & {
 			 */
 			const contested = new Map<
 				number,
-				{ version: string; html: string; edits: number }
+				{
+					version: string;
+					html: string;
+					baseHtml?: string;
+					edits: number;
+				}
 			>();
 			bridge.onContested( ( event ) => {
 				const existing = contested.get( event.index );
 				contested.set( event.index, {
 					version: event.version,
 					html: event.html,
+					// The base is recorded once, at the first collision;
+					// refreshes keep it.
+					baseHtml: existing?.baseHtml ?? event.baseHtml,
 					edits: ( existing?.edits ?? 0 ) + 1,
 				} );
 				notifyKey( key );
@@ -422,12 +514,193 @@ export function createDeRtcEngine(): SyncEngine & {
 					: text;
 			};
 
+			/*
+			 * Which parked rows the merge view can serve: the LOCAL
+			 * author's genuine merge conflicts (whole-proposal or
+			 * salvaged blocks) and property-register losses. Kses rows
+			 * keep their approval cards (different capability
+			 * semantics, different reviewer), and remote items keep
+			 * their cards in v1.
+			 */
+			const parkedSupportsMergeView = (
+				parked: DeRtcParkedProposal
+			): boolean => {
+				if ( parked.authorClientId !== ydoc.clientID ) {
+					return false;
+				}
+				if ( parked.property?.name ) {
+					return 'property-conflict' === parked.reason;
+				}
+				return (
+					'manual-conflict-required' === parked.reason &&
+					( parked.changedBlocks?.length ?? 0 ) > 0
+				);
+			};
+
+			const describeGroup = ( itemIds: string[] ) => {
+				const [ firstId ] = itemIds;
+				if ( undefined === firstId || ! bridge.isBootstrapped() ) {
+					return null;
+				}
+				const contestIndex = contestedIndexOf( firstId );
+				if ( null !== contestIndex ) {
+					// A contested block: mine is the LIVE local block,
+					// current is the canonical form cached with the
+					// contest, and the base was recorded when the contest
+					// first arose (the three-pane-guaranteed case).
+					const entry = contested.get( contestIndex );
+					const localBlock = localBlocks()[ contestIndex ];
+					if ( ! entry || ! localBlock ) {
+						return null;
+					}
+					const mineHtml = serializeCanonicalBlocks( [ localBlock ] );
+					return {
+						baseText:
+							undefined !== entry.baseHtml
+								? blockTextOf( entry.baseHtml )
+								: null,
+						proposedText: blockTextOf( mineHtml ),
+						proposedHtml: mineHtml,
+						currentText: blockTextOf( entry.html ),
+						currentHtml: entry.html,
+					};
+				}
+				const parked = review
+					.getOpen()
+					.find( ( candidate ) => candidate.proposalId === firstId );
+				if ( ! parked || ! parkedSupportsMergeView( parked ) ) {
+					return null;
+				}
+				if ( parked.property?.name ) {
+					// The two-pane property variant: both values are
+					// single strings.
+					return {
+						baseText: null,
+						proposedText: propertyDisplayText(
+							parked.property.value
+						),
+						currentText: propertyDisplayText(
+							bridge.buildProperties()[ parked.property.name ]
+						),
+					};
+				}
+				// Parked blocks: mine is stored with the row; current is
+				// the block(s) at the recorded indices in the live doc.
+				// Base is null in v1 (only a version label is stored).
+				const changed = parked.changedBlocks ?? [];
+				const proposedHtml = changed
+					.map( ( block ) => String( block.html ?? '' ) )
+					.join( '\n\n' );
+				const local = localBlocks();
+				const currentHtml = changed
+					.map( ( block ) => {
+						const localBlock = local[ Number( block.index ) ];
+						if ( ! localBlock ) {
+							return '';
+						}
+						return serializeCanonicalBlocks( [ localBlock ] );
+					} )
+					.filter( ( piece ) => '' !== piece )
+					.join( '\n\n' );
+				return {
+					baseText: null,
+					proposedText: blockTextOf( proposedHtml ),
+					proposedHtml,
+					currentText: blockTextOf( currentHtml ),
+					currentHtml,
+				};
+			};
+
+			const resolveGroup = (
+				itemIds: string[],
+				resolution: 'restored' | 'dismissed',
+				mergedContent?: string
+			) => {
+				for ( const itemId of itemIds ) {
+					const contestIndex = contestedIndexOf( itemId );
+					if ( null !== contestIndex ) {
+						/*
+						 * Contested mapping in the merge view's terms:
+						 * "current" is the canonical form, "mine" the
+						 * live local block. Keep-current adopts
+						 * canonical; restore-mine keeps the local block
+						 * (per-block base honesty carries it into the
+						 * next proposal); a hand-merge re-proposes.
+						 */
+						if ( 'dismissed' === resolution ) {
+							bridge.adoptContestedBlock( contestIndex );
+						} else if ( undefined !== mergedContent ) {
+							bridge.resolveContestedBlockWithMerged(
+								contestIndex,
+								mergedContent
+							);
+						} else {
+							bridge.rejectContestedBlock( contestIndex );
+						}
+						continue;
+					}
+					const parked = review
+						.getOpen()
+						.find(
+							( candidate ) => candidate.proposalId === itemId
+						);
+					if ( ! parked ) {
+						continue;
+					}
+					if ( 'dismissed' === resolution ) {
+						review.resolve( itemId, 'dismissed' );
+						continue;
+					}
+					if ( undefined === mergedContent ) {
+						// Restore-mine is exactly the existing restore.
+						if ( bridge.isBootstrapped() ) {
+							overlayParkedBlocks( parked );
+						}
+						review.resolve( itemId, 'restored' );
+						continue;
+					}
+					// Hand-merged resolution: re-author the merged form
+					// as an ordinary local edit (the restore overlay's
+					// mechanism with different content), then resolve.
+					if ( bridge.isBootstrapped() ) {
+						if ( parked.property?.name ) {
+							applyChanges(
+								unflattenProperties( {
+									[ parked.property.name ]:
+										mergedPropertyValue(
+											parked.property.value,
+											mergedContent
+										),
+								} ),
+								DE_RTC_RESTORE_ORIGIN
+							);
+						} else {
+							overlayParkedBlocks( {
+								...parked,
+								changedBlocks: [
+									{
+										index: Number(
+											parked.changedBlocks?.[ 0 ]
+												?.index ?? 0
+										),
+										html: mergedContent,
+									},
+								],
+							} );
+						}
+					}
+					review.resolve( itemId, 'restored' );
+				}
+			};
+
 			entityReviews.set( key, {
 				review,
 				adoptContested: ( index ) =>
 					bridge.adoptContestedBlock( index ),
 				rejectContested: ( index ) =>
 					bridge.rejectContestedBlock( index ),
+				describeGroup,
+				resolveGroup,
 				getItems: () => [
 					...review.getOpen().map( ( parked ) => ( {
 						id: parked.proposalId,
@@ -447,6 +720,10 @@ export function createDeRtcEngine(): SyncEngine & {
 						// De-rtc addresses blocks positionally: the first
 						// changed block anchors the inline card (B3).
 						targetIndex: parked.changedBlocks?.[ 0 ]?.index,
+						// Property rows carry the register's name as the
+						// merge-view field half.
+						targetField: parked.property?.name,
+						supportsMergeView: parkedSupportsMergeView( parked ),
 					} ) ),
 					...Array.from( contested.entries() ).map(
 						( [ index, item ] ) => ( {
@@ -458,6 +735,7 @@ export function createDeRtcEngine(): SyncEngine & {
 							intentType: 'proposal',
 							summary: contestedExcerpt( item ),
 							targetIndex: index,
+							supportsMergeView: true,
 						} )
 					),
 				],

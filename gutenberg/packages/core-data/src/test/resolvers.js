@@ -695,6 +695,122 @@ describe( 'getEntityRecord', () => {
 		);
 	} );
 
+	it( 'groups a same-field burst into ONE combined notice with the merge-view verbs', async () => {
+		const ENTITIES_WITH_SYNC = [
+			{
+				name: 'post',
+				kind: 'postType',
+				baseURL: '/wp/v2/posts',
+				baseURLParams: { context: 'edit' },
+				syncConfig: {},
+			},
+		];
+		const notices = {
+			createNotice: jest.fn(),
+			removeNotice: jest.fn(),
+		};
+		const registryWithNotices = {
+			batch: ( callback ) => callback(),
+			dispatch: jest.fn( () => notices ),
+		};
+		dispatch.setSyncReviewItems = jest.fn();
+		dispatch.openSyncReviewMerge = jest.fn();
+		// The engine's merge-view supplier: the coalesced burst.
+		syncManager.describeReviewGroup = jest.fn( () => ( {
+			baseText: 'Hello world',
+			proposedText: 'Hello world 123',
+			currentText: 'abc Hello world ',
+			runs: [ { kind: 'insert', text: ' 123' } ],
+		} ) );
+		triggerFetch.mockImplementation( () => ( {
+			json: () => Promise.resolve( { id: 1, title: 'Test Post' } ),
+		} ) );
+
+		await getEntityRecord(
+			'postType',
+			'post',
+			1
+		)( {
+			dispatch,
+			registry: registryWithNotices,
+			resolveSelect: {
+				getEntitiesConfig: jest.fn( () => ENTITIES_WITH_SYNC ),
+				getEditedEntityRecord: jest.fn(),
+			},
+		} );
+
+		const handlers = syncManager.load.mock.calls[ 0 ][ 4 ];
+		const keystroke = ( id, summary ) => ( {
+			id,
+			unitId: id,
+			isLocal: true,
+			actorId: 'actor',
+			reason: 'frame-conflict',
+			intentType: 'insert_text',
+			summary,
+			targetId: 'p1',
+			targetField: 'content',
+			supportsMergeView: true,
+		} );
+
+		// A parked burst: three keystrokes on one field, delivered as the
+		// manager does (list first, then one escalation per item).
+		const burst = [
+			keystroke( 'k1', '1' ),
+			keystroke( 'k2', '2' ),
+			keystroke( 'k3', '3' ),
+		];
+		handlers.onProposalsChange( burst );
+		burst.forEach( ( item ) =>
+			handlers.onEscalation( {
+				isLocal: true,
+				proposalId: item.id,
+				summary: item.summary,
+			} )
+		);
+
+		// ONE combined notice: the coalesced lost content, never one
+		// notice per keystroke, and no aggregate counter (three
+		// keystrokes are one conflict).
+		expect( notices.createNotice ).toHaveBeenCalledTimes( 1 );
+		const [ , content, options ] = notices.createNotice.mock.calls[ 0 ];
+		expect( content ).toContain( '“ 123”' );
+		expect( options.id ).toBe(
+			'core-data-sync-escalation-postType-post-1-group-actor-p1-content'
+		);
+		expect( syncManager.describeReviewGroup ).toHaveBeenCalledWith(
+			'postType/post',
+			1,
+			[ 'k1', 'k2', 'k3' ]
+		);
+
+		// The primary action opens the merge view for the whole group.
+		expect( options.actions[ 0 ].label ).toBe( 'Review' );
+		options.actions[ 0 ].onClick();
+		expect( dispatch.openSyncReviewMerge ).toHaveBeenCalledWith(
+			'postType',
+			'post',
+			1,
+			[ 'k1', 'k2', 'k3' ]
+		);
+
+		// Another keystroke parks: the ONE notice refreshes in place.
+		handlers.onProposalsChange( [ ...burst, keystroke( 'k4', '4' ) ] );
+		expect( notices.createNotice ).toHaveBeenCalledTimes( 2 );
+		expect( notices.createNotice.mock.calls[ 1 ][ 2 ].id ).toBe(
+			options.id
+		);
+
+		// An unchanged list does not re-create the notice (a dismissed
+		// notice stays dismissed).
+		handlers.onProposalsChange( [ ...burst, keystroke( 'k4', '4' ) ] );
+		expect( notices.createNotice ).toHaveBeenCalledTimes( 2 );
+
+		// Resolving the group sweeps its notice.
+		handlers.onProposalsChange( [] );
+		expect( notices.removeNotice ).toHaveBeenCalledWith( options.id );
+	} );
+
 	it( 'provides transient properties when read/write config is supplied', async () => {
 		const POST_RECORD = { id: 1, title: 'Test Post' };
 		const POST_RESPONSE = {

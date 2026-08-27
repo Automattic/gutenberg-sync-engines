@@ -4,8 +4,10 @@ import { PanelBody } from '@wordpress/components';
 import { store as blockEditorStore } from '@wordpress/block-editor';
 import ReviewGroup from './review-group';
 import {
+	canOpenMergeView,
 	groupByUnit,
 	itemAnchorClientId,
+	useOpenMergeView,
 	useReviewData,
 	useResolveReviewItems,
 } from './review-data';
@@ -21,6 +23,7 @@ export default function CollaborationReviewPanel() {
 	const { postType, postId, items, clientIdByTarget, clientIdByIndex } =
 		useReviewData();
 	const onResolve = useResolveReviewItems( postType, postId );
+	const openMergeView = useOpenMergeView( postType, postId );
 	const { selectBlock, flashBlock } = useDispatch( blockEditorStore );
 
 	if ( ! items.length ) {
@@ -57,6 +60,11 @@ export default function CollaborationReviewPanel() {
 						items={ groupItems }
 						onResolve={ onResolve }
 						summaryOnly={ !! clientId }
+						onOpenMerge={
+							canOpenMergeView( groupItems )
+								? () => openMergeView( groupItems )
+								: undefined
+						}
 						onNavigate={
 							clientId
 								? () => {

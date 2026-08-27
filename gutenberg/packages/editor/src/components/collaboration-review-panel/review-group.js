@@ -1,6 +1,6 @@
 import { __, sprintf } from '@wordpress/i18n';
 import { Button } from '@wordpress/components';
-import { canRestoreItems, REASON_LABELS } from './review-data';
+import { canRestoreItems, itemSummaries, REASON_LABELS } from './review-data';
 
 /**
  * One conflict group (a unit of edits set aside together): attribution,
@@ -14,12 +14,15 @@ import { canRestoreItems, REASON_LABELS } from './review-data';
  * @param {Array}    props.items         The group's review items.
  * @param {Function} props.onResolve     ( items, resolution ) => void.
  * @param {Function} [props.onNavigate]  Jump to the conflicted block.
+ * @param {Function} [props.onOpenMerge] Open the merge view for the group
+ *                                       (present when it qualifies).
  * @param {boolean}  [props.summaryOnly] Render without resolution verbs.
  */
 export default function ReviewGroup( {
 	items,
 	onResolve,
 	onNavigate,
+	onOpenMerge,
 	summaryOnly,
 } ) {
 	const [ first ] = items;
@@ -38,9 +41,7 @@ export default function ReviewGroup( {
 					'Only someone allowed to publish unfiltered HTML can adopt it.'
 			  ) }`;
 	}
-	const summaries = items
-		.map( ( item ) => item.summary ?? item.excerpt )
-		.filter( Boolean );
+	const summaries = itemSummaries( items );
 
 	return (
 		<div className="editor-collaboration-review-panel__item">
@@ -68,6 +69,18 @@ export default function ReviewGroup( {
 						summaries.join( ' ' )
 					) }
 				</p>
+			) }
+			{ onOpenMerge && (
+				<div className="editor-collaboration-review-panel__actions">
+					<Button
+						__next40pxDefaultSize
+						size="compact"
+						variant="secondary"
+						onClick={ onOpenMerge }
+					>
+						{ __( 'Open merge view' ) }
+					</Button>
+				</div>
 			) }
 			{ ! summaryOnly && (
 				<div className="editor-collaboration-review-panel__actions">

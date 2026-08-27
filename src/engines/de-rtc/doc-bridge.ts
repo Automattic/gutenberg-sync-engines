@@ -81,8 +81,11 @@ export interface DeRtcDocBridge {
 	 * an application would clobber).
 	 *
 	 * @param version Canonical version label.
+	 * @param content The version's canonical content when the caller holds
+	 *                it (the round-tripped proposal), so a later contest
+	 *                can record its base block's exact form.
 	 */
-	advanceVersion: ( version: string ) => void;
+	advanceVersion: ( version: string, content?: string ) => void;
 
 	/**
 	 * Incorporates a canonical state that arrived while local edits are
@@ -133,6 +136,12 @@ export interface DeRtcDocBridge {
 			index: number;
 			version: string;
 			html: string;
+			/**
+			 * The block's serialized form at the version the local text
+			 * was really written against, recorded when the contest first
+			 * arose. Absent when that canonical form was no longer held.
+			 */
+			baseHtml?: string;
 		} ) => void
 	) => void;
 
@@ -163,6 +172,20 @@ export interface DeRtcDocBridge {
 	 * @return Whether a contest existed for the index.
 	 */
 	rejectContestedBlock: ( index: number ) => boolean;
+
+	/**
+	 * MERGED: resolve the contest by writing a hand-merged block into the
+	 * doc at the contested index, under the restore origin so it reaches
+	 * the editor AND marks the doc dirty (the merged form re-proposes as
+	 * an ordinary change). The recorded true base clears: the merged
+	 * text was written against the contest's canonical form, so the next
+	 * proposal declares the current version.
+	 *
+	 * @param index The contested block's top-level index.
+	 * @param html  The merged block's serialized form.
+	 * @return Whether a contest existed for the index.
+	 */
+	resolveContestedBlockWithMerged: ( index: number, html: string ) => boolean;
 
 	/** Serializes the doc's current blocks to proposal content. */
 	buildContent: () => string;
@@ -224,6 +247,17 @@ export function parseCanonicalBlocks(
 		}
 		return true;
 	} );
+}
+
+/**
+ * Serializes editor blocks back to canonical content form, with the same
+ * serializer proposals use (byte-consistency with WordPress saves).
+ *
+ * @param blocks Editor blocks.
+ * @return Serialized block content.
+ */
+export function serializeCanonicalBlocks( blocks: unknown[] ): string {
+	return __unstableSerializeAndClean( blocks as any[] ).trim();
 }
 
 /**
@@ -301,8 +335,26 @@ export function createDeRtcDocBridge(
 		number,
 		{ version: string; block: unknown }
 	>();
+	/*
+	 * The base form of each contested block: recorded ONCE, beside the
+	 * block's true-base entry, from the last incorporated canonical (the
+	 * version the local text was really written against). What makes a
+	 * contest the merge view's only three-pane-guaranteed case.
+	 */
+	const blockBaseHtml = new Map< number, string >();
+	/*
+	 * The blocks of the last canonical state this bridge incorporated,
+	 * with its version, the source contest bases are recorded from. Null
+	 * when the last advance carried no content.
+	 */
+	let prevCanonical: { version: string; blocks: unknown[] } | null = null;
 	const contestedListeners = new Set<
-		( event: { index: number; version: string; html: string } ) => void
+		( event: {
+			index: number;
+			version: string;
+			html: string;
+			baseHtml?: string;
+		} ) => void
 	>();
 	const contestResolvedListeners = new Set< ( index: number ) => void >();
 
@@ -315,7 +367,12 @@ export function createDeRtcDocBridge(
 			entry.block as any,
 		] ).trim();
 		contestedListeners.forEach( ( listener ) =>
-			listener( { index, version: entry.version, html } )
+			listener( {
+				index,
+				version: entry.version,
+				html,
+				baseHtml: blockBaseHtml.get( index ),
+			} )
 		);
 	};
 	const resolveContest = ( index: number ) => {
@@ -411,18 +468,31 @@ export function createDeRtcDocBridge(
 			}, DE_RTC_REMOTE_ORIGIN );
 			// Wholesale adoption: every pending collision resolved.
 			blockBases.clear();
+			blockBaseHtml.clear();
 			resolveAllContests();
+			prevCanonical = { version: nextVersion, blocks };
 			markVersion( nextVersion );
 		},
 
-		advanceVersion( nextVersion ) {
+		advanceVersion( nextVersion, content ) {
 			if ( bootstrapped && seqOf( nextVersion ) <= seqOf( version ) ) {
 				return;
 			}
 			// Our proposal round-tripped unchanged: every kept block's
 			// content IS canonical now.
 			blockBases.clear();
+			blockBaseHtml.clear();
 			resolveAllContests();
+			if ( 'string' === typeof content ) {
+				prevCanonical = {
+					version: nextVersion,
+					blocks: parseCanonicalBlocks( content ),
+				};
+			} else {
+				// Without the content, contest bases cannot be recorded
+				// against this version.
+				prevCanonical = null;
+			}
 			markVersion( nextVersion );
 		},
 
@@ -475,6 +545,7 @@ export function createDeRtcDocBridge(
 						// Adopting canonical resolves any pending
 						// collision on this block.
 						blockBases.delete( index );
+						blockBaseHtml.delete( index );
 						resolveContest( index );
 						return canonicalBlocks[ index ];
 					}
@@ -493,6 +564,19 @@ export function createDeRtcDocBridge(
 							null !== priorVersion
 						) {
 							blockBases.set( index, priorVersion );
+							// The base block's exact form, when the last
+							// incorporated canonical is still that
+							// version's (the merge view's base pane).
+							const baseBlock =
+								prevCanonical?.version === priorVersion
+									? prevCanonical.blocks[ index ]
+									: undefined;
+							if ( undefined !== baseBlock ) {
+								blockBaseHtml.set(
+									index,
+									serializeOne( baseBlock )
+								);
+							}
 						}
 						// The contest tracks the LATEST canonical form:
 						// repeats refresh the one pending item, never a
@@ -510,6 +594,7 @@ export function createDeRtcDocBridge(
 			doc.transact( () => {
 				syncConfig.applyChangesToCRDTDoc( doc, { blocks: merged } );
 			}, DE_RTC_REMOTE_ORIGIN );
+			prevCanonical = { version: nextVersion, blocks: canonicalBlocks };
 			markVersion( nextVersion );
 			collided.forEach( emitContested );
 
@@ -568,6 +653,7 @@ export function createDeRtcDocBridge(
 				syncConfig.applyChangesToCRDTDoc( doc, { blocks } );
 			}, DE_RTC_REMOTE_ORIGIN );
 			blockBases.delete( index );
+			blockBaseHtml.delete( index );
 			resolveContest( index );
 			return true;
 		},
@@ -579,6 +665,33 @@ export function createDeRtcDocBridge(
 			// Keep the local block AND its recorded true base: the next
 			// proposal still declares it (per-block base honesty). Only the
 			// pending item resolves; a later peer edit raises a fresh one.
+			resolveContest( index );
+			return true;
+		},
+
+		resolveContestedBlockWithMerged( index, html ) {
+			if ( ! contestedLatest.has( index ) ) {
+				return false;
+			}
+			const stored: any = doc
+				.getMap( CRDT_RECORD_MAP_KEY )
+				.get( 'blocks' );
+			const blocks: unknown[] = (
+				stored?.toJSON?.() ?? ( Array.isArray( stored ) ? stored : [] )
+			).slice();
+			const parsed = parseCanonicalBlocks( html );
+			if ( index < blocks.length && parsed.length > 0 ) {
+				blocks.splice( index, 1, ...parsed );
+			}
+			// Restore origin: the merged form reaches the editor AND marks
+			// the doc dirty, so it re-proposes as an ordinary change.
+			doc.transact( () => {
+				syncConfig.applyChangesToCRDTDoc( doc, { blocks } );
+			}, DE_RTC_RESTORE_ORIGIN );
+			// The merged text was written against the contest's canonical
+			// form; the next proposal declares the current version.
+			blockBases.delete( index );
+			blockBaseHtml.delete( index );
 			resolveContest( index );
 			return true;
 		},

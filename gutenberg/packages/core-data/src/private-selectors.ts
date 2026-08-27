@@ -414,3 +414,22 @@ export function getSyncReviewItems(
 		EMPTY_REVIEW_ITEMS
 	);
 }
+
+/**
+ * Returns the pending merge-view request (the review-item group the user
+ * asked to review in the merge dialog), or null when none is open. The
+ * stored ids are a seed; the dialog recomputes the full group from the
+ * open items when it opens.
+ *
+ * @param state Data state.
+ *
+ * @return The merge-view request, or null.
+ */
+export function getSyncReviewMergeRequest( state: State ): {
+	kind: string;
+	name: string;
+	recordId: EntityRecordKey;
+	itemIds: string[];
+} | null {
+	return state.syncReviewMergeRequest ?? null;
+}

@@ -36,6 +36,103 @@ export function canRestoreItems( items ) {
 const EMPTY_CLIENT_IDS = {};
 
 /**
+ * Whether the merge view can open for a group of review items: every item
+ * must be one the engine declared it can describe and resolve as a group
+ * (see `SyncReviewItem.supportsMergeView`).
+ *
+ * @param {Array} items The group's review items.
+ * @return {boolean} Whether the merge view applies.
+ */
+export function canOpenMergeView( items ) {
+	return (
+		items.length > 0 && items.every( ( item ) => item.supportsMergeView )
+	);
+}
+
+/**
+ * Expands a set of seed item ids to the full merge-view group: one author's
+ * open items on one field (author, block, field). Field-less items (whole
+ * blocks, engines that already fold revisions into one item) group only
+ * with the seeds themselves. Items the engine cannot serve are excluded.
+ *
+ * @param {Array}    items   All open review items.
+ * @param {string[]} seedIds Seed item ids.
+ * @return {Array} The group's items (empty when no seed is open).
+ */
+export function mergeViewGroupItems( items, seedIds ) {
+	const seedSet = new Set( seedIds );
+	const seeds = items.filter(
+		( item ) => seedSet.has( item.id ) && item.supportsMergeView
+	);
+	if ( ! seeds.length ) {
+		return [];
+	}
+	const [ first ] = seeds;
+	if ( undefined === first.targetField ) {
+		return seeds;
+	}
+	return items.filter(
+		( item ) =>
+			item.supportsMergeView &&
+			item.actorId === first.actorId &&
+			item.targetId === first.targetId &&
+			item.targetField === first.targetField
+	);
+}
+
+/**
+ * Returns a callback opening the merge view for a group of review items.
+ *
+ * @param {string}        postType Current post type.
+ * @param {string|number} postId   Current post ID.
+ * @return {Function} ( items ) => void.
+ */
+export function useOpenMergeView( postType, postId ) {
+	const { openSyncReviewMerge } = unlock( useDispatch( coreStore ) );
+
+	return useCallback(
+		( groupItems ) => {
+			openSyncReviewMerge(
+				'postType',
+				postType,
+				postId,
+				groupItems.map( ( item ) => item.id )
+			);
+		},
+		[ postType, postId, openSyncReviewMerge ]
+	);
+}
+
+/**
+ * The lost-content summaries of a set of review items, ONE entry per
+ * changeset: items stamped with a `groupSummary` (a parked burst's
+ * combined text) contribute it once per group, everything else its own
+ * summary. Keeps a burst reading as "abc " instead of "b c ".
+ *
+ * @param {Array} items Review items.
+ * @return {string[]} Display summaries.
+ */
+export function itemSummaries( items ) {
+	const summaries = [];
+	const seenGroups = new Set();
+	for ( const item of items ) {
+		if ( undefined !== item.groupSummary ) {
+			const groupKey = `${ item.actorId }|${ item.targetId }|${ item.targetField }`;
+			if ( ! seenGroups.has( groupKey ) ) {
+				seenGroups.add( groupKey );
+				summaries.push( item.groupSummary );
+			}
+			continue;
+		}
+		const summary = item.summary ?? item.excerpt;
+		if ( summary ) {
+			summaries.push( summary );
+		}
+	}
+	return summaries;
+}
+
+/**
  * Groups review items by their unit (a batch of edits made together), so a
  * burst of typing reads as one conflict with one set of actions.
  *

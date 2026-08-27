@@ -945,6 +945,117 @@ test.describe( 'Collaboration - intent-log engine', () => {
 		).toHaveCount( 0 );
 	} );
 
+	test( 'the merge view resolves a whole conflicted burst with one dialog', async ( {
+		collaborationUtils,
+		requestUtils,
+		editor,
+	} ) => {
+		test.setTimeout( 120_000 );
+
+		const post = await requestUtils.createPost( {
+			title: 'Intent Log Merge View Test',
+			status: 'draft',
+			content:
+				'<!-- wp:paragraph -->\n<p>Contested paragraph</p>\n<!-- /wp:paragraph -->',
+			date_gmt: new Date().toISOString(),
+		} );
+
+		await collaborationUtils.openCollaborativeSession( post.id );
+		const { editor2, page2 } = collaborationUtils;
+		const page1 = editor.page;
+
+		// Both users type into the SAME paragraph. The per-keystroke delay
+		// makes the interleaving happen on every host (the de-rtc
+		// concurrency spec's pattern), so at least one side's later
+		// keystrokes park for review.
+		await editor.canvas
+			.locator( '[data-type="core/paragraph"]' )
+			.first()
+			.click();
+		await page1.keyboard.press( 'End' );
+		await editor2.canvas
+			.locator( '[data-type="core/paragraph"]' )
+			.first()
+			.click();
+		await page2.keyboard.press( 'Home' );
+
+		await Promise.all( [
+			page1.keyboard.type( ' alpha beta gamma', { delay: 100 } ),
+			page2.keyboard.type( 'delta epsilon ', { delay: 100 } ),
+		] );
+
+		// Let the bursts settle (every keystroke accepted or parked): the
+		// dialog freezes its panes on open, so opening mid-settlement would
+		// snapshot a partial group and force a staleness re-confirm.
+		await page1.waitForTimeout( 4000 );
+
+		// At least one side's inline card offers the merge view for its own
+		// parked burst.
+		let dialogPage = page1;
+		const mergeButtonOn = ( page: typeof page1 ) =>
+			page
+				.locator( '.editor-collaboration-pending-card__body' )
+				.getByRole( 'button', { name: 'Open merge view' } )
+				.first();
+		await expect( async () => {
+			const counts = await Promise.all( [
+				mergeButtonOn( page1 ).count(),
+				mergeButtonOn( page2 ).count(),
+			] );
+			expect( counts[ 0 ] + counts[ 1 ] ).toBeGreaterThan( 0 );
+			dialogPage = counts[ 0 ] > 0 ? page1 : page2;
+		} ).toPass( { timeout: 20000 } );
+		// This side's whole intended burst, contiguous, as typed.
+		const intendedText =
+			dialogPage === page1 ? 'alpha beta gamma' : 'delta epsilon';
+
+		await mergeButtonOn( dialogPage ).click();
+
+		// ONE dialog for the whole burst: the author's full intended text
+		// beside the current text, not one card per keystroke.
+		const dialog = dialogPage.getByRole( 'dialog', {
+			name: 'Review conflicting edits',
+		} );
+		await expect( dialog ).toBeVisible();
+		await expect(
+			dialog.getByRole( 'heading', { name: 'Your version' } )
+		).toBeVisible();
+		await expect(
+			dialog.getByRole( 'heading', { name: 'Current version' } )
+		).toBeVisible();
+		const minePane = dialog
+			.locator( '.editor-collaboration-merge-dialog__pane' )
+			.first();
+		await expect( minePane ).toContainText( intendedText );
+
+		// Restore mine: the field rewrites to the intended text and the
+		// group's items resolve together. A confirm racing a late
+		// settlement refreshes the panes and asks again (by design), so
+		// allow a second click.
+		await expect( async () => {
+			const restore = dialog.getByRole( 'button', {
+				name: 'Restore my version',
+			} );
+			if ( ( await restore.count() ) > 0 ) {
+				await restore.click();
+			}
+			await expect( dialog ).toBeHidden( { timeout: 3000 } );
+		} ).toPass( { timeout: 20000 } );
+
+		const dialogEditor = dialogPage === page1 ? editor : editor2;
+		await expect(
+			dialogEditor.canvas
+				.locator( '[data-type="core/paragraph"]' )
+				.first()
+		).toContainText( intendedText, { timeout: 15000 } );
+
+		// The restoring side's own parked items closed with the dialog; its
+		// card offers no further merge view for them.
+		await expect( mergeButtonOn( dialogPage ) ).toHaveCount( 0, {
+			timeout: 15000,
+		} );
+	} );
+
 	test( 'custom HTML blocks sync between users and persist through save', async ( {
 		collaborationUtils,
 		requestUtils,

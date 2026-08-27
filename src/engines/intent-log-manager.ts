@@ -30,8 +30,19 @@ import {
 } from './intent-log-bridge';
 import {
 	createIntentLogSession,
+	type IntentLogProposal,
 	type IntentLogSession,
 } from './intent-log-session';
+import {
+	candidateHoldsParkedText,
+	changesetRuns,
+	coalesceRuns,
+	isMergeReviewCandidate,
+	isMergeReviewProposal,
+	mergeReviewGroupKey,
+	replayIntendedField,
+} from './intent-log-review';
+import { getBlock } from './intent-log/document.js';
 import { mintSyncId } from './intent-log/sync-id.js';
 import { fieldToHtml } from './intent-log/rich-text.js';
 import {
@@ -39,7 +50,11 @@ import {
 	type IntentLogUndoManager,
 } from './intent-log-undo';
 import { getProviderCreators } from '../framework';
-import type { EngineDocument } from './intent-log/engine-types';
+import type {
+	EngineDocument,
+	EngineField,
+	IntentEnvelope,
+} from './intent-log/engine-types';
 import type {
 	CollectionHandlers,
 	ObjectData,
@@ -1623,6 +1638,20 @@ export function createIntentLogManager( debug = false ): SyncManager {
 					return undefined;
 			}
 		};
+		// The merge-view grouping key's field half: the edited rich-text
+		// field, or the property register's name for property items.
+		const targetFieldFor = (
+			proposal: IntentLogProposal
+		): string | undefined => {
+			const { type, payload } = proposal.intent;
+			if ( 'string' === typeof payload.field ) {
+				return payload.field;
+			}
+			if ( 'set_property' === type && 'string' === typeof payload.name ) {
+				return payload.name;
+			}
+			return undefined;
+		};
 		// A parked new-block proposal (insert_block) has no block in the
 		// reviewer's canvas to anchor to. Surface its intended position and
 		// a readable content preview so the editor can render it INLINE
@@ -1663,8 +1692,70 @@ export function createIntentLogManager( debug = false ): SyncManager {
 						: undefined,
 			};
 		};
-		const mapReviewItems = () =>
-			session.getOpenProposals().map( ( proposal ) => ( {
+		/**
+		 * One combined lost-content summary per text CHANGESET (one
+		 * author, one field, any author): the whole burst as one string,
+		 * with its already-merged fragment included ("abc ", never
+		 * "b c "). Stamped on every member so cards, panel, and notices
+		 * show one summary per changeset instead of joining keystrokes.
+		 *
+		 * @return Summary by member intentId.
+		 */
+		const computeGroupSummaries = (): Map< string, string > => {
+			const byGroup = new Map< string, IntentLogProposal[] >();
+			for ( const proposal of session.getOpenProposals() ) {
+				if (
+					! isMergeReviewCandidate( proposal ) ||
+					'set_property' === proposal.intent.type
+				) {
+					continue;
+				}
+				const groupKey = mergeReviewGroupKey( proposal );
+				if ( ! byGroup.has( groupKey ) ) {
+					byGroup.set( groupKey, [] );
+				}
+				byGroup.get( groupKey )!.push( proposal );
+			}
+			const summaries = new Map< string, string >();
+			for ( const [ , groupProposals ] of byGroup ) {
+				const first = groupProposals[ 0 ].intent;
+				const changeset = reconstructChangeset(
+					state,
+					groupProposals,
+					first.payload.syncId as string,
+					first.payload.field as string
+				);
+				let runs = null;
+				if (
+					changeset &&
+					null !== changeset.baseText &&
+					changeset.mine
+				) {
+					runs = changesetRuns(
+						changeset.baseText,
+						changeset.mine.text
+					);
+				} else {
+					runs = coalesceRuns(
+						groupProposals.map( ( proposal ) => proposal.intent )
+					);
+				}
+				const inserted = runs
+					.filter( ( run ) => 'insert' === run.kind )
+					.map( ( run ) => run.text )
+					.join( ' ' );
+				if ( ! inserted ) {
+					continue;
+				}
+				for ( const proposal of groupProposals ) {
+					summaries.set( proposal.intent.intentId, inserted );
+				}
+			}
+			return summaries;
+		};
+		const mapReviewItems = () => {
+			const groupSummaries = computeGroupSummaries();
+			return session.getOpenProposals().map( ( proposal ) => ( {
 				id: proposal.intent.intentId,
 				unitId: proposal.intent.txnId ?? proposal.intent.intentId,
 				isLocal: proposal.actorId === session.actorId,
@@ -1677,8 +1768,17 @@ export function createIntentLogManager( debug = false ): SyncManager {
 					typeof proposal.intent.payload.syncId === 'string'
 						? proposal.intent.payload.syncId
 						: undefined,
+				// The merge-view grouping key's field half: the edited
+				// rich-text field, or the property register's name.
+				targetField: targetFieldFor( proposal ),
+				supportsMergeView: isMergeReviewProposal(
+					proposal,
+					session.actorId
+				),
+				groupSummary: groupSummaries.get( proposal.intent.intentId ),
 				proposedInsertion: proposedInsertionFor( proposal ),
 			} ) );
+		};
 		session.onProposalsChange( () => {
 			if ( proposalsNotifyScheduled ) {
 				return;
@@ -1715,6 +1815,27 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				}
 			} );
 		} );
+
+		/*
+		 * Review retention pin: keep the replica's log sliceable from the
+		 * oldest open LOCAL merge-viewable proposal's baseSeq, so the merge
+		 * view can still reconstruct its base document and replay after the
+		 * observed frame moves past it. Released when the last such
+		 * proposal resolves.
+		 */
+		const updateReviewRetention = () => {
+			let min: number | null = null;
+			for ( const proposal of session.getOpenProposals() ) {
+				if ( ! isMergeReviewProposal( proposal, session.actorId ) ) {
+					continue;
+				}
+				if ( null === min || proposal.intent.baseSeq < min ) {
+					min = proposal.intent.baseSeq;
+				}
+			}
+			session.setReviewRetainSeq( min );
+		};
+		session.onProposalsChange( updateReviewRetention );
 
 		log( 'connecting', { key } );
 		state.providers = await Promise.all(
@@ -1870,6 +1991,256 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			observedVersion: doc?.propVersions?.[ state.selfRegister ] ?? 0,
 		} );
 	}
+
+	/**
+	 * A property register value as merge-view pane text: strings verbatim,
+	 * everything else in JSON form.
+	 *
+	 * @param value Register value.
+	 * @return Display text.
+	 */
+	/**
+	 * Reconstructs one text CHANGESET (one author's edits on one block
+	 * field) from the retained log: the base text, the intended field
+	 * (base plus the author's own rows: accepted fragment, parked
+	 * payloads, and the author's own in-flight tail), the current field
+	 * WITHOUT the changeset (base plus everyone else's accepted rows),
+	 * and whether part of the changeset already merged.
+	 *
+	 * The fragment matters because the planner merges a burst's first
+	 * in-flight keystroke and parks the rest: presenting the merged "a"
+	 * as part of "current" while "bc " sits in review reads as noise.
+	 * The whole burst is ONE changeset; the current pane excludes it and
+	 * keep-current discards all of it together.
+	 *
+	 * Works for any author (peers' changesets reconstruct for combined
+	 * display summaries); returns null when the base is no longer
+	 * retained.
+	 *
+	 * @param state     Entity state.
+	 * @param proposals The group's parked proposals, arrival order.
+	 * @param targetId  The conflicted block.
+	 * @param field     The conflicted field.
+	 * @return The changeset, or null.
+	 */
+	const reconstructChangeset = (
+		state: EntityState,
+		proposals: IntentLogProposal[],
+		targetId: string,
+		field: string
+	) => {
+		const session = state.session;
+		const actorId = proposals[ 0 ].actorId;
+		const minBaseSeq = Math.min(
+			...proposals.map( ( proposal ) => proposal.intent.baseSeq )
+		);
+		const baseDoc = session.getDocumentAt( minBaseSeq );
+		if ( ! baseDoc ) {
+			return null;
+		}
+		const parkedIntents = proposals.map( ( proposal ) => proposal.intent );
+		const baseBlock = getBlock( baseDoc, targetId );
+		const baseText = baseBlock
+			? baseBlock.fields[ field ]?.text ?? ''
+			: null;
+		const retained = session.getRetainedEntries( minBaseSeq );
+		const ownAccepted = retained.filter(
+			( row ) => row.entry.actorId === actorId
+		);
+		const isSelf = actorId === session.actorId;
+		/*
+		 * Replay in the AUTHORED frame: the log holds the server's
+		 * transformed forms (offsets expressed against the interleaved
+		 * head), and mixing those with own-frame parked payloads splices
+		 * the replay ("alpha bbeta gamma", found by the merge-view e2e
+		 * under a live race). This session authored the rows itself, so
+		 * substitute the recorded ORIGINAL envelopes wherever they exist;
+		 * transformed forms remain the reload fallback.
+		 */
+		const originalOf = ( entry: IntentEnvelope ): IntentEnvelope =>
+			session.getAuthoredIntent( entry.intentId ) ?? entry;
+		const mine = replayIntendedField(
+			baseDoc,
+			ownAccepted.map( ( row ) => ( {
+				seq: row.seq,
+				entry: originalOf( row.entry ),
+			} ) ),
+			[
+				...parkedIntents.map( originalOf ),
+				...( isSelf ? session.getPendingIntents() : [] ),
+			],
+			session.getAuthoredOrder,
+			targetId,
+			field
+		);
+		// The merged fragment: own accepted rows that WROTE this field.
+		const hasFragment = ownAccepted.some(
+			( row ) =>
+				row.entry.payload.syncId === targetId &&
+				row.entry.payload.field === field
+		);
+		// Current without the changeset: base plus everyone else's rows.
+		const currentDoc = applyDerivedIntents(
+			baseDoc,
+			retained
+				.filter( ( row ) => row.entry.actorId !== actorId )
+				.map( ( row ) => ( {
+					type: row.entry.type,
+					payload: row.entry.payload,
+				} ) )
+		);
+		const currentBlock = getBlock( currentDoc, targetId );
+		const currentField = currentBlock
+			? {
+					text: currentBlock.fields[ field ]?.text ?? '',
+					formats: currentBlock.fields[ field ]?.formats ?? [],
+			  }
+			: null;
+		return { baseText, mine, currentField, hasFragment };
+	};
+
+	const propertyDisplayText = ( value: unknown ): string => {
+		if ( undefined === value ) {
+			return '';
+		}
+		if ( 'string' === typeof value ) {
+			return value;
+		}
+		return JSON.stringify( value );
+	};
+
+	/**
+	 * Resolves a merge-view group's proposals and reconstructs its texts
+	 * (see intent-log-review.ts and the plan's reconstruction section):
+	 * base from the retained log at the group's smallest baseSeq, the
+	 * intended field from the own-row replay (fallbacks: the observed
+	 * baseline document, the last editor tree, each only when it still
+	 * holds the parked text), current from the live document. Returns null
+	 * when no addressed proposal is open (or the entity has no document).
+	 *
+	 * @param state   Entity state.
+	 * @param itemIds The group's proposal ids.
+	 * @return Group context, or null.
+	 */
+	const describeMergeGroup = ( state: EntityState, itemIds: string[] ) => {
+		const session = state.session;
+		const wanted = new Set( itemIds );
+		const proposals = session
+			.getOpenProposals()
+			.filter( ( proposal ) => wanted.has( proposal.intent.intentId ) )
+			.filter( ( proposal ) =>
+				isMergeReviewProposal( proposal, session.actorId )
+			);
+		if ( 0 === proposals.length ) {
+			return null;
+		}
+		const doc = session.getDocument();
+		if ( ! doc ) {
+			return null;
+		}
+		const first = proposals[ 0 ].intent;
+
+		if ( 'set_property' === first.type ) {
+			// The two-pane property variant: both values are single
+			// strings; the latest parked revision carries the lost value.
+			const lastParked = proposals[ proposals.length - 1 ].intent;
+			const name = first.payload.name as string;
+			return {
+				description: {
+					baseText: null,
+					proposedText: propertyDisplayText(
+						lastParked.payload.value
+					),
+					currentText: propertyDisplayText( doc.props?.[ name ] ),
+				},
+				mine: null as EngineField | null,
+				currentField: null as EngineField | null,
+				hasFragment: false,
+				proposals,
+				property: name,
+				targetId: null as string | null,
+				field: null as string | null,
+			};
+		}
+
+		const targetId = first.payload.syncId as string;
+		const field = first.payload.field as string;
+		const parkedIntents = proposals.map( ( proposal ) => proposal.intent );
+
+		/*
+		 * The changeset reconstruction: intended text, the current field
+		 * WITHOUT the author's changeset (their merged fragment factored
+		 * out; see reconstructChangeset), and the base. All best-effort;
+		 * the live document's field is the currentText fallback when the
+		 * base is no longer retained.
+		 */
+		const changeset = reconstructChangeset(
+			state,
+			proposals,
+			targetId,
+			field
+		);
+		const baseText: string | null = changeset?.baseText ?? null;
+		let mine: EngineField | null = changeset?.mine ?? null;
+		const currentField = changeset?.currentField ?? null;
+		const hasFragment = changeset?.hasFragment ?? false;
+		const currentText = currentField
+			? currentField.text
+			: getBlock( doc, targetId )?.fields[ field ]?.text ?? '';
+		if ( ! mine && state.observed ) {
+			const observedField = getBlock( state.observed.doc, targetId )
+				?.fields[ field ];
+			if (
+				observedField &&
+				candidateHoldsParkedText( observedField.text, parkedIntents )
+			) {
+				mine = {
+					text: observedField.text,
+					formats: observedField.formats ?? [],
+				};
+			}
+		}
+		if ( ! mine && Array.isArray( state.lastEditorTree ) ) {
+			const summary = summarizeEditorTree( state.lastEditorTree, {
+				richTextFields: state.fieldsResolver,
+				rawContent: state.rawContent,
+			} );
+			const treeField = summary.blocks.get( targetId )?.fields[ field ];
+			if (
+				treeField &&
+				candidateHoldsParkedText( treeField.text, parkedIntents )
+			) {
+				mine = {
+					text: treeField.text,
+					formats: treeField.formats ?? [],
+				};
+			}
+		}
+
+		// Display runs cover the WHOLE changeset (merged fragment
+		// included) when the reconstruction succeeded; per-parked-intent
+		// coalescing is the degraded fallback.
+		const runs =
+			null !== baseText && mine
+				? changesetRuns( baseText, mine.text )
+				: coalesceRuns( parkedIntents );
+
+		return {
+			description: {
+				baseText,
+				proposedText: mine?.text ?? null,
+				currentText,
+				runs,
+			},
+			mine,
+			currentField,
+			hasFragment,
+			proposals,
+			property: null as string | null,
+			targetId: targetId as string | null,
+			field: field as string | null,
+		};
+	};
 
 	const manager: SyncManager = {
 		load: loadEntity,
@@ -2322,6 +2693,159 @@ export function createIntentLogManager( debug = false ): SyncManager {
 				} );
 			}
 			session.resolveProposal( proposalId, 'restored' );
+		},
+
+		describeReviewGroup( objectType, objectId, itemIds ) {
+			const state = entityStates.get( entityKey( objectType, objectId ) );
+			if ( ! state || state.unloaded ) {
+				return null;
+			}
+			return describeMergeGroup( state, itemIds )?.description ?? null;
+		},
+
+		resolveReviewGroup(
+			objectType,
+			objectId,
+			itemIds,
+			resolution,
+			mergedContent
+		) {
+			const state = entityStates.get( entityKey( objectType, objectId ) );
+			if ( ! state || state.unloaded ) {
+				return;
+			}
+			const session = state.session;
+			// One whole-field rewrite plus its format spans, at the current
+			// head (replace_attr_content clears formats; pairing them is
+			// the coarse capture path's pattern).
+			const rewriteField = (
+				targetId: string,
+				field: string,
+				text: string,
+				formats: EngineField[ 'formats' ]
+			): void => {
+				session.author( 'replace_attr_content', {
+					syncId: targetId,
+					field,
+					newText: text,
+					observedVersion: 0,
+				} );
+				for ( const span of formats ) {
+					if ( span.end > span.start ) {
+						session.author( 'format_text', {
+							syncId: targetId,
+							field,
+							start: span.start,
+							end: span.end,
+							format: span.format,
+							on: true,
+						} );
+					}
+				}
+			};
+			if ( 'dismissed' === resolution ) {
+				/*
+				 * Keep-current keeps what the dialog SHOWED as current: the
+				 * document without the author's changeset. When part of the
+				 * changeset already merged (a burst's accepted first
+				 * keystroke), closing the items alone would strand that
+				 * fragment on the canvas ("aparagraph two 123"); rewrite
+				 * the field to the fragment-free current first. A group
+				 * with nothing merged still authors nothing.
+				 */
+				const group = describeMergeGroup( state, itemIds );
+				const doc = session.getDocument();
+				if (
+					group &&
+					doc &&
+					! group.property &&
+					group.hasFragment &&
+					group.currentField &&
+					getBlock( doc, group.targetId as string )
+				) {
+					rewriteField(
+						group.targetId as string,
+						group.field as string,
+						group.currentField.text,
+						group.currentField.formats
+					);
+				}
+				for ( const id of itemIds ) {
+					session.resolveProposal( id, 'dismissed' );
+				}
+				return;
+			}
+
+			const group = describeMergeGroup( state, itemIds );
+			const doc = session.getDocument();
+			if ( ! group || ! doc ) {
+				return;
+			}
+
+			/*
+			 * Author the chosen content as ONE ordinary whole-field rewrite
+			 * at the current head (no priors to transform over, the same
+			 * risk profile as restoreProposal). replace_attr_content clears
+			 * formats, so "restore mine" pairs it with format_text intents
+			 * from the replayed field, the coarse capture path's pattern; a
+			 * hand-merged result is authored as text only (v1: the merged
+			 * field's formats drop, documented in the dialog).
+			 */
+			if ( group.property ) {
+				const lastParked =
+					group.proposals[ group.proposals.length - 1 ].intent;
+				let value: unknown = lastParked.payload.value;
+				if ( undefined !== mergedContent ) {
+					if ( 'string' === typeof value ) {
+						value = mergedContent;
+					} else {
+						try {
+							value = JSON.parse( mergedContent );
+						} catch {
+							value = mergedContent;
+						}
+					}
+				}
+				session.author( 'set_property', {
+					name: group.property,
+					value,
+					observedVersion: doc.propVersions?.[ group.property ] ?? 0,
+				} );
+			} else {
+				let text: string | undefined = mergedContent;
+				let formats = [] as EngineField[ 'formats' ];
+				if ( undefined === text ) {
+					if ( ! group.mine ) {
+						// Nothing reconstructable to author; leave the group
+						// open rather than resolving work away silently.
+						return;
+					}
+					text = group.mine.text;
+					formats = group.mine.formats;
+				}
+				const targetId = group.targetId as string;
+				const field = group.field as string;
+				if ( getBlock( doc, targetId ) ) {
+					rewriteField( targetId, field, text, formats );
+				} else {
+					// The block vanished while the dialog was open: degrade
+					// the way restoreProposal does, a fresh paragraph at the
+					// end of the document.
+					session.author( 'insert_block', {
+						block: {
+							syncId: mintSyncId(),
+							blockType: 'core/paragraph',
+							text,
+						},
+						parentId: null,
+						afterSiblingId: doc.root.at( -1 )?.syncId ?? null,
+					} );
+				}
+			}
+
+			for ( const id of itemIds ) {
+				session.resolveProposal( id, 'restored' );
+			}
 		},
 
 		// The server materializes; there is no client-side persisted doc.

@@ -521,7 +521,7 @@ const blockField = ( block: EngineBlock, name: string ): EngineField =>
  * @param after  New text.
  * @return The prefix length and the removed/inserted middles.
  */
-function textDelta(
+export function textDelta(
 	before: string,
 	after: string
 ): { prefix: number; removed: string; inserted: string } {

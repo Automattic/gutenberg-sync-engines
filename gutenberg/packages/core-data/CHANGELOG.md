@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Enhancements
+
+-   Add private actions and a private selector for the collaboration merge view: `describeSyncReviewGroup` / `resolveSyncReviewGroup` (delegating to the sync engine's optional merge-view supplier), `openSyncReviewMerge` / `closeSyncReviewMerge`, and `getSyncReviewMergeRequest`. An escalation notice whose item the engine can serve through the merge view now offers a Review action opening that dialog instead of the direct Restore verb.
+-   Escalation notices now group per conflict (one author, one block, one field), the merge view's grouping: a parked typing burst raises ONE notice carrying its combined lost content (refreshed in place as more of the burst parks) instead of one notice per keystroke, and the notice's verbs settle the whole group. The aggregate counter notice counts conflicts, not parked keystrokes. Kses approvals and parked insertions keep their per-item notices.
+
 ### Bug Fixes
 
 -   Validate the shared parsed-blocks cache against the registered block types as well as the content, so a record resolved before the block types register — as happens when the editor's assets load lazily — is re-parsed instead of rendering, and one save later persisting, an empty block list ([#81809](https://github.com/WordPress/gutenberg/pull/81809)).

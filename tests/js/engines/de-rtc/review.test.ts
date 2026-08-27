@@ -521,3 +521,362 @@ describe( 'de-rtc review lane (client)', () => {
 		).not.toThrow();
 	} );
 } );
+
+describe( 'de-rtc merge-view group surface (describe and resolve)', () => {
+	let syncConfig: jest.MockedObject< SyncConfig >;
+	let engine: ReturnType< typeof createDeRtcEngine >;
+
+	beforeEach( () => {
+		syncConfig = makeSyncConfig();
+		engine = createDeRtcEngine();
+		// Edits and snapshots land in the same tick here; the typing-burst
+		// quiet gate would defer every snapshot otherwise.
+		setDeRtcBurstQuietMsForTesting( 0 );
+	} );
+
+	afterEach( () => {
+		setDeRtcBurstQuietMsForTesting( 500 );
+	} );
+
+	function makeEntity() {
+		const entity = engine.createEntity( {
+			syncConfig,
+			// A type WITHOUT a commit route: these suites pin the transport
+			// proposal lane.
+			objectType: 'postType/book',
+			objectId: '1',
+		} as any );
+		const session = entity.createSession();
+		const sent: any[] = [];
+		session.onLocalUpdate( ( update: any ) => sent.push( update ) );
+		return { entity, session, sent };
+	}
+
+	const A_LOCAL = {
+		name: 'core/paragraph',
+		attributes: { content: 'Alpha local' },
+	};
+	const A_MERGED = {
+		name: 'core/paragraph',
+		attributes: { content: 'Alpha merged by hand' },
+	};
+
+	describe( 'parked rows', () => {
+		it( 'stamps supportsMergeView on the LOCAL author’s genuine conflicts only', () => {
+			const { session } = makeEntity();
+			session.receiveUpdate(
+				snapshotRow( 'v1', contentOf( BLOCK_A, BLOCK_B ) )
+			);
+			const ownClientId = ( session as any ).clientId as number;
+			session.receiveUpdate(
+				parkedRow( 'p-own', 'manual-conflict-required', ownClientId, [
+					{ index: 0, html: contentOf( A_LOCAL ) },
+				] )
+			);
+			session.receiveUpdate(
+				parkedRow( 'p-peer', 'manual-conflict-required', 424242, [
+					{ index: 1, html: contentOf( BLOCK_B ) },
+				] )
+			);
+			session.receiveUpdate(
+				parkedRow( 'p-kses', 'requires-unfiltered-html', ownClientId, [
+					{ index: 1, html: contentOf( BLOCK_B ) },
+				] )
+			);
+
+			const byId = new Map(
+				engine.review
+					.getOpenItems( 'postType/book', '1' )
+					.map( ( item ) => [ item.id, item ] )
+			);
+			expect( byId.get( 'p-own' )?.supportsMergeView ).toBe( true );
+			expect( byId.get( 'p-peer' )?.supportsMergeView ).toBe( false );
+			expect( byId.get( 'p-kses' )?.supportsMergeView ).toBe( false );
+		} );
+
+		it( 'describes a parked block group: stored mine, live current, no base', () => {
+			const { session } = makeEntity();
+			session.receiveUpdate(
+				snapshotRow( 'v1', contentOf( BLOCK_A, BLOCK_B ) )
+			);
+			const ownClientId = ( session as any ).clientId as number;
+			session.receiveUpdate(
+				parkedRow( 'p-own', 'manual-conflict-required', ownClientId, [
+					{ index: 0, html: contentOf( A_LOCAL ) },
+				] )
+			);
+
+			const description = engine.review.describeReviewGroup!(
+				'postType/book',
+				'1',
+				[ 'p-own' ]
+			);
+			expect( description ).toMatchObject( {
+				baseText: null,
+				proposedHtml: contentOf( A_LOCAL ),
+				currentHtml: JSON.stringify( [ BLOCK_A ] ),
+			} );
+			expect( description!.proposedText ).toContain( 'Alpha local' );
+		} );
+
+		it( 'a hand-merged resolution overlays the merged html and resolves restored', () => {
+			const { entity, session, sent } = makeEntity();
+			session.receiveUpdate(
+				snapshotRow( 'v1', contentOf( BLOCK_A, BLOCK_B ) )
+			);
+			const ownClientId = ( session as any ).clientId as number;
+			session.receiveUpdate(
+				parkedRow( 'p-own', 'manual-conflict-required', ownClientId, [
+					{ index: 0, html: contentOf( A_LOCAL ) },
+				] )
+			);
+			sent.length = 0;
+
+			engine.review.resolveReviewGroup!(
+				'postType/book',
+				'1',
+				[ 'p-own' ],
+				'restored',
+				contentOf( A_MERGED )
+			);
+
+			const changes = entity.getEditorChanges( {
+				blocks: [],
+			} as any ) as any;
+			expect( changes.blocks ).toEqual( [ A_MERGED, BLOCK_B ] );
+			const resolvedRows = sent
+				.filter( ( update ) => DE_RTC_RESOLVED_TYPE === update.type )
+				.map( ( update ) => JSON.parse( update.data ) );
+			expect( resolvedRows ).toEqual( [
+				{ proposalId: 'p-own', resolution: 'restored' },
+			] );
+			expect(
+				engine.review.getOpenItems( 'postType/book', '1' )
+			).toHaveLength( 0 );
+		} );
+
+		it( 'keep-current dismisses without touching the doc', () => {
+			const { entity, session, sent } = makeEntity();
+			session.receiveUpdate(
+				snapshotRow( 'v1', contentOf( BLOCK_A, BLOCK_B ) )
+			);
+			const ownClientId = ( session as any ).clientId as number;
+			session.receiveUpdate(
+				parkedRow( 'p-own', 'manual-conflict-required', ownClientId, [
+					{ index: 0, html: contentOf( A_LOCAL ) },
+				] )
+			);
+			sent.length = 0;
+
+			engine.review.resolveReviewGroup!(
+				'postType/book',
+				'1',
+				[ 'p-own' ],
+				'dismissed'
+			);
+
+			const changes = entity.getEditorChanges( {
+				blocks: [],
+			} as any ) as any;
+			expect( changes.blocks ).toEqual( [ BLOCK_A, BLOCK_B ] );
+			const resolvedRows = sent
+				.filter( ( update ) => DE_RTC_RESOLVED_TYPE === update.type )
+				.map( ( update ) => JSON.parse( update.data ) );
+			expect( resolvedRows ).toEqual( [
+				{ proposalId: 'p-own', resolution: 'dismissed' },
+			] );
+		} );
+
+		it( 'a lost property register gets the two-pane variant and a merged value re-applies', () => {
+			const { entity, session } = makeEntity();
+			session.receiveUpdate( snapshotRow( 'v1', contentOf( BLOCK_A ) ) );
+			entity.applyLocalChanges(
+				{ title: 'Theirs' } as any,
+				'editor',
+				{}
+			);
+			const ownClientId = ( session as any ).clientId as number;
+			session.receiveUpdate( {
+				type: DE_RTC_PROPOSAL_PARKED_TYPE,
+				data: JSON.stringify( {
+					proposalId: 'p-prop',
+					reason: 'property-conflict',
+					authorClientId: ownClientId,
+					author: 7,
+					changedBlocks: [],
+					property: { name: 'title', value: 'Mine' },
+					excerpt: 'Mine',
+				} ),
+			} );
+
+			const description = engine.review.describeReviewGroup!(
+				'postType/book',
+				'1',
+				[ 'p-prop' ]
+			);
+			expect( description ).toEqual( {
+				baseText: null,
+				proposedText: 'Mine',
+				currentText: 'Theirs',
+			} );
+
+			engine.review.resolveReviewGroup!(
+				'postType/book',
+				'1',
+				[ 'p-prop' ],
+				'restored',
+				'Merged title'
+			);
+			const changes = entity.getEditorChanges( {} as any ) as any;
+			expect( changes.title ).toBe( 'Merged title' );
+		} );
+	} );
+
+	describe( 'contested blocks', () => {
+		const A_NEWER = {
+			name: 'core/paragraph',
+			attributes: { content: 'Alpha local newer' },
+		};
+		const A_PEER = {
+			name: 'core/paragraph',
+			attributes: { content: 'Alpha peer' },
+		};
+
+		/**
+		 * Same collision choreography as the contested-item suite above:
+		 * a newer local edit collides with a server-merged peer change.
+		 */
+		function raiseContest() {
+			const { entity, session, sent } = makeEntity();
+			session.receiveUpdate( snapshotRow( 'v1', contentOf( BLOCK_A ) ) );
+			entity.applyLocalChanges(
+				{ blocks: [ A_LOCAL ] } as any,
+				'editor',
+				{}
+			);
+			const proposal = JSON.parse( sent[ 0 ].data );
+			const clientId = Number( proposal.proposalId.split( '-' )[ 1 ] );
+			entity.applyLocalChanges(
+				{ blocks: [ A_NEWER ] } as any,
+				'editor',
+				{}
+			);
+			session.receiveUpdate( {
+				type: DE_RTC_ANNOUNCE_TYPE,
+				data: JSON.stringify( {
+					version: 'v2',
+					baseVersion: 'v1',
+					contentHash: 'merged-differs',
+					authorClientId: clientId,
+					proposalId: proposal.proposalId,
+				} ),
+			} );
+			session.receiveUpdate( snapshotRow( 'v2', contentOf( A_PEER ) ) );
+			return { entity, session, sent };
+		}
+
+		it( 'is the three-pane-guaranteed case: base, live mine, cached current', () => {
+			raiseContest();
+			const items = engine.review.getOpenItems( 'postType/book', '1' );
+			expect( items[ 0 ] ).toMatchObject( {
+				id: 'contested-0',
+				supportsMergeView: true,
+			} );
+
+			const description = engine.review.describeReviewGroup!(
+				'postType/book',
+				'1',
+				[ 'contested-0' ]
+			);
+			expect( description ).toMatchObject( {
+				proposedHtml: JSON.stringify( [ A_NEWER ] ),
+				currentHtml: JSON.stringify( [ A_PEER ] ),
+			} );
+			// The base block's exact form was recorded when the contest
+			// arose.
+			expect( description!.baseText ).toContain( 'Alpha' );
+			expect( description!.baseText ).not.toContain( 'peer' );
+		} );
+
+		it( 'keep-current ADOPTS canonical; restore-mine KEEPS the local block', () => {
+			const first = raiseContest();
+			engine.review.resolveReviewGroup!(
+				'postType/book',
+				'1',
+				[ 'contested-0' ],
+				'dismissed'
+			);
+			expect(
+				(
+					first.entity.getEditorChanges( {
+						blocks: [],
+					} as any ) as any
+				 ).blocks
+			).toEqual( [ A_PEER ] );
+
+			// A fresh entity for the restore-mine direction. The engine's
+			// review registry keys by entity, so re-create it.
+			engine = createDeRtcEngine();
+			const second = raiseContest();
+			engine.review.resolveReviewGroup!(
+				'postType/book',
+				'1',
+				[ 'contested-0' ],
+				'restored'
+			);
+			expect(
+				(
+					second.entity.getEditorChanges( {
+						blocks: [],
+					} as any ) as any
+				 ).blocks
+			).toEqual( [ A_NEWER ] );
+			expect(
+				engine.review.getOpenItems( 'postType/book', '1' )
+			).toHaveLength( 0 );
+		} );
+
+		it( 'a hand-merged contest re-proposes the merged block and clears the recorded base', () => {
+			const { entity, session, sent } = raiseContest();
+			const proposalRows = () =>
+				sent
+					.filter(
+						( update ) => DE_RTC_PROPOSAL_TYPE === update.type
+					)
+					.map( ( update ) => JSON.parse( update.data ) );
+			const proposalsBefore = proposalRows().length;
+
+			engine.review.resolveReviewGroup!(
+				'postType/book',
+				'1',
+				[ 'contested-0' ],
+				'restored',
+				contentOf( A_MERGED )
+			);
+
+			expect(
+				( entity.getEditorChanges( { blocks: [] } as any ) as any )
+					.blocks
+			).toEqual( [ A_MERGED ] );
+			expect(
+				engine.review.getOpenItems( 'postType/book', '1' )
+			).toHaveLength( 0 );
+			// The restore origin marks the doc dirty; the merged form waits
+			// on the one-in-flight rule, so settle the pending proposal and
+			// the merged one goes out as an ordinary proposal, declaring
+			// the current version (the recorded per-block base cleared).
+			const pending = proposalRows().at( -1 );
+			session.receiveDispositions!( [
+				{ intentId: pending.proposalId, status: 'applied' },
+			] as never );
+			const proposals = proposalRows();
+			expect( proposals.length ).toBeGreaterThan( proposalsBefore );
+			const lastProposal = proposals[ proposals.length - 1 ];
+			expect( lastProposal.baseVersion ).toBe( 'v2' );
+			expect( lastProposal.blockBaseVersions ).toBeUndefined();
+			expect( lastProposal.proposedContent ).toContain(
+				'Alpha merged by hand'
+			);
+		} );
+	} );
+} );

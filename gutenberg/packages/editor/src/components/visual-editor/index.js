@@ -34,6 +34,7 @@ import { usePaddingAppender } from './use-padding-appender';
 import { useEditContentOnlySectionExit } from './use-edit-content-only-section-exit';
 import { SyncConnectionErrorModal } from '../sync-connection-error-modal';
 import CollaborationConflictMarkers from '../collaboration-review-panel/markers';
+import CollaborationMergeDialog from '../collaboration-review-panel/merge-dialog';
 
 const {
 	LayoutStyle,
@@ -468,6 +469,7 @@ function VisualEditor( {
 		>
 			<SyncConnectionErrorModal />
 			<CollaborationConflictMarkers contentRef={ localRef } />
+			<CollaborationMergeDialog />
 			<ResizableEditor
 				enableResizing={ enableResizing }
 				width={

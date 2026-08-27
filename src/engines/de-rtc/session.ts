@@ -589,7 +589,10 @@ export function createDeRtcSessionCodec(
 								: {} ),
 							authorClientId: doc.clientID,
 						} );
-						bridge.advanceVersion( decoded.version );
+						bridge.advanceVersion(
+							decoded.version,
+							lastProposedContent ?? undefined
+						);
 						if ( announcedSeq >= behindSeq ) {
 							behindSeq = 0;
 						}
@@ -698,7 +701,10 @@ export function createDeRtcSessionCodec(
 								lastProposedProperties
 							);
 						}
-						bridge.advanceVersion( decoded.version );
+						bridge.advanceVersion(
+							decoded.version,
+							decoded.content
+						);
 						settleQueued();
 						return;
 					}

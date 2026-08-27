@@ -726,6 +726,32 @@ export function syncReviewItems( state = {}, action ) {
 }
 
 /**
+ * Reducer managing the merge-view request: which review-item group (if
+ * any) the user asked to review in the merge dialog. Null when no merge
+ * view is open.
+ *
+ * @param {Object|null} state  Current request ({ kind, name, recordId,
+ *                             itemIds }) or null.
+ * @param {Object}      action Dispatched action.
+ *
+ * @return {Object|null} Updated state.
+ */
+export function syncReviewMergeRequest( state = null, action ) {
+	switch ( action.type ) {
+		case 'OPEN_SYNC_REVIEW_MERGE':
+			return {
+				kind: action.kind,
+				name: action.name,
+				recordId: action.recordId,
+				itemIds: action.itemIds,
+			};
+		case 'CLOSE_SYNC_REVIEW_MERGE':
+			return null;
+	}
+	return state;
+}
+
+/**
  * Reducer managing whether collaboration is supported.
  *
  * Default to true, as collaboration is supported by default
@@ -806,6 +832,7 @@ export default combineReducers( {
 	editorAssets,
 	syncConnectionStatuses,
 	syncReviewItems,
+	syncReviewMergeRequest,
 	collaborationSupported,
 	viewConfigs,
 } );
