@@ -22,6 +22,15 @@ them under a version heading when a version ships.
     it every time
     ([#64](https://github.com/Automattic/gutenberg-sync-engines/issues/64)).
 
+-   `wp collaboration rooms inspect --materialize` crashed with a fatal
+    PHP error when the site's collaboration method had been switched
+    since a room's data was written, because it rebuilt the room's
+    content with the site's currently configured method rather than the
+    method that room's data actually belongs to. It now resolves the
+    room's own recorded method first, and prints a clear message instead
+    of crashing when that method isn't available
+    ([#56](https://github.com/Automattic/gutenberg-sync-engines/issues/56)).
+
 -   Under the yjs-server engine, a Group block (or other container) could
     come back after a reload as WordPress's "unexpected or invalid
     content" recovery screen with nothing to recover, its contents gone

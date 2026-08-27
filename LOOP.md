@@ -25,13 +25,15 @@ to ask about it.
 ## How to run it
 
 ```
-/shape-issues        # turn filed reports into issues anyone could pick up
-/loop /issue-cycle   # work through everything labelled agent:ready
+/loop /shape-issue   # turn filed reports into issues anyone could pick up
+/loop /solve-issue   # work through everything labelled agent:ready
 ```
 
-One issue per branch, named `loop/<issue number>`. One bounded piece of
-work per cycle. The full protocol is in
-`.claude/commands/issue-cycle.md`; the writing rules are in
+Either command also takes a single issue number directly (e.g.
+`/solve-issue 56`) when you want to work one issue without starting a
+loop. One issue per branch, named `loop/<issue number>`. One bounded
+piece of work per cycle. The full protocol is in
+`.claude/commands/solve-issue.md`; the writing rules are in
 `docs/plan/README.md`; the standing repo rules are in `AGENTS.md`.
 
 ## Working alongside other people and agents

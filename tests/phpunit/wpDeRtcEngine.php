@@ -675,6 +675,100 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 		$this->assertSame( 'p-classic', $parked[0]['proposalId'] );
 	}
 
+	/**
+	 * Records the CURRENT behavior questioned by issue #41: a reviewer's
+	 * approval of risky content is one-shot. Restore re-proposes the risky
+	 * block under the reviewer's own capability (that lands it), but nothing
+	 * remembers the approval afterwards. The next edit by a filtered author —
+	 * even a plain typo fix around the already-approved risky markup — fails
+	 * both sequestration passes (the block is no longer byte-identical to its
+	 * base form, and kses still rewrites the approved markup), so the block
+	 * reverts to base, the typo fix is lost from canonical, and the block
+	 * parks for review all over again.
+	 *
+	 * If persistent approval becomes the policy, the last four assertions
+	 * are the ones that should flip.
+	 */
+	public function test_approval_of_a_risky_block_does_not_survive_the_next_edit_by_a_filtered_author() {
+		$engine   = $this->engine();
+		$response = $engine->get_updates_since( $this->room(), 1, 0, array() );
+		$genesis  = $this->latest_from_response( $response );
+
+		// Step 1 — a filtered author edits the Beta block to include markup
+		// kses would strip. The block reverts to its base form and parks.
+		wp_set_current_user( self::$author_id );
+		$risky_text = 'Beta block original text <script>widget()</script>';
+		$proposed   = str_replace( 'Beta block original text', $risky_text, $genesis['content'] );
+		$result     = $this->engine()->handle_updates(
+			$this->room(),
+			3,
+			0,
+			array( $this->proposal( 'p-embed', $genesis['version'], $genesis['content'], $proposed ) ),
+			array()
+		);
+		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
+		$this->assertStringNotContainsString( '<script>', (string) $this->engine()->materialize( $this->room() ) );
+
+		$parked = $this->rows_of_type(
+			$this->engine()->get_updates_since( $this->room(), 4, 0, array() ),
+			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+		);
+		$this->assertCount( 1, $parked );
+		$this->assertSame( 'p-embed', $parked[0]['proposalId'] );
+		$this->assertSame( 'requires-unfiltered-html', $parked[0]['reason'] );
+
+		// Step 2 — a reviewer with unfiltered_html restores the parked block:
+		// the parked markup re-proposes as the reviewer's own edit (that is
+		// what approval IS in this engine), and the parked row resolves.
+		wp_set_current_user( self::$editor_id );
+		$reviewer_state    = $this->latest_from_response( $this->engine()->get_updates_since( $this->room(), 1, 0, array() ) );
+		$restored_proposed = str_replace( 'Beta block original text', $risky_text, $reviewer_state['content'] );
+		$restore_result    = $this->engine()->handle_updates(
+			$this->room(),
+			1,
+			0,
+			array( $this->proposal( 'p-restore', $reviewer_state['version'], $reviewer_state['content'], $restored_proposed ) ),
+			array()
+		);
+		$this->assertSame( 'applied', $restore_result['dispositions'][0]['status'] );
+		$resolved = $this->engine()->resolve_proposal( $this->room(), 'p-embed', 'restored', 1 );
+		$this->assertSame( 'resolved', $resolved['status'] );
+
+		$approved_canonical = (string) $this->engine()->materialize( $this->room() );
+		$this->assertStringContainsString( '<script>widget()</script>', $approved_canonical, 'the restore must land the approved risky markup' );
+
+		// Step 3 — the same filtered author fixes a typo in the approved
+		// block, leaving the approved risky markup untouched.
+		wp_set_current_user( self::$author_id );
+		$author_state = $this->latest_from_response( $this->engine()->get_updates_since( $this->room(), 3, 0, array() ) );
+		$this->assertStringContainsString( '<script>widget()</script>', $author_state['content'] );
+		$typo_fixed  = str_replace( 'Beta block original text', 'Beta block corrected text', $author_state['content'] );
+		$typo_result = $this->engine()->handle_updates(
+			$this->room(),
+			3,
+			0,
+			array( $this->proposal( 'p-typo', $author_state['version'], $author_state['content'], $typo_fixed ) ),
+			array()
+		);
+		$this->assertSame( 'applied', $typo_result['dispositions'][0]['status'] );
+
+		// Step 4 — CURRENT behavior: the approval did not stick. The typo fix
+		// never lands (the block reverted to its approved base form), and the
+		// author's edit parks for review a second time.
+		$materialized = (string) $this->engine()->materialize( $this->room() );
+		$this->assertStringContainsString( 'Beta block original text', $materialized, 'current behavior: the typo fix is reverted with the block' );
+		$this->assertStringNotContainsString( 'Beta block corrected text', $materialized, 'current behavior: the typo fix does not land' );
+
+		$parked = $this->rows_of_type(
+			$this->engine()->get_updates_since( $this->room(), 4, 0, array() ),
+			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+		);
+		$this->assertCount( 2, $parked, 'current behavior: the already-approved block parks again' );
+		$this->assertSame( 'p-typo', $parked[1]['proposalId'] );
+		$this->assertSame( 'requires-unfiltered-html', $parked[1]['reason'] );
+		$this->assertStringContainsString( 'Beta block corrected text', $parked[1]['changedBlocks'][0]['html'] );
+	}
+
 	public function test_redelivered_escalation_does_not_double_park() {
 		$genesis = $this->escalate_conflict();
 
