@@ -30,48 +30,65 @@
 	}
 }
 
-.editor-collaboration-pending-card {
-	// The card must not swallow clicks meant for the block below it.
-	.components-popover__content {
-		background: none;
-		border: none;
-		box-shadow: none;
-		overflow: visible;
+// Add/remove highlighting for the merge dialog's panes. The in-canvas
+// conflict block carries its own copy of these rules: this stylesheet does
+// not load inside the canvas iframe.
+.editor-collaboration-diff__added {
+	background: rgba($alert-green, 0.25);
+	text-decoration: none;
+}
+
+.editor-collaboration-diff__removed {
+	background: rgba($alert-red, 0.2);
+	text-decoration: line-through;
+}
+
+.editor-collaboration-merge-dialog {
+	.editor-collaboration-merge-dialog__description {
+		color: $gray-700;
+		margin: 0 0 $grid-unit-15;
 	}
 
-	.editor-collaboration-pending-card__body {
-		background: $white;
-		border: $border-width solid $alert-yellow;
-		border-radius: $radius-medium;
-		box-shadow: $elevation-medium;
-		margin-top: $grid-unit-05;
-		max-height: 60vh;
-		max-width: 320px;
-		min-width: 280px;
-		overflow-y: auto;
-		padding: $grid-unit-15;
+	.editor-collaboration-merge-dialog__panes {
+		display: grid;
+		gap: $grid-unit-15;
+		grid-template-columns: 1fr 1fr;
+		margin-bottom: $grid-unit-20;
 	}
 
-	.editor-collaboration-pending-card__attribution {
+	.editor-collaboration-merge-dialog__pane {
+		display: flex;
+		flex-direction: column;
+	}
+
+	.editor-collaboration-merge-dialog__pane-label {
+		font-size: $helptext-font-size;
 		font-weight: 600;
 		margin: 0 0 $grid-unit-05;
+		text-transform: uppercase;
 	}
 
-	.editor-collaboration-pending-card__summary {
-		color: $gray-700;
-		margin: 0 0 $grid-unit-10;
-		overflow-wrap: break-word;
+	.editor-collaboration-merge-dialog__pane-content {
+		background: $gray-100;
+		border-radius: $radius-small;
+		flex-grow: 1;
+		margin-bottom: $grid-unit-10;
+		max-height: 16em;
+		overflow-y: auto;
+		padding: $grid-unit-10;
+		white-space: pre-wrap;
+		word-break: break-word;
 	}
 
-	.editor-collaboration-pending-card__actions {
-		align-items: center;
+	.editor-collaboration-merge-dialog__pane .components-button {
+		align-self: flex-start;
+	}
+
+	.editor-collaboration-merge-dialog__actions {
 		display: flex;
 		gap: $grid-unit-10;
-	}
-
-	.editor-collaboration-pending-card__hint {
-		color: $gray-700;
-		font-size: $helptext-font-size;
+		justify-content: flex-end;
+		margin-top: $grid-unit-20;
 	}
 }
 

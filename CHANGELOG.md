@@ -7,7 +7,30 @@ them under a version heading when a version ships.
 
 ## Unreleased
 
+### Added
+
+-   A prototype flow for reviewing conflicting edits, for UI design work.
+    A block whose edits were set aside is replaced in place by a
+    recovery-style card, the way an invalid block is: a "Review conflict"
+    action above a preview of the conflict with add/remove highlighting,
+    and the block's content is read-only until the conflict is reviewed.
+    The action opens a dialog comparing "Your version" with the "Current
+    version", each highlighted against the shared text both started
+    from; either can be restored into an editable merged result, and
+    Accept writes that result into the block and clears the set-aside
+    items. Escalations no longer raise editor notices; the in-place card
+    and the sidebar panel are the only surfaces. The compared texts are
+    pre-set placeholder content for now. Real conflicts from any engine
+    open the flow; supplying the real texts is follow-up engine work.
+
 ### Fixed
+
+-   Switching the editor to the code view crashed with an invalid React
+    element type, as did a block's "Edit as HTML" view and blocks built
+    on the plain-text component. The bundled Gutenberg build's CommonJS
+    interop handed the auto-sizing textarea dependency over as a module
+    object instead of the component; the three usage sites now unwrap
+    both shapes.
 
 -   De-rtc sessions could silently stop syncing after a failed network
     request: the polling transport's recovery step seized the slot of a

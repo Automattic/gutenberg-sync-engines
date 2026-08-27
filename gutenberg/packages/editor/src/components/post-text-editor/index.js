@@ -1,4 +1,4 @@
-import Textarea from 'react-autosize-textarea';
+import autosizeTextarea from 'react-autosize-textarea';
 import { useLayoutEffect, useRef } from '@wordpress/element';
 import { __ } from '@wordpress/i18n';
 import { store as coreStore } from '@wordpress/core-data';
@@ -7,6 +7,12 @@ import { useInstanceId } from '@wordpress/compose';
 import { VisuallyHidden } from '@wordpress/ui';
 import { store as editorStore } from '../../store';
 import { adjustPosition, getDiff } from './utils';
+
+// The build's CommonJS interop can hand this import over either as the
+// component itself or as the module object carrying it as `default`.
+// Unwrap both shapes; the raw module object is not a valid element type
+// and crashes the code editor.
+const Textarea = autosizeTextarea.default ?? autosizeTextarea;
 
 /**
  * Displays the Post Text Editor along with content in Visual and Text mode.

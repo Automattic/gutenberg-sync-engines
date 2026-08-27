@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Enhancements
+
+-   Collaboration: Sync escalations no longer raise editor notices (neither the per-escalation warning nor the aggregate counter). The open review items are still mirrored into the store; the review panel and the in-canvas conflict UI are the surfaces for them.
+
 ### Bug Fixes
 
 -   Validate the shared parsed-blocks cache against the registered block types as well as the content, so a record resolved before the block types register — as happens when the editor's assets load lazily — is re-parsed instead of rendering, and one save later persisting, an empty block list ([#81809](https://github.com/WordPress/gutenberg/pull/81809)).

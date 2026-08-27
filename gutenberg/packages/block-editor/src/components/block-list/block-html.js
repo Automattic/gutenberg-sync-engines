@@ -1,4 +1,4 @@
-import TextareaAutosize from 'react-autosize-textarea';
+import autosizeTextarea from 'react-autosize-textarea';
 import { useEffect, useMemo, useState } from '@wordpress/element';
 import { useSelect, useDispatch } from '@wordpress/data';
 import {
@@ -10,6 +10,12 @@ import {
 } from '@wordpress/blocks';
 import { store as blockEditorStore } from '../../store';
 import { useNativeUndo } from '../../utils/native-undo';
+
+// The build's CommonJS interop can hand this import over either as the
+// component itself or as the module object carrying it as `default`.
+// Unwrap both shapes; the raw module object is not a valid element type
+// and crashes the block's "Edit as HTML" view.
+const TextareaAutosize = autosizeTextarea.default ?? autosizeTextarea;
 
 function BlockHTML( { clientId } ) {
 	const [ html, setHtml ] = useState( '' );

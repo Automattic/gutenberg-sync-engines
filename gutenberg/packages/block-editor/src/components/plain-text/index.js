@@ -1,7 +1,13 @@
-import TextareaAutosize from 'react-autosize-textarea';
+import autosizeTextarea from 'react-autosize-textarea';
 import clsx from 'clsx';
 import { forwardRef } from '@wordpress/element';
 import EditableText from '../editable-text';
+
+// The build's CommonJS interop can hand this import over either as the
+// component itself or as the module object carrying it as `default`.
+// Unwrap both shapes; the raw module object is not a valid element type
+// and crashes the block's plain-text editing view.
+const TextareaAutosize = autosizeTextarea.default ?? autosizeTextarea;
 
 /**
  * Render an auto-growing textarea allow users to fill any textual content.

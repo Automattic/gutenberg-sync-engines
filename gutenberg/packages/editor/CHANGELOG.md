@@ -4,6 +4,7 @@
 
 ### Enhancements
 
+-   Collaboration: Replace the inline pending-edit card with a prototype conflict review flow. A conflicted block's edit UI is replaced in place by a recovery-style card ("Review conflict" above an add/remove highlighted preview), making the block read-only until reviewed. The card opens a dialog that compares "Your version" with the "Current version", each diffed against the shared text both started from, restores either into an editable merged result, and on Accept writes that result into the block and clears the set-aside items. The compared texts are pre-set placeholder content while the UI design settles.
 -   Commands: Add a command palette entry that opens the current post on the front end once it is published, labelled with the post type's `view_item` label ([#66720](https://github.com/WordPress/gutenberg/pull/66720)).
 -   Pre-publish panel: Remove the "Visibility" and "Publish" headings that repeated the title of the panel containing them. The publish date's reset action, which lived in the removed header, becomes a "Reset" button below the date picker, disabled but still focusable while the post is set to publish immediately ([#81806](https://github.com/WordPress/gutenberg/pull/81806)).
 
