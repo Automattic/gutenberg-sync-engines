@@ -10,6 +10,9 @@ Operational guide for working in this repo. Read this first.
 - Practice "BLUF": Bottom Line Up Front. Start with the main point or
   conclusion, then provide supporting details.
 - Be as concise as possible without omitting essential information.
+- Before posting something for external consumption, run the draft past a fresh
+  subagent instructed to flag jargon and follow these language rules. Use a
+  model that is skilled at summarizing.
 
 ## What this is
 
