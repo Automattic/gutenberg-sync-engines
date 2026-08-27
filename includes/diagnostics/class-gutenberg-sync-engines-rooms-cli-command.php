@@ -197,11 +197,18 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Rooms_CLI_Command' ) && defined( 'W
 			}
 
 			if ( isset( $assoc_args['materialize'] ) && array() !== $all_rows ) {
-				$engine = ( new WP_HTTP_Polling_Sync_Server( $storage ) )
-					->get_engine_registry()
-					->get_engine_for_room( $room );
-				if ( method_exists( $engine, 'materialize' ) ) {
-					$state['materialized'] = $engine->materialize( $room );
+				$engine_slug = $state['engine'];
+				if ( null === $engine_slug || '' === $engine_slug ) {
+					$state['materialized'] = '(cannot materialize: room has no recorded engine lineage)';
+				} else {
+					$engine = ( new WP_HTTP_Polling_Sync_Server( $storage ) )
+						->get_engine_registry()
+						->get_engine( $engine_slug );
+					if ( null === $engine ) {
+						$state['materialized'] = "(cannot materialize: engine '{$engine_slug}' is not registered on this site)";
+					} elseif ( method_exists( $engine, 'materialize' ) ) {
+						$state['materialized'] = $engine->materialize( $room );
+					}
 				}
 			}
 
