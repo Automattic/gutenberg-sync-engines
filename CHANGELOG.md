@@ -9,6 +9,17 @@ them under a version heading when a version ships.
 
 ### Fixed
 
+-   Pressing Ctrl+C did not stop the websocket sync server started by
+    `npm run rtc:ws`, even though the server said it would: the terminal
+    just sat there and the server kept running. Two things were in the
+    way. The container took over the terminal, so Ctrl+C never reached
+    the script that knows how to shut it down; and inside the container
+    the server is the first process, where the system ignores a stop
+    request unless the program has explicitly asked to hear about it.
+    Both are fixed — the script now sees Ctrl+C and stops the server, and
+    the server listens for stop requests wherever PHP allows it, closing
+    open connections and freeing the port on the way out.
+
 -   Under the de-rtc engine, once a reviewer approved content an
     unprivileged author's edit would otherwise have stripped (a script
     tag, a custom embed), that author's later edits anywhere else in the
