@@ -53,6 +53,13 @@ export interface BridgeBlock {
 	 * whose markup lives OUTSIDE attributes.
 	 */
 	innerContent?: Array< string | null >;
+	/**
+	 * The block-editor's own id for this block, present on trees that
+	 * arrived from the editor. Never part of the engine projection:
+	 * deriveIntents only reports it back (editorClientIds) so the caller
+	 * can keep pushed blocks on the editor's ids.
+	 */
+	clientId?: string;
 }
 
 /**
@@ -159,6 +166,15 @@ export interface DerivedIntents {
 	} >;
 	coarseBlockCount: number;
 	retainedIds: Set< string >;
+	/**
+	 * Editor clientIds for blocks whose identity this derivation ASSIGNED
+	 * (freshly minted, re-minted on a duplicate, or rewritten by
+	 * adoption), keyed by the final syncId. Callers seed their push-side
+	 * clientId map with these entries: a push that hands the editor a
+	 * fresh clientId for a block it already displays remounts that block,
+	 * destroying component-local UI state (an open modal, focus).
+	 */
+	editorClientIds: Map< string, string >;
 }
 
 /**
@@ -236,6 +252,10 @@ function serializeAttribute( value: unknown ): unknown {
  *                   duplicates re-mint (the first occurrence keeps identity).
  * @param raw        Raw-content block handling (core/html-style markup).
  * @param saveMarkup
+ * @param sources    Optional map collecting spec → source bridge block, so
+ *                   the caller can pair each spec's FINAL id (adoption
+ *                   rewrites specs in place) with the editor block it came
+ *                   from.
  * @return Engine block spec (makeBlock input shape).
  */
 export function blockToEngineSpec(
@@ -244,7 +264,8 @@ export function blockToEngineSpec(
 	minted?: Set< string >,
 	seenIds?: Set< string >,
 	raw?: RawContentAdapter,
-	saveMarkup?: SaveMarkupAdapter
+	saveMarkup?: SaveMarkupAdapter,
+	sources?: Map< Record< string, unknown >, BridgeBlock >
 ): Record< string, unknown > {
 	const attributes = { ...block.attributes };
 	const metadata = {
@@ -302,7 +323,8 @@ export function blockToEngineSpec(
 				minted,
 				seenIds,
 				raw,
-				saveMarkup
+				saveMarkup,
+				sources
 			)
 		);
 	}
@@ -346,13 +368,15 @@ export function blockToEngineSpec(
 		}
 	}
 
-	return {
+	const spec: Record< string, unknown > = {
 		syncId,
 		blockType: block.name,
 		attrs,
 		fields,
 		children,
 	};
+	sources?.set( spec, block );
+	return spec;
 }
 
 /**
@@ -960,6 +984,7 @@ export function deriveIntents(
 	const raw = options.rawContent;
 	const minted = new Set< string >();
 	const seenIds = new Set< string >();
+	const sources = new Map< Record< string, unknown >, BridgeBlock >();
 	let specs = blocks.map( ( block ) =>
 		blockToEngineSpec(
 			block,
@@ -967,7 +992,8 @@ export function deriveIntents(
 			minted,
 			seenIds,
 			raw,
-			options.saveMarkup
+			options.saveMarkup,
+			sources
 		)
 	);
 	/*
@@ -1037,6 +1063,31 @@ export function deriveIntents(
 	if ( options.excludeIds && options.excludeIds.size > 0 ) {
 		specs = filterExcludedSpecs( specs, options.excludeIds );
 	}
+	/*
+	 * Pair each identity this derivation ASSIGNED with the editor block
+	 * that received it. A block whose incoming metadata.syncId survived
+	 * unchanged is skipped: its association is already settled. Read AFTER
+	 * adoption and exclusion, so the pairs carry final ids and dropped
+	 * specs contribute nothing.
+	 */
+	const editorClientIds = new Map< string, string >();
+	const collectAssignedClientIds = (
+		specList: Array< Record< string, unknown > >
+	) => {
+		for ( const spec of specList ) {
+			const source = sources.get( spec );
+			const incomingId = (
+				source?.attributes?.metadata as { syncId?: string } | undefined
+			 )?.syncId;
+			if ( source?.clientId && spec.syncId !== incomingId ) {
+				editorClientIds.set( spec.syncId as string, source.clientId );
+			}
+			collectAssignedClientIds(
+				( spec.children as Array< Record< string, unknown > > ) ?? []
+			);
+		}
+	};
+	collectAssignedClientIds( specs );
 	const target = specsToDocument( specs );
 	const targetIds = collectSpecIds( specs, new Set() );
 	const fieldNames: RichTextFieldsResolver = ( name ) =>
@@ -1101,6 +1152,7 @@ export function deriveIntents(
 				intents: [],
 				coarseBlockCount: 0,
 				retainedIds: new Set( missing ),
+				editorClientIds,
 				specs,
 			};
 		}
@@ -1301,7 +1353,13 @@ export function deriveIntents(
 			authoredContentIds
 		)
 	) {
-		return { intents, coarseBlockCount: 0, retainedIds, specs };
+		return {
+			intents,
+			coarseBlockCount: 0,
+			retainedIds,
+			editorClientIds,
+			specs,
+		};
 	}
 
 	/*
@@ -1382,7 +1440,13 @@ export function deriveIntents(
 		);
 	}
 
-	return { intents: coarse, coarseBlockCount, retainedIds, specs };
+	return {
+		intents: coarse,
+		coarseBlockCount,
+		retainedIds,
+		editorClientIds,
+		specs,
+	};
 }
 
 /**
