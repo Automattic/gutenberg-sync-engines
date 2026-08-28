@@ -1,22 +1,22 @@
 import { useState } from '@wordpress/element';
 import { __ } from '@wordpress/i18n';
 import { Button, Modal } from '@wordpress/components';
-import { diffWordsWithSpace } from 'diff';
-import DiffText from './diff-text';
+import { RevisionsCodeDiff } from '../post-revisions-preview/revisions-code-diff';
 
 /**
  * The dialog's content for reviewing a block held for security approval.
  *
- * A NEW-block proposal shows one "Proposed block" pane. An UPDATE shows
- * "Original" and "Proposed block" side by side as a split diff: one word
- * diff from the original to the proposal feeds both panes, the original
- * keeping the removals and the proposal keeping the additions. Either
- * shape offers Approve, Remove block, and an Edit toggle opening the
- * proposed markup for plain-text editing below; the panes re-diff live
- * while editing, and Approve hands back the (possibly edited) markup.
+ * The held markup shows as the revisions system's line-numbered code
+ * diff. An UPDATE diffs from the original to the proposal in one unified
+ * view (removed and added lines interleaved); a NEW-block proposal diffs
+ * against nothing, so every line reads as added. Either shape offers
+ * Approve, Remove block, and an Edit toggle opening the proposed markup
+ * for plain-text editing below; the diff recomputes live while editing,
+ * and Approve hands back the (possibly edited) markup.
  *
- * All held markup renders as inert text, never live DOM. The point of the
- * approval gate is that this markup has not been trusted.
+ * All held markup renders as inert text, never live DOM (the code diff
+ * renders lines as text). The point of the approval gate is that this
+ * markup has not been trusted.
  *
  * Position-independent so it can be unit-tested without the modal.
  *
@@ -32,18 +32,6 @@ export function KsesReviewDialogBody( { sequestration, onApprove, onRemove } ) {
 	const [ isEditing, setIsEditing ] = useState( false );
 	const isUpdate = 'update' === sequestration.kind;
 
-	let originalParts = null;
-	let proposedParts = null;
-
-	if ( isUpdate ) {
-		const parts = diffWordsWithSpace(
-			sequestration.original,
-			proposedHtml
-		);
-		originalParts = parts.filter( ( part ) => ! part.added );
-		proposedParts = parts.filter( ( part ) => ! part.removed );
-	}
-
 	return (
 		<div className="editor-collaboration-kses-dialog__body">
 			<p className="editor-collaboration-kses-dialog__description">
@@ -55,35 +43,29 @@ export function KsesReviewDialogBody( { sequestration, onApprove, onRemove } ) {
 							'This proposed block contains content that needs approval from someone allowed to publish unfiltered HTML.'
 					  ) }
 			</p>
-			{ isUpdate ? (
-				<div className="editor-collaboration-kses-dialog__panes">
-					<div className="editor-collaboration-kses-dialog__pane">
-						<h3 className="editor-collaboration-kses-dialog__pane-label">
-							{ __( 'Original' ) }
-						</h3>
-						<pre className="editor-collaboration-kses-dialog__pane-content">
-							<DiffText parts={ originalParts } />
-						</pre>
-					</div>
-					<div className="editor-collaboration-kses-dialog__pane">
-						<h3 className="editor-collaboration-kses-dialog__pane-label">
-							{ __( 'Proposed block' ) }
-						</h3>
-						<pre className="editor-collaboration-kses-dialog__pane-content">
-							<DiffText parts={ proposedParts } />
-						</pre>
-					</div>
+			<div className="editor-collaboration-kses-dialog__pane">
+				<h3 className="editor-collaboration-kses-dialog__pane-label">
+					{ isUpdate
+						? __( 'Proposed changes' )
+						: __( 'Proposed block' ) }
+				</h3>
+				<div className="editor-collaboration-kses-dialog__code-diff">
+					<RevisionsCodeDiff
+						revision={ { content: { raw: proposedHtml } } }
+						previousRevision={
+							isUpdate
+								? {
+										content: {
+											raw: sequestration.original,
+										},
+								  }
+								: null
+						}
+						showDiff
+						isPreviousRevisionLoading={ false }
+					/>
 				</div>
-			) : (
-				<div className="editor-collaboration-kses-dialog__pane">
-					<h3 className="editor-collaboration-kses-dialog__pane-label">
-						{ __( 'Proposed block' ) }
-					</h3>
-					<pre className="editor-collaboration-kses-dialog__pane-content">
-						{ proposedHtml }
-					</pre>
-				</div>
-			) }
+			</div>
 			{ isEditing && (
 				<div className="editor-collaboration-kses-dialog__editor">
 					<h3 className="editor-collaboration-kses-dialog__pane-label">

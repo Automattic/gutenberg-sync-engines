@@ -2,10 +2,22 @@ import { useState } from '@wordpress/element';
 import { __ } from '@wordpress/i18n';
 import { Button, Modal } from '@wordpress/components';
 import { createBlock } from '@wordpress/blocks';
-import { diffWordsWithSpace } from 'diff';
-import DiffText from './diff-text';
+import BlockDiffPane, { BlockDiffResources } from './block-diff-pane';
 import MergedResultEditor from './merged-result-editor';
 import { MOCK_CONFLICT } from './mock-conflict';
+
+/**
+ * A version's text as serialized paragraph markup, the input shape the
+ * block differ compares. The prototype's conflict texts are plain
+ * strings; the eventual engine-supplied versions arrive serialized
+ * already, and this wrapper disappears with them.
+ *
+ * @param {string} text The version's text.
+ * @return {string} The text as one serialized paragraph block.
+ */
+function paragraphContent( text ) {
+	return `<!-- wp:paragraph -->\n<p>${ text }</p>\n<!-- /wp:paragraph -->`;
+}
 
 /**
  * The merged result as blocks, seeded from one version's text.
@@ -33,23 +45,29 @@ function mergedHtmlFrom( blocks ) {
 }
 
 /**
- * One version pane: a heading, the diff-highlighted text, and a button
- * copying this version into the merged result.
+ * One version pane: a heading, this version rendered as read-only blocks
+ * with the revisions diff highlighting against the base version, and a
+ * button copying this version into the merged result.
  *
  * @param {Object}   props
- * @param {string}   props.label     Pane heading.
- * @param {Array}    props.parts     diffWords change objects to render.
- * @param {Function} props.onRestore Copy this version into the merged
- *                                   result.
+ * @param {string}   props.label       Pane heading.
+ * @param {string}   props.content     This version as serialized blocks.
+ * @param {string}   props.baseContent The shared base as serialized
+ *                                     blocks.
+ * @param {Function} props.onRestore   Copy this version into the merged
+ *                                     result.
  */
-function Pane( { label, parts, onRestore } ) {
+function Pane( { label, content, baseContent, onRestore } ) {
 	return (
 		<div className="editor-collaboration-merge-dialog__pane">
 			<h3 className="editor-collaboration-merge-dialog__pane-label">
 				{ label }
 			</h3>
 			<div className="editor-collaboration-merge-dialog__pane-content">
-				<DiffText parts={ parts } />
+				<BlockDiffPane
+					content={ content }
+					baseContent={ baseContent }
+				/>
 			</div>
 			<Button
 				__next40pxDefaultSize
@@ -65,12 +83,17 @@ function Pane( { label, parts, onRestore } ) {
 
 /**
  * The merge dialog's content: your version and the current version side by
- * side, each word-diffed against the SHARED BASE both started from (so
- * each pane highlights only that side's own changes), and each restorable
- * into the merged result below them. The merged result is a paragraph
- * edited in its own small block editor (text and formatting only), so the
- * paragraph block type must be registered. Accept hands the merged
- * result's HTML back; Cancel closes without changing anything.
+ * side, each rendered as read-only blocks diffed against the SHARED BASE
+ * both started from with the revisions diff system (so each pane
+ * highlights only that side's own changes), and each restorable into the
+ * merged result below them. The merged result is a paragraph edited in
+ * its own small block editor (text and formatting only), so the paragraph
+ * block type must be registered. Accept hands the merged result's HTML
+ * back; Cancel closes without changing anything.
+ *
+ * The merged editor deliberately stays free of the diff highlighting: the
+ * inline diff marks are rich-text formats living in the content, and they
+ * would serialize into the accepted result.
  *
  * Position-independent so it can be unit-tested without the modal.
  *
@@ -95,8 +118,11 @@ export function MergeDialogBody( {
 		mergedBlocksFrom( currentText )
 	);
 
+	const baseContent = paragraphContent( baseText );
+
 	return (
 		<div className="editor-collaboration-merge-dialog__body">
+			<BlockDiffResources />
 			<p className="editor-collaboration-merge-dialog__description">
 				{ __(
 					'These edits could not be merged automatically. Compare the versions and choose what to keep.'
@@ -105,14 +131,16 @@ export function MergeDialogBody( {
 			<div className="editor-collaboration-merge-dialog__panes">
 				<Pane
 					label={ __( 'Your version' ) }
-					parts={ diffWordsWithSpace( baseText, yourText ) }
+					content={ paragraphContent( yourText ) }
+					baseContent={ baseContent }
 					onRestore={ () =>
 						setMerged( mergedBlocksFrom( yourText ) )
 					}
 				/>
 				<Pane
 					label={ __( 'Current version' ) }
-					parts={ diffWordsWithSpace( baseText, currentText ) }
+					content={ paragraphContent( currentText ) }
+					baseContent={ baseContent }
 					onRestore={ () =>
 						setMerged( mergedBlocksFrom( currentText ) )
 					}

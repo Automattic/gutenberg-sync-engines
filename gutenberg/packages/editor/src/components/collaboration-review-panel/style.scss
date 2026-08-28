@@ -30,18 +30,10 @@
 	}
 }
 
-// Add/remove highlighting for the merge dialog's panes. The in-canvas
-// conflict block carries its own copy of these rules: this stylesheet does
-// not load inside the canvas iframe.
-.editor-collaboration-diff__added {
-	background: rgba($alert-green, 0.25);
-	text-decoration: none;
-}
-
-.editor-collaboration-diff__removed {
-	background: rgba($alert-red, 0.2);
-	text-decoration: line-through;
-}
+// The add/remove text highlighting classes (editor-collaboration-diff__*)
+// only appear inside the canvas iframe now (the conflict card's preview),
+// where conflict-block.js carries their rules: this stylesheet does not
+// load in there. The dialogs use the revisions diff system instead.
 
 .editor-collaboration-merge-dialog {
 	.editor-collaboration-merge-dialog__description {
@@ -68,6 +60,9 @@
 		text-transform: uppercase;
 	}
 
+	// Holds a pane's read-only block canvas (see block-diff-pane.js). The
+	// padding leaves room for the diff outlines drawn just outside the
+	// blocks' boxes.
 	.editor-collaboration-merge-dialog__pane-content {
 		background: $gray-100;
 		border-radius: $radius-small;
@@ -75,9 +70,18 @@
 		margin-bottom: $grid-unit-10;
 		max-height: 16em;
 		overflow-y: auto;
-		padding: $grid-unit-10;
-		white-space: pre-wrap;
-		word-break: break-word;
+		padding: $grid-unit-15;
+	}
+
+	// Trim the canvas's outer margins so the pane hugs its blocks.
+	.editor-collaboration-block-diff {
+		.block-editor-block-list__layout > :first-child {
+			margin-top: 0;
+		}
+
+		.block-editor-block-list__layout > :last-child {
+			margin-bottom: 0;
+		}
 	}
 
 	.editor-collaboration-merge-dialog__pane .components-button {
@@ -122,12 +126,6 @@
 		margin: 0 0 $grid-unit-15;
 	}
 
-	.editor-collaboration-kses-dialog__panes {
-		display: grid;
-		gap: $grid-unit-15;
-		grid-template-columns: 1fr 1fr;
-	}
-
 	.editor-collaboration-kses-dialog__pane {
 		display: flex;
 		flex-direction: column;
@@ -140,17 +138,17 @@
 		text-transform: uppercase;
 	}
 
-	.editor-collaboration-kses-dialog__pane-content {
-		background: $gray-100;
+	// Wraps the revisions code diff showing the held markup (as inert
+	// text). The inner element is its own scroll container; cap its
+	// height here.
+	.editor-collaboration-kses-dialog__code-diff {
+		border: $border-width solid $gray-200;
 		border-radius: $radius-small;
-		flex-grow: 1;
-		font-size: 13px;
-		margin: 0;
-		max-height: 16em;
-		overflow: auto;
-		padding: $grid-unit-10;
-		white-space: pre-wrap;
-		word-break: break-word;
+		overflow: hidden;
+
+		.editor-revisions-code-diff {
+			max-height: 16em;
+		}
 	}
 
 	.editor-collaboration-kses-dialog__editor {

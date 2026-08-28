@@ -15,10 +15,12 @@ them under a version heading when a version ships.
     action above a preview of the conflict with add/remove highlighting,
     and the block's content is read-only until the conflict is reviewed.
     The action opens a dialog comparing "Your version" with the "Current
-    version", each highlighted against the shared text both started
-    from; either can be restored into the merged result, which is edited
-    in its own small block editor with text formatting controls, and
-    Accept writes that result into the block and clears the set-aside
+    version", each shown as real read-only blocks with the editor's
+    revision-comparison highlighting (changed blocks are outlined, added
+    and removed text is marked inline) against the shared version both
+    started from; either can be restored into the merged result, which is
+    edited in its own small block editor with text formatting controls,
+    and Accept writes that result into the block and clears the set-aside
     items. Escalations no longer raise editor notices; the in-place card
     and the sidebar panel are the only surfaces. The compared texts are
     pre-set placeholder content for now. Real conflicts from any engine
@@ -28,10 +30,12 @@ them under a version heading when a version ships.
     place by a recovery-style card reading "This block requires elevated
     permissions." above the held markup shown as inert text. Users
     allowed to publish unfiltered HTML also get a "Review changes"
-    action opening a dialog: a brand-new proposal shows one "Proposed
-    block" pane, an update shows "Original" and "Proposed block" side by
-    side with change highlighting, and both offer Approve, Remove block,
-    and plain-text editing of the proposed markup. The card triggers on
+    action opening a dialog showing the held markup as the editor's
+    line-numbered code comparison, still as inert text: for a brand-new
+    proposal every line reads as added, for an update the removed and
+    added lines interleave in one view. The dialog offers Approve, Remove
+    block, and plain-text editing of the proposed markup with the
+    comparison recomputing live. The card triggers on
     the engines' real security holds (edits parked as needing approval),
     which no longer render the conflicting-edits card. Approve resolves
     the parked items through the engines' restore lane, so the REAL held

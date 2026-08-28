@@ -11,7 +11,8 @@ const props = {
 };
 
 // The merged result is a real paragraph block in the dialog's own block
-// editor, so the block type must be registered.
+// editor, and the panes render each version as real blocks, so the block
+// types must be registered.
 beforeAll( () => {
 	registerCoreBlocks();
 } );
@@ -20,11 +21,13 @@ afterAll( () => {
 	getBlockTypes().forEach( ( { name } ) => unregisterBlockType( name ) );
 } );
 
+// The pane paragraphs read as "Modified block: Paragraph" (the revisions
+// diff labels them by status), so the plain label is the merged editor's.
 const mergedParagraph = () =>
 	screen.getByRole( 'document', { name: 'Block: Paragraph' } );
 
 describe( 'MergeDialogBody', () => {
-	it( 'shows both versions, with the merged result seeded from the current version', () => {
+	it( 'shows both versions as diffed blocks, with the merged result seeded from the current version', () => {
 		render(
 			<MergeDialogBody
 				{ ...props }
@@ -37,6 +40,14 @@ describe( 'MergeDialogBody', () => {
 		expect( screen.getByText( 'Current version' ) ).toBeVisible();
 		expect(
 			screen.getAllByRole( 'button', { name: 'Restore this version' } )
+		).toHaveLength( 2 );
+
+		// Each pane renders its version as one paragraph block whose text
+		// changed against the base, so both read as modified blocks.
+		expect(
+			screen.getAllByRole( 'document', {
+				name: 'Modified block: Paragraph',
+			} )
 		).toHaveLength( 2 );
 		expect( mergedParagraph() ).toHaveTextContent( props.currentText );
 	} );
@@ -52,9 +63,10 @@ describe( 'MergeDialogBody', () => {
 
 		// Each pane highlights only its own additions over the base
 		// ("paragraph"): " - adding something new" on your side, "This is
-		// my " and "." on the current side. The diff is whitespace
-		// sensitive, so an added space is part of the highlight. Nothing
-		// reads as removed.
+		// my " and "." on the current side. The highlights are the
+		// revisions diff's rich-text formats, rendered as <ins> inside the
+		// pane paragraphs. The diff is whitespace sensitive, so an added
+		// space is part of the highlight. Nothing reads as removed.
 		const additions = screen
 			.getAllByRole( 'insertion' )
 			.map( ( node ) => node.textContent );

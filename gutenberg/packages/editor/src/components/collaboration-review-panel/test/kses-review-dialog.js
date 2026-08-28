@@ -1,13 +1,18 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { KsesReviewDialogBody } from '../kses-review-dialog';
 import { MOCK_KSES_NEW, MOCK_KSES_UPDATE } from '../mock-kses';
 
 const noop = () => {};
 
+// The held markup shows as the revisions code diff: a line-numbered table
+// inside a region labelled "Code changes", every line rendered as inert
+// text. Each row carries a visually hidden "Added"/"Removed" status.
+const codeDiff = () => screen.getByRole( 'region', { name: 'Code changes' } );
+
 describe( 'KsesReviewDialogBody', () => {
 	describe( 'new-block proposal', () => {
-		it( 'shows one proposed pane, without an original to compare', () => {
+		it( 'shows the proposed markup as a code diff with every line added', () => {
 			render(
 				<KsesReviewDialogBody
 					sequestration={ MOCK_KSES_NEW }
@@ -18,11 +23,17 @@ describe( 'KsesReviewDialogBody', () => {
 
 			expect( screen.getByText( 'Proposed block' ) ).toBeVisible();
 			expect( screen.queryByText( 'Original' ) ).not.toBeInTheDocument();
+
+			// There is no original to compare, so the whole markup reads as
+			// added, line by line (the mock is three lines).
+			const diff = codeDiff();
 			expect(
-				screen.getByText( /<script>alert\(0\);<\/script>/ )
+				within( diff ).getByText( /<script>alert\(0\);<\/script>/ )
 			).toBeVisible();
-			expect( screen.queryAllByRole( 'insertion' ) ).toHaveLength( 0 );
-			expect( screen.queryAllByRole( 'deletion' ) ).toHaveLength( 0 );
+			expect( within( diff ).getAllByText( 'Added' ) ).toHaveLength( 3 );
+			expect(
+				within( diff ).queryByText( 'Removed' )
+			).not.toBeInTheDocument();
 		} );
 
 		it( 'Approve hands back the proposed markup', async () => {
@@ -87,7 +98,7 @@ describe( 'KsesReviewDialogBody', () => {
 	} );
 
 	describe( 'update proposal', () => {
-		it( 'shows the original and the proposal as a split diff', () => {
+		it( 'shows one unified line diff from the original to the proposal', () => {
 			render(
 				<KsesReviewDialogBody
 					sequestration={ MOCK_KSES_UPDATE }
@@ -96,30 +107,24 @@ describe( 'KsesReviewDialogBody', () => {
 				/>
 			);
 
-			expect( screen.getByText( 'Original' ) ).toBeVisible();
-			expect( screen.getByText( 'Proposed block' ) ).toBeVisible();
+			expect( screen.getByText( 'Proposed changes' ) ).toBeVisible();
+			expect( screen.queryByText( 'Original' ) ).not.toBeInTheDocument();
 
 			// The scenario's only change is alert(0) becoming
-			// alert('changed'): the original pane keeps the removal, the
-			// proposed pane the addition.
-			const additions = screen
-				.getAllByRole( 'insertion' )
-				.map( ( node ) => node.textContent );
-			expect( additions ).toEqual(
-				expect.arrayContaining( [
-					expect.stringContaining( 'changed' ),
-				] )
+			// alert('changed'): the old line reads as removed, the new line
+			// as added, and both appear in the one view.
+			const diff = codeDiff();
+			expect( within( diff ).getByText( 'alert(0);' ) ).toBeVisible();
+			expect(
+				within( diff ).getByText( "alert('changed');" )
+			).toBeVisible();
+			expect( within( diff ).getAllByText( 'Removed' ) ).toHaveLength(
+				1
 			);
-
-			const removals = screen
-				.getAllByRole( 'deletion' )
-				.map( ( node ) => node.textContent );
-			expect( removals ).toEqual(
-				expect.arrayContaining( [ expect.stringContaining( '0' ) ] )
-			);
+			expect( within( diff ).getAllByText( 'Added' ) ).toHaveLength( 1 );
 		} );
 
-		it( 're-diffs the panes live while editing', async () => {
+		it( 're-diffs live while editing', async () => {
 			const user = userEvent.setup();
 			render(
 				<KsesReviewDialogBody
@@ -137,12 +142,13 @@ describe( 'KsesReviewDialogBody', () => {
 			await user.clear( textarea );
 			await user.type( textarea, '<p>safe</p>' );
 
-			const additions = screen
-				.getAllByRole( 'insertion' )
-				.map( ( node ) => node.textContent );
-			expect( additions ).toEqual(
-				expect.arrayContaining( [ expect.stringContaining( 'safe' ) ] )
-			);
+			// The replacement markup reads as an added line, and every
+			// original line now reads as removed.
+			const diff = codeDiff();
+			expect( within( diff ).getByText( '<p>safe</p>' ) ).toBeVisible();
+			expect(
+				within( diff ).getAllByText( 'Removed' ).length
+			).toBeGreaterThan( 0 );
 		} );
 
 		it( 'Approve hands back the proposed markup', async () => {
