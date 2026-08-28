@@ -2285,6 +2285,33 @@ export function createIntentLogManager( debug = false ): SyncManager {
 					observedVersion:
 						doc.propVersions?.[ payload.name as string ] ?? 0,
 				} );
+			} else if ( 'format_text' === type && doc ) {
+				/*
+				 * A parked format application. This is the kses lane's
+				 * shape for markup carried as an object format, e.g. a
+				 * custom HTML block's content change: the placeholder
+				 * character lands as safe plain text and only the format
+				 * carrying the markup parks. Re-author it over the target
+				 * range at the current head (clamped; the range's text is
+				 * ordinarily still there, since the paired text intent was
+				 * accepted). The re-authored intent carries the RESTORER's
+				 * capability, which is what makes this an approval.
+				 */
+				const block = findBlock( doc.root, payload.syncId as string );
+				const field = ( payload.field as string ) ?? 'content';
+				const text = block?.fields[ field ]?.text ?? '';
+				const start = Math.min( payload.start as number, text.length );
+				const end = Math.min( payload.end as number, text.length );
+				if ( block && start < end ) {
+					session.author( 'format_text', {
+						syncId: payload.syncId as string,
+						field,
+						start,
+						end,
+						format: payload.format as string,
+						on: payload.on,
+					} );
+				}
 			} else if ( 'insert_block' === type && doc ) {
 				/*
 				 * Re-insert the parked block spec under FRESH identities

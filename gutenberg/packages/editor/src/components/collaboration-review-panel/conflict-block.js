@@ -12,7 +12,7 @@ import { unlock } from '../../lock-unlock';
 import DiffText from './diff-text';
 import { mockConflictParts } from './mock-conflict';
 import CollaborationMergeDialog from './merge-dialog';
-import { useResolveReviewItems } from './review-data';
+import { itemsTargetingBlock, useResolveReviewItems } from './review-data';
 
 const EMPTY_ITEMS = [];
 
@@ -44,14 +44,14 @@ const CANVAS_CSS = `
 `;
 
 /**
- * The open review items targeting a block; empty for an unconflicted
- * block. Matches by durable block identity (syncId) first, then by
- * top-level index for positionally addressed engines. Parked insertions
- * are excluded: they propose a block that does not exist yet, so there is
- * nothing to replace (their inline approval card remains).
+ * The open CONFLICT review items targeting a block; empty for an
+ * unconflicted block (see itemsTargetingBlock for the matching rules).
+ * Items held for security approval (`requires-approval`) are excluded:
+ * those present as the sequestered-block card instead (see the
+ * collaboration-sequestered-block editor hook).
  *
  * @param {string} clientId The block's client id.
- * @return {Array} The block's open review items.
+ * @return {Array} The block's open conflict review items.
  */
 export function useBlockConflicts( clientId ) {
 	return useSelect(
@@ -75,27 +75,11 @@ export function useBlockConflicts( clientId ) {
 				return EMPTY_ITEMS;
 			}
 
-			const { getBlockAttributes, getBlockRootClientId, getBlockIndex } =
-				select( blockEditorStore );
-			const syncId = getBlockAttributes( clientId )?.metadata?.syncId;
-			const isTopLevel = '' === getBlockRootClientId( clientId );
-			const index = getBlockIndex( clientId );
-
-			const matches = items.filter( ( item ) => {
-				if ( item.proposedInsertion ) {
-					return false;
-				}
-
-				if ( item.targetId ) {
-					return item.targetId === syncId;
-				}
-
-				return (
-					undefined !== item.targetIndex &&
-					isTopLevel &&
-					item.targetIndex === index
-				);
-			} );
+			const matches = itemsTargetingBlock(
+				select,
+				items,
+				clientId
+			).filter( ( item ) => 'requires-approval' !== item.reason );
 
 			if ( ! matches.length ) {
 				return EMPTY_ITEMS;

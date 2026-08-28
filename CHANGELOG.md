@@ -23,9 +23,37 @@ them under a version heading when a version ships.
     and the sidebar panel are the only surfaces. The compared texts are
     pre-set placeholder content for now. Real conflicts from any engine
     open the flow; supplying the real texts is follow-up engine work.
+-   A prototype flow for reviewing blocks held back by the security
+    filter (wp_kses), for UI design work. A held block is replaced in
+    place by a recovery-style card reading "This block requires elevated
+    permissions." above the held markup shown as inert text. Users
+    allowed to publish unfiltered HTML also get a "Review changes"
+    action opening a dialog: a brand-new proposal shows one "Proposed
+    block" pane, an update shows "Original" and "Proposed block" side by
+    side with change highlighting, and both offer Approve, Remove block,
+    and plain-text editing of the proposed markup. The card triggers on
+    the engines' real security holds (edits parked as needing approval),
+    which no longer render the conflicting-edits card. Approve resolves
+    the parked items through the engines' restore lane, so the REAL held
+    markup lands for every collaborator. The dialog's preview contents
+    are pre-set placeholder scenarios; supplying the real texts to the
+    dialog is follow-up work.
 
 ### Fixed
 
+-   Intent-log: a change to protected markup by an author without the
+    `unfiltered_html` capability (editing a custom HTML block, for
+    example) silently stripped the previously approved markup out of
+    the document while the new markup was parked for review. The change
+    derives as a remove/apply format pair and only the apply half was
+    gated; removing a protected format now requires approval too, so
+    the pair parks together and the block keeps its approved content
+    until review.
+-   Intent-log: restoring a parked format application (the shape a
+    custom HTML block's held content takes) now re-authors the format
+    under the restorer's account. It previously closed the proposal
+    without re-authoring anything, so approving such a hold never
+    brought the content back.
 -   Switching the editor to the code view crashed with an invalid React
     element type, as did a block's "Edit as HTML" view and blocks built
     on the plain-text component. The bundled Gutenberg build's CommonJS

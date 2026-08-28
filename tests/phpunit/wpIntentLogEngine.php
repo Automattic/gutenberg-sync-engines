@@ -1155,6 +1155,59 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 		$this->assertStringContainsString( '<a href="https://example.com/">Hello</a>', $content );
 	}
 
+	public function test_removing_protected_markup_as_filtered_author_parks_for_approval() {
+		// A privileged author lands a block whose markup rides an object
+		// span over the placeholder character (the custom HTML block shape).
+		$this->grant_unfiltered_html();
+		$applied = $this->poll(
+			array( self::object_block_intent( 'kses-app', '<script>alert(1)</script>' ) )
+		);
+		$this->assertSame( 'applied', $applied['dispositions'][0]['status'] );
+
+		$engine = new WP_Intent_Log_Engine( new WP_Sync_Post_Meta_Storage() );
+		$this->assertStringContainsString( '<script>alert(1)</script>', (string) $engine->materialize( $this->room() ) );
+
+		/*
+		 * A filtered author's attempt to REMOVE the protected format parks
+		 * instead of applying. This is the off half of a filtered author's
+		 * format replacement (a custom HTML block edit derives as off/on):
+		 * letting it apply would strip the approved markup out of the
+		 * canonical document without review while the on half parks.
+		 */
+		$this->revoke_unfiltered_html();
+		$protected = 'obj|' . wp_json_encode( array( 'html' => '<script>alert(1)</script>' ), JSON_UNESCAPED_SLASHES );
+		$off       = $this->poll(
+			array(
+				self::intent_update(
+					array(
+						'intentId' => 'kses-off',
+						'baseSeq'  => 0,
+						'type'     => 'format_text',
+						'payload'  => array(
+							'syncId' => 'kses-nb',
+							'field'  => 'content',
+							'start'  => 0,
+							'end'    => 1,
+							'format' => $protected,
+							'on'     => false,
+						),
+					)
+				),
+			)
+		);
+		$this->assertSame(
+			array(
+				'intentId' => 'kses-off',
+				'status'   => 'escalated',
+				'reason'   => WP_Intent_Log_Engine::ESCALATION_REQUIRES_APPROVAL,
+			),
+			$off['dispositions'][0]
+		);
+
+		// The approved markup is still in the canonical document.
+		$this->assertStringContainsString( '<script>alert(1)</script>', (string) $engine->materialize( $this->room() ) );
+	}
+
 	/**
 	 * A set_property intent (entity property register write).
 	 *

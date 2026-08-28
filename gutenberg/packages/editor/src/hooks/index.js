@@ -1,4 +1,5 @@
 import './collaboration-conflict-block';
+import './collaboration-sequestered-block';
 import './custom-sources-backwards-compatibility';
 import './default-autocompleters';
 import './media-upload';

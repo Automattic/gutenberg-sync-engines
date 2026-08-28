@@ -2424,6 +2424,76 @@ describe( 'intent-log manager', () => {
 		} );
 	} );
 
+	it( 'restoreProposal re-authors a parked format application, then resolves', async () => {
+		const { manager, handlers, transport } = await loadManagedEntity();
+		handlers.onEscalation = jest.fn();
+		// The kses lane's shape for a custom HTML block content change: the
+		// placeholder character landed as safe plain text, and only the
+		// format carrying the markup parked.
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [
+				{
+					syncId: 'h1',
+					blockType: 'core/html',
+					text: '￼',
+				},
+			] )
+		);
+		const format = 'obj|{"html":"<script>alert(0);</script>"}';
+		transport.captured.session!.receiveUpdate( {
+			data: JSON.stringify( {
+				intent: {
+					intentId: 'parked-format',
+					txnId: null,
+					type: 'format_text',
+					payload: {
+						syncId: 'h1',
+						field: 'content',
+						start: 0,
+						end: 1,
+						format,
+						on: true,
+					},
+				},
+				actorId: 'u9c9',
+				reason: 'requires-approval',
+			} ),
+			type: INTENT_LOG_UPDATE_TYPES.PROPOSAL,
+		} );
+		await Promise.resolve();
+
+		manager.restoreProposal!( 'postType/post', '1', 'parked-format' );
+
+		// The format re-applies over the surviving placeholder as an
+		// ORDINARY intent (carrying the restorer's capability), and the
+		// proposal closes as restored.
+		const sentTypes = transport.captured.sent.map( ( update ) => ( {
+			type: update.type,
+			decoded: JSON.parse( update.data ),
+		} ) );
+		const authored = sentTypes.find(
+			( row ) =>
+				INTENT_LOG_UPDATE_TYPES.INTENT === row.type &&
+				'format_text' === row.decoded.type
+		);
+		expect( authored ).toBeDefined();
+		expect( authored!.decoded.payload ).toMatchObject( {
+			syncId: 'h1',
+			field: 'content',
+			start: 0,
+			end: 1,
+			format,
+			on: true,
+		} );
+		const resolved = sentTypes.find(
+			( row ) => INTENT_LOG_UPDATE_TYPES.RESOLVED === row.type
+		);
+		expect( resolved!.decoded ).toEqual( {
+			proposalId: 'parked-format',
+			resolution: 'restored',
+		} );
+	} );
+
 	it( 'attr-lane blocks (core/html) never author a wire-inexpressible undefined set_attr', async () => {
 		const transport = makeFakeTransport();
 		window.__experimentalEnableRealTimeCollaboration = true;

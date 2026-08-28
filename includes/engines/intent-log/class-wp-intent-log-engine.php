@@ -966,7 +966,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 		 * not publish without `unfiltered_html`.
 		 *
 		 * Markup-bearing payload surfaces: format_text (the span format id,
-		 * when turning a format ON), insert_block (the block spec's field
+		 * whether turning it on OR off), insert_block (the block spec's field
 		 * formats, plus every attr's string leaves), set_attr (string
 		 * leaves; blocks like core/html render an attr as raw markup), and
 		 * set_property (string values — title and excerpt are kses-filtered
@@ -984,8 +984,18 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 			$payload = $intent['payload'];
 			switch ( $intent['type'] ) {
 				case 'format_text':
-					return ! empty( $payload['on'] )
-						&& self::format_requires_unfiltered_html( $payload['format'] );
+					/*
+					 * Judged in BOTH directions. Applying a protected format
+					 * is the obvious case; REMOVING one is gated too: a
+					 * filtered author's change to protected markup derives
+					 * as an off/on format pair (a custom HTML block edit is
+					 * the canonical case), and letting the off half apply
+					 * would strip the previously approved markup out of the
+					 * canonical document while the on half parks. Parking
+					 * both keeps the block at its approved content until
+					 * review, and restoring re-authors the pair.
+					 */
+					return self::format_requires_unfiltered_html( $payload['format'] );
 				case 'insert_block':
 					return self::block_spec_requires_unfiltered_html( $payload['block'] );
 				case 'set_attr':
