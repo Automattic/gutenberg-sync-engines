@@ -44,19 +44,19 @@ a real decision (which engine, which transport):
 | `suite=engines`    | The engine-decision matrix and invariant sweeps — the harness documented in the rest of this README. `scenarios=`, `certify=`, and `concurrency=` imply it, so documented invocations keep working without `suite=`. (`engines=` alone belongs to the host report — its one-table-per-engine list.) |
 | `suite=transport`  | Two-browser edit-to-visible latency + wire traffic per transport (`transport/README.md`). |
 
-The remaining two lanes are **debugging and analysis tools**, not
-benchmarks: they generate load or validate projections rather than
-answer a decision. They are deliberately NOT reachable through
-`npm run bench` — run them directly (each has comprehensive docs):
+The **debugging and analysis tools** — lanes that generate load or
+validate projections rather than answer a decision — live in
+`tests/debugging/` (see its README). They are deliberately NOT
+reachable through `npm run bench`:
 
 ```bash
-node tests/benchmarks/transport/soak-transport.mjs \
+node tests/debugging/soak-transport.mjs \
     engine=de-rtc windows=3 soak=3600      # N-window hour-scale soak that
                                            # validates the cost cards
-                                           # end to end (transport/README.md)
-node tests/benchmarks/replay/replay.mjs \
+                                           # end to end
+node tests/debugging/replay/replay.mjs \
     my-session-clean.json speed=1          # replay a captured session as
-                                           # real HTTP load (replay/README.md)
+                                           # real HTTP load
 ```
 
 ## Community-harness compatibility
@@ -508,7 +508,7 @@ headers (~0.5–1 KB/request) and awareness traffic add overhead on top —
 the transport benchmark (`tests/benchmarks/transport/`) measures those
 per-collaborator rates on a live site, and multiplying ITS idle rate into
 the card's per-user-hour numbers is the full steady-state bill. A third
-lane, `tests/benchmarks/replay/`, captures REAL editor sessions at the
+lane, `tests/debugging/replay/`, captures REAL editor sessions at the
 transport seam and replays them as HTTP load (community-harness fixture
 format; see its README) — repeatable full-stack traffic with genuine
 engine payloads, complementing this harness's synthetic workloads. Composing

@@ -157,12 +157,12 @@ The framework/plugin split is complete: the framework ships **neither** engines
   deactivated; `suite=engines` is the engine-decision matrix (`wp
   eval-file tests/benchmarks/benchmark.php` per run) and
   `suite=transport` the browser-driven transport-experience benchmark
-  in `tests/benchmarks/transport/`. Two debugging/analysis TOOLS live
-  alongside them, deliberately NOT behind `npm run bench` — run
-  directly: the N-window soak
-  (`tests/benchmarks/transport/soak-transport.mjs`) and the
-  capture→sanitize→replay session tools in `tests/benchmarks/replay/`
-  — community-harness fixture format; see the READMEs),
+  in `tests/benchmarks/transport/`),
+  `tests/debugging/` (the debugging/analysis TOOLS, deliberately NOT
+  behind `npm run bench` — run directly: the N-window soak
+  (`tests/debugging/soak-transport.mjs`) and the
+  capture→sanitize→replay session tools in `tests/debugging/replay/` —
+  community-harness fixture format; see `tests/debugging/README.md`),
   `tests/fuzzer/` (the seeded browser fuzzer swept across every
   engine × transport combo — `npm run fuzz`; see its README for strategy,
   replay, and triage), and
@@ -421,7 +421,7 @@ they exist so a failure is observable without re-instrumenting:
   no-ops until used): `wp collaboration capture start|stop|list|export|drop`
   records real `/wp-sync/` sessions and exports them in the community RTC
   performance harness's fixture format (replay/sanitize via
-  `tests/benchmarks/replay/`); requests tagged `X-RTC-Test: 1` get
+  `tests/debugging/replay/`); requests tagged `X-RTC-Test: 1` get
   per-request server metrics (dispatch/CPU ms, db_queries, db_time with
   SAVEQUERIES, memory, concurrency) logged with that harness's column
   conventions — read via `wp collaboration bench-log report [--all]` or

@@ -36,4 +36,4 @@ the real transport: it selects the websocket transport on the tests
 site, publishes the `wp collaboration sync-server` daemon, and restores
 the previous transport at teardown (`npm run test:e2e:websocket`). For
 hour-scale per-user costs with a convergence gate, run the soak harness
-(`tests/benchmarks/transport/soak-transport.mjs`).
+(`tests/debugging/soak-transport.mjs`).

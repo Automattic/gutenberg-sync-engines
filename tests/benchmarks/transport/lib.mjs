@@ -1,9 +1,10 @@
 /**
- * Shared plumbing for the browser-driven transport tools:
- * benchmark-transport.mjs (two-window latency/traffic benchmark) and
- * soak-transport.mjs (N-window duration soak). Everything here
- * was extracted verbatim from benchmark-transport.mjs — behavior
- * changes belong in the tools, not the library.
+ * Shared plumbing for the browser-driven tools:
+ * benchmark-transport.mjs (two-window latency/traffic benchmark), the
+ * host benchmark (../host/), and the N-window soak (now at
+ * tests/debugging/soak-transport.mjs). Everything here was extracted
+ * verbatim from benchmark-transport.mjs — behavior changes belong in
+ * the tools, not the library.
  */
 
 export const BASE = process.env.WP_BASE_URL ?? 'http://localhost:8889';

@@ -22,10 +22,10 @@ npx wp-env run cli wp collaboration capture stop
 npx wp-env run cli wp collaboration capture export my-session > my-session.json
 
 # 2. SANITIZE (strip user identity + site ids before sharing)
-node tests/benchmarks/replay/sanitize.mjs my-session.json out=my-session-clean.json
+node tests/debugging/replay/sanitize.mjs my-session.json out=my-session-clean.json
 
 # 3. REPLAY (against any site running this plugin with the same engine)
-node tests/benchmarks/replay/replay.mjs my-session-clean.json speed=1
+node tests/debugging/replay/replay.mjs my-session-clean.json speed=1
 ```
 
 `wp collaboration capture list` shows captured sessions;
@@ -90,7 +90,7 @@ update payloads and `base_content` by construction. Sanitization removes
   (below) — the server-side per-request report. `json=out.json` writes
   per-frame results.
 
-Run `node tests/benchmarks/replay/replay.mjs` with no arguments for the
+Run `node tests/debugging/replay/replay.mjs` with no arguments for the
 full option list. Environment: `WP_BASE_URL` (default
 `http://localhost:8889`), `WP_USERNAME` / `WP_PASSWORD` (default
 `admin` / `password`).

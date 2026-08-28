@@ -13,10 +13,11 @@
  *
  * Those are the BENCHMARKS: the host report (default), the engine
  * matrix, and the transport experience. The soak and replay lanes are
- * debugging/analysis tools, run directly (no suite=):
+ * debugging/analysis tools, run directly (no suite=) from
+ * tests/debugging/:
  *
- *   node tests/benchmarks/transport/soak-transport.mjs …
- *   node tests/benchmarks/replay/replay.mjs …
+ *   node tests/debugging/soak-transport.mjs …
+ *   node tests/debugging/replay/replay.mjs …
  *
  * Every suite other than `engines` forwards the remaining arguments to
  * its own script (see each script's header for its argument list). The
@@ -105,11 +106,11 @@ Suites (suite=; default: host):
              transport (tests/benchmarks/transport/README.md).
 
 Debugging and analysis tools (not benchmarks, so not suites here — run
-them directly; each has comprehensive docs):
-  node tests/benchmarks/transport/soak-transport.mjs   N-window hour-scale
-             co-editing soak (tests/benchmarks/transport/README.md)
-  node tests/benchmarks/replay/replay.mjs              replay a captured
-             session as HTTP load (tests/benchmarks/replay/README.md)
+them directly from tests/debugging/; each has comprehensive docs, see
+tests/debugging/README.md):
+  node tests/debugging/soak-transport.mjs   N-window hour-scale soak
+  node tests/debugging/replay/replay.mjs    replay a captured session
+                                            as HTTP load
 
 Arguments are key=value tokens; leading dashes are accepted and stripped
 (--suite=engines means suite=engines). Arguments after suite= are
@@ -147,8 +148,8 @@ const SUITE_SCRIPTS = {
 // benchmarks — deliberately NOT offered here. Point at their direct
 // invocations instead of silently running them.
 const RETIRED_SUITES = {
-	soak: 'node tests/benchmarks/transport/soak-transport.mjs (see tests/benchmarks/transport/README.md)',
-	replay: 'node tests/benchmarks/replay/replay.mjs (see tests/benchmarks/replay/README.md)',
+	soak: 'node tests/debugging/soak-transport.mjs (see tests/debugging/README.md)',
+	replay: 'node tests/debugging/replay/replay.mjs (see tests/debugging/replay/README.md)',
 };
 // engines= deliberately does NOT imply the engines suite: it is the
 // host report's per-engine-table list. scenarios=/certify=/concurrency=
