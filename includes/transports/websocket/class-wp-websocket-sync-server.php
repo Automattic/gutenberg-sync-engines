@@ -285,6 +285,8 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 
 			$this->log( sprintf( 'Listening on ws://%s:%d', $this->host, $this->port ) );
 
+			$this->install_signal_handlers();
+
 			$this->running           = true;
 			$this->last_ping_at      = microtime( true );
 			$this->last_sweep_at     = microtime( true );
@@ -348,6 +350,36 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 		 */
 		public function stop(): void {
 			$this->running = false;
+		}
+
+		/**
+		 * Asks the loop to finish when the process is interrupted or asked to
+		 * quit, so open connections are closed and the port is released.
+		 *
+		 * Registering a handler also decides whether the signal arrives at
+		 * all when the daemon is PID 1 inside a container: the kernel drops
+		 * signals that still carry their default action. Best effort — the
+		 * pcntl extension is optional and absent from some CLI images, and
+		 * without it Ctrl+C cannot be caught here.
+		 *
+		 * @since n.e.x.t
+		 */
+		private function install_signal_handlers(): void {
+			if ( ! function_exists( 'pcntl_signal' ) || ! function_exists( 'pcntl_async_signals' ) ) {
+				return;
+			}
+
+			pcntl_async_signals( true );
+
+			$handler = function () {
+				if ( $this->running ) {
+					$this->log( 'Stopping: closing connections.' );
+				}
+				$this->stop();
+			};
+
+			pcntl_signal( SIGINT, $handler );
+			pcntl_signal( SIGTERM, $handler );
 		}
 
 		/**
