@@ -411,6 +411,7 @@ async function runWebSocketsMode( mode ) {
 			'run',
 			'--rm',
 			...( detach ? [ '-d' ] : [] ),
+			'-T',
 			'--name',
 			DAEMON_CONTAINER_NAME,
 			'-p',
@@ -422,7 +423,7 @@ async function runWebSocketsMode( mode ) {
 			'--host=0.0.0.0',
 			`--port=${ PORT }`,
 		],
-		{ stdio: 'inherit' }
+		{ stdio: [ 'ignore', 'inherit', 'inherit' ] }
 	);
 
 	if ( detach ) {
@@ -451,10 +452,9 @@ async function runWebSocketsMode( mode ) {
 		return;
 	}
 
-	// On a TTY, Ctrl+C reaches the attached docker client directly and stops
-	// the container. This handler covers non-TTY kills (a crashed terminal,
-	// `kill <pid>`): killing the docker CLIENT alone detaches and leaves the
-	// container running, so remove the container explicitly.
+	// Ctrl+C (and `kill <pid>`) lands here, not in the container: killing the
+	// docker CLIENT alone detaches and leaves the container running, so
+	// remove the container explicitly.
 	let shuttingDown = false;
 	const shutdown = () => {
 		if ( shuttingDown ) {
@@ -491,7 +491,9 @@ async function runWebSocketsMode( mode ) {
 	);
 
 	const [ code ] = await once( daemon, 'exit' );
-	process.exit( code ?? 0 );
+	// A container we removed on purpose makes the docker client exit
+	// non-zero; that is a clean stop, not a failure.
+	process.exit( shuttingDown ? 0 : code ?? 0 );
 }
 
 async function runHttpMode() {
