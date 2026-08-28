@@ -9,6 +9,16 @@ them under a version heading when a version ships.
 
 ### Fixed
 
+-   Under the default intent-log engine, the "Edit HTML" window on a
+    just-added Custom HTML block closed by itself about a second after
+    opening. The first sync push after creating a block handed the
+    editor a copy of the block under a fresh internal id, which
+    remounted it and reset any on-screen state local to that block
+    (the open window, focus, open dropdowns). The push now reuses the
+    editor's own id for blocks whose collaboration identity was just
+    assigned, so nothing remounts
+    ([#66](https://github.com/Automattic/gutenberg-sync-engines/issues/66)).
+
 -   Under the de-rtc engine, once a reviewer approved content an
     unprivileged author's edit would otherwise have stripped (a script
     tag, a custom embed), that author's later edits anywhere else in the

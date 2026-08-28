@@ -2086,6 +2086,17 @@ export function createIntentLogManager( debug = false ): SyncManager {
 					}
 				};
 				confirmIds( derived.specs );
+				/*
+				 * Blocks whose identity this capture assigned keep the
+				 * editor's own clientId in every future push. Without the
+				 * seed, the first identity write-back mints a fresh
+				 * clientId for a just-created block, and the swap remounts
+				 * it, destroying component-local UI state (the HTML
+				 * block's just-opened edit modal, focus, open dropdowns).
+				 */
+				for ( const [ syncId, clientId ] of derived.editorClientIds ) {
+					state.clientIds.set( syncId, clientId );
+				}
 				if ( derived.coarseBlockCount > 0 ) {
 					log( 'coarse capture', {
 						origin,

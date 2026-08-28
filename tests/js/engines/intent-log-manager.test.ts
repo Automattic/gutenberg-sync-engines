@@ -1476,6 +1476,71 @@ describe( 'intent-log manager', () => {
 		);
 	} );
 
+	it( 'REGRESSION: a just-created block keeps the EDITOR clientId on its first identity write-back (no remount)', async () => {
+		// Creating a block gives it an editor-chosen clientId; capture
+		// mints its collaboration identity and the deferred sync pushes
+		// the tree back. That push must reuse the editor's clientId: a
+		// fresh one remounts the block and destroys component-local UI
+		// state, visibly closing the Custom HTML block's just-opened
+		// "Edit HTML" modal about a second after the block is added.
+		const { manager, handlers, transport } = await loadManagedEntity();
+		transport.captured.session!.receiveUpdate(
+			snapshotRow( [
+				{ syncId: 'p1', blockType: 'core/paragraph', text: 'Hello' },
+			] )
+		);
+		const bootstrapPush = handlers.edits.at( -1 ) as {
+			blocks: Array< {
+				clientId: string;
+				attributes: { metadata?: { syncId?: string } };
+			} >;
+		};
+		const existing = bootstrapPush.blocks[ 0 ];
+		expect( existing.attributes.metadata?.syncId ).toBe( 'p1' );
+
+		// The user adds a block: the tree carries the pushed block
+		// unchanged plus the new block with its own editor clientId and
+		// no collaboration identity yet.
+		manager.update(
+			'postType/post',
+			'1',
+			{
+				blocks: [
+					{
+						name: 'core/paragraph',
+						clientId: existing.clientId,
+						attributes: {
+							content: 'Hello',
+							metadata: { syncId: 'p1' },
+						},
+						innerBlocks: [],
+					},
+					{
+						name: 'core/paragraph',
+						clientId: 'editor-made-this',
+						attributes: { content: 'brand new' },
+						innerBlocks: [],
+					},
+				],
+			},
+			'gutenberg'
+		);
+		flushEditorSync();
+
+		const push = handlers.edits.at( -1 ) as {
+			blocks: Array< {
+				clientId?: string;
+				attributes: { metadata?: { syncId?: string } };
+			} >;
+		};
+		expect( push.blocks ).toHaveLength( 2 );
+		// The write-back carries the minted identity for the new block…
+		expect( push.blocks[ 1 ].attributes.metadata?.syncId ).toBeTruthy();
+		// …on the editor's OWN clientIds, so nothing remounts.
+		expect( push.blocks[ 0 ].clientId ).toBe( existing.clientId );
+		expect( push.blocks[ 1 ].clientId ).toBe( 'editor-made-this' );
+	} );
+
 	it( 'title: genesis matching the loaded record is NOT re-pushed as an edit', async () => {
 		const { handlers, transport } = await loadManagedEntity( {
 			title: { raw: 'Same title' },
