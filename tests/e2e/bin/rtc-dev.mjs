@@ -411,15 +411,6 @@ async function runWebSocketsMode( mode ) {
 			'run',
 			'--rm',
 			...( detach ? [ '-d' ] : [] ),
-			// No container TTY, and no inherited stdin. With a TTY the docker
-			// client puts the HOST terminal into raw mode, so Ctrl+C is never
-			// turned into a SIGINT here — it is forwarded into the container
-			// as a keystroke, where PHP runs as PID 1 and the kernel drops
-			// signals that still have their default disposition (the wp-env
-			// cli image ships no pcntl, so the daemon cannot register a
-			// handler there). The result was a Ctrl+C that did nothing at
-			// all. Without a TTY the signal reaches this process and the
-			// shutdown handler below removes the container.
 			'-T',
 			'--name',
 			DAEMON_CONTAINER_NAME,
