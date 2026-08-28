@@ -151,6 +151,45 @@ jobs:
       - name: PHPUnit
         run: npm run test:php
 
+  bench:
+    name: Benchmark invariants (certify sweep)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            gutenberg/package-lock.json
+
+      - name: Install plugin dependencies
+        run: npm ci
+
+      - name: Install and build the vendored Gutenberg subtree
+        run: |
+          cd gutenberg
+          npm ci --ignore-scripts
+          npm run build
+
+      - name: Build the plugin bundle
+        run: npm run build
+
+      - name: Start wp-env (tests)
+        run: npm run env:tests start
+
+      # The quality-oracle sweep: every engine, the adversarial scenarios
+      # PLUS the two save-lane sessions (whose sizes are chosen so the
+      # pre-#70 de-rtc failures reproduce), across 3 seeds. The invariants
+      # are gates: any lost work or convergence failure fails the job —
+      # before this job existed, an engine could drop accepted edits in
+      # save-bearing sessions and nothing in CI would notice (issue #70).
+      - name: Certify sweep
+        run: npm run bench -- certify=3
+
   e2e:
     name: End-to-end (Playwright)
     runs-on: ubuntu-latest

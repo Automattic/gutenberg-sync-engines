@@ -310,8 +310,10 @@ npm run bench                        # every engine x the decision matrix
                                      #  convergence failure
 npm run bench -- engines=de-rtc scenarios=editorial-session
 npm run bench -- certify=10          # invariant sweep: 10 seeds x engines x
-                                     # adversarial scenarios — certifies "no
-                                     # edit is ever silently dropped" at scale
+                                     # adversarial scenarios + both save-lane
+                                     # sessions — certifies "no edit is ever
+                                     # silently dropped" at scale; CI runs
+                                     # certify=3 on every push/PR
 ```
 
 Multi-process concurrency measurement is OPT-IN behind one flag:
