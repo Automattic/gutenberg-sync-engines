@@ -1,7 +1,9 @@
 /**
- * The host cost report: what activating this plugin adds to a server,
- * measured as the difference against the SAME site with the plugin
- * deactivated, printed as one baseline/sync/delta table per engine.
+ * The host cost report: what real-time collaboration adds to a server,
+ * measured as the difference against the workflow it replaces — the
+ * same people producing the same document by editing in series with
+ * the plugin deactivated — printed as one baseline/sync/delta/delta-%
+ * table per engine plus a whole-job total.
  *
  *   npm run bench                            # this report, defaults
  *   npm run bench -- engines=intent-log,yjs-server,de-rtc windows=3
@@ -10,13 +12,17 @@
  * Phases, all real browser windows against a live site:
  *
  *   1. BASELINE — the plugin is deactivated (every active copy, via the
- *      REST plugins endpoint) and one window edits a draft post in the
- *      block editor for `edit` seconds, then sits idle for `idle`
- *      seconds. This is the site a host runs today.
+ *      REST plugins endpoint) and `windows` people edit the same draft
+ *      IN SERIES: person i types their part for `edit` seconds, saves,
+ *      and leaves, then the next person takes a turn; after the last
+ *      turn the tab sits idle for `idle` seconds. This is the workflow
+ *      the plugin replaces — the post lock forces turn-taking — and
+ *      each person types the same script their window types in phase
+ *      2, so both phases produce the same final document.
  *   2. PER ENGINE — the plugin is reactivated, real-time collaboration
  *      is enabled, and `windows` browser windows co-edit an identical
- *      draft (each typing into its own paragraph) on that engine and
- *      the chosen transport, same durations.
+ *      draft simultaneously (each typing into its own paragraph, one
+ *      save at the end) on that engine and the chosen transport.
  *
  * Every request each window makes is counted client-side (requests,
  * bytes). Server-side, EVERY request from the windows is tagged with
@@ -34,15 +40,18 @@
  * Each engine's table reports, per person, for editing and idle spans:
  * requests per minute, network traffic, server CPU per minute, the
  * share of one PHP worker held, and peak PHP memory per request —
- * columns baseline | sync | delta.
+ * columns baseline | sync | delta | delta %. Under the table, one
+ * whole-job line: what producing the same final document cost in
+ * series vs collaboratively (requests, server CPU, network).
  *
  * Arguments (bare key=value, like every benchmark here):
  *
  *   engines=    comma list of engines to measure (default: the site's
  *               current engine); engine= is an alias for a single one
  *   transport=  http-polling | http-long-polling | websocket | current
- *   windows=    collaborator windows per engine phase (default 2)
- *   edit=       editing seconds per phase (default 120, min 30)
+ *   windows=    people per phase: collaborator windows, and the same
+ *               number of one-after-the-other baseline turns (default 2)
+ *   edit=       editing seconds per person (default 120, min 30)
  *   idle=       idle seconds per phase (default 120; 0 skips)
  *   poll=       override the HTTP short-polling interval for the run, in
  *               seconds 0-25 (0 = the plugin's defaults; default: leave
@@ -89,8 +98,9 @@ const HELP = `node tests/benchmarks/host/host-benchmark.mjs [key=value …]
               site's current engine; engine= is an alias for one)
   transport=  http-polling | http-long-polling | websocket
               (default: the site's current transport)
-  windows=    collaborator windows per engine phase (default 2)
-  edit=       editing seconds per phase (default 120, min 30)
+  windows=    people per phase: collaborator windows, and the same
+              number of one-after-the-other baseline turns (default 2)
+  edit=       editing seconds per person (default 120, min 30)
   idle=       idle seconds per phase (default 120; 0 skips)
   poll=       override the HTTP short-polling interval for the run, in
               seconds 1-25 (0 = the plugin's defaults; default: leave
@@ -349,13 +359,36 @@ async function openEditorWindow( context, measured, postId, index ) {
 }
 
 /**
- * Runs one phase's editing + idle measurement over a set of windows.
+ * Saves the post through the editor's own save action (the button's
+ * path), so the save cost lands inside the measured span the way a
+ * real person's save does.
  *
- * @param {Object[]} wins Window records.
- * @param {Object}   tag  Mutable { scenario, approach } labels.
+ * @param {import('@playwright/test').Page} page Editor page.
+ * @return {Promise<boolean>} Whether the save succeeded.
+ */
+async function saveViaEditor( page ) {
+	return page
+		.evaluate( async () => {
+			await window.wp.data.dispatch( 'core/editor' ).savePost();
+			return ! window.wp.data
+				.select( 'core/editor' )
+				.didPostSaveRequestFail();
+		} )
+		.catch( () => false );
+}
+
+/**
+ * Runs one measured span set over a set of windows: an editing span
+ * (drivers, then window 0 saves — the save is part of the editing
+ * work), and optionally an idle span. Both phases run through this,
+ * so the workload shape is identical; only who is present differs.
+ *
+ * @param {Object[]} wins     Window records.
+ * @param {Object}   tag      Mutable { scenario, approach } labels.
+ * @param {boolean}  withIdle Run the idle span after editing.
  * @return {Promise<Object>} Per-window counter deltas and durations.
  */
-async function measurePhase( wins, tag ) {
+async function measurePhase( wins, tag, withIdle = true ) {
 	// Let the just-loaded pages settle so page-load assets and session
 	// setup stay out of the rates.
 	await wins[ 0 ].page.waitForTimeout( 3000 );
@@ -367,17 +400,18 @@ async function measurePhase( wins, tag ) {
 	const startSync = wins.map( ( win ) => win.sync.snapshot() );
 	const deadline = editStart + EDIT_SECONDS * 1000;
 	await Promise.all(
-		wins.map( ( win ) =>
-			editingDriver( win, deadline, editStats[ win.index ] )
+		wins.map( ( win, position ) =>
+			editingDriver( win, deadline, editStats[ position ] )
 		)
 	);
+	const saveOk = await saveViaEditor( wins[ 0 ].page );
 	const editMs = Date.now() - editStart;
 	const editAll = wins.map( ( win ) => win.all.snapshot() );
 	const editSync = wins.map( ( win ) => win.sync.snapshot() );
 
 	tag.scenario = 'host-idle';
 	const idleStart = Date.now();
-	if ( IDLE_SECONDS > 0 ) {
+	if ( withIdle && IDLE_SECONDS > 0 ) {
 		await wins[ 0 ].page.waitForTimeout( IDLE_SECONDS * 1000 );
 	}
 	const idleMs = Date.now() - idleStart;
@@ -395,6 +429,7 @@ async function measurePhase( wins, tag ) {
 	return {
 		editMs,
 		idleMs,
+		saveOk,
 		perWindow: wins.map( ( win, index ) => ( {
 			window: index,
 			tokensTyped: editStats[ index ].tokensTyped,
@@ -413,23 +448,33 @@ async function measurePhase( wins, tag ) {
 }
 
 /**
- * Mean per-minute rate of one client counter across a phase's windows.
+ * Sums one client counter over a span across a phase's windows.
  *
  * @param {Object} phase   measurePhase result.
  * @param {string} spanKey 'editing' or 'idle'.
  * @param {string} counter Counter name.
- * @return {number} Mean per-window rate per minute.
+ * @return {number} Total across windows.
  */
-function clientRatePerMinute( phase, spanKey, counter ) {
-	const ms = 'editing' === spanKey ? phase.editMs : phase.idleMs;
-	if ( ms <= 0 ) {
-		return 0;
-	}
-	const sum = phase.perWindow.reduce(
+function spanTotal( phase, spanKey, counter ) {
+	return phase.perWindow.reduce(
 		( total, win ) => total + win[ spanKey ].all[ counter ],
 		0
 	);
-	return ( sum / phase.perWindow.length / ms ) * 60000;
+}
+
+/**
+ * Per-person-per-minute client rate for a span. `ms` is the span's
+ * wall time and `persons` how many people were active in it — for the
+ * serial baseline each accumulated session minute has exactly one
+ * active person, so persons is 1 over the summed session time.
+ *
+ * @param {number} total   Counter total over the span.
+ * @param {number} ms      Span wall time (summed for serial sessions).
+ * @param {number} persons Active people sharing the span.
+ * @return {number} Rate per person-minute.
+ */
+function ratePerPersonMinute( total, ms, persons ) {
+	return ms > 0 ? ( total / ( ms * persons ) ) * 60000 : 0;
 }
 
 /**
@@ -483,49 +528,61 @@ function serverRates( agg, ms, persons ) {
 }
 
 /**
- * Builds one engine's summary from its phase + the shared baseline.
+ * Builds one engine's summary from its phase + the shared serial
+ * baseline: per-span baseline/sync rates, plus the whole-job totals —
+ * both phases produce the same final document, so "what did producing
+ * this document cost" is directly comparable.
  *
  * @param {Object} phase    The engine's measurePhase result.
- * @param {Object} baseline The baseline measurePhase result.
+ * @param {Object} baseline Serial baseline { sessions, editMs, idleMs }.
  * @param {Array}  rows     All server rows (may be empty).
  * @param {string} engine   Engine slug (the approach label).
- * @return {Object} Per-span baseline/sync/delta metric rows.
+ * @return {Object} { spans, job } for the report.
  */
 function summarize( phase, baseline, rows, engine ) {
+	const lastSession = baseline.sessions[ baseline.sessions.length - 1 ];
+	const baseTotal = ( spanKey, counter ) =>
+		'editing' === spanKey
+			? baseline.sessions.reduce(
+					( total, session ) =>
+						total + spanTotal( session, spanKey, counter ),
+					0
+			  )
+			: spanTotal( lastSession, spanKey, counter );
+
 	const spans = {};
 	for ( const spanKey of [ 'editing', 'idle' ] ) {
 		const ms = 'editing' === spanKey ? phase.editMs : phase.idleMs;
 		const baseMs =
 			'editing' === spanKey ? baseline.editMs : baseline.idleMs;
-		const client = {
-			requestsPerMinute: clientRatePerMinute(
-				phase,
-				spanKey,
-				'requests'
-			),
-			kbPerMinute:
-				( clientRatePerMinute( phase, spanKey, 'requestBytes' ) +
-					clientRatePerMinute( phase, spanKey, 'responseBytes' ) ) /
-				1024,
-		};
-		const baseClient = {
-			requestsPerMinute: clientRatePerMinute(
-				baseline,
-				spanKey,
-				'requests'
-			),
-			kbPerMinute:
-				( clientRatePerMinute( baseline, spanKey, 'requestBytes' ) +
-					clientRatePerMinute(
-						baseline,
-						spanKey,
-						'responseBytes'
-					) ) /
-				1024,
-		};
+		// Serial baseline: every accumulated minute has ONE active
+		// person; the idle tab is one person's in both phases' baselines.
+		const basePersons = 1;
+		const rate = ( counter ) =>
+			ratePerPersonMinute(
+				spanTotal( phase, spanKey, counter ),
+				ms,
+				WINDOWS
+			);
+		const baseRate = ( counter ) =>
+			ratePerPersonMinute(
+				baseTotal( spanKey, counter ),
+				baseMs,
+				basePersons
+			);
 		spans[ spanKey ] = {
-			client,
-			baseClient,
+			client: {
+				requestsPerMinute: rate( 'requests' ),
+				kbPerMinute:
+					( rate( 'requestBytes' ) + rate( 'responseBytes' ) ) / 1024,
+			},
+			baseClient: {
+				requestsPerMinute: baseRate( 'requests' ),
+				kbPerMinute:
+					( baseRate( 'requestBytes' ) +
+						baseRate( 'responseBytes' ) ) /
+					1024,
+			},
 			server: serverRates(
 				aggregateServerRows( rows, engine, `host-${ spanKey }` ),
 				ms,
@@ -534,11 +591,41 @@ function summarize( phase, baseline, rows, engine ) {
 			baseServer: serverRates(
 				aggregateServerRows( rows, 'baseline', `host-${ spanKey }` ),
 				baseMs,
-				1
+				basePersons
 			),
 		};
 	}
-	return spans;
+
+	// Whole-job totals over the editing spans (saves included; idle
+	// excluded): the cost of producing the same final document once in
+	// series and once collaboratively.
+	const baseServerJob = aggregateServerRows(
+		rows,
+		'baseline',
+		'host-editing'
+	);
+	const engineServerJob = aggregateServerRows( rows, engine, 'host-editing' );
+	const job = {
+		base: {
+			requests: baseTotal( 'editing', 'requests' ),
+			kb:
+				( baseTotal( 'editing', 'requestBytes' ) +
+					baseTotal( 'editing', 'responseBytes' ) ) /
+				1024,
+			serverCpuS: baseServerJob.n ? baseServerJob.cpuMsSum / 1000 : null,
+		},
+		sync: {
+			requests: spanTotal( phase, 'editing', 'requests' ),
+			kb:
+				( spanTotal( phase, 'editing', 'requestBytes' ) +
+					spanTotal( phase, 'editing', 'responseBytes' ) ) /
+				1024,
+			serverCpuS: engineServerJob.n
+				? engineServerJob.cpuMsSum / 1000
+				: null,
+		},
+	};
+	return { spans, job };
 }
 
 async function main() {
@@ -670,6 +757,9 @@ async function main() {
 			}`
 		);
 		console.log(
+			`  baseline   ${ WINDOWS } person(s) editing the same document one after the other, plugin deactivated`
+		);
+		console.log(
 			`  editing    ${ EDIT_SECONDS } s${
 				provided( 'edit' ) ? '' : ' (default)'
 			}, idle ${ IDLE_SECONDS } s${
@@ -690,34 +780,60 @@ async function main() {
 		);
 
 		// ---------------- Phase 1: baseline (plugin deactivated) --------
+		// The baseline is the workflow the plugin replaces: the same
+		// number of people producing the same document by editing IN
+		// SERIES — person i types their part, saves, and leaves, then
+		// person i+1 takes a turn. Each person types the same script
+		// their window types in the collaborative phase, so the final
+		// document matches in size and shape and the whole-job totals
+		// are directly comparable.
 		const baselinePost = await createDraft( rest, 'baseline' );
 		console.log(
 			`baseline phase: deactivating ${ activeCopies
 				.map( ( copy ) => copy.plugin )
-				.join(
-					', '
-				) } and editing post ${ baselinePost } in 1 window ` +
-				`(${ EDIT_SECONDS }s editing, ${ IDLE_SECONDS }s idle)…`
+				.join( ', ' ) }; ${ WINDOWS } person(s) editing post ` +
+				`${ baselinePost } in series (${ EDIT_SECONDS }s + a save ` +
+				`each, then ${ IDLE_SECONDS }s idle)…`
 		);
 		for ( const copy of activeCopies ) {
 			await setPluginStatus( rest, copy.plugin, 'inactive' );
 			deactivated.push( copy.plugin );
 		}
 
-		const baselineWin = await openEditorWindow(
-			context,
-			measuredPages,
-			baselinePost,
-			0
-		);
-		const baseline = await measurePhase( [ baselineWin ], tag );
-		await baselineWin.page.close();
-
-		if ( baseline.perWindow[ 0 ].editing.sync.requests > 0 ) {
-			throw new Error(
-				'the baseline window made sync requests — the plugin was still active, so the comparison is meaningless'
+		const baselineSessions = [];
+		for ( let person = 0; person < WINDOWS; person++ ) {
+			const isLast = person === WINDOWS - 1;
+			console.log( `  baseline turn ${ person + 1 }/${ WINDOWS }…` );
+			const win = await openEditorWindow(
+				context,
+				measuredPages,
+				baselinePost,
+				person
 			);
+			const session = await measurePhase( [ win ], tag, isLast );
+			await win.page.close();
+			if ( session.perWindow[ 0 ].editing.sync.requests > 0 ) {
+				throw new Error(
+					'a baseline turn made sync requests — the plugin was still active, so the comparison is meaningless'
+				);
+			}
+			if ( ! session.saveOk ) {
+				throw new Error(
+					`baseline turn ${
+						person + 1
+					} failed to save — the next turn would edit a stale document, breaking the parity the comparison depends on`
+				);
+			}
+			baselineSessions.push( session );
 		}
+		const baseline = {
+			sessions: baselineSessions,
+			editMs: baselineSessions.reduce(
+				( total, session ) => total + session.editMs,
+				0
+			),
+			idleMs: baselineSessions[ baselineSessions.length - 1 ].idleMs,
+		};
 
 		for ( const plugin of deactivated ) {
 			await setPluginStatus( rest, plugin, 'active' );
@@ -764,6 +880,11 @@ async function main() {
 			}
 
 			const phase = await measurePhase( wins, tag );
+			if ( ! phase.saveOk ) {
+				console.warn(
+					`WARNING: the ${ engine } phase's end-of-editing save failed — job totals still comparable, but the save cost is missing from the sync side`
+				);
+			}
 			for ( const win of wins ) {
 				const edited = phase.perWindow[ win.index ].editing.sync;
 				if (
@@ -814,12 +935,7 @@ async function main() {
 				engine: entry.engine,
 				transport: entry.transport,
 				postId: entry.postId,
-				spans: summarize(
-					entry.phase,
-					baseline,
-					serverRows,
-					entry.engine
-				),
+				...summarize( entry.phase, baseline, serverRows, entry.engine ),
 				detail: entry.phase,
 			} ) ),
 			serverRows,
@@ -980,8 +1096,9 @@ function printReport( report ) {
 		console.log( '' );
 		console.log(
 			`── ${ entry.engine } over ${ entry.transport } — per person ` +
-				`(${ env.windows } collaborating vs 1 baseline editor, ` +
-				`${ env.editSeconds }s editing + ${ env.idleSeconds }s idle) ──`
+				`(${ env.windows } collaborating vs ${ env.windows } editing ` +
+				`in series, ${ env.editSeconds }s editing + a save per ` +
+				`person, ${ env.idleSeconds }s idle) ──`
 		);
 		console.log(
 			`${ ''.padEnd( labelWidth ) }   ${ 'baseline'.padEnd(
@@ -997,6 +1114,24 @@ function printReport( report ) {
 				}`
 			);
 		}
+
+		// The whole-job line: both phases produced the same final
+		// document, so the totals are directly comparable.
+		const job = entry.job;
+		const cpu = ( value ) =>
+			null === value ? '—' : `${ value.toFixed( 1 ) } CPU-s`;
+		console.log(
+			`producing the same document: ${ job.base.requests } requests / ` +
+				`${ cpu( job.base.serverCpuS ) } / ${ Math.round(
+					job.base.kb
+				) } KB in series → ${ job.sync.requests } / ${ cpu(
+					job.sync.serverCpuS
+				) } / ${ Math.round( job.sync.kb ) } KB collaboratively ` +
+				`(${ pct( job.base.requests, job.sync.requests ) } / ${ pct(
+					job.base.serverCpuS,
+					job.sync.serverCpuS
+				) } / ${ pct( job.base.kb, job.sync.kb ) })`
+		);
 	}
 
 	console.log( '' );

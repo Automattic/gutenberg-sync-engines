@@ -8,19 +8,25 @@ npm run bench
 
 By default that prints **the host cost report** — the small set of
 numbers someone hosting this plugin actually needs, each measured as
-the difference against the SAME site with the plugin deactivated:
+the difference against the workflow the plugin replaces:
 
 - extra requests per minute, per person editing (and per idle open tab);
 - extra network traffic (KB/min);
 - extra server CPU per minute;
 - the extra share of one PHP worker held;
-- peak PHP memory per request.
+- peak PHP memory per request;
+- and a whole-job total: what producing the same final document cost.
 
 It runs two real-browser phases against a live site (the tests env:
-`npm run env:tests start`): a scripted editing session with the plugin
-deactivated (the baseline a host runs today), then the same session
-with the plugin active and `windows=` people collaborating on each
-requested engine — one baseline/sync/delta/delta-% table per engine.
+`npm run env:tests start`). The **baseline** is the same number of
+people producing the same document the old way — editing in series
+with the plugin deactivated: each person types their part, saves, and
+hands off (the post lock forces exactly this turn-taking today). Then
+the **sync** phase: the plugin active and the same `windows=` people
+collaborating live on each requested engine, typing the same scripts —
+so both phases end with a document of the same size and shape, and the
+delta isolates what real-time collaboration itself costs. One
+baseline/sync/delta/delta-% table per engine.
 The run opens by stating the configuration it resolved (engine,
 transport, durations, polling), marking defaults. Arguments target
 what you need: `engines=` (comma list; `engine=` for one),
@@ -32,7 +38,11 @@ columns come from the whole-request measurement mu-plugin
 (`tests/benchmarks/host/mu-bench-log.php`, mapped into mu-plugins by
 this repo's wp-env configs — restart the env once after pulling this),
 which measures every tagged request even with the plugin deactivated;
-that is what makes CPU, worker, and memory true over-baseline deltas. Two honest limits, printed with the report: server rows cover
+that is what makes CPU, worker, and memory true over-baseline deltas.
+One trap: it is a single-FILE mount, and Docker file mounts go stale
+when git deletes or recreates the file (checking out an older commit,
+rebasing) — if the report says the mu-plugin recorded nothing, restart
+the env. Two honest limits, printed with the report: server rows cover
 requests that reach PHP (static files appear only in the client-side
 rows), and runs are only comparable across identical environments.
 

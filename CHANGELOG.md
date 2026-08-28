@@ -13,8 +13,11 @@ them under a version heading when a version ships.
     and by default prints a host cost report: one baseline/sync/delta
     table per engine with the handful of numbers a hosting provider
     needs (requests per minute, network traffic, server CPU, PHP worker
-    share, peak PHP memory), each measured against the same site with
-    the plugin deactivated. A whole-request measurement mu-plugin
+    share, peak PHP memory), plus a whole-job total for producing the
+    same document. The baseline is the workflow the plugin replaces:
+    the same number of people writing the same document by editing in
+    series — type, save, hand off — with the plugin deactivated, so
+    the delta isolates what real-time collaboration itself costs. A whole-request measurement mu-plugin
     (community-harness model, mapped by the wp-env configs) measures
     every request the editor windows make — page loads, heartbeat,
     autosaves, sync — even while the plugin is deactivated, which is

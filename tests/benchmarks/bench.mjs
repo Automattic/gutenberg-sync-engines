@@ -78,9 +78,11 @@ const HELP = `npm run bench -- [suite=<name>] [key=value …]
 
 Suites (suite=; default: host):
   host       The host cost report: what the plugin adds to a server, as one
-             baseline/sync/delta/delta-% table per engine, measured with real
-             browser sessions against the same site with the plugin
-             deactivated. Arguments:
+             baseline/sync/delta/delta-% table per engine plus a whole-job
+             total. The baseline is the same people producing the same
+             document by editing IN SERIES (save-and-hand-off, plugin
+             deactivated) — so the delta isolates what real-time
+             collaboration itself costs. Arguments:
                engines=    comma list of engines to measure, one table each
                            (intent-log | yjs-server | de-rtc | current;
                            default: the site's current engine; engine= is an
