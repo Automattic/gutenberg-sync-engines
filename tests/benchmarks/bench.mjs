@@ -10,8 +10,13 @@
  *   npm run bench -- engine=de-rtc windows=3     # host report, targeted
  *   npm run bench -- suite=engines       # engine-decision matrix (below)
  *   npm run bench -- suite=transport transport=http-polling trials=30
- *   npm run bench -- suite=soak engine=de-rtc soak=3600
- *   npm run bench -- suite=replay my-session.json speed=1
+ *
+ * Those are the BENCHMARKS: the host report (default), the engine
+ * matrix, and the transport experience. The soak and replay lanes are
+ * debugging/analysis tools, run directly (no suite=):
+ *
+ *   node tests/benchmarks/transport/soak-transport.mjs …
+ *   node tests/benchmarks/replay/replay.mjs …
  *
  * Every suite other than `engines` forwards the remaining arguments to
  * its own script (see each script's header for its argument list). The
@@ -98,9 +103,13 @@ Suites (suite=; default: host):
              scenarios=/certify=/concurrency= imply suite=engines.
   transport  Two-browser edit-to-visible latency + wire traffic for one
              transport (tests/benchmarks/transport/README.md).
-  soak       N-window hour-scale co-editing soak (same README).
-  replay     Replay a captured session as HTTP load
-             (tests/benchmarks/replay/README.md).
+
+Debugging and analysis tools (not benchmarks, so not suites here — run
+them directly; each has comprehensive docs):
+  node tests/benchmarks/transport/soak-transport.mjs   N-window hour-scale
+             co-editing soak (tests/benchmarks/transport/README.md)
+  node tests/benchmarks/replay/replay.mjs              replay a captured
+             session as HTTP load (tests/benchmarks/replay/README.md)
 
 Arguments are key=value tokens; leading dashes are accepted and stripped
 (--suite=engines means suite=engines). Arguments after suite= are
@@ -133,8 +142,13 @@ if (
 const SUITE_SCRIPTS = {
 	host: 'tests/benchmarks/host/host-benchmark.mjs',
 	transport: 'tests/benchmarks/transport/benchmark-transport.mjs',
-	soak: 'tests/benchmarks/transport/soak-transport.mjs',
-	replay: 'tests/benchmarks/replay/replay.mjs',
+};
+// The soak and replay lanes are debugging/analysis tools, not
+// benchmarks — deliberately NOT offered here. Point at their direct
+// invocations instead of silently running them.
+const RETIRED_SUITES = {
+	soak: 'node tests/benchmarks/transport/soak-transport.mjs (see tests/benchmarks/transport/README.md)',
+	replay: 'node tests/benchmarks/replay/replay.mjs (see tests/benchmarks/replay/README.md)',
 };
 // engines= deliberately does NOT imply the engines suite: it is the
 // host report's per-engine-table list. scenarios=/certify=/concurrency=
@@ -154,13 +168,15 @@ console.log( `suite: ${ SUITE } (${ suiteReason })` );
 if ( 'engines' !== SUITE ) {
 	const script = SUITE_SCRIPTS[ SUITE ];
 	if ( ! script ) {
-		console.error(
-			`unknown suite "${ SUITE }" — known: host (default), engines, ${ Object.keys(
-				SUITE_SCRIPTS
-			)
-				.filter( ( name ) => 'host' !== name )
-				.join( ', ' ) }`
-		);
+		if ( RETIRED_SUITES[ SUITE ] ) {
+			console.error(
+				`"${ SUITE }" is a debugging/analysis tool, not a benchmark — run it directly:\n  ${ RETIRED_SUITES[ SUITE ] }`
+			);
+		} else {
+			console.error(
+				`unknown suite "${ SUITE }" — known: host (default), engines, transport`
+			);
+		}
 		process.exit( 1 );
 	}
 	// Forward the NORMALIZED tokens (dashes stripped), minus suite=.

@@ -19,11 +19,11 @@ them under a version heading when a version ships.
     every request the editor windows make — page loads, heartbeat,
     autosaves, sync — even while the plugin is deactivated, which is
     what makes the CPU/worker/memory columns true over-baseline deltas.
-    The existing harnesses remain as debugging tools behind
-    `suite=engines`, `suite=transport`, `suite=soak`, and
-    `suite=replay`, and the community-harness compatibility statement
-    (what matches, what diverges and why) is in
-    `tests/benchmarks/README.md`
+    The engine matrix and transport benchmark remain behind
+    `suite=engines` and `suite=transport`; the soak and replay lanes
+    are classified as debugging/analysis tools, run directly by their
+    own scripts. The community-harness compatibility statement (what
+    matches, what diverges and why) is in `tests/benchmarks/README.md`
     ([#60](https://github.com/Automattic/gutenberg-sync-engines/issues/60)).
 
 ### Fixed

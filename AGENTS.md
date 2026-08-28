@@ -151,16 +151,18 @@ The framework/plugin split is complete: the framework ships **neither** engines
   framework, `plugins/` holds the test WebSocket provider fixture plugin,
   `bin/` the y-websocket sync-server daemon + the `rtc:ws`/`rtc:http` dev
   switcher for the real websocket transport; see Testing),
-  `tests/benchmarks/` (ALL benchmarks behind one command, `npm run
+  `tests/benchmarks/` (the BENCHMARKS behind one command, `npm run
   bench` — by default the HOST COST REPORT in `tests/benchmarks/host/`,
   what the plugin adds to a server vs the same site with the plugin
   deactivated; `suite=engines` is the engine-decision matrix (`wp
-  eval-file tests/benchmarks/benchmark.php` per run), `suite=transport`
-  / `suite=soak` the browser-driven lanes in
-  `tests/benchmarks/transport/`, `suite=replay` the
-  capture→sanitize→replay session tools in `tests/benchmarks/replay/` —
-  community-harness fixture format; every non-default suite is a
-  debugging/analysis tool for this repo's developers; see the READMEs),
+  eval-file tests/benchmarks/benchmark.php` per run) and
+  `suite=transport` the browser-driven transport-experience benchmark
+  in `tests/benchmarks/transport/`. Two debugging/analysis TOOLS live
+  alongside them, deliberately NOT behind `npm run bench` — run
+  directly: the N-window soak
+  (`tests/benchmarks/transport/soak-transport.mjs`) and the
+  capture→sanitize→replay session tools in `tests/benchmarks/replay/`
+  — community-harness fixture format; see the READMEs),
   `tests/fuzzer/` (the seeded browser fuzzer swept across every
   engine × transport combo — `npm run fuzz`; see its README for strategy,
   replay, and triage), and

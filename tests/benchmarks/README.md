@@ -36,15 +36,28 @@ that is what makes CPU, worker, and memory true over-baseline deltas. Two honest
 requests that reach PHP (static files appear only in the client-side
 rows), and runs are only comparable across identical environments.
 
-Everything else in this directory is a **debugging and analysis tool**
-for this repo's developers, selected with `suite=`:
+Two more **benchmarks** live behind `suite=` — measurements that inform
+a real decision (which engine, which transport):
 
 | Suite              | What it is                                                    |
 | ------------------ | ------------------------------------------------------------- |
 | `suite=engines`    | The engine-decision matrix and invariant sweeps — the harness documented in the rest of this README. `scenarios=`, `certify=`, and `concurrency=` imply it, so documented invocations keep working without `suite=`. (`engines=` alone belongs to the host report — its one-table-per-engine list.) |
 | `suite=transport`  | Two-browser edit-to-visible latency + wire traffic per transport (`transport/README.md`). |
-| `suite=soak`       | N-window hour-scale co-editing soak (`transport/README.md`).  |
-| `suite=replay`     | Record real sessions and replay them as HTTP load (`replay/README.md`). |
+
+The remaining two lanes are **debugging and analysis tools**, not
+benchmarks: they generate load or validate projections rather than
+answer a decision. They are deliberately NOT reachable through
+`npm run bench` — run them directly (each has comprehensive docs):
+
+```bash
+node tests/benchmarks/transport/soak-transport.mjs \
+    engine=de-rtc windows=3 soak=3600      # N-window hour-scale soak that
+                                           # validates the cost cards
+                                           # end to end (transport/README.md)
+node tests/benchmarks/replay/replay.mjs \
+    my-session-clean.json speed=1          # replay a captured session as
+                                           # real HTTP load (replay/README.md)
+```
 
 ## Community-harness compatibility
 
