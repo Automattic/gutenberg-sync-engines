@@ -25,8 +25,11 @@ the difference against the workflow the plugin replaces:
   IOPS (every write transaction forces at least one) — hold fsyncs/min
   against a hosting plan's IOPS ceiling. The counters are
   server-global, so the rows are trustworthy only when the run is the
-  database's only traffic; true device-level IOPS sits below what any
-  WordPress request can see and remains the host's own telemetry. Log
+  database's only traffic; data-file reads/writes can honestly read 0
+  over short spans (reads of 0 mean the working set fit in memory,
+  and page writes flush lazily in the background — fsyncs are the
+  live signal); true device-level IOPS sits below what any WordPress
+  request can see and remains the host's own telemetry. Log
   rows also carry the PHP process's own block I/O
   (`php_io_reads`/`php_io_writes`) — ~0 with a warm opcache, which is
   exactly the column that spikes in the cold-opcache-after-deploy
@@ -43,20 +46,32 @@ scales per editor. Nothing here depends on wp-cron: history is bounded
 on the write path, so a quiet site with a cron that never fires holds
 exactly what the disk-per-room line reports.
 
+Reading the report: server-side rows cover every tagged PHP request
+the editor windows make — page loads, heartbeat, autosaves, sync —
+while static files never reach PHP and appear only in the client-side
+requests and network rows. Compare runs only across identical
+environments; the report's environment block names the versions to
+quote. The report measures ONE engine per run (`engine=`) so its
+baseline/sync comparison stays a single readable pair — comparing
+engines against each other is the engines suite's job.
+
 It runs two real-browser phases against a live site (the tests env:
 `npm run env:tests start`). The **baseline** is the same number of
 people producing the same document the old way — editing in series
 with the plugin deactivated: each person types their part, saves, and
 hands off (the post lock forces exactly this turn-taking today). Then
 the **sync** phase: the plugin active and the same `windows=` people
-collaborating live on each requested engine, typing the same scripts —
-so both phases end with a document of the same size and shape, and the
-delta isolates what real-time collaboration itself costs. One
-baseline/sync/delta/delta-% table per engine.
+collaborating live on the chosen engine, typing the same scripts — so
+both phases end with a document of the same size and shape, and the
+delta isolates what real-time collaboration itself costs. The RESULTS
+section prints two markdown tables (editing, then idle), columns
+baseline/sync/delta/delta-%, followed by the summary stats (job
+totals, room storage, derived capacity).
 The run opens by stating the configuration it resolved (engine,
 transport, durations, polling), marking defaults. Arguments target
-what you need: `engines=` (comma list; `engine=` for one),
-`transport=`, `windows=`, `edit=`/`idle=` durations, `poll=` to
+what you need: `engine=` (one per run — comparing engines is
+`suite=engines`), `transport=`, `windows=`, `edit=`/`idle=` durations,
+`poll=` to
 override the HTTP short-polling interval for the run (restored
 afterwards), `metrics=` to print only some rows, `json=` for the full
 data — `npm run bench -- --help` prints the complete list. The server-side

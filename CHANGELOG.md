@@ -10,10 +10,11 @@ them under a version heading when a version ships.
 ### Added
 
 -   `npm run bench` is now the single entry point for every benchmark,
-    and by default prints a host cost report: one baseline/sync/delta
-    table per engine with the handful of numbers a hosting provider
-    needs (requests per minute, network traffic, server CPU, PHP worker
-    share, peak PHP memory), plus a whole-job total for producing the
+    and by default prints a host cost report — one engine per run: two
+    baseline/sync/delta/delta-% tables (editing and idle) with the
+    handful of numbers a hosting provider needs (requests per minute,
+    network traffic, server CPU, PHP worker share, peak PHP memory),
+    plus summary stats including a whole-job total for producing the
     same document. The baseline is the workflow the plugin replaces:
     the same number of people writing the same document by editing in
     series — type, save, hand off — with the plugin deactivated, so

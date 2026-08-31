@@ -22,9 +22,10 @@
  * Every suite other than `engines` forwards the remaining arguments to
  * its own script (see each script's header for its argument list). The
  * engines-suite arguments `scenarios=`, `certify=`, and `concurrency=`
- * keep working without `suite=engines` — they imply it. `engines=` is
- * the HOST report's list (one table per engine); it selects the
- * engines suite only alongside one of those three.
+ * keep working without `suite=engines` — they imply it. The host
+ * report takes `engine=` (singular, one per run); a bare `engines=`
+ * without one of those three lands on the host suite, which refuses it
+ * with a pointer to both spellings.
  *
  * The engines suite: the whole engine-decision matrix, or an
  * invariant-certification sweep, from a single invocation.
@@ -77,16 +78,16 @@ const args = Object.fromEntries(
 const HELP = `npm run bench -- [suite=<name>] [key=value …]
 
 Suites (suite=; default: host):
-  host       The host cost report: what the plugin adds to a server, as one
-             baseline/sync/delta/delta-% table per engine plus a whole-job
-             total. The baseline is the same people producing the same
-             document by editing IN SERIES (save-and-hand-off, plugin
+  host       The host cost report: what the plugin adds to a server —
+             baseline/sync/delta/delta-% tables plus summary stats, ONE
+             engine per run. The baseline is the same people producing the
+             same document by editing IN SERIES (save-and-hand-off, plugin
              deactivated) — so the delta isolates what real-time
              collaboration itself costs. Arguments:
-               engines=    comma list of engines to measure, one table each
-                           (intent-log | yjs-server | de-rtc | current;
-                           default: the site's current engine; engine= is an
-                           alias for a single one)
+               engine=     the one engine to measure (intent-log |
+                           yjs-server | de-rtc | current; default: the
+                           site's current engine — comparing engines is
+                           what suite=engines is for)
                transport=  http-polling | http-long-polling | websocket
                            (default: the site's current transport)
                windows=    collaborator windows per engine phase (default 2)
@@ -122,7 +123,7 @@ WP_USERNAME/WP_PASSWORD.
 
 Examples:
   npm run bench
-  npm run bench -- engines=intent-log,de-rtc windows=3 poll=2
+  npm run bench -- engine=de-rtc windows=3 poll=2
   npm run bench -- suite=engines scenarios=editorial-session
   npm run bench -- certify=10
 `;
@@ -153,9 +154,10 @@ const RETIRED_SUITES = {
 	soak: 'node tests/debugging/soak-transport.mjs (see tests/debugging/README.md)',
 	replay: 'node tests/debugging/replay/replay.mjs (see tests/debugging/replay/README.md)',
 };
-// engines= deliberately does NOT imply the engines suite: it is the
-// host report's per-engine-table list. scenarios=/certify=/concurrency=
-// are unambiguous engines-suite modes and keep working without suite=.
+// engines= deliberately does NOT imply the engines suite (a bare
+// engines= reaches the host suite, which refuses it with guidance);
+// scenarios=/certify=/concurrency= are unambiguous engines-suite modes
+// and keep working without suite=.
 const impliesEngines = args.certify || args.concurrency || args.scenarios;
 const SUITE = String( args.suite ?? ( impliesEngines ? 'engines' : 'host' ) );
 // Say which suite is running and why, so a surprising suite selection is

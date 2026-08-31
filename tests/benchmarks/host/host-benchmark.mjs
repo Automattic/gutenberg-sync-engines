@@ -2,11 +2,13 @@
  * The host cost report: what real-time collaboration adds to a server,
  * measured as the difference against the workflow it replaces — the
  * same people producing the same document by editing in series with
- * the plugin deactivated — printed as one baseline/sync/delta/delta-%
- * table per engine plus a whole-job total.
+ * the plugin deactivated. One engine per run (comparing engines is the
+ * engines suite's job); the RESULTS section prints two markdown tables
+ * (editing, idle) with columns baseline/sync/delta/delta-%, then the
+ * summary stats (job totals, room storage, derived capacity).
  *
  *   npm run bench                            # this report, defaults
- *   npm run bench -- engines=intent-log,yjs-server,de-rtc windows=3
+ *   npm run bench -- engine=de-rtc windows=3
  *   npm run bench -- metrics=requests,cpu json=host.json
  *
  * Phases, all real browser windows against a live site:
@@ -37,18 +39,17 @@
  * server columns fall back to the plugin's own sync requests and the
  * baseline server column reads "—".
  *
- * Each engine prints two markdown tables — one for the editing span,
- * one for idle — with columns baseline | sync | delta | delta %:
- * requests per minute, network traffic, server CPU per minute, the
- * share of one PHP worker held, options-cache invalidations, database
- * disk I/O, and (editing) peak PHP memory per request. Under the
- * tables, one whole-job line: what producing the same final document
- * cost in series vs collaboratively (requests, server CPU, network).
+ * Table rows: requests per minute, network traffic, server CPU per
+ * minute, the share of one PHP worker held, options-cache
+ * invalidations, database disk I/O, and (editing) peak PHP memory per
+ * request. Caveats and how to read each metric live in
+ * tests/benchmarks/README.md, which the report points at.
  *
  * Arguments (bare key=value, like every benchmark here):
  *
- *   engines=    comma list of engines to measure (default: the site's
- *               current engine); engine= is an alias for a single one
+ *   engine=     the ONE engine to measure (intent-log | yjs-server |
+ *               de-rtc | current; default: the site's current engine —
+ *               comparing engines is what suite=engines is for)
  *   transport=  http-polling | http-long-polling | websocket | current
  *   windows=    people per phase: collaborator windows, and the same
  *               number of one-after-the-other baseline turns (default 2)
@@ -94,9 +95,9 @@ const opts = parseCliOptions();
 const HELP = `node tests/benchmarks/host/host-benchmark.mjs [key=value …]
 (or: npm run bench -- [key=value …])
 
-  engines=    comma list of engines to measure, one table each
-              (intent-log | yjs-server | de-rtc | current; default: the
-              site's current engine; engine= is an alias for one)
+  engine=     the ONE engine to measure (intent-log | yjs-server |
+              de-rtc | current; default: the site's current engine —
+              comparing engines is what suite=engines is for)
   transport=  http-polling | http-long-polling | websocket
               (default: the site's current transport)
   windows=    people per phase: collaborator windows, and the same
@@ -120,10 +121,22 @@ if ( opts.help || opts.h ) {
 	process.exit( 0 );
 }
 
-const ENGINES = String( opts.engines ?? opts.engine ?? 'current' )
-	.split( ',' )
-	.map( ( slug ) => slug.trim() )
-	.filter( Boolean );
+if ( undefined !== opts.engines ) {
+	console.error(
+		'the host report measures ONE engine per run — use engine=<slug> ' +
+			'(e.g. npm run bench -- engine=de-rtc); comparing all three is ' +
+			'what suite=engines is for'
+	);
+	process.exit( 1 );
+}
+const ENGINE = String( opts.engine ?? 'current' );
+if ( ENGINE.includes( ',' ) ) {
+	console.error(
+		'engine= takes a single engine — comparing engines is what ' +
+			'suite=engines is for'
+	);
+	process.exit( 1 );
+}
 const TRANSPORT = String( opts.transport ?? 'current' );
 const WINDOWS = Math.max( 1, Number( opts.windows ?? 2 ) );
 const EDIT_SECONDS = Number( opts.edit ?? 120 );
@@ -791,14 +804,15 @@ async function main() {
 			);
 		}
 
-		// Record the site's engine/transport to restore at the end, and
-		// whether the collaboration experiment was already on.
+		// Choose the engine/transport up front (recording what to restore
+		// at the end), and whether the collaboration experiment was on.
 		originalSettings = await configureSettings(
 			adminPage,
-			'current',
-			'current'
+			ENGINE,
+			TRANSPORT
 		);
 		lastActive = originalSettings.active;
+		const engine = originalSettings.active.engine;
 		const settingsBefore = await rest.get( '/wp/v2/settings' );
 		experimentWasOn = Boolean(
 			settingsBefore.data?.[ 'gutenberg-experiments' ]?.[
@@ -822,72 +836,47 @@ async function main() {
 		await ensureCollaborationEnabled( adminPage );
 		await rest.del( '/rtc-test/v1/log' ).catch( () => null );
 
-		// Say exactly what this run will measure, and where each choice
-		// came from, before spending minutes measuring it.
-		const provided = ( key ) => undefined !== opts[ key ];
-		const engineLabels = ENGINES.map( ( slug ) =>
-			'current' === slug
-				? `current → ${ originalSettings.active.engine } (site setting; engines= to target)`
-				: slug
-		);
+		// Say exactly what this run will measure, and where it runs,
+		// before spending minutes measuring it.
 		console.log( 'configuration:' );
-		console.log(
-			`  engines    ${ engineLabels.join( ', ' ) }${
-				provided( 'engines' ) || provided( 'engine' )
-					? ''
-					: ' (default)'
-			}`
-		);
-		console.log(
-			`  transport  ${
-				'current' === TRANSPORT
-					? `current → ${ originalSettings.active.transport } (site setting; transport= to override)`
-					: `${ TRANSPORT } (transport=)`
-			}`
-		);
-		console.log(
-			`  windows    ${ WINDOWS }${
-				provided( 'windows' ) ? '' : ' (default)'
-			}`
-		);
-		console.log(
-			`  baseline   ${ WINDOWS } person(s) editing the same document one after the other, plugin deactivated`
-		);
-		console.log(
-			`  editing    ${ EDIT_SECONDS } s${
-				provided( 'edit' ) ? '' : ' (default)'
-			}, idle ${ IDLE_SECONDS } s${
-				provided( 'idle' ) ? '' : ' (default)'
-			}`
-		);
-		console.log(
-			`  polling    ${
-				null === POLL_OVERRIDE
-					? `site setting, ${ originalPoll } s (0 = plugin defaults; poll= to override)`
-					: `${ POLL_OVERRIDE } s (poll=; restored afterwards)`
-			}`
-		);
-		console.log(
-			`  metrics    ${ METRICS.join( ',' ) }${
-				provided( 'metrics' ) ? '' : ' (default: all)'
-			}${ JSON_PATH ? `, json ${ JSON_PATH }` : '' }`
-		);
+		console.log( '  --suite=host' );
+		console.log( `  --engine=${ engine }` );
+		console.log( `  --transport=${ originalSettings.active.transport }` );
+		console.log( `  --windows=${ WINDOWS }` );
+		console.log( `  --edit=${ EDIT_SECONDS }` );
+		console.log( `  --idle=${ IDLE_SECONDS }` );
+		if ( null !== POLL_OVERRIDE ) {
+			console.log( `  --poll=${ POLL_OVERRIDE }` );
+		}
+		if ( undefined !== opts.metrics ) {
+			console.log( `  --metrics=${ METRICS.join( ',' ) }` );
+		}
+		if ( JSON_PATH ) {
+			console.log( `  --json=${ JSON_PATH }` );
+		}
+
+		const envResponse = await rest.get( '/rtc-test/v1/env' );
+		const serverEnv = 200 === envResponse.status ? envResponse.data : null;
+		if ( serverEnv ) {
+			console.log( 'environment:' );
+			console.log( `  server: PHP ${ serverEnv.php_version }` );
+			console.log( `  wp: ${ serverEnv.wp_version }` );
+			console.log( `  mysql: ${ serverEnv.mysql_version }` );
+		}
 
 		// ---------------- Phase 1: baseline (plugin deactivated) --------
 		// The baseline is the workflow the plugin replaces: the same
 		// number of people producing the same document by editing IN
 		// SERIES — person i types their part, saves, and leaves, then
 		// person i+1 takes a turn. Each person types the same script
-		// their window types in the collaborative phase, so the final
-		// document matches in size and shape and the whole-job totals
-		// are directly comparable.
+		// their window types in the sync phase, so the final document
+		// matches in size and shape and the whole-job totals are
+		// directly comparable.
 		const baselinePost = await createDraft( rest, 'baseline' );
+		console.log( '' );
+		console.log( 'Running baseline phase (plugin deactivated)…' );
 		console.log(
-			`baseline phase: deactivating ${ activeCopies
-				.map( ( copy ) => copy.plugin )
-				.join( ', ' ) }; ${ WINDOWS } person(s) editing post ` +
-				`${ baselinePost } in series (${ EDIT_SECONDS }s + a save ` +
-				`each, then ${ IDLE_SECONDS }s idle)…`
+			`  ${ WINDOWS } person(s) editing post ${ baselinePost } in series…`
 		);
 		for ( const copy of activeCopies ) {
 			await setPluginStatus( rest, copy.plugin, 'inactive' );
@@ -897,7 +886,7 @@ async function main() {
 		const baselineSessions = [];
 		for ( let person = 0; person < WINDOWS; person++ ) {
 			const isLast = person === WINDOWS - 1;
-			console.log( `  baseline turn ${ person + 1 }/${ WINDOWS }…` );
+			console.log( `  baseline step ${ person + 1 }/${ WINDOWS }…` );
 			const win = await openEditorWindow(
 				context,
 				measuredPages,
@@ -913,14 +902,14 @@ async function main() {
 			await win.page.close();
 			if ( session.perWindow[ 0 ].editing.sync.requests > 0 ) {
 				throw new Error(
-					'a baseline turn made sync requests — the plugin was still active, so the comparison is meaningless'
+					'a baseline step made sync requests — the plugin was still active, so the comparison is meaningless'
 				);
 			}
 			if ( ! session.saveOk ) {
 				throw new Error(
-					`baseline turn ${
+					`baseline step ${
 						person + 1
-					} failed to save — the next turn would edit a stale document, breaking the parity the comparison depends on`
+					} failed to save — the next step would edit a stale document, breaking the parity the comparison depends on`
 				);
 			}
 			baselineSessions.push( session );
@@ -939,88 +928,69 @@ async function main() {
 		}
 		deactivated = [];
 
-		// ---------------- Phase 2: one measurement per engine -----------
-		const engines = [];
-		for ( const requested of ENGINES ) {
-			const settings = await configureSettings(
-				adminPage,
-				requested,
-				TRANSPORT
-			);
-			lastActive = settings.active;
-			const engine = settings.active.engine;
-			tag.approach = engine;
+		// ---------------- Phase 2: the sync phase ------------------------
+		tag.approach = engine;
+		const post = await createDraft( rest, engine );
+		console.log( 'Running sync phase…' );
+		console.log(
+			`  ${ WINDOWS } person(s) editing post ${ post } simultaneously…`
+		);
 
-			const post = await createDraft( rest, engine );
-			console.log(
-				`${ engine } phase: ${ WINDOWS } window(s) on post ${ post }, ` +
-					`transport=${ settings.active.transport }…`
+		const wins = [];
+		for ( let index = 0; index < WINDOWS; index++ ) {
+			const win = await openEditorWindow(
+				context,
+				measuredPages,
+				post,
+				index
 			);
+			await waitForSyncTraffic( win.page, win.sync, String( index ) );
+			wins.push( win );
+		}
+		const observed = observeTransport( wins[ 0 ].sync );
+		if (
+			'current' !== TRANSPORT &&
+			observed !== originalSettings.active.transport
+		) {
+			throw new Error(
+				`requested transport "${ originalSettings.active.transport }" but the session negotiated "${ observed }"`
+			);
+		}
 
-			const wins = [];
-			for ( let index = 0; index < WINDOWS; index++ ) {
-				const win = await openEditorWindow(
-					context,
-					measuredPages,
-					post,
-					index
-				);
-				await waitForSyncTraffic( win.page, win.sync, String( index ) );
-				wins.push( win );
-			}
-			const observed = observeTransport( wins[ 0 ].sync );
+		const phase = await measurePhase( wins, tag, true, sampleDbIo );
+		if ( ! phase.saveOk ) {
+			console.warn(
+				`WARNING: the sync phase's end-of-editing save failed — job totals still comparable, but the save cost is missing from the sync side`
+			);
+		}
+		for ( const win of wins ) {
+			const edited = phase.perWindow[ win.index ].editing.sync;
 			if (
-				'current' !== TRANSPORT &&
-				observed !== settings.active.transport
+				0 === edited.dataRequests &&
+				0 === edited.wsFramesSent + edited.wsFramesReceived
 			) {
 				throw new Error(
-					`requested transport "${ settings.active.transport }" but the session negotiated "${ observed }"`
+					`sync window ${ win.index } made no sync data traffic while editing — dead session, numbers unusable`
 				);
 			}
-
-			const phase = await measurePhase( wins, tag, true, sampleDbIo );
-			if ( ! phase.saveOk ) {
-				console.warn(
-					`WARNING: the ${ engine } phase's end-of-editing save failed — job totals still comparable, but the save cost is missing from the sync side`
-				);
-			}
-			for ( const win of wins ) {
-				const edited = phase.perWindow[ win.index ].editing.sync;
-				if (
-					0 === edited.dataRequests &&
-					0 === edited.wsFramesSent + edited.wsFramesReceived
-				) {
-					throw new Error(
-						`${ engine } window ${ win.index } made no sync data traffic while editing — dead session, numbers unusable`
-					);
-				}
-				await win.page.close();
-			}
-			tag.approach = 'baseline';
-
-			// Disk per room: what this session's server-side history holds
-			// at rest (community feedback: growth on low-traffic sites).
-			const roomSize = await rest
-				.get(
-					`/rtc-test/v1/room-size?room=${ encodeURIComponent(
-						`postType/post:${ post }`
-					) }`
-				)
-				.then( ( response ) =>
-					200 === response.status && response.data?.found
-						? response.data
-						: null
-				)
-				.catch( () => null );
-
-			engines.push( {
-				engine,
-				transport: observed,
-				postId: post,
-				phase,
-				roomSize,
-			} );
+			await win.page.close();
 		}
+		tag.approach = 'baseline';
+
+		// Disk per room: what this session's server-side history holds
+		// at rest (community feedback: growth on low-traffic sites).
+		const roomSize = await rest
+			.get(
+				`/rtc-test/v1/room-size?room=${ encodeURIComponent(
+					`postType/post:${ post }`
+				) }`
+			)
+			.then( ( response ) =>
+				200 === response.status && response.data?.found
+					? response.data
+					: null
+			)
+			.catch( () => null );
 
 		// ---------------- Collect and report ----------------------------
 		const logResponse = await rest.get( '/rtc-test/v1/log' );
@@ -1028,8 +998,6 @@ async function main() {
 			200 === logResponse.status && Array.isArray( logResponse.data )
 				? logResponse.data
 				: [];
-		const envResponse = await rest.get( '/rtc-test/v1/env' );
-		const serverEnv = 200 === envResponse.status ? envResponse.data : null;
 
 		const muPresent = serverRows.some(
 			( row ) => 'baseline' === row.approach
@@ -1046,14 +1014,14 @@ async function main() {
 				server: serverEnv,
 			},
 			baseline: { postId: baselinePost, detail: baseline },
-			engines: engines.map( ( entry ) => ( {
-				engine: entry.engine,
-				transport: entry.transport,
-				postId: entry.postId,
-				roomSize: entry.roomSize,
-				...summarize( entry.phase, baseline, serverRows, entry.engine ),
-				detail: entry.phase,
-			} ) ),
+			engine: {
+				engine,
+				transport: observed,
+				postId: post,
+				roomSize,
+				...summarize( phase, baseline, serverRows, engine ),
+				detail: phase,
+			},
 			serverRows,
 		};
 
@@ -1115,7 +1083,8 @@ async function main() {
 }
 
 /**
- * Renders one baseline/sync/delta table per engine.
+ * Renders the RESULTS section: two markdown tables (editing, idle),
+ * then the summary stats and the pointer to the README.
  *
  * @param {Object} report Assembled report.
  */
@@ -1259,59 +1228,50 @@ function printReport( report ) {
 		return rows;
 	};
 
-	for ( const entry of report.engines ) {
+	const entry = report.engine;
+	console.log( '' );
+	console.log( 'RESULTS' );
+	console.log( '=======' );
+	console.log( '' );
+	renderTable( 'metric (editing)', buildSpanRows( entry, 'editing' ) );
+	if ( env.idleSeconds > 0 ) {
 		console.log( '' );
-		console.log(
-			`── ${ entry.engine } over ${ entry.transport } — per person ` +
-				`(${ env.windows } collaborating vs ${ env.windows } editing ` +
-				`in series, ${ env.editSeconds }s editing + a save per ` +
-				`person, ${ env.idleSeconds }s idle) ──`
-		);
-		console.log( '' );
-		renderTable( 'metric (editing)', buildSpanRows( entry, 'editing' ) );
-		if ( env.idleSeconds > 0 ) {
-			console.log( '' );
-			renderTable( 'metric (idle)', buildSpanRows( entry, 'idle' ) );
-		}
-		console.log( '' );
+		renderTable( 'metric (idle)', buildSpanRows( entry, 'idle' ) );
+	}
 
-		// The whole-job line: both phases produced the same final
-		// document, so the totals are directly comparable.
-		const job = entry.job;
-		const cpu = ( value ) =>
-			null === value ? '—' : `${ value.toFixed( 1 ) } CPU-s`;
+	// Stats: single-value results that fit no table — both phases
+	// produced the same final document, so the job totals compare 1:1.
+	const job = entry.job;
+	const cpu = ( value ) =>
+		null === value ? '—' : `${ value.toFixed( 1 ) } CPU-s`;
+	console.log( '' );
+	console.log( 'stats:' );
+	console.log(
+		`  produced document: ${ job.base.requests } requests / ` +
+			`${ cpu( job.base.serverCpuS ) } / ${ Math.round(
+				job.base.kb
+			) } KB in series → ${ job.sync.requests } / ${ cpu(
+				job.sync.serverCpuS
+			) } / ${ Math.round( job.sync.kb ) } KB in sync ` +
+			`(${ pct( job.base.requests, job.sync.requests ) } / ${ pct(
+				job.base.serverCpuS,
+				job.sync.serverCpuS
+			) } / ${ pct( job.base.kb, job.sync.kb ) })`
+	);
+	if ( entry.roomSize ) {
 		console.log(
-			`producing the same document: ${ job.base.requests } requests / ` +
-				`${ cpu( job.base.serverCpuS ) } / ${ Math.round(
-					job.base.kb
-				) } KB in series → ${ job.sync.requests } / ${ cpu(
-					job.sync.serverCpuS
-				) } / ${ Math.round( job.sync.kb ) } KB collaboratively ` +
-				`(${ pct( job.base.requests, job.sync.requests ) } / ${ pct(
-					job.base.serverCpuS,
-					job.sync.serverCpuS
-				) } / ${ pct( job.base.kb, job.sync.kb ) })`
+			`  room storage: ${ entry.roomSize.rows } rows, ${ Math.round(
+				entry.roomSize.bytes / 1024
+			) } KB`
 		);
-		if ( entry.roomSize ) {
-			console.log(
-				`room storage at rest: ${ entry.roomSize.rows } rows, ` +
-					`${ Math.round(
-						entry.roomSize.bytes / 1024
-					) } KB — history is bounded on the write path (the ` +
-					`plugin schedules no cron, so nothing depends on ` +
-					`wp-cron firing on a quiet site)`
-			);
-		}
-		const editShare = entry.spans.editing.server?.workerShare;
-		if ( editShare > 0 ) {
-			console.log(
-				`capacity (derived): ~${ Math.floor(
-					1 / editShare
-				) } concurrent editors per PHP worker at this cadence — ` +
-					`measure real queueing with npm run bench -- ` +
-					`suite=engines concurrency=N`
-			);
-		}
+	}
+	const editShare = entry.spans.editing.server?.workerShare;
+	if ( editShare > 0 ) {
+		console.log(
+			`  derived capacity: ~${ Math.floor(
+				1 / editShare
+			) } concurrent editors per PHP worker`
+		);
 	}
 
 	console.log( '' );
@@ -1324,33 +1284,9 @@ function printReport( report ) {
 				'and rerun'
 		);
 	}
-	if ( report.environment.server ) {
-		const server = report.environment.server;
-		console.log(
-			`server: PHP ${ server.php_version }, WordPress ${ server.wp_version }, ` +
-				`MySQL ${ server.mysql_version } — compare runs only across identical environments`
-		);
-	}
 	console.log(
-		'server rows cover every tagged PHP request from the editor ' +
-			'windows (page loads, heartbeat, autosaves, sync); static ' +
-			'files never reach PHP and appear only in the client-side rows'
+		'caveats, method, and how to read each metric: tests/benchmarks/README.md'
 	);
-	const hasIo = report.engines.some(
-		( entry ) => entry.spans.editing.io || entry.spans.editing.baseIo
-	);
-	if ( hasIo ) {
-		console.log(
-			'DB disk rows are server-global InnoDB counters — trustworthy ' +
-				'only when this run is the database’s only traffic. Fsyncs ' +
-				'are the live signal (every write transaction forces one); ' +
-				'data-file reads/writes can honestly read 0 over short ' +
-				'spans — reads mean the working set fit in memory, and ' +
-				'page writes flush lazily in the background. Hold ' +
-				'fsyncs/min against a plan’s IOPS ceiling, and treat ' +
-				'device-level IOPS as the host’s own telemetry'
-		);
-	}
 }
 
 main().catch( ( error ) => {
