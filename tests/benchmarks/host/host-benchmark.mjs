@@ -37,12 +37,13 @@
  * server columns fall back to the plugin's own sync requests and the
  * baseline server column reads "—".
  *
- * Each engine's table reports, per person, for editing and idle spans:
+ * Each engine prints two markdown tables — one for the editing span,
+ * one for idle — with columns baseline | sync | delta | delta %:
  * requests per minute, network traffic, server CPU per minute, the
- * share of one PHP worker held, and peak PHP memory per request —
- * columns baseline | sync | delta | delta %. Under the table, one
- * whole-job line: what producing the same final document cost in
- * series vs collaboratively (requests, server CPU, network).
+ * share of one PHP worker held, options-cache invalidations, database
+ * disk I/O, and (editing) peak PHP memory per request. Under the
+ * tables, one whole-job line: what producing the same final document
+ * cost in series vs collaboratively (requests, server CPU, network).
  *
  * Arguments (bare key=value, like every benchmark here):
  *
@@ -1139,12 +1140,44 @@ function printReport( report ) {
 		return `${ value >= 0 ? '+' : '' }${ value }%`;
 	};
 
-	for ( const entry of report.engines ) {
+	// One markdown table per span: the first column names the span
+	// ("metric (editing)"), so row labels stay clean. The label column
+	// is left-aligned, the number columns right-aligned.
+	const renderTable = ( title, rows ) => {
+		const headers = [ title, 'baseline', 'sync', 'delta', 'delta %' ];
+		const widths = headers.map( ( header, column ) =>
+			Math.max(
+				header.length,
+				...rows.map( ( row ) => row[ column ].length )
+			)
+		);
+		const pad = ( cell, column ) =>
+			0 === column
+				? cell.padEnd( widths[ column ] )
+				: cell.padStart( widths[ column ] );
+		const line = ( cells ) => `| ${ cells.map( pad ).join( ' | ' ) } |`;
+		console.log( line( headers ) );
+		console.log(
+			`| ${ widths
+				.map( ( width, column ) =>
+					0 === column
+						? '-'.repeat( width )
+						: `${ '-'.repeat( width - 1 ) }:`
+				)
+				.join( ' | ' ) } |`
+		);
+		for ( const row of rows ) {
+			console.log( line( row ) );
+		}
+	};
+
+	const buildSpanRows = ( entry, spanKey ) => {
+		const span = entry.spans[ spanKey ];
 		const rows = [];
-		const push = ( metric, label, spanKey, base, sync, decimals ) => {
+		const push = ( metric, label, base, sync, decimals ) => {
 			if ( METRICS.includes( metric ) ) {
 				rows.push( [
-					`${ label } — ${ spanKey }`,
+					label,
 					fmt( base, decimals ),
 					fmt( sync, decimals ),
 					delta( base, sync, decimals ),
@@ -1152,76 +1185,65 @@ function printReport( report ) {
 				] );
 			}
 		};
-		for ( const spanKey of [ 'editing', 'idle' ] ) {
-			const span = entry.spans[ spanKey ];
-			push(
-				'requests',
-				'requests/min',
-				spanKey,
-				span.baseClient.requestsPerMinute,
-				span.client.requestsPerMinute,
-				1
-			);
-			push(
-				'traffic',
-				'network KB/min',
-				spanKey,
-				span.baseClient.kbPerMinute,
-				span.client.kbPerMinute,
-				1
-			);
-			push(
-				'cpu',
-				'server CPU ms/min',
-				spanKey,
-				span.baseServer?.cpuMsPerMinute ?? null,
-				span.server?.cpuMsPerMinute ?? null,
-				1
-			);
-			push(
-				'workers',
-				'PHP worker share',
-				spanKey,
-				span.baseServer?.workerShare ?? null,
-				span.server?.workerShare ?? null,
-				3
-			);
-			push(
-				'cache',
-				'options-cache invalidations/min',
-				spanKey,
-				span.baseServer?.optionWritesPerMinute ?? null,
-				span.server?.optionWritesPerMinute ?? null,
-				1
-			);
-			push(
-				'diskio',
-				'DB disk reads/min',
-				spanKey,
-				span.baseIo?.readsPerMinute ?? null,
-				span.io?.readsPerMinute ?? null,
-				1
-			);
-			push(
-				'diskio',
-				'DB disk writes/min',
-				spanKey,
-				span.baseIo?.writesPerMinute ?? null,
-				span.io?.writesPerMinute ?? null,
-				1
-			);
-			push(
-				'diskio',
-				'DB fsyncs/min',
-				spanKey,
-				span.baseIo?.fsyncsPerMinute ?? null,
-				span.io?.fsyncsPerMinute ?? null,
-				1
-			);
-		}
-		if ( METRICS.includes( 'memory' ) ) {
-			const base = entry.spans.editing.baseServer;
-			const sync = entry.spans.editing.server;
+		push(
+			'requests',
+			'requests/min',
+			span.baseClient.requestsPerMinute,
+			span.client.requestsPerMinute,
+			1
+		);
+		push(
+			'traffic',
+			'network KB/min',
+			span.baseClient.kbPerMinute,
+			span.client.kbPerMinute,
+			1
+		);
+		push(
+			'cpu',
+			'server CPU ms/min',
+			span.baseServer?.cpuMsPerMinute ?? null,
+			span.server?.cpuMsPerMinute ?? null,
+			1
+		);
+		push(
+			'workers',
+			'PHP worker share',
+			span.baseServer?.workerShare ?? null,
+			span.server?.workerShare ?? null,
+			3
+		);
+		push(
+			'cache',
+			'options-cache invalidations/min',
+			span.baseServer?.optionWritesPerMinute ?? null,
+			span.server?.optionWritesPerMinute ?? null,
+			1
+		);
+		push(
+			'diskio',
+			'DB disk reads/min',
+			span.baseIo?.readsPerMinute ?? null,
+			span.io?.readsPerMinute ?? null,
+			1
+		);
+		push(
+			'diskio',
+			'DB disk writes/min',
+			span.baseIo?.writesPerMinute ?? null,
+			span.io?.writesPerMinute ?? null,
+			1
+		);
+		push(
+			'diskio',
+			'DB fsyncs/min',
+			span.baseIo?.fsyncsPerMinute ?? null,
+			span.io?.fsyncsPerMinute ?? null,
+			1
+		);
+		if ( 'editing' === spanKey && METRICS.includes( 'memory' ) ) {
+			const base = span.baseServer;
+			const sync = span.server;
 			rows.push( [
 				'peak PHP memory MB/request',
 				base ? fmt( base.peakMemoryMaxMb, 1 ) : '—',
@@ -1234,12 +1256,10 @@ function printReport( report ) {
 					: '—',
 			] );
 		}
+		return rows;
+	};
 
-		const labelWidth = Math.max(
-			...rows.map( ( row ) => row[ 0 ].length ),
-			26
-		);
-		const col = 12;
+	for ( const entry of report.engines ) {
 		console.log( '' );
 		console.log(
 			`── ${ entry.engine } over ${ entry.transport } — per person ` +
@@ -1247,20 +1267,13 @@ function printReport( report ) {
 				`in series, ${ env.editSeconds }s editing + a save per ` +
 				`person, ${ env.idleSeconds }s idle) ──`
 		);
-		console.log(
-			`${ ''.padEnd( labelWidth ) }   ${ 'baseline'.padEnd(
-				col
-			) }${ 'sync'.padEnd( col ) }${ 'delta'.padEnd( col ) }delta %`
-		);
-		for ( const row of rows ) {
-			console.log(
-				`${ row[ 0 ].padEnd( labelWidth ) }   ${ row[ 1 ].padEnd(
-					col
-				) }${ row[ 2 ].padEnd( col ) }${ row[ 3 ].padEnd( col ) }${
-					row[ 4 ]
-				}`
-			);
+		console.log( '' );
+		renderTable( 'metric (editing)', buildSpanRows( entry, 'editing' ) );
+		if ( env.idleSeconds > 0 ) {
+			console.log( '' );
+			renderTable( 'metric (idle)', buildSpanRows( entry, 'idle' ) );
 		}
+		console.log( '' );
 
 		// The whole-job line: both phases produced the same final
 		// document, so the totals are directly comparable.
