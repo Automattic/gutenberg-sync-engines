@@ -1,4 +1,4 @@
-import { useEffect } from '@wordpress/element';
+import { useEffect, useMemo } from '@wordpress/element';
 import { useDispatch } from '@wordpress/data';
 import { Popover, SlotFillProvider } from '@wordpress/components';
 import {
@@ -8,12 +8,6 @@ import {
 	WritingFlow,
 	store as blockEditorStore,
 } from '@wordpress/block-editor';
-
-const EDITOR_SETTINGS = {
-	// Text and formatting only: the block structure is not editable.
-	templateLock: 'all',
-	hasFixedToolbar: true,
-};
 
 /**
  * Keeps the merged block selected, so the formatting toolbar is available
@@ -47,11 +41,28 @@ function SelectMergedBlock( { clientId } ) {
  * render into the local Popover.Slot instead of the editor shell's slots
  * behind the modal.
  *
- * @param {Object}   props
- * @param {Array}    props.blocks   The merged content as blocks.
- * @param {Function} props.onChange ( blocks ) => void.
+ * @param {Object}         props
+ * @param {Array}          props.blocks       The merged content as blocks.
+ * @param {Function}       props.onChange     ( blocks ) => void.
+ * @param {string|boolean} props.templateLock The lock for the merged
+ *                                            content. The default 'all'
+ *                                            allows text and formatting
+ *                                            only; the section dialog
+ *                                            passes false so blocks can
+ *                                            be added and removed while
+ *                                            resolving a structural
+ *                                            conflict.
  */
-export default function MergedResultEditor( { blocks, onChange } ) {
+export default function MergedResultEditor( {
+	blocks,
+	onChange,
+	templateLock = 'all',
+} ) {
+	const settings = useMemo(
+		() => ( { templateLock, hasFixedToolbar: true } ),
+		[ templateLock ]
+	);
+
 	return (
 		<div className="editor-collaboration-merge-dialog__merged-editor">
 			<SlotFillProvider>
@@ -59,7 +70,7 @@ export default function MergedResultEditor( { blocks, onChange } ) {
 					value={ blocks }
 					onInput={ onChange }
 					onChange={ onChange }
-					settings={ EDITOR_SETTINGS }
+					settings={ settings }
 				>
 					<SelectMergedBlock clientId={ blocks[ 0 ]?.clientId } />
 					<div className="editor-collaboration-merge-dialog__merged-toolbar">

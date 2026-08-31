@@ -9,6 +9,14 @@ them under a version heading when a version ships.
 
 ### Added
 
+-   A manual "Sync" button for demos on the short-polling transport. When
+    that transport is active, automatic polling is held and nothing moves
+    over the wire until the button (in the editor header, left of the
+    settings toggle) is clicked; each click runs one send-and-receive
+    cycle, and a count on the button shows how many updates are waiting.
+    This makes conflict timing reproducible: edit in two windows, then
+    sync each window in the order the demo needs. Joining a session still
+    syncs once automatically so documents open normally.
 -   A prototype flow for reviewing conflicting edits, for UI design work.
     A block whose edits were set aside is replaced in place by a
     recovery-style card, the way an invalid block is: a "Review conflict"
@@ -34,6 +42,24 @@ them under a version heading when a version ships.
     holding the current version's value, to be settled by editing the
     merged table directly. The compared grids are pre-set placeholder
     content, like the rest of the prototype.
+-   A section-shaped variant of the conflict review prototype, for
+    conflicts that have no single-block answer, like a paragraph split
+    on one side and edited on the other: the two sides no longer agree
+    on the block structure itself, so the review compares the whole
+    section. When the conflicted block is a group, or sits inside one,
+    the in-place card reads "This section has conflicting edits." and
+    the review dialog shows each version's blocks with the editor's
+    revision-comparison highlighting against the shared base: the split
+    reads as a changed paragraph plus an added one, the edit as a
+    changed paragraph. The merged result is a small multi-block editor
+    whose structure is unlocked, so resolving can keep, drop, or reshape
+    blocks; accepting replaces the section's blocks. All set-aside edits
+    landing inside one group present as a SINGLE conflict: one card on
+    the group's first affected block (other affected blocks keep their
+    normal editing controls), and accepting resolves every set-aside
+    edit in the group, so edits spanning several blocks read and settle
+    as one conflict instead of a card per block. The compared versions
+    are pre-set placeholder content, like the rest of the prototype.
 -   A prototype flow for reviewing blocks held back by the security
     filter (wp_kses), for UI design work. A held block is replaced in
     place by a recovery-style card reading "This block requires elevated

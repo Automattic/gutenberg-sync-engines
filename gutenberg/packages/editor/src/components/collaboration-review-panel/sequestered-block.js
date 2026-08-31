@@ -45,7 +45,7 @@ const CANVAS_CSS = `
  * The open SECURITY-HOLD review items targeting a block: the items parked
  * with the `requires-approval` reason, the reason every engine maps a
  * wp_kses rejection to. Empty for an ordinary block. Other reasons present
- * as the conflict card instead (see useBlockConflicts).
+ * as the conflict card instead (see useConflictGroup).
  *
  * @param {string} clientId The block's client id.
  * @return {Array} The block's open security-hold review items.

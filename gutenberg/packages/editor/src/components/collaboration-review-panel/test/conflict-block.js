@@ -49,6 +49,38 @@ describe( 'ConflictBlockBody', () => {
 		);
 	} );
 
+	it( 'shows a section message and preview for a conflict in a group section', () => {
+		render( <ConflictBlockBody isSection onReview={ () => {} } /> );
+
+		expect(
+			screen.getByText( 'This section has conflicting edits.' )
+		).toBeVisible();
+		expect(
+			screen.getByRole( 'button', { name: 'Review conflict' } )
+		).toBeVisible();
+
+		// The preview is the word diff of the whole mock section's text
+		// between the two versions: your split's sign-up call reads as
+		// added, the current version's date edit as removed.
+		expect( screen.getByText( /Sign up now/ ) ).toBeVisible();
+		expect( screen.getAllByRole( 'insertion' ) ).not.toHaveLength( 0 );
+		expect( screen.getAllByRole( 'deletion' ) ).not.toHaveLength( 0 );
+	} );
+
+	it( 'keeps the table presentation for a conflicted table inside a section', () => {
+		render(
+			<ConflictBlockBody
+				blockName="core/table"
+				isSection
+				onReview={ () => {} }
+			/>
+		);
+
+		expect(
+			screen.getByText( 'This table has conflicting edits.' )
+		).toBeVisible();
+	} );
+
 	it( 'Review conflict opens the review flow', async () => {
 		const user = userEvent.setup();
 		const onReview = jest.fn();
