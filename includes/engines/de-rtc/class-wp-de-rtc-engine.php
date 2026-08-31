@@ -2244,19 +2244,9 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				'properties_by_version' => array( $version => $properties ),
 
 				/*
-				 * The room is BORN from this post content, so mark it as seen
-				 * by the external-save healer from the start. Without the
-				 * stamp, the healer's stale-copy guard rests on the bounded
-				 * snapshot window: once genesis ages out of the window, an
-				 * unchanged post_content (a session that has not saved yet)
-				 * reads as brand-new out-of-band work and the "converge to
-				 * WordPress's accepted state" rule rolls the whole room back
-				 * to its genesis content, discarding every accepted proposal
-				 * since. Cold per-request loads normally re-stamp long before
-				 * the window ages out, but nothing guarantees a load at the
-				 * right moment — the engine benchmark's warm single-instance
-				 * session hit exactly this wipe on its first mid-session
-				 * save (issue #70).
+				 * Remember the content used to create the room. This prevents
+				 * the external-save check from treating an unchanged post as a
+				 * new change after older snapshots expire.
 				 */
 				'healed_hash'           => wp_de_rtc_hash_content( $content ),
 			);
