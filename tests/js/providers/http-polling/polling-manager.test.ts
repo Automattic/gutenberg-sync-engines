@@ -169,6 +169,9 @@ describe( 'polling-manager', () => {
 	>;
 	let mockApplyFilters: jest.Mock;
 	let setLongPollMode: ( enabled: boolean ) => void;
+	let setManualSyncMode: ( enabled: boolean ) => void;
+	let syncNow: () => void;
+	let getQueuedUpdateCount: () => number;
 	let inspector: typeof import('../../../../src/providers/http-polling/../../../src/debug/inspector').syncDebugApi;
 
 	beforeEach( () => {
@@ -180,6 +183,9 @@ describe( 'polling-manager', () => {
 			const managerModule = require( '../../../../src/providers/http-polling/polling-manager' );
 			pollingManager = managerModule.pollingManager;
 			setLongPollMode = managerModule.setLongPollMode;
+			setManualSyncMode = managerModule.setManualSyncMode;
+			syncNow = managerModule.syncNow;
+			getQueuedUpdateCount = managerModule.getQueuedUpdateCount;
 			mockPostSyncUpdate =
 				require( '../../../../src/providers/http-polling/utils' ).postSyncUpdate;
 			mockPostSyncUpdateNonBlocking =
@@ -2678,6 +2684,81 @@ describe( 'polling-manager', () => {
 			expect(
 				resent.rooms[ 0 ].updates.map( ( entry ) => entry.data )
 			).toContain( update.data );
+		} );
+	} );
+
+	describe( 'manual sync mode', () => {
+		// Mirrors the intent-log codec (the engine the manual-sync demo
+		// tooling targets): its queue syncs while solo.
+		function registerManualRoom() {
+			const session = { ...createMockSession( 1 ), syncWhileSolo: true };
+			pollingManager.registerRoom( {
+				room: 'test-room',
+				session,
+				log: jest.fn(),
+				onStatusChange: jest.fn(),
+			} );
+
+			return session;
+		}
+
+		it( 'runs the initial poll, then parks instead of scheduling', async () => {
+			mockPostSyncUpdate.mockResolvedValue( syncResponse );
+			setManualSyncMode( true );
+			registerManualRoom();
+
+			await jest.advanceTimersByTimeAsync( 0 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
+
+			// No auto-poll fires, even well past the normal interval.
+			await jest.advanceTimersByTimeAsync( 60000 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
+		} );
+
+		it( 'sends queued local updates only when syncNow() runs', async () => {
+			mockPostSyncUpdate.mockResolvedValue( syncResponse );
+			setManualSyncMode( true );
+			const session = registerManualRoom();
+			await jest.advanceTimersByTimeAsync( 0 );
+
+			const update = createMockUpdate( 4 );
+			getOnLocalUpdate( session )( update, 4 );
+			await jest.advanceTimersByTimeAsync( 60000 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
+			expect( getQueuedUpdateCount() ).toBe( 1 );
+
+			syncNow();
+			await jest.advanceTimersByTimeAsync( 0 );
+
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+			const payload = mockPostSyncUpdate.mock
+				.calls[ 1 ][ 0 ] as SyncPayload;
+			expect(
+				payload.rooms[ 0 ].updates.map( ( entry ) => entry.data )
+			).toContain( update.data );
+			expect( getQueuedUpdateCount() ).toBe( 0 );
+		} );
+
+		it( 'cancels the scheduled poll when enabled and resumes the loop when disabled', async () => {
+			mockPostSyncUpdate.mockResolvedValue( syncResponse );
+			registerManualRoom();
+			await jest.advanceTimersByTimeAsync( 0 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
+
+			// A poll is scheduled at the solo interval; enabling manual mode
+			// cancels it.
+			setManualSyncMode( true );
+			await jest.advanceTimersByTimeAsync( 60000 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
+
+			// Disabling resumes the loop immediately...
+			setManualSyncMode( false );
+			await jest.advanceTimersByTimeAsync( 0 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+
+			// ...and the automatic cadence is back.
+			await jest.advanceTimersByTimeAsync( 4000 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 3 );
 		} );
 	} );
 } );

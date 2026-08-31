@@ -364,6 +364,21 @@ export function setLongPollMode( enabled: boolean ): void {
 // yield to the event loop without idling.
 const LONG_POLL_REISSUE_MS = 50;
 
+/*
+ * Manual sync mode (demo tooling): while enabled, the poll loop PARKS after
+ * each cycle instead of scheduling the next one, so nothing moves over the
+ * wire until syncNow() runs (the editor's Sync button). The initial poll made
+ * when the first room registers still runs, so joining a session and
+ * receiving genesis work normally.
+ */
+let manualSyncMode = false;
+let isRequestInFlight = false;
+const manualSyncListeners = new Set< () => void >();
+
+function notifyManualSyncListeners(): void {
+	manualSyncListeners.forEach( ( listener ) => listener() );
+}
+
 // When more rooms are registered than the server allows per request
 // (MAX_ROOMS_PER_REQUEST), the primary room is sent every poll and the
 // remaining "overflow" rooms are rotated across polls. This offset
@@ -594,6 +609,8 @@ function restoreExactUpdates( payload: SyncPayload ): void {
 function poll(): void {
 	isPolling = true;
 	pollingTimeoutId = null;
+	isRequestInFlight = true;
+	notifyManualSyncListeners();
 
 	async function start(): Promise< void > {
 		if ( 0 === roomStates.size ) {
@@ -995,11 +1012,26 @@ function poll(): void {
 			}
 		}
 
+		if ( manualSyncMode ) {
+			// Manual sync mode: park instead of scheduling. The next cycle
+			// runs when syncNow() fires (or when the mode turns off).
+			return;
+		}
+
 		pollingTimeoutId = setTimeout( poll, pollInterval );
 	}
 
 	// Start polling.
-	void start();
+	void start().finally( () => {
+		isRequestInFlight = false;
+		// A parked loop (manual sync mode) has no scheduled poll left to
+		// notice an empty room list; reset so the next room registration
+		// restarts the loop.
+		if ( 0 === roomStates.size && ! pollingTimeoutId ) {
+			isPolling = false;
+		}
+		notifyManualSyncListeners();
+	} );
 }
 
 function registerRoom( {
@@ -1089,6 +1121,7 @@ function registerRoom( {
 		}
 
 		updateQueue.add( update );
+		notifyManualSyncListeners();
 
 		if ( longPollMode && inFlightParkController ) {
 			// Wake the parked poll: local work must not wait out the hold.
@@ -1143,6 +1176,10 @@ function registerRoom( {
 
 	if ( ! isPolling ) {
 		poll();
+	} else {
+		// Already polling (or parked in manual sync mode): the new room's
+		// initial updates changed the queued count.
+		notifyManualSyncListeners();
 	}
 }
 
@@ -1186,6 +1223,14 @@ function unregisterRoom(
 		roomOverflowOffset = 0;
 		syncRequestBodySizeLimit = MAX_SYNC_REQUEST_BODY_SIZE_IN_BYTES;
 	}
+
+	// A parked loop (manual sync mode) has no scheduled poll left to notice
+	// the empty room list; reset so the next room registration restarts it.
+	if ( 0 === roomStates.size && ! isRequestInFlight && ! pollingTimeoutId ) {
+		isPolling = false;
+	}
+
+	notifyManualSyncListeners();
 }
 
 /**
@@ -1201,7 +1246,99 @@ function retryNow(): void {
 		clearTimeout( pollingTimeoutId );
 		pollingTimeoutId = null;
 		poll();
+	} else if ( isPolling && ! isRequestInFlight && roomStates.size > 0 ) {
+		// The loop is parked (manual sync mode): a retry request is an
+		// explicit ask to poll now.
+		poll();
 	}
+}
+
+/**
+ * Enable or disable manual sync mode. While enabled, no polls are scheduled;
+ * each cycle runs only when syncNow() is called. Disabling resumes the
+ * automatic loop immediately.
+ *
+ * @param enabled Whether polls should only run on demand.
+ */
+export function setManualSyncMode( enabled: boolean ): void {
+	if ( manualSyncMode === enabled ) {
+		return;
+	}
+
+	manualSyncMode = enabled;
+
+	if ( enabled ) {
+		// Cancel the scheduled auto-poll. An in-flight request finishes its
+		// cycle and then parks.
+		if ( pollingTimeoutId ) {
+			clearTimeout( pollingTimeoutId );
+			pollingTimeoutId = null;
+		}
+	} else if (
+		isPolling &&
+		! pollingTimeoutId &&
+		! isRequestInFlight &&
+		roomStates.size > 0
+	) {
+		// Resume the automatic loop from the parked state.
+		poll();
+	}
+
+	notifyManualSyncListeners();
+}
+
+/**
+ * Run one poll cycle now: send everything queued and receive what the server
+ * holds. No-op while a request is already in flight or no rooms are
+ * registered.
+ */
+export function syncNow(): void {
+	if ( isRequestInFlight || 0 === roomStates.size ) {
+		return;
+	}
+
+	if ( pollingTimeoutId ) {
+		clearTimeout( pollingTimeoutId );
+		pollingTimeoutId = null;
+	}
+
+	poll();
+}
+
+/**
+ * Whether a sync request is currently in flight. UI state for the Sync
+ * button.
+ */
+export function isSyncInFlight(): boolean {
+	return isRequestInFlight;
+}
+
+/**
+ * Number of local updates queued across all rooms, waiting for the next poll
+ * cycle. UI state for the Sync button.
+ */
+export function getQueuedUpdateCount(): number {
+	let count = 0;
+	roomStates.forEach( ( state ) => {
+		count += state.updateQueue.size();
+	} );
+
+	return count;
+}
+
+/**
+ * Subscribe to manual-sync state changes (mode, in-flight request, queued
+ * updates).
+ *
+ * @param listener Called on every state change.
+ * @return Unsubscribe function.
+ */
+export function subscribeManualSync( listener: () => void ): () => void {
+	manualSyncListeners.add( listener );
+
+	return () => {
+		manualSyncListeners.delete( listener );
+	};
 }
 
 export const pollingManager: PollingManager = {

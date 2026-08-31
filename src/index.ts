@@ -38,6 +38,7 @@ import { createDeRtcEngineAdapter } from './engines/de-rtc-adapter';
 import { createHttpPollingProvider } from './providers/http-polling/http-polling-provider';
 import { createHttpLongPollingProvider } from './providers/http-long-polling/http-long-polling-provider';
 import { createWebSocketProvider } from './providers/websocket/websocket-provider';
+import { registerManualSyncButton } from './manual-sync/manual-sync-button';
 
 const { registerSyncEngine, registerSyncTransport } = unlock( privateApis );
 
@@ -63,3 +64,7 @@ registerSyncTransport( {
 	protocolVersion: 1,
 	create: createWebSocketProvider,
 } );
+
+// Demo tooling: on the http-polling transport, hold automatic polling and
+// sync on demand from a header button instead.
+registerManualSyncButton();

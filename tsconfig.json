@@ -11,6 +11,12 @@
       "@wordpress/blocks": [
         "./gutenberg/node_modules/@wordpress/blocks/build-types"
       ],
+      "@wordpress/components": [
+        "./gutenberg/node_modules/@wordpress/components/build-types"
+      ],
+      "@wordpress/plugins": [
+        "./gutenberg/node_modules/@wordpress/plugins/build-types"
+      ],
       "@wordpress/block-serialization-default-parser": [
         "./gutenberg/node_modules/@wordpress/block-serialization-default-parser"
       ],
