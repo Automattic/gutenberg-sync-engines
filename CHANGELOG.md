@@ -9,6 +9,19 @@ them under a version heading when a version ships.
 
 ### Fixed
 
+-   Under the de-rtc engine, a long-running collaboration session could
+    lose every accepted edit the moment a save request looked at the
+    room. The engine watches the saved post for outside changes, and its
+    guard against re-applying an old copy only remembered the last 20
+    versions — so once a session that had not saved yet ran long enough,
+    the post's own untouched starting content stopped looking familiar,
+    was mistaken for brand-new outside work, and the room was rolled all
+    the way back to it. The room now permanently remembers the content it
+    was created from. Found by the engine benchmark's editing-session
+    scenarios, which now run in CI so this class of failure fails a pull
+    request instead of waiting for someone to run the benchmark by hand
+    ([#70](https://github.com/Automattic/gutenberg-sync-engines/issues/70)).
+
 -   Under the default intent-log engine, the "Edit HTML" window on a
     just-added Custom HTML block closed by itself about a second after
     opening. The first sync push after creating a block handed the

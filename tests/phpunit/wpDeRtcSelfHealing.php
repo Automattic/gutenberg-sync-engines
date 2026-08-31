@@ -112,6 +112,42 @@ class Tests_Collaboration_WpDeRtcSelfHealing extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'Alpha advanced by the session.', $after, 'A stale copy must not roll the room back.' );
 	}
 
+	public function test_unchanged_genesis_post_content_never_reads_as_external_work() {
+		$post_id = $this->make_post();
+		$room    = 'postType/post:' . $post_id;
+		$engine  = $this->engine();
+		$this->assertSame( self::GENESIS_CONTENT, $engine->materialize( $room ) );
+
+		/*
+		 * Advance the session far enough that the genesis content ages out
+		 * of the bounded version-snapshot window — all on ONE warm engine
+		 * instance, so no intermediate room load re-marks the unchanged
+		 * post_content as seen. That is the websocket daemon's long-lived
+		 * shape, and the engine benchmark's warm session: before the
+		 * genesis healed-hash stamp, the FIRST cold load after this point
+		 * (a save request) misread the post's own unchanged content as new
+		 * out-of-band work and converged the room back to genesis,
+		 * discarding every accepted proposal (issue #70).
+		 */
+		$rounds  = wp_de_rtc_get_automerge_version_snapshot_limit() + 5;
+		$alpha   = 'Alpha block original text.';
+		$current = self::GENESIS_CONTENT;
+		for ( $i = 1; $i <= $rounds; $i++ ) {
+			$next_alpha = $alpha . " s{$i};";
+			$next       = str_replace( $alpha, $next_alpha, $current );
+			$result     = $engine->handle_updates( $room, 400 + $i, 0, array( $this->proposal( 'p-' . $i, 'v' . $i, $next ) ), array() );
+			$this->assertSame( 'applied', $result['dispositions'][0]['status'], "Proposal {$i} must apply." );
+			$alpha   = $next_alpha;
+			$current = $next;
+		}
+
+		// A cold load (a save request's engine instance) must serve the
+		// session head, not heal the room back to its own genesis.
+		$cold = (string) $this->engine()->materialize( $room );
+		$this->assertStringContainsString( ' s1;', $cold, 'The earliest accepted edit must survive a cold load.' );
+		$this->assertSame( $current, $cold, 'An unchanged genesis post_content must never be merged back over the session.' );
+	}
+
 	public function test_meta_carrying_external_edit_merges_with_concurrent_session_work() {
 		$post_id = $this->make_post();
 		$room    = 'postType/post:' . $post_id;

@@ -508,7 +508,19 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 				}
 			}
 
-			if ( is_array( $latest ) ) {
+			/*
+			 * Version gate, the shipping bridge's applyCanonical rule: a
+			 * content row at or below the client's current version is
+			 * IGNORED, never adopted. The row stream re-delivers old
+			 * content-carrying rows as a matter of course — a compaction
+			 * checkpoint stores a snapshot of the head at checkpoint TIME,
+			 * which lands at a cursor many rows later — so a client whose
+			 * settle-time advance already carried it past that version must
+			 * not roll back to it (a client that adopted a checkpoint row
+			 * older than its own accepted proposals ended the session behind
+			 * the canonical; issue #70).
+			 */
+			if ( is_array( $latest ) && (int) ltrim( (string) $latest['version'], 'v' ) > $base_seq ) {
 				$this->content[ $client ]      = (string) $latest['content'];
 				$this->base_version[ $client ] = (string) $latest['version'];
 				if ( is_array( $latest['properties'] ?? null ) ) {

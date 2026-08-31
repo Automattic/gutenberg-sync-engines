@@ -2242,6 +2242,13 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				'sync_meta'             => wp_de_rtc_update_automerge_version_snapshots( $sync_meta, $version, $content ),
 				'properties'            => $properties,
 				'properties_by_version' => array( $version => $properties ),
+
+				/*
+				 * Remember the content used to create the room. This prevents
+				 * the external-save check from treating an unchanged post as a
+				 * new change after older snapshots expire.
+				 */
+				'healed_hash'           => wp_de_rtc_hash_content( $content ),
 			);
 
 			$stored = $this->add_row(

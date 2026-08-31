@@ -197,6 +197,16 @@ function wp( ...wpArgs ) {
 	return result.stdout;
 }
 
+// Best-effort variant: null on failure instead of throwing (for cleanup
+// commands whose target may legitimately be absent or already inactive).
+function wpTry( ...wpArgs ) {
+	try {
+		return wp( ...wpArgs );
+	} catch {
+		return null;
+	}
+}
+
 // Returns the parsed report, or null when the run CRASHED — a fatal
 // engine error is itself a certification result (recorded as a
 // violation), and one crash must not abort the rest of the sweep.
@@ -245,7 +255,32 @@ function checkInvariants( report, label, violations ) {
 
 fs.mkdirSync( OUT_DIR, { recursive: true } );
 console.log( `env: ${ ENV_CONFIG } (${ ENV_CWD }); activating plugins…` );
-wp( 'wp', 'plugin', 'activate', 'gutenberg', 'gutenberg-sync-engines' );
+/*
+ * The framework is BUNDLED: the plugin loads the vendored Gutenberg subtree
+ * itself, so only the plugin needs activating — and only its DIRECTORY-NAME
+ * copy. wp-env mounts the plugin twice (the directory name via `plugins`,
+ * plus the fixed `gutenberg-sync-engines` mapping); in a worktree those are
+ * two distinct plugin entries and activating both is a fatal redeclaration,
+ * so activate the directory-name copy (the arrangement `wp-env start`
+ * re-creates) and make sure the mapped copy is off. A stale `gutenberg`
+ * stub activation (the precedence e2e fixture, left behind by an aborted
+ * run) blocks the bundled framework, so switch it off too.
+ */
+const PLUGIN_DIR = path.basename( process.cwd() );
+wp( 'wp', 'plugin', 'activate', PLUGIN_DIR );
+if ( 'gutenberg-sync-engines' !== PLUGIN_DIR ) {
+	wpTry( 'wp', 'plugin', 'deactivate', 'gutenberg-sync-engines' );
+}
+const gutenbergVersion = wpTry(
+	'wp',
+	'plugin',
+	'get',
+	'gutenberg',
+	'--field=version'
+);
+if ( gutenbergVersion && gutenbergVersion.includes( 'stub' ) ) {
+	wpTry( 'wp', 'plugin', 'deactivate', 'gutenberg' );
+}
 
 const violations = [];
 const started = Date.now();
@@ -428,23 +463,54 @@ if ( args.concurrency ) {
 	// Invariant sweep: many seeds, every engine, the adversarial
 	// scenarios — cheap per run, additive as evidence.
 	const seeds = Math.max( 1, Number( args.certify ) );
-	const certifyScenarios = [
-		'mixed-newsroom',
-		'structural-churn',
-		'remove-contention',
-		'field-sync',
-	];
-	const config = {
+	const shortConfig = {
 		rounds: 40,
 		clients: 3,
 		paragraphs: 4,
 		reps: 1,
 		warmup: 0,
 	};
+	/*
+	 * The short config keeps the adversarial scenarios cheap per seed. The
+	 * two SAVE-lane scenarios need their matrix depth to mean anything:
+	 * editorial-session's first mid-session autosave fires at round 60 and
+	 * the pre-#70 room wipe needed enough versions before it for genesis to
+	 * age out of the snapshot window (green at 120 rounds even before the
+	 * fix), and save-sync-session's pre-#70 rollback needed a compaction
+	 * checkpoint (~100 stored rows, so ~120 rounds). Both configs below
+	 * reproduce those failures on the pre-fix engine at seed 42 — do not
+	 * shrink them without re-verifying that.
+	 */
+	const certifyScenarios = [
+		{ scenario: 'mixed-newsroom', config: shortConfig },
+		{ scenario: 'structural-churn', config: shortConfig },
+		{ scenario: 'remove-contention', config: shortConfig },
+		{ scenario: 'field-sync', config: shortConfig },
+		{
+			scenario: 'save-sync-session',
+			config: {
+				rounds: 120,
+				clients: 3,
+				paragraphs: 6,
+				reps: 1,
+				warmup: 0,
+			},
+		},
+		{
+			scenario: 'editorial-session',
+			config: {
+				rounds: 600,
+				clients: 3,
+				paragraphs: 6,
+				reps: 1,
+				warmup: 0,
+			},
+		},
+	];
 	let edits = 0;
 	const dispositions = { applied: 0, escalated: 0, voided: 0 };
 
-	for ( const scenario of certifyScenarios ) {
+	for ( const { scenario, config } of certifyScenarios ) {
 		for ( const engine of ENGINES ) {
 			for ( let i = 0; i < seeds; i++ ) {
 				const seed = SEED + i;
