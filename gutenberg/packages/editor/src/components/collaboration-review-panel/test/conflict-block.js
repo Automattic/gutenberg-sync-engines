@@ -22,6 +22,33 @@ describe( 'ConflictBlockBody', () => {
 		expect( screen.getAllByRole( 'deletion' ) ).not.toHaveLength( 0 );
 	} );
 
+	it( 'shows a table message and a table preview for a conflicted table', () => {
+		render(
+			<ConflictBlockBody blockName="core/table" onReview={ () => {} } />
+		);
+
+		expect(
+			screen.getByText( 'This table has conflicting edits.' )
+		).toBeVisible();
+		expect(
+			screen.getByRole( 'button', { name: 'Review conflict' } )
+		).toBeVisible();
+
+		// The preview is the compact union view of the fabricated pricing
+		// scenario: both sides' structural additions highlighted as added,
+		// and the contested cell holding the current version's value,
+		// marked contested.
+		expect( screen.getByText( 'Team' ) ).toHaveClass(
+			'editor-collaboration-table-diff__cell--added'
+		);
+		expect( screen.getByText( 'API access' ) ).toHaveClass(
+			'editor-collaboration-table-diff__cell--added'
+		);
+		expect( screen.getByText( '$7' ) ).toHaveClass(
+			'editor-collaboration-table-diff__cell--contested'
+		);
+	} );
+
 	it( 'Review conflict opens the review flow', async () => {
 		const user = userEvent.setup();
 		const onReview = jest.fn();

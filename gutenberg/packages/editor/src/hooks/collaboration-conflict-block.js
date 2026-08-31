@@ -23,7 +23,11 @@ const withConflictReview = createHigherOrderComponent(
 		}
 
 		return (
-			<ConflictBlock clientId={ props.clientId } items={ conflicts } />
+			<ConflictBlock
+				clientId={ props.clientId }
+				blockName={ props.name }
+				items={ conflicts }
+			/>
 		);
 	},
 	'withConflictReview'

@@ -88,6 +88,35 @@
 		align-self: flex-start;
 	}
 
+	// The table dialog's panes render each version as a plain table with
+	// per-cell diff highlighting (see table-diff-grid.js); the same
+	// classes are mirrored in the conflict card's canvas CSS. The wrapper
+	// scrolls horizontally when a wide table overflows its pane.
+	.editor-collaboration-table-diff__wrapper {
+		overflow-x: auto;
+	}
+
+	.editor-collaboration-table-diff {
+		border-collapse: collapse;
+		width: 100%;
+	}
+
+	.editor-collaboration-table-diff__cell {
+		border: $border-width solid $gray-300;
+		padding: $grid-unit-05 $grid-unit-10;
+		text-align: left;
+		vertical-align: top;
+	}
+
+	.editor-collaboration-table-diff__cell--added,
+	.editor-collaboration-table-diff__cell--changed {
+		background: rgba(74, 184, 102, 0.25);
+	}
+
+	.editor-collaboration-table-diff__cell--contested {
+		background: rgba(240, 184, 73, 0.4);
+	}
+
 	.editor-collaboration-merge-dialog__merged-editor {
 		border: $border-width solid $gray-600;
 		border-radius: $radius-small;

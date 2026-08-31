@@ -8,6 +8,9 @@ import { unlock } from '../../lock-unlock';
 
 export const REASON_LABELS = {
 	'frame-conflict': __( 'It conflicted with a collaborator’s change.' ),
+	'attr-conflict': __(
+		'It changed block settings a collaborator also changed.'
+	),
 	'dependent-on-escalated': __(
 		'It depended on another edit that was set aside.'
 	),

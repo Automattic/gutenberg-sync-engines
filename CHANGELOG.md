@@ -25,6 +25,15 @@ them under a version heading when a version ships.
     and the sidebar panel are the only surfaces. The compared texts are
     pre-set placeholder content for now. Real conflicts from any engine
     open the flow; supplying the real texts is follow-up engine work.
+-   A table-shaped variant of the conflict review prototype. When the
+    conflicted block is a table, the in-place card previews the changed
+    cells as a compact table, and the review dialog shows both versions
+    as tables highlighting each side's own changes and pre-fills the
+    merged result with a suggested cell-level merge: clean changes from
+    both sides applied, and a cell both sides changed differently
+    holding the current version's value, to be settled by editing the
+    merged table directly. The compared grids are pre-set placeholder
+    content, like the rest of the prototype.
 -   A prototype flow for reviewing blocks held back by the security
     filter (wp_kses), for UI design work. A held block is replaced in
     place by a recovery-style card reading "This block requires elevated
