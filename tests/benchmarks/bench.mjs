@@ -96,7 +96,7 @@ Suites (suite=; default: host):
                            run, in seconds 1-25 (0 = the plugin's defaults;
                            default: leave the site's setting alone)
                metrics=    comma list of table rows to print:
-                           requests,traffic,cpu,workers,memory (default all)
+                           requests,traffic,cpu,workers,memory,cache (default all)
                json=       write full results as JSON to this path
                headed=1    visible browser (debugging)
   engines    The engine-decision matrix and invariant sweeps (in-process,

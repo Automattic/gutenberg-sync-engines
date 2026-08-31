@@ -212,6 +212,61 @@ class Tests_Collaboration_GutenbergSyncEnginesDiagnostics extends WP_UnitTestCas
 		$this->assertSame( array(), Gutenberg_Sync_Engines_Request_Log::fetch_rows() );
 	}
 
+	public function test_option_writes_are_counted_per_request() {
+		$request = $this->build_sync_request( 'postType/post:' . self::$post_id );
+		$request->set_header( 'X-RTC-Test', '1' );
+		$request->set_header( 'X-RTC-Scenario', 'editing' );
+
+		$server = rest_get_server();
+		apply_filters( 'rest_pre_dispatch', null, $server, $request );
+		// Two options-API writes inside the measured window; the direct-SQL
+		// primitives (room lock, CAS) deliberately bypass the API and must
+		// not count.
+		update_option( 'gutenberg_sync_engines_test_option', 'a' );
+		delete_option( 'gutenberg_sync_engines_test_option' );
+		apply_filters(
+			'rest_post_dispatch',
+			new WP_REST_Response( $this->room_response(), 200 ),
+			$server,
+			$request
+		);
+
+		$rows = Gutenberg_Sync_Engines_Request_Log::fetch_rows();
+		$this->assertCount( 1, $rows );
+		$this->assertGreaterThanOrEqual( 2, $rows[0]['option_writes'] );
+	}
+
+	public function test_room_size_route_reports_storage_without_creating() {
+		$log = new Gutenberg_Sync_Engines_Request_Log();
+
+		$missing = new WP_REST_Request( 'GET', '/rtc-test/v1/room-size' );
+		$missing->set_param( 'room', 'postType/post:999999' );
+		$data = $log->rest_room_size( $missing )->get_data();
+		$this->assertFalse( $data['found'] );
+		$this->assertSame( 0, $data['rows'] );
+
+		// A room-shaped storage post with two update rows.
+		$storage_id = self::factory()->post->create(
+			array(
+				'post_type'   => 'wp_sync_storage',
+				'post_status' => 'publish',
+				'post_name'   => md5( 'postType/post:' . self::$post_id ),
+			)
+		);
+		add_post_meta( $storage_id, 'wp_sync_update', 'payload-one' );
+		add_post_meta( $storage_id, 'wp_sync_update', 'payload-two-longer' );
+
+		$request = new WP_REST_Request( 'GET', '/rtc-test/v1/room-size' );
+		$request->set_param( 'room', 'postType/post:' . self::$post_id );
+		$data = $log->rest_room_size( $request )->get_data();
+		$this->assertTrue( $data['found'] );
+		$this->assertSame( $storage_id, $data['post_id'] );
+		$this->assertGreaterThanOrEqual( 2, $data['rows'] );
+		$this->assertGreaterThan( 0, $data['bytes'] );
+
+		wp_delete_post( $storage_id, true );
+	}
+
 	public function test_whole_request_capture_logs_any_tagged_request() {
 		// The mu-plugin lane: an untagged request arms nothing…
 		$log = new Gutenberg_Sync_Engines_Request_Log();

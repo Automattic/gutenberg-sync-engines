@@ -56,7 +56,7 @@
  *   poll=       override the HTTP short-polling interval for the run, in
  *               seconds 0-25 (0 = the plugin's defaults; default: leave
  *               the site's setting alone; restored afterwards)
- *   metrics=    comma list to report: requests,traffic,cpu,workers,memory
+ *   metrics=    comma list to report: requests,traffic,cpu,workers,memory,cache
  *               (default all)
  *   json=       write full results as JSON to this path
  *   headed=1    visible browser (debugging)
@@ -106,7 +106,7 @@ const HELP = `node tests/benchmarks/host/host-benchmark.mjs [key=value …]
               seconds 1-25 (0 = the plugin's defaults; default: leave
               the site's setting alone; restored afterwards)
   metrics=    comma list of table rows to print:
-              requests,traffic,cpu,workers,memory (default all)
+              requests,traffic,cpu,workers,memory,cache (default all)
   json=       write full results as JSON to this path
   headed=1    visible browser (debugging)
 
@@ -133,7 +133,14 @@ const POLL_OVERRIDE =
 		: Math.max( 0, Math.min( 25, Number( opts.poll ) ) );
 const JSON_PATH = opts.json ? String( opts.json ) : null;
 const HEADED = Boolean( opts.headed );
-const ALL_METRICS = [ 'requests', 'traffic', 'cpu', 'workers', 'memory' ];
+const ALL_METRICS = [
+	'requests',
+	'traffic',
+	'cpu',
+	'workers',
+	'memory',
+	'cache',
+];
 const METRICS = opts.metrics
 	? String( opts.metrics )
 			.split( ',' )
@@ -496,6 +503,7 @@ function aggregateServerRows( rows, approach, scenario ) {
 		cpuMsSum: sum( 'total_cpu_ms' ),
 		totalMsSum: sum( 'total_ms' ),
 		dbQueriesSum: sum( 'db_queries' ),
+		optionWritesSum: sum( 'option_writes' ),
 		peakMemoryMax: kept.reduce(
 			( max, row ) => Math.max( max, row.peak_memory ?? 0 ),
 			0
@@ -522,6 +530,7 @@ function serverRates( agg, ms, persons ) {
 		cpuMsPerMinute: agg.cpuMsSum / minutes / persons,
 		workerShare: agg.totalMsSum / ms / persons,
 		dbQueriesPerMinute: agg.dbQueriesSum / minutes / persons,
+		optionWritesPerMinute: agg.optionWritesSum / minutes / persons,
 		peakMemoryMaxMb: agg.peakMemoryMax / 1048576,
 		peakMemoryMeanMb: agg.peakMemoryMean / 1048576,
 	};
@@ -899,11 +908,27 @@ async function main() {
 			}
 			tag.approach = 'baseline';
 
+			// Disk per room: what this session's server-side history holds
+			// at rest (community feedback: growth on low-traffic sites).
+			const roomSize = await rest
+				.get(
+					`/rtc-test/v1/room-size?room=${ encodeURIComponent(
+						`postType/post:${ post }`
+					) }`
+				)
+				.then( ( response ) =>
+					200 === response.status && response.data?.found
+						? response.data
+						: null
+				)
+				.catch( () => null );
+
 			engines.push( {
 				engine,
 				transport: observed,
 				postId: post,
 				phase,
+				roomSize,
 			} );
 		}
 
@@ -935,6 +960,7 @@ async function main() {
 				engine: entry.engine,
 				transport: entry.transport,
 				postId: entry.postId,
+				roomSize: entry.roomSize,
 				...summarize( entry.phase, baseline, serverRows, entry.engine ),
 				detail: entry.phase,
 			} ) ),
@@ -1071,6 +1097,14 @@ function printReport( report ) {
 				span.server?.workerShare ?? null,
 				3
 			);
+			push(
+				'cache',
+				'options-cache invalidations/min',
+				spanKey,
+				span.baseServer?.optionWritesPerMinute ?? null,
+				span.server?.optionWritesPerMinute ?? null,
+				1
+			);
 		}
 		if ( METRICS.includes( 'memory' ) ) {
 			const base = entry.spans.editing.baseServer;
@@ -1132,6 +1166,26 @@ function printReport( report ) {
 					job.sync.serverCpuS
 				) } / ${ pct( job.base.kb, job.sync.kb ) })`
 		);
+		if ( entry.roomSize ) {
+			console.log(
+				`room storage at rest: ${ entry.roomSize.rows } rows, ` +
+					`${ Math.round(
+						entry.roomSize.bytes / 1024
+					) } KB — history is bounded on the write path (the ` +
+					`plugin schedules no cron, so nothing depends on ` +
+					`wp-cron firing on a quiet site)`
+			);
+		}
+		const editShare = entry.spans.editing.server?.workerShare;
+		if ( editShare > 0 ) {
+			console.log(
+				`capacity (derived): ~${ Math.floor(
+					1 / editShare
+				) } concurrent editors per PHP worker at this cadence — ` +
+					`measure real queueing with npm run bench -- ` +
+					`suite=engines concurrency=N`
+			);
+		}
 	}
 
 	console.log( '' );

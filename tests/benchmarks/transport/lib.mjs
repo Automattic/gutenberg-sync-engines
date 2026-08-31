@@ -401,7 +401,11 @@ export async function makeRestClient( page ) {
 		return null;
 	}
 	const call = async ( method, path, { body, headers } = {} ) => {
-		const response = await page.request.fetch( restUrl( path ), {
+		// A path may carry its own query (`/route?a=b`): only the route
+		// part belongs inside rest_route; the query rides alongside it.
+		const [ route, query ] = path.split( '?' );
+		const url = restUrl( route ) + ( query ? `&${ query }` : '' );
+		const response = await page.request.fetch( url, {
 			method,
 			headers: {
 				'content-type': 'application/json',

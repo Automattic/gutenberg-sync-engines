@@ -29,7 +29,11 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 	 *
 	 * Differences are additive only: when no `X-RTC-Approach` label is sent,
 	 * rows are auto-labeled `<engine>/<transport>` — the axis this plugin
-	 * compares — instead of the community harness's storage-approach labels.
+	 * compares — instead of the community harness's storage-approach labels;
+	 * rows carry one extra column, `option_writes` (options-API writes during
+	 * the measured window — each invalidates the options cache on sites with
+	 * a persistent object cache); and one extra route, `/room-size` (storage
+	 * held by one room, for the host benchmark's disk-per-room line).
 	 *
 	 * Untagged requests pay one autoloaded-option-free header check and
 	 * nothing else. This file only loads on local/development sites (or under
@@ -47,7 +51,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 		 * @since 0.4.0
 		 * @var string
 		 */
-		const DB_VERSION = '1';
+		const DB_VERSION = '2';
 
 		/**
 		 * Option holding the installed schema version.
@@ -134,6 +138,48 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 		private static $whole_flushed = false;
 
 		/**
+		 * Options-API writes (add/update/delete) observed so far in this
+		 * request. Each one invalidates the options cache — on a site with
+		 * a persistent object cache, the shared alloptions blob — so the
+		 * per-request count is the cache-invalidation cost a host asks
+		 * about. The room lock and the compare-and-swap primitive
+		 * deliberately bypass the options API (direct SQL, no
+		 * invalidation) and are correctly not counted.
+		 *
+		 * @since 0.5.0
+		 * @var int
+		 */
+		private static $option_writes = 0;
+
+		/**
+		 * Whether the option-write counting hooks are attached.
+		 *
+		 * @since 0.5.0
+		 * @var bool
+		 */
+		private static $option_hooks = false;
+
+		/**
+		 * Attaches the option-write counters once.
+		 *
+		 * @since 0.5.0
+		 *
+		 * @return void
+		 */
+		private static function hook_option_writes(): void {
+			if ( self::$option_hooks ) {
+				return;
+			}
+			self::$option_hooks = true;
+			$bump               = static function () {
+				++self::$option_writes;
+			};
+			add_action( 'added_option', $bump );
+			add_action( 'updated_option', $bump );
+			add_action( 'deleted_option', $bump );
+		}
+
+		/**
 		 * Hooks the measurement filters and REST routes. Idempotent: only
 		 * the first instance registers.
 		 *
@@ -147,6 +193,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 			}
 			self::$registered  = true;
 			$this->boot_cpu_us = $this->cpu_us();
+			self::hook_option_writes();
 			add_filter( 'rest_pre_dispatch', array( $this, 'pre_dispatch' ), 5, 3 );
 			add_filter( 'rest_post_dispatch', array( $this, 'post_dispatch' ), 99, 3 );
 			add_action( 'rest_api_init', array( $this, 'register_routes' ) );
@@ -179,14 +226,16 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 			global $wpdb;
 
 			self::ensure_table();
+			self::hook_option_writes();
 			self::$whole_flushed = false;
 			self::$whole         = array(
-				'concurrent' => $this->increment_concurrent(),
-				'queries'    => (int) $wpdb->num_queries,
-				'db_time'    => $this->db_time_so_far(),
-				'memory'     => memory_get_usage( true ),
-				'cpu_us'     => $this->cpu_us(),
-				'dispatch'   => null,
+				'concurrent'    => $this->increment_concurrent(),
+				'queries'       => (int) $wpdb->num_queries,
+				'db_time'       => $this->db_time_so_far(),
+				'memory'        => memory_get_usage( true ),
+				'cpu_us'        => $this->cpu_us(),
+				'option_writes' => self::$option_writes,
+				'dispatch'      => null,
 			);
 			register_shutdown_function( array( __CLASS__, 'flush_whole_request' ) );
 			register_shutdown_function( array( $this, 'decrement_concurrent' ) );
@@ -235,18 +284,20 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 				'should_compact'  => 0,
 				'total_updates'   => 0,
 				'concurrent'      => 0,
+				'option_writes'   => 0,
 			);
 
 			$request_start = isset( $_SERVER['REQUEST_TIME_FLOAT'] ) ? (float) $_SERVER['REQUEST_TIME_FLOAT'] : 0.0;
 
-			$row['total_ms']     = $request_start > 0 ? round( ( microtime( true ) - $request_start ) * 1000, 2 ) : 0.0;
-			$row['total_cpu_ms'] = round( ( $instance->cpu_us() - $whole['cpu_us'] ) / 1000, 2 );
-			$row['db_queries']   = (int) $wpdb->num_queries - $whole['queries'];
-			$row['db_time_ms']   = round( ( $instance->db_time_so_far() - $whole['db_time'] ) * 1000, 2 );
-			$row['memory_delta'] = memory_get_usage( true ) - $whole['memory'];
-			$row['peak_memory']  = memory_get_peak_usage( true );
-			$row['concurrent']   = $whole['concurrent'];
-			$status              = (int) http_response_code();
+			$row['total_ms']      = $request_start > 0 ? round( ( microtime( true ) - $request_start ) * 1000, 2 ) : 0.0;
+			$row['total_cpu_ms']  = round( ( $instance->cpu_us() - $whole['cpu_us'] ) / 1000, 2 );
+			$row['db_queries']    = (int) $wpdb->num_queries - $whole['queries'];
+			$row['db_time_ms']    = round( ( $instance->db_time_so_far() - $whole['db_time'] ) * 1000, 2 );
+			$row['memory_delta']  = memory_get_usage( true ) - $whole['memory'];
+			$row['peak_memory']   = memory_get_peak_usage( true );
+			$row['concurrent']    = $whole['concurrent'];
+			$row['option_writes'] = self::$option_writes - $whole['option_writes'];
+			$status               = (int) http_response_code();
 			if ( $status > 0 ) {
 				$row['status'] = $status;
 			}
@@ -297,7 +348,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 
 			if ( get_option( self::DB_VERSION_OPTION ) === self::DB_VERSION ) {
 				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Schema spot-check on a diagnostics-only table.
-				if ( null !== $wpdb->get_var( "SHOW COLUMNS FROM `{$table}` LIKE 'concurrent'" ) ) {
+				if ( null !== $wpdb->get_var( "SHOW COLUMNS FROM `{$table}` LIKE 'option_writes'" ) ) {
 					return;
 				}
 			}
@@ -333,6 +384,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 					should_compact tinyint(1) NOT NULL DEFAULT 0,
 					total_updates int(11) NOT NULL DEFAULT 0,
 					concurrent int(11) NOT NULL DEFAULT 0,
+					option_writes int(11) NOT NULL DEFAULT 0,
 					PRIMARY KEY (id),
 					KEY approach_scenario (approach, scenario),
 					KEY ts (ts)
@@ -341,7 +393,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 			// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.SchemaChange, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 
 			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Verify creation before recording the version.
-			if ( null !== $wpdb->get_var( "SHOW COLUMNS FROM `{$table}` LIKE 'concurrent'" ) ) {
+			if ( null !== $wpdb->get_var( "SHOW COLUMNS FROM `{$table}` LIKE 'option_writes'" ) ) {
 				update_option( self::DB_VERSION_OPTION, self::DB_VERSION, true );
 			}
 		}
@@ -397,11 +449,12 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 
 			$this->wall_start = microtime( true );
 			$this->start      = array(
-				'concurrent' => $concurrent,
-				'queries'    => (int) $wpdb->num_queries,
-				'db_time'    => $this->db_time_so_far(),
-				'memory'     => memory_get_usage( true ),
-				'cpu_us'     => $this->cpu_us(),
+				'concurrent'    => $concurrent,
+				'queries'       => (int) $wpdb->num_queries,
+				'db_time'       => $this->db_time_so_far(),
+				'memory'        => memory_get_usage( true ),
+				'cpu_us'        => $this->cpu_us(),
+				'option_writes' => self::$option_writes,
 			);
 			if ( null === self::$whole ) {
 				register_shutdown_function( array( $this, 'decrement_concurrent' ) );
@@ -483,6 +536,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 				'should_compact'  => empty( $first_out['should_compact'] ) ? 0 : 1,
 				'total_updates'   => isset( $first_out['total_updates'] ) ? (int) $first_out['total_updates'] : 0,
 				'concurrent'      => $this->start['concurrent'],
+				'option_writes'   => self::$option_writes - $this->start['option_writes'],
 			);
 
 			$response->header( 'X-RTC-Test-Active', '1' );
@@ -530,6 +584,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 				'%f',
 				'%d',
 				'%f',
+				'%d',
 				'%d',
 				'%d',
 				'%d',
@@ -889,6 +944,80 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 					'args'                => $report_args,
 				)
 			);
+
+			// Additive to the community surface: server-side storage held
+			// by one room, for the host benchmark's disk-per-room line.
+			register_rest_route(
+				self::REST_NAMESPACE,
+				'/room-size',
+				array(
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => array( $this, 'rest_room_size' ),
+					'permission_callback' => $can,
+					'args'                => array(
+						'room' => array(
+							'required' => true,
+							'type'     => 'string',
+						),
+					),
+				)
+			);
+		}
+
+		/**
+		 * GET /room-size — rows and bytes a room's storage post holds.
+		 * Resolves the room WITHOUT creating storage (the oldest published
+		 * `wp_sync_storage` post slugged md5(room) — the canonical-post
+		 * rule; the storage API's own lookup would create one).
+		 *
+		 * @since 0.5.0
+		 *
+		 * @param WP_REST_Request $request Request with a `room` argument.
+		 * @return WP_REST_Response { room, found, rows, bytes }.
+		 */
+		public function rest_room_size( WP_REST_Request $request ) {
+			global $wpdb;
+
+			$room = sanitize_text_field( (string) $request->get_param( 'room' ) );
+			$ids  = get_posts(
+				array(
+					'post_type'      => 'wp_sync_storage',
+					'post_status'    => 'publish',
+					'name'           => md5( $room ),
+					'posts_per_page' => 1,
+					'orderby'        => 'ID',
+					'order'          => 'ASC',
+					'fields'         => 'ids',
+				)
+			);
+			if ( array() === $ids ) {
+				return rest_ensure_response(
+					array(
+						'room'  => $room,
+						'found' => false,
+						'rows'  => 0,
+						'bytes' => 0,
+					)
+				);
+			}
+
+			$post_id = (int) $ids[0];
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Read-only size probe on a diagnostics route.
+			$stats = $wpdb->get_row(
+				$wpdb->prepare(
+					"SELECT COUNT(*) AS row_count, COALESCE( SUM( LENGTH( meta_key ) + LENGTH( meta_value ) ), 0 ) AS byte_count FROM {$wpdb->postmeta} WHERE post_id = %d",
+					$post_id
+				)
+			);
+			return rest_ensure_response(
+				array(
+					'room'    => $room,
+					'found'   => true,
+					'post_id' => $post_id,
+					'rows'    => (int) $stats->row_count,
+					'bytes'   => (int) $stats->byte_count,
+				)
+			);
 		}
 
 		/**
@@ -1024,7 +1153,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared -- Diagnostics-only table read.
 			$rows = $wpdb->get_results( $sql, ARRAY_A );
 
-			$int_cols   = array( 'id', 'ts', 'db_queries', 'memory_delta', 'peak_memory', 'status', 'rooms', 'updates_in', 'updates_out', 'response_bytes', 'awareness_count', 'total_updates', 'concurrent', 'poll_delay' );
+			$int_cols   = array( 'id', 'ts', 'db_queries', 'memory_delta', 'peak_memory', 'status', 'rooms', 'updates_in', 'updates_out', 'response_bytes', 'awareness_count', 'total_updates', 'concurrent', 'poll_delay', 'option_writes' );
 			$float_cols = array( 'ms', 'total_ms', 'cpu_ms', 'total_cpu_ms', 'db_time_ms' );
 			foreach ( $rows as &$row ) {
 				foreach ( $int_cols as $col ) {

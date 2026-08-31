@@ -15,7 +15,21 @@ the difference against the workflow the plugin replaces:
 - extra server CPU per minute;
 - the extra share of one PHP worker held;
 - peak PHP memory per request;
-- and a whole-job total: what producing the same final document cost.
+- options-cache invalidations per minute (every options-API write
+  invalidates the shared options cache on hosts running a persistent
+  object cache — the plugin's lock and counter primitives deliberately
+  bypass that API, and this row proves it);
+- a whole-job total: what producing the same final document cost;
+- storage held per collaborative post at rest, and a derived
+  editors-per-worker capacity estimate.
+
+The workload model follows the lowest-common-denominator assumptions
+the plugin itself makes: HTTP short-polling is the default transport
+because it works everywhere, every request is an authenticated POST
+(nothing is HTTP-cacheable), no object cache is assumed, and the load
+scales per editor. Nothing here depends on wp-cron: history is bounded
+on the write path, so a quiet site with a cron that never fires holds
+exactly what the disk-per-room line reports.
 
 It runs two real-browser phases against a live site (the tests env:
 `npm run env:tests start`). The **baseline** is the same number of
@@ -42,7 +56,20 @@ that is what makes CPU, worker, and memory true over-baseline deltas.
 One trap: it is a single-FILE mount, and Docker file mounts go stale
 when git deletes or recreates the file (checking out an older commit,
 rebasing) — if the report says the mu-plugin recorded nothing, restart
-the env. Two honest limits, printed with the report: server rows cover
+the env.
+
+Two honest limits on where the numbers come from. Runs against wp-env
+are a BEST case — warm opcache, local disk, a database one socket
+away; real shared hosting has cold opcache after deploys, slower disk,
+and noisy neighbors. The lane is portable by design: point
+`WP_BASE_URL` (with `WP_USERNAME`/`WP_PASSWORD`) at a staging copy of
+the real hosting, install the mu-plugin there, define
+`GUTENBERG_SYNC_ENGINES_DIAGNOSTICS`, and the same command measures
+that environment — cold-cache and slow-disk behavior are properties of
+the host, measured there rather than simulated here. And the
+editors-per-worker capacity line is DERIVED from the measured worker
+share, which assumes requests do not queue; the measured check for the
+queueing knee is `npm run bench -- suite=engines concurrency=N`. Two honest limits, printed with the report: server rows cover
 requests that reach PHP (static files appear only in the client-side
 rows), and runs are only comparable across identical environments.
 
@@ -96,6 +123,12 @@ Divergences, each deliberate:
   commit through the ordinary autosave endpoint, so their merge cost
   lives on that route; the community harness's relay had no such path.
   Untagged requests are unaffected.
+- **One extra log column and one extra route.** Rows carry
+  `option_writes` (options-API writes during the measured window —
+  the cache-invalidation count), and the namespace adds `/room-size`
+  (storage held by one room, for the disk-per-room line). Both are
+  additive; the community report tooling ignores what it does not
+  know.
 - **The MU-plugin is optional.** With
   `tests/benchmarks/host/mu-bench-log.php` in mu-plugins (this repo's
   wp-env configs map it), measurement covers the whole request from
