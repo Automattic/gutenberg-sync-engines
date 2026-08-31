@@ -56,7 +56,7 @@
  *   poll=       override the HTTP short-polling interval for the run, in
  *               seconds 0-25 (0 = the plugin's defaults; default: leave
  *               the site's setting alone; restored afterwards)
- *   metrics=    comma list to report: requests,traffic,cpu,workers,memory,cache
+ *   metrics=    comma list to report: requests,traffic,cpu,workers,memory,cache,diskio
  *               (default all)
  *   json=       write full results as JSON to this path
  *   headed=1    visible browser (debugging)
@@ -106,7 +106,7 @@ const HELP = `node tests/benchmarks/host/host-benchmark.mjs [key=value …]
               seconds 1-25 (0 = the plugin's defaults; default: leave
               the site's setting alone; restored afterwards)
   metrics=    comma list of table rows to print:
-              requests,traffic,cpu,workers,memory,cache (default all)
+              requests,traffic,cpu,workers,memory,cache,diskio (default all)
   json=       write full results as JSON to this path
   headed=1    visible browser (debugging)
 
@@ -140,6 +140,7 @@ const ALL_METRICS = [
 	'workers',
 	'memory',
 	'cache',
+	'diskio',
 ];
 const METRICS = opts.metrics
 	? String( opts.metrics )
@@ -366,6 +367,44 @@ async function openEditorWindow( context, measured, postId, index ) {
 }
 
 /**
+ * Difference between two database disk-I/O counter samples.
+ *
+ * @param {Object|null} before Earlier sample.
+ * @param {Object|null} after  Later sample.
+ * @return {Object|null} Deltas, or null when either sample is missing.
+ */
+function diffDbIo( before, after ) {
+	if ( ! before || ! after ) {
+		return null;
+	}
+	return {
+		reads: after.data_reads - before.data_reads,
+		writes: after.data_writes - before.data_writes,
+		fsyncs: after.fsyncs - before.fsyncs,
+	};
+}
+
+/**
+ * Per-person-per-minute database disk-I/O rates for one span.
+ *
+ * @param {Object|null} delta   diffDbIo result.
+ * @param {number}      ms      Span wall time.
+ * @param {number}      persons Active people sharing the span.
+ * @return {Object|null} Rates, or null without data.
+ */
+function dbIoRates( delta, ms, persons ) {
+	if ( ! delta || ms <= 0 ) {
+		return null;
+	}
+	const rate = ( value ) => ( value / ( ms * persons ) ) * 60000;
+	return {
+		readsPerMinute: rate( delta.reads ),
+		writesPerMinute: rate( delta.writes ),
+		fsyncsPerMinute: rate( delta.fsyncs ),
+	};
+}
+
+/**
  * Saves the post through the editor's own save action (the button's
  * path), so the save cost lands inside the measured span the way a
  * real person's save does.
@@ -390,16 +429,18 @@ async function saveViaEditor( page ) {
  * work), and optionally an idle span. Both phases run through this,
  * so the workload shape is identical; only who is present differs.
  *
- * @param {Object[]} wins     Window records.
- * @param {Object}   tag      Mutable { scenario, approach } labels.
- * @param {boolean}  withIdle Run the idle span after editing.
+ * @param {Object[]}      wins       Window records.
+ * @param {Object}        tag        Mutable { scenario, approach } labels.
+ * @param {boolean}       withIdle   Run the idle span after editing.
+ * @param {Function|null} sampleDbIo Database I/O counter sampler.
  * @return {Promise<Object>} Per-window counter deltas and durations.
  */
-async function measurePhase( wins, tag, withIdle = true ) {
+async function measurePhase( wins, tag, withIdle = true, sampleDbIo = null ) {
 	// Let the just-loaded pages settle so page-load assets and session
 	// setup stay out of the rates.
 	await wins[ 0 ].page.waitForTimeout( 3000 );
 
+	const ioStart = sampleDbIo ? await sampleDbIo() : null;
 	tag.scenario = 'host-editing';
 	const editStats = wins.map( () => ( { tokensTyped: 0, bursts: 0 } ) );
 	const editStart = Date.now();
@@ -415,6 +456,7 @@ async function measurePhase( wins, tag, withIdle = true ) {
 	const editMs = Date.now() - editStart;
 	const editAll = wins.map( ( win ) => win.all.snapshot() );
 	const editSync = wins.map( ( win ) => win.sync.snapshot() );
+	const ioEdit = sampleDbIo ? await sampleDbIo() : null;
 
 	tag.scenario = 'host-idle';
 	const idleStart = Date.now();
@@ -424,6 +466,7 @@ async function measurePhase( wins, tag, withIdle = true ) {
 	const idleMs = Date.now() - idleStart;
 	const idleAll = wins.map( ( win ) => win.all.snapshot() );
 	const idleSync = wins.map( ( win ) => win.sync.snapshot() );
+	const ioIdle = sampleDbIo ? await sampleDbIo() : null;
 	tag.scenario = 'setup';
 
 	const span = ( before, after ) => {
@@ -437,6 +480,10 @@ async function measurePhase( wins, tag, withIdle = true ) {
 		editMs,
 		idleMs,
 		saveOk,
+		dbIo: {
+			editing: diffDbIo( ioStart, ioEdit ),
+			idle: withIdle ? diffDbIo( ioEdit, ioIdle ) : null,
+		},
 		perWindow: wins.map( ( win, index ) => ( {
 			window: index,
 			tokensTyped: editStats[ index ].tokensTyped,
@@ -579,6 +626,25 @@ function summarize( phase, baseline, rows, engine ) {
 				baseMs,
 				basePersons
 			);
+		const sumDbIo = ( deltas ) =>
+			deltas.every( ( delta ) => delta )
+				? deltas.reduce(
+						( acc, delta ) => ( {
+							reads: acc.reads + delta.reads,
+							writes: acc.writes + delta.writes,
+							fsyncs: acc.fsyncs + delta.fsyncs,
+						} ),
+						{ reads: 0, writes: 0, fsyncs: 0 }
+				  )
+				: null;
+		const baseIoDelta =
+			'editing' === spanKey
+				? sumDbIo(
+						baseline.sessions.map(
+							( session ) => session.dbIo.editing
+						)
+				  )
+				: lastSession.dbIo.idle;
 		spans[ spanKey ] = {
 			client: {
 				requestsPerMinute: rate( 'requests' ),
@@ -602,6 +668,8 @@ function summarize( phase, baseline, rows, engine ) {
 				baseMs,
 				basePersons
 			),
+			io: dbIoRates( phase.dbIo[ spanKey ], ms, WINDOWS ),
+			baseIo: dbIoRates( baseIoDelta, baseMs, basePersons ),
 		};
 	}
 
@@ -675,6 +743,22 @@ async function main() {
 		if ( ! rest ) {
 			throw new Error( 'could not obtain a REST nonce' );
 		}
+
+		// Database disk-I/O sampler: the mu-plugin answers a tagged
+		// `_rtcdbio` probe with the server's InnoDB counters and exits
+		// before WordPress routes — so it works with the plugin
+		// deactivated (the baseline phase) and never logs itself.
+		const sampleDbIo = async () => {
+			try {
+				const response = await adminPage.request.get(
+					`${ BASE }/?_rtctest=1&_rtcdbio=1`
+				);
+				const data = await response.json();
+				return data?.available ? data : null;
+			} catch {
+				return null;
+			}
+		};
 
 		// The plugin must be active at start: its settings screen is how
 		// engine/transport are chosen, and its diagnostics log is how the
@@ -819,7 +903,12 @@ async function main() {
 				baselinePost,
 				person
 			);
-			const session = await measurePhase( [ win ], tag, isLast );
+			const session = await measurePhase(
+				[ win ],
+				tag,
+				isLast,
+				sampleDbIo
+			);
 			await win.page.close();
 			if ( session.perWindow[ 0 ].editing.sync.requests > 0 ) {
 				throw new Error(
@@ -888,7 +977,7 @@ async function main() {
 				);
 			}
 
-			const phase = await measurePhase( wins, tag );
+			const phase = await measurePhase( wins, tag, true, sampleDbIo );
 			if ( ! phase.saveOk ) {
 				console.warn(
 					`WARNING: the ${ engine } phase's end-of-editing save failed — job totals still comparable, but the save cost is missing from the sync side`
@@ -1105,6 +1194,30 @@ function printReport( report ) {
 				span.server?.optionWritesPerMinute ?? null,
 				1
 			);
+			push(
+				'diskio',
+				'DB disk reads/min',
+				spanKey,
+				span.baseIo?.readsPerMinute ?? null,
+				span.io?.readsPerMinute ?? null,
+				1
+			);
+			push(
+				'diskio',
+				'DB disk writes/min',
+				spanKey,
+				span.baseIo?.writesPerMinute ?? null,
+				span.io?.writesPerMinute ?? null,
+				1
+			);
+			push(
+				'diskio',
+				'DB fsyncs/min',
+				spanKey,
+				span.baseIo?.fsyncsPerMinute ?? null,
+				span.io?.fsyncsPerMinute ?? null,
+				1
+			);
 		}
 		if ( METRICS.includes( 'memory' ) ) {
 			const base = entry.spans.editing.baseServer;
@@ -1210,6 +1323,21 @@ function printReport( report ) {
 			'windows (page loads, heartbeat, autosaves, sync); static ' +
 			'files never reach PHP and appear only in the client-side rows'
 	);
+	const hasIo = report.engines.some(
+		( entry ) => entry.spans.editing.io || entry.spans.editing.baseIo
+	);
+	if ( hasIo ) {
+		console.log(
+			'DB disk rows are server-global InnoDB counters — trustworthy ' +
+				'only when this run is the database’s only traffic. Fsyncs ' +
+				'are the live signal (every write transaction forces one); ' +
+				'data-file reads/writes can honestly read 0 over short ' +
+				'spans — reads mean the working set fit in memory, and ' +
+				'page writes flush lazily in the background. Hold ' +
+				'fsyncs/min against a plan’s IOPS ceiling, and treat ' +
+				'device-level IOPS as the host’s own telemetry'
+		);
+	}
 }
 
 main().catch( ( error ) => {

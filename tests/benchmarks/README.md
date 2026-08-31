@@ -19,6 +19,18 @@ the difference against the workflow the plugin replaces:
   invalidates the shared options cache on hosts running a persistent
   object cache — the plugin's lock and counter primitives deliberately
   bypass that API, and this row proves it);
+- database disk I/O per minute — data-file reads, writes, and fsyncs,
+  sampled from the database server's own InnoDB counters at span
+  boundaries. Fsyncs are the number that dominates real-world burst
+  IOPS (every write transaction forces at least one) — hold fsyncs/min
+  against a hosting plan's IOPS ceiling. The counters are
+  server-global, so the rows are trustworthy only when the run is the
+  database's only traffic; true device-level IOPS sits below what any
+  WordPress request can see and remains the host's own telemetry. Log
+  rows also carry the PHP process's own block I/O
+  (`php_io_reads`/`php_io_writes`) — ~0 with a warm opcache, which is
+  exactly the column that spikes in the cold-opcache-after-deploy
+  scenario;
 - a whole-job total: what producing the same final document cost;
 - storage held per collaborative post at rest, and a derived
   editors-per-worker capacity estimate.
@@ -123,12 +135,15 @@ Divergences, each deliberate:
   commit through the ordinary autosave endpoint, so their merge cost
   lives on that route; the community harness's relay had no such path.
   Untagged requests are unaffected.
-- **One extra log column and one extra route.** Rows carry
+- **Three extra log columns and two extra routes.** Rows carry
   `option_writes` (options-API writes during the measured window —
-  the cache-invalidation count), and the namespace adds `/room-size`
-  (storage held by one room, for the disk-per-room line). Both are
-  additive; the community report tooling ignores what it does not
-  know.
+  the cache-invalidation count) and `php_io_reads`/`php_io_writes`
+  (the PHP process's own block I/O via getrusage); the namespace adds
+  `/room-size` (storage held by one room) and `/db-io` (the database
+  server's disk-I/O counters — the mu-plugin also answers a tagged
+  `_rtcdbio` probe with the same counters, which is how the baseline
+  phase samples them while the plugin is deactivated). All additive;
+  the community report tooling ignores what it does not know.
 - **The MU-plugin is optional.** With
   `tests/benchmarks/host/mu-bench-log.php` in mu-plugins (this repo's
   wp-env configs map it), measurement covers the whole request from

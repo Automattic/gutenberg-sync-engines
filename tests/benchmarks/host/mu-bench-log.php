@@ -40,4 +40,18 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 	return;
 }
 
+// Database disk-I/O probe: a tagged request with `_rtcdbio` gets the
+// server's InnoDB I/O counters as JSON and exits BEFORE any measurement
+// arms — the probe must never log itself as traffic, and it must work
+// with the plugin deactivated (the host benchmark's baseline phase
+// samples these counters at span boundaries). Same environment gate as
+// everything above; the counters are server load statistics, not site
+// content.
+// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only counters on a diagnostics-only lane.
+if ( isset( $_GET['_rtcdbio'] ) ) {
+	header( 'Content-Type: application/json' );
+	echo wp_json_encode( Gutenberg_Sync_Engines_Request_Log::db_io_counters() );
+	exit;
+}
+
 ( new Gutenberg_Sync_Engines_Request_Log() )->capture_whole_request();

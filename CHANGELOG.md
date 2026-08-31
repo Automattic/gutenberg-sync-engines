@@ -22,11 +22,14 @@ them under a version heading when a version ships.
     every request the editor windows make — page loads, heartbeat,
     autosaves, sync — even while the plugin is deactivated, which is
     what makes the CPU/worker/memory columns true over-baseline deltas.
-    Community feedback added three host-facing rows: options-cache
+    Community feedback added host-facing rows: options-cache
     invalidations per minute (options-API writes, the cost persistent
-    object caches pay), storage held per collaborative post at rest
-    (history is bounded on the write path — no cron involved), and a
-    derived editors-per-worker capacity estimate with a pointer to the
+    object caches pay), database disk I/O per minute (data-file reads,
+    writes, and fsyncs from the database server's own counters —
+    fsyncs/min is the number to hold against a plan's IOPS ceiling),
+    storage held per collaborative post at rest (history is bounded on
+    the write path — no cron involved), and a derived
+    editors-per-worker capacity estimate with a pointer to the
     measured queueing probe. The engine matrix and transport benchmark
     remain behind `suite=engines` and `suite=transport`; the soak and
     replay lanes are classified as debugging/analysis tools, run

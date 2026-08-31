@@ -234,6 +234,33 @@ class Tests_Collaboration_GutenbergSyncEnginesDiagnostics extends WP_UnitTestCas
 		$rows = Gutenberg_Sync_Engines_Request_Log::fetch_rows();
 		$this->assertCount( 1, $rows );
 		$this->assertGreaterThanOrEqual( 2, $rows[0]['option_writes'] );
+		// The PHP-process block-I/O columns exist and are sane (zero on
+		// platforms whose getrusage does not fill the fields).
+		$this->assertGreaterThanOrEqual( 0, $rows[0]['php_io_reads'] );
+		$this->assertGreaterThanOrEqual( 0, $rows[0]['php_io_writes'] );
+	}
+
+	public function test_db_io_counters_are_cumulative_and_route_matches() {
+		$first = Gutenberg_Sync_Engines_Request_Log::db_io_counters();
+		$this->assertArrayHasKey( 'available', $first );
+		$this->assertArrayHasKey( 'data_reads', $first );
+		$this->assertArrayHasKey( 'data_writes', $first );
+		$this->assertArrayHasKey( 'fsyncs', $first );
+		$this->assertArrayHasKey( 'buffer_pool_reads', $first );
+
+		if ( $first['available'] ) {
+			// Force at least one write transaction, then resample: the
+			// counters are cumulative and must never go backward.
+			update_option( 'gutenberg_sync_engines_dbio_probe', wp_rand() );
+			delete_option( 'gutenberg_sync_engines_dbio_probe' );
+			$second = Gutenberg_Sync_Engines_Request_Log::db_io_counters();
+			$this->assertGreaterThanOrEqual( $first['data_writes'], $second['data_writes'] );
+			$this->assertGreaterThanOrEqual( $first['fsyncs'], $second['fsyncs'] );
+		}
+
+		$log  = new Gutenberg_Sync_Engines_Request_Log();
+		$data = $log->rest_db_io()->get_data();
+		$this->assertSame( $first['available'], $data['available'] );
 	}
 
 	public function test_room_size_route_reports_storage_without_creating() {
