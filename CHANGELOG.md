@@ -9,6 +9,12 @@ them under a version heading when a version ships.
 
 ### Added
 
+-   `npm run bench` and the session replay tool
+    (`tests/debugging/replay/replay.mjs`) take `--key=value` flags
+    (`npm run bench -- --suite=engines`, `--certify=3`,
+    `replay.mjs fixture.json --speed=2 --force`) instead of bare
+    `key=value` tokens; a bare token is now refused with the flag to use.
+
 -   `npm run bench` is the single entry point for the benchmarks, and
     by default prints a host cost report: what real-time collaboration
     adds to a server, one engine per run, as two
@@ -26,7 +32,7 @@ them under a version heading when a version ships.
     wp-env configs) measures every request the editor windows make,
     plugin active or not, which is what makes the server-side columns
     true over-baseline deltas. The engine matrix and transport
-    benchmark sit behind `suite=engines` and `suite=transport`; the
+    benchmark sit behind `--suite=engines` and `--suite=transport`; the
     soak and replay lanes are debugging/analysis tools run directly
     from `tests/debugging/`. The community-harness compatibility
     statement (what matches, what diverges and why) is in

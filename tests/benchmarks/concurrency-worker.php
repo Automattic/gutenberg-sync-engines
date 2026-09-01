@@ -2,7 +2,7 @@
 /**
  * One simulated client for the multi-process concurrency measurement —
  * invoked N times IN PARALLEL against the same room by
- * `npm run bench -- concurrency=N` (see bench.mjs).
+ * `npm run bench -- --concurrency=N` (see bench.mjs).
  *
  * Unlike the single-process harness, this path uses the REAL postmeta
  * storage (processes can only contend through a shared database) and

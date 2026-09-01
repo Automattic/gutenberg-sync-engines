@@ -9,8 +9,8 @@
  * in the json= report as engine.job).
  *
  *   npm run bench                            # this report, defaults
- *   npm run bench -- engine=de-rtc windows=3
- *   npm run bench -- metrics=requests,cpu json=host.json
+ *   npm run bench -- --engine=de-rtc --windows=3
+ *   npm run bench -- --metrics=requests,cpu --json=host.json
  *
  * Phases, all real browser windows against a live site:
  *
@@ -50,7 +50,7 @@
  *
  *   engine=     the ONE engine to measure (intent-log | yjs-server |
  *               de-rtc | current; default: the site's current engine —
- *               comparing engines is what suite=engines is for)
+ *               comparing engines is what --suite=engines is for)
  *   transport=  http-polling | http-long-polling | websocket | current
  *   windows=    people per phase: collaborator windows, and the same
  *               number of one-after-the-other baseline turns (default 2)
@@ -95,11 +95,11 @@ import {
 const opts = parseCliOptions();
 
 const HELP = `node tests/benchmarks/host/host-benchmark.mjs [key=value …]
-(or: npm run bench -- [key=value …])
+(or: npm run bench -- [--key=value …])
 
   engine=     the ONE engine to measure (intent-log | yjs-server |
               de-rtc | current; default: the site's current engine —
-              comparing engines is what suite=engines is for)
+              comparing engines is what --suite=engines is for)
   transport=  http-polling | http-long-polling | websocket
               (default: the site's current transport)
   windows=    people per phase: collaborator windows, and the same
@@ -146,7 +146,7 @@ if ( unknownArgs.length ) {
 			', '
 		) } — known: ${ KNOWN_ARGS.join( ', ' ) }` +
 			( unknownArgs.includes( 'engines' )
-				? '\n(the host report measures ONE engine per run — engine=<slug>; comparing engines is what suite=engines is for)'
+				? '\n(the host report measures ONE engine per run — engine=<slug>; comparing engines is what --suite=engines is for)'
 				: '' )
 	);
 	process.exit( 1 );

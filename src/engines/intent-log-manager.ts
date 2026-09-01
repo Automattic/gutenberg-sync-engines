@@ -30,6 +30,7 @@ import {
 } from './intent-log-bridge';
 import {
 	createIntentLogSession,
+	randomClientId,
 	type IntentLogSession,
 } from './intent-log-session';
 import { mintSyncId } from './intent-log/sync-id.js';
@@ -1079,7 +1080,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 		 * `clientID` (and a destroy listener) from its doc argument, so a
 		 * stub suffices — presence is transport data, engine-independent.
 		 */
-		const clientId = Math.floor( Math.random() * ( 2 ** 31 - 1 ) ) + 1;
+		const clientId = randomClientId();
 		const awareness = syncConfig.createAwareness?.(
 			createAwarenessDoc( clientId ) as never,
 			objectId
@@ -1764,7 +1765,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			return;
 		}
 
-		const clientId = Math.floor( Math.random() * ( 2 ** 31 - 1 ) ) + 1;
+		const clientId = randomClientId();
 		const awareness = syncConfig.createAwareness?.(
 			createAwarenessDoc( clientId ) as never
 		);

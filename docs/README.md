@@ -31,6 +31,6 @@ The docs above describe how things work today; `plan/` describes what
 we intend to change, and `docs/plan/history.md` says why things are the way
 they are. Notable shipped changes are recorded in `CHANGELOG.md`. To
 regenerate every number behind these docs on YOUR hardware, run
-`npm run bench -- suite=engines` against a running tests env (see
+`npm run bench -- --suite=engines` against a running tests env (see
 `tests/benchmarks/README.md`; plain `npm run bench` is the host cost
 report — what the plugin adds to a server).

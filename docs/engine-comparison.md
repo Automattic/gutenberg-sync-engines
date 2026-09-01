@@ -17,10 +17,10 @@ choice.
 
 This guide carries no measured numbers, because they go stale and
 mislead. To produce them on your own hardware, run
-`npm run bench -- suite=engines`
+`npm run bench -- --suite=engines`
 against a running tests env. It prints the whole decision matrix — a
 comparison table per scenario, plus hosting cost cards — and fails loudly
-if any engine loses work. `npm run bench -- certify=10` re-checks the
+if any engine loses work. `npm run bench -- --certify=10` re-checks the
 never-lose-work guarantee across ten seeds per engine.
 
 ## The engines
@@ -199,7 +199,7 @@ each pay for it differently:
 ### Why this guide has no numbers
 
 Numbers vary by machine, PHP build, and code revision, and stale numbers
-mislead harder than no numbers at all. Run `npm run bench -- suite=engines`
+mislead harder than no numbers at all. Run `npm run bench -- --suite=engines`
 for figures
 from your own hardware. What follows are the stable shapes those figures
 make concrete.
@@ -322,7 +322,7 @@ their own (open work lives in GitHub Issues), grouped by engine.
 
 - **Under heavy write concurrency the server can ask a client to
   resync** ([scenario G](scenarios.md)). Measured with
-  `npm run bench -- concurrency=8`: most runs settle fully applied with
+  `npm run bench -- --concurrency=8`: most runs settle fully applied with
   zero voids, the occasional run a handful of benign `resync-required`
   voids that heal by full-state upload. intent-log showed zero voids
   under the same load, paying with measured lock queueing instead.
