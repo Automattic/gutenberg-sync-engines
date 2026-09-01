@@ -18,7 +18,8 @@
   "mappings": {
     "wp-content/plugins/gutenberg-sync-engines": ".",
     "wp-content/plugins/gutenberg-test-plugins": "./gutenberg/packages/e2e-tests/plugins",
-    "wp-content/plugins/sync-engines-test-plugins": "./tests/e2e/plugins"
+    "wp-content/plugins/sync-engines-test-plugins": "./tests/e2e/plugins",
+    "wp-content/mu-plugins/gutenberg-sync-engines-bench-log.php": "./tests/benchmarks/host/mu-bench-log.php"
   },
   "lifecycleScripts": {
     "afterStart": "node tests/e2e/bin/rtc-dev.mjs --mode=daemon --detach || true"

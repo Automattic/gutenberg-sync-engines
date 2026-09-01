@@ -1,4 +1,207 @@
-# Sync-engine benchmark harness
+# Benchmarks
+
+One command runs everything here:
+
+```bash
+npm run bench
+```
+
+By default that prints **the host cost report** — the small set of
+numbers someone hosting this plugin actually needs, each measured as
+the difference against the workflow the plugin replaces:
+
+- extra requests per minute, per person editing (and per idle open tab);
+- extra network traffic (KB/min);
+- extra server CPU per minute;
+- the extra share of one PHP worker held;
+- peak PHP memory per request;
+- options-cache invalidations per minute (every options-API write
+  invalidates the shared options cache on hosts running a persistent
+  object cache — the plugin's lock and counter primitives deliberately
+  bypass that API, and this row proves it);
+- database queries per minute — every query the tagged requests ran,
+  WordPress load included, per person;
+- database disk I/O per minute — data-file reads, writes, and fsyncs,
+  sampled from the database server's own InnoDB counters at span
+  boundaries. Fsyncs are the number that dominates real-world burst
+  IOPS (every write transaction forces at least one) — hold fsyncs/min
+  against a hosting plan's IOPS ceiling. The counters are
+  server-global, so the rows are trustworthy only when the run is the
+  database's only traffic; data-file reads/writes can honestly read 0
+  over short spans (reads of 0 mean the working set fit in memory,
+  and page writes flush lazily in the background — fsyncs are the
+  live signal); true device-level IOPS sits below what any WordPress
+  request can see and remains the host's own telemetry. Log
+  rows also carry the PHP process's own block I/O
+  (`php_io_reads`/`php_io_writes`) — ~0 with a warm opcache, which is
+  exactly the column that spikes in the cold-opcache-after-deploy
+  scenario;
+- storage held per collaborative post at rest, and a derived
+  editors-per-worker capacity estimate (whole-job totals for producing
+  the same final document land in the `json=` report as `engine.job`).
+
+The workload model follows the lowest-common-denominator assumptions
+the plugin itself makes: HTTP short-polling is the default transport
+because it works everywhere, every request is an authenticated POST
+(nothing is HTTP-cacheable), no object cache is assumed, and the load
+scales per editor. Nothing here depends on wp-cron: history is bounded
+on the write path, so a quiet site with a cron that never fires holds
+exactly what the disk-per-room line reports.
+
+Reading the report: server-side rows cover every tagged PHP request
+the editor windows make — page loads, heartbeat, autosaves, sync —
+while static files never reach PHP and appear only in the client-side
+requests and network rows. Compare runs only across identical
+environments; the report's environment block names the versions to
+quote. The report measures ONE engine per run (`engine=`) so its
+baseline/sync comparison stays a single readable pair — comparing
+engines against each other is the engines suite's job.
+
+Fleet math: the load scales with open editor tabs, so capacity
+planning starts from the per-tab request rate. With the plugin active,
+an open editor polls every 4 seconds while its person edits alone
+(the solo cadence exists only to notice a second person arriving —
+`src/providers/http-polling/config.ts`), every second while
+collaborators are present, and every 25 seconds from a backgrounded
+tab. Per day that is roughly 21,600 requests for a focused solo tab,
+86,400 for a collaborating one, and 3,500 backgrounded; WordPress's
+own editor heartbeat — present with or without this plugin — is one
+request per 15 seconds focused, about 5,800 per day. For figures from
+your own run, multiply the idle table's requests/min by 1,440, then by
+your fleet's typical count of open editor tabs for the platform total.
+The Settings → Collaboration polling interval (or a
+`polling-interval=` run) stretches the with-collaborators term
+proportionally. Editing alone is the overwhelmingly common case, so
+the solo term dominates fleet totals: measure it directly with
+`windows=1`, where the delta is what the plugin costs an editor who is
+alone. Issue [#72](https://github.com/Automattic/gutenberg-sync-engines/issues/72)
+(presence detection through the existing heartbeat) would collapse
+that solo term to the heartbeat baseline — this report is the
+before/after measurement for it.
+
+It runs two real-browser phases against a live site (the tests env:
+`npm run env:tests start`). The **baseline** is the same number of
+people producing the same document the old way — editing in series
+with the plugin deactivated: each person types their part, saves, and
+hands off (the post lock forces exactly this turn-taking today). Then
+the **sync** phase: the plugin active and the same `windows=` people
+collaborating live on the chosen engine, typing the same scripts — so
+both phases end with a document of the same size and shape, and the
+delta isolates what real-time collaboration itself costs. The RESULTS
+section prints two markdown tables (editing, then idle), columns
+baseline/sync/delta/delta-%, followed by the summary stats (room
+storage, derived capacity).
+The run opens by stating the configuration it resolved (engine,
+transport, durations, polling), marking defaults. Arguments target
+what you need: `engine=` (one per run — comparing engines is
+`suite=engines`), `transport=`, `windows=`, `edit-seconds=`/`idle-seconds=`,
+`polling-interval=` to override the HTTP short-polling interval for
+the run (restored afterwards), `metrics=` to print only some rows, `json=` for the full
+data — `npm run bench -- --help` prints the complete list. The server-side
+columns come from the whole-request measurement mu-plugin
+(`tests/benchmarks/host/mu-bench-log.php`, mapped into mu-plugins by
+this repo's wp-env configs),
+which measures every tagged request even with the plugin deactivated;
+that is what makes CPU, worker, and memory true over-baseline deltas.
+One trap: it is a single-FILE mount, and Docker file mounts go stale
+when git deletes or recreates the file (checking out an older commit,
+rebasing) — if the report says the mu-plugin recorded nothing, restart
+the env.
+
+Two honest limits on where the numbers come from. Runs against wp-env
+are a BEST case — warm opcache, local disk, a database one socket
+away; real shared hosting has cold opcache after deploys, slower disk,
+and noisy neighbors. The lane is portable by design: point
+`WP_BASE_URL` (with `WP_USERNAME`/`WP_PASSWORD`) at a staging copy of
+the real hosting, install the mu-plugin there, define
+`GUTENBERG_SYNC_ENGINES_DIAGNOSTICS`, and the same command measures
+that environment — cold-cache and slow-disk behavior are properties of
+the host, measured there rather than simulated here. And the
+editors-per-worker capacity line is DERIVED from the measured worker
+share, which assumes requests do not queue; the measured check for the
+queueing knee is `npm run bench -- suite=engines concurrency=N`. Two honest limits, printed with the report: server rows cover
+requests that reach PHP (static files appear only in the client-side
+rows), and runs are only comparable across identical environments.
+
+Two more **benchmarks** live behind `suite=` — measurements that inform
+a real decision (which engine, which transport):
+
+| Suite              | What it is                                                    |
+| ------------------ | ------------------------------------------------------------- |
+| `suite=engines`    | The engine-decision matrix and invariant sweeps — the harness documented in the rest of this README. `scenarios=`, `certify=`, and `concurrency=` exist only in this suite, so passing any of them selects it without `suite=` (CI's certify job invokes it that way). |
+| `suite=transport`  | Two-browser edit-to-visible latency + wire traffic per transport (`transport/README.md`). |
+
+The **debugging and analysis tools** — lanes that generate load or
+validate projections rather than answer a decision — live in
+`tests/debugging/` (see its README). They are deliberately NOT
+reachable through `npm run bench`:
+
+```bash
+node tests/debugging/soak-transport.mjs \
+    engine=de-rtc windows=3 soak=3600      # N-window hour-scale soak that
+                                           # validates the cost cards
+                                           # end to end
+node tests/debugging/replay/replay.mjs \
+    my-session-clean.json speed=1          # replay a captured session as
+                                           # real HTTP load
+```
+
+## Community-harness compatibility
+
+The measurement plumbing deliberately speaks the community RTC
+performance harness's conventions
+([WordPress/distributed-rtc-performance-testing](https://github.com/WordPress/distributed-rtc-performance-testing)),
+so numbers and fixtures travel between the two toolchains:
+
+- the same request tags (`X-RTC-Test`, `X-RTC-Scenario`,
+  `X-RTC-Approach`, `X-RTC-Poll-Delay`, `X-RTC-Update-Size`, with query
+  fallbacks), the same server-side log columns, and the same
+  `rtc-test/v1` REST surface (`/log`, `/env`, `/report`,
+  `/report-all`) with the same report table layout — the community
+  repo's report tooling reads a site running this plugin natively;
+- the same capture fixture format in `replay/` (our additive keys —
+  `engine`, `transport`, `base_title`, `base_content` — are dropped by
+  the community sanitizer and preserved by ours).
+
+Divergences, each deliberate:
+
+- **Approach auto-label.** When a client sends no `X-RTC-Approach`,
+  rows are labeled `<engine>/<transport>` — the axis this plugin
+  compares — instead of the community's storage-approach labels.
+  Additive: an explicit label always wins.
+- **Tagged autosave requests are measured too.** De-rtc sessions
+  commit through the ordinary autosave endpoint, so their merge cost
+  lives on that route; the community harness's relay had no such path.
+  Untagged requests are unaffected.
+- **Three extra log columns and two extra routes.** Rows carry
+  `option_writes` (options-API writes during the measured window —
+  the cache-invalidation count) and `php_io_reads`/`php_io_writes`
+  (the PHP process's own block I/O via getrusage); the namespace adds
+  `/room-size` (storage held by one room) and `/db-io` (the database
+  server's disk-I/O counters — the mu-plugin also answers a tagged
+  `_rtcdbio` probe with the same counters, which is how the baseline
+  phase samples them while the plugin is deactivated). All additive;
+  the community report tooling ignores what it does not know.
+- **The MU-plugin is optional.** With
+  `tests/benchmarks/host/mu-bench-log.php` in mu-plugins (this repo's
+  wp-env configs map it), measurement covers the whole request from
+  mu-plugin load — the community model — for ANY tagged request, even
+  with the plugin deactivated. Without it, the REST lane alone
+  measures, starting at plugin load, so `total_cpu_ms` slightly
+  understates full-request CPU; `cpu_ms` (dispatch only) is unaffected
+  either way.
+- **The host report's baseline is "the same site with the plugin
+  deactivated"**, not the community's ambient baseline of tagged empty
+  polls — a host evaluates against a site without the plugin. The
+  transport suite still runs the community-convention baseline phase,
+  so its server-side tables normalize the community way.
+- **The engines suite has no community equivalent.** It measures the
+  engine seam in-process (below); its JSON reports are this repo's own
+  format.
+
+---
+
+# The engines suite (`suite=engines`)
 
 Compares server sync engines **through the production seam** — the same
 `WP_Sync_Engine::handle_updates()` / `get_updates_since()` calls the polling
@@ -300,7 +503,7 @@ The fastest way to the whole decision picture is the one-command runner
 subtree built; it activates the plugins itself):
 
 ```bash
-npm run bench                        # every engine x the decision matrix
+npm run bench -- suite=engines       # every engine x the decision matrix
                                      # (steady concurrency, deep-lag
                                      #  settlement, structural churn, remove
                                      #  contention, field-sync registers, a
@@ -401,7 +604,7 @@ headers (~0.5–1 KB/request) and awareness traffic add overhead on top —
 the transport benchmark (`tests/benchmarks/transport/`) measures those
 per-collaborator rates on a live site, and multiplying ITS idle rate into
 the card's per-user-hour numbers is the full steady-state bill. A third
-lane, `tests/benchmarks/replay/`, captures REAL editor sessions at the
+lane, `tests/debugging/replay/`, captures REAL editor sessions at the
 transport seam and replays them as HTTP load (community-harness fixture
 format; see its README) — repeatable full-stack traffic with genuine
 engine payloads, complementing this harness's synthetic workloads. Composing
@@ -450,7 +653,7 @@ request payloads (the whole document travels in every proposal — both its
 merge time and its wire/storage bytes scale with document size);
 yjs-server ~36 ms (the canonical-doc rebuild dominates regardless of edit
 size). The `laggy-newsroom` scenario (one client reading every 10th round;
-part of the `npm run bench` matrix, at mixed-newsroom size) settles
+part of the engines-suite matrix, at mixed-newsroom size) settles
 differently per engine and loses nothing on any of them: intent-log
 absorbs stale bases with deeper transforms (~24% escalated, 38 benign
 voids, 13 floor-reset re-authoring follow-ups, heavier catch-up reads —

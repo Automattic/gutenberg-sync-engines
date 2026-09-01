@@ -45,7 +45,9 @@ answer and the full trade-off — scorecard, feature parity, resource shapes,
 and each engine's known gaps — live in
 [`docs/engine-comparison.md`](docs/engine-comparison.md); the transports are
 compared separately in [`docs/transports.md`](docs/transports.md). Both are
-deliberately number-free. Run `npm run bench` for numbers on your hardware.
+deliberately number-free. Run `npm run bench` for a report of what the
+plugin adds to a server on your own hardware, and
+`npm run bench -- suite=engines` for the full engine-decision numbers.
 
 **Want to help?** [`plan/`](docs/plan/README.md) holds what we intend to build
 next, one file per bug or feature, each with an example and a way to tell

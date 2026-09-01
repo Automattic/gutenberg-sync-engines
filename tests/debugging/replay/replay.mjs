@@ -6,7 +6,7 @@
  * format (either a raw `wp collaboration capture export` or a sanitized
  * fixture from sanitize.mjs).
  *
- *   node tests/benchmarks/replay/replay.mjs fixture.json [speed=1] [json=out.json]
+ *   node tests/debugging/replay/replay.mjs fixture.json [speed=1] [json=out.json]
  *
  * Each captured frame is re-sent to POST /wp-json/wp-sync/v1/updates at its
  * captured offset (scaled by `speed`), retargeted at a fresh post seeded
@@ -67,7 +67,7 @@ const JSON_PATH = opts.json ? String( opts.json ) : null;
 
 if ( ! FIXTURE_PATH ) {
 	console.error(
-		'Usage: node tests/benchmarks/replay/replay.mjs <fixture.json> [speed=1] [post=<id>] [json=out.json]'
+		'Usage: node tests/debugging/replay/replay.mjs <fixture.json> [speed=1] [post=<id>] [json=out.json]'
 	);
 	process.exit( 1 );
 }

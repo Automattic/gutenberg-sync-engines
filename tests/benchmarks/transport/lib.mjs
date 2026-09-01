@@ -1,9 +1,10 @@
 /**
- * Shared plumbing for the browser-driven transport tools:
- * benchmark-transport.mjs (two-window latency/traffic benchmark) and
- * soak-transport.mjs (N-window duration soak). Everything here
- * was extracted verbatim from benchmark-transport.mjs — behavior
- * changes belong in the tools, not the library.
+ * Shared plumbing for the browser-driven tools:
+ * benchmark-transport.mjs (two-window latency/traffic benchmark), the
+ * host benchmark (../host/), and the N-window soak
+ * (tests/debugging/soak-transport.mjs). Everything here was extracted
+ * verbatim from benchmark-transport.mjs — behavior changes belong in
+ * the tools, not the library.
  */
 
 export const BASE = process.env.WP_BASE_URL ?? 'http://localhost:8889';
@@ -18,6 +19,10 @@ export const COLLABORATION_EXPERIMENT = 'gutenberg-real-time-collaboration';
 
 /**
  * Parses bare `key=value` CLI tokens (the engine benchmark's convention).
+ * Leading dashes are accepted and stripped — `--poll=3` means `poll=3`,
+ * and a bare `--headed` means `headed` — because the dashed habit is too
+ * strong to fight and silently ignoring a mistyped flag costs a whole
+ * benchmark run.
  *
  * @param {string[]} argv Argument vector (defaults to process.argv).
  * @return {Object} Parsed options.
@@ -25,10 +30,11 @@ export const COLLABORATION_EXPERIMENT = 'gutenberg-real-time-collaboration';
 export function parseCliOptions( argv = process.argv.slice( 2 ) ) {
 	return Object.fromEntries(
 		argv.map( ( token ) => {
-			const eq = token.indexOf( '=' );
+			const bare = token.replace( /^--?/, '' );
+			const eq = bare.indexOf( '=' );
 			return eq === -1
-				? [ token, true ]
-				: [ token.slice( 0, eq ), token.slice( eq + 1 ) ];
+				? [ bare, true ]
+				: [ bare.slice( 0, eq ), bare.slice( eq + 1 ) ];
 		} )
 	);
 }
@@ -395,7 +401,11 @@ export async function makeRestClient( page ) {
 		return null;
 	}
 	const call = async ( method, path, { body, headers } = {} ) => {
-		const response = await page.request.fetch( restUrl( path ), {
+		// A path may carry its own query (`/route?a=b`): only the route
+		// part belongs inside rest_route; the query rides alongside it.
+		const [ route, query ] = path.split( '?' );
+		const url = restUrl( route ) + ( query ? `&${ query }` : '' );
+		const response = await page.request.fetch( url, {
 			method,
 			headers: {
 				'content-type': 'application/json',

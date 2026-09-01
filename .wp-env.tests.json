@@ -19,6 +19,7 @@
     "wp-content/plugins/gutenberg-sync-engines": ".",
     "wp-content/plugins/gutenberg": "./tests/e2e/plugins/gutenberg-stub",
     "wp-content/plugins/gutenberg-test-plugins": "./gutenberg/packages/e2e-tests/plugins",
-    "wp-content/plugins/sync-engines-test-plugins": "./tests/e2e/plugins"
+    "wp-content/plugins/sync-engines-test-plugins": "./tests/e2e/plugins",
+    "wp-content/mu-plugins/gutenberg-sync-engines-bench-log.php": "./tests/benchmarks/host/mu-bench-log.php"
   }
 }

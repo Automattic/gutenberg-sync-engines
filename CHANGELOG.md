@@ -7,6 +7,32 @@ them under a version heading when a version ships.
 
 ## Unreleased
 
+### Added
+
+-   `npm run bench` is the single entry point for the benchmarks, and
+    by default prints a host cost report: what real-time collaboration
+    adds to a server, one engine per run, as two
+    baseline/sync/delta/delta-% tables (editing and idle) of the
+    numbers a hosting provider sizes for — requests per minute, network
+    traffic, server CPU, PHP worker share, peak PHP memory,
+    options-cache invalidations, database queries, and database disk I/O (data-file
+    reads/writes and fsyncs from the database server's own counters) —
+    plus storage held per collaborative post and a derived
+    editors-per-worker capacity estimate. The baseline is the workflow
+    the plugin replaces: the same people writing the same document in
+    series — type, save, hand off — with the plugin deactivated, so
+    the delta isolates what live collaboration itself costs; a
+    measurement mu-plugin (community-harness model, mounted by the
+    wp-env configs) measures every request the editor windows make,
+    plugin active or not, which is what makes the server-side columns
+    true over-baseline deltas. The engine matrix and transport
+    benchmark sit behind `suite=engines` and `suite=transport`; the
+    soak and replay lanes are debugging/analysis tools run directly
+    from `tests/debugging/`. The community-harness compatibility
+    statement (what matches, what diverges and why) is in
+    `tests/benchmarks/README.md`
+    ([#60](https://github.com/Automattic/gutenberg-sync-engines/issues/60)).
+
 ### Fixed
 
 -   Under the de-rtc engine, a long-running collaboration session could

@@ -1,7 +1,7 @@
 /**
  * Sanitizes a captured collaboration-session fixture for sharing.
  *
- *   node tests/benchmarks/replay/sanitize.mjs fixture.json [out=sanitized.json]
+ *   node tests/debugging/replay/sanitize.mjs fixture.json [out=sanitized.json]
  *
  * Mirrors the community RTC performance harness's sanitizer
  * (WordPress/distributed-rtc-performance-testing rtc-helpers.php
@@ -38,7 +38,7 @@ const named = Object.fromEntries(
 const inputPath = positional[ 0 ];
 if ( ! inputPath ) {
 	console.error(
-		'Usage: node tests/benchmarks/replay/sanitize.mjs <fixture.json> [out=sanitized.json]'
+		'Usage: node tests/debugging/replay/sanitize.mjs <fixture.json> [out=sanitized.json]'
 	);
 	process.exit( 1 );
 }

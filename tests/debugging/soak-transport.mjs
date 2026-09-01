@@ -3,7 +3,7 @@
  * validates the hosting cost cards' composed per-user-hour projections
  * against measured end-to-end totals.
  *
- *   node tests/benchmarks/transport/soak-transport.mjs \
+ *   node tests/debugging/soak-transport.mjs \
  *       engine=de-rtc transport=http-polling windows=3 soak=3600 \
  *       json=soak-de-rtc.json
  *
@@ -60,7 +60,7 @@ import {
 	percentile,
 	restoreSettings,
 	waitForSyncTraffic,
-} from './lib.mjs';
+} from '../benchmarks/transport/lib.mjs';
 
 const opts = parseCliOptions();
 

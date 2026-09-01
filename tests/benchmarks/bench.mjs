@@ -1,8 +1,36 @@
 /**
- * One-command benchmark runner: the whole engine-decision matrix, or an
+ * One-command benchmark runner — the single front door to every
+ * benchmark in this repo, selected with `suite=`:
+ *
+ *   npm run bench                        # DEFAULT: the host cost report —
+ *                                        # what the plugin adds to a server,
+ *                                        # measured against the same site
+ *                                        # with the plugin deactivated
+ *                                        # (tests/benchmarks/host/)
+ *   npm run bench -- engine=de-rtc windows=3     # host report, targeted
+ *   npm run bench -- suite=engines       # engine-decision matrix (below)
+ *   npm run bench -- suite=transport transport=http-polling trials=30
+ *
+ * Those are the BENCHMARKS: the host report (default), the engine
+ * matrix, and the transport experience. The soak and replay lanes are
+ * debugging/analysis tools, run directly (no suite=) from
+ * tests/debugging/:
+ *
+ *   node tests/debugging/soak-transport.mjs …
+ *   node tests/debugging/replay/replay.mjs …
+ *
+ * Every suite other than `engines` forwards the remaining arguments to
+ * its own script (see each script's header for its argument list).
+ * `scenarios=`, `certify=`, and `concurrency=` belong only to the
+ * engines suite, so passing one selects it without `suite=engines`
+ * (CI's certify job invokes it that way). The host report takes
+ * `engine=` — singular, one per run — and refuses arguments it does
+ * not know.
+ *
+ * The engines suite: the whole engine-decision matrix, or an
  * invariant-certification sweep, from a single invocation.
  *
- *   npm run bench                        # every engine x the decision matrix
+ *   npm run bench -- suite=engines       # every engine x the decision matrix
  *   npm run bench -- engines=de-rtc scenarios=editorial-session
  *   npm run bench -- certify=10          # invariant sweep across 10 seeds
  *
@@ -33,12 +61,140 @@ import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
+// Arguments are bare key=value tokens (wp-cli would claim --flags on the
+// engines suite), but leading dashes are such a strong habit that they
+// are accepted and stripped: --suite=engines means suite=engines.
+const TOKENS = process.argv
+	.slice( 2 )
+	.map( ( token ) =>
+		token.includes( '=' ) ? token.replace( /^--?/, '' ) : token
+	);
 const args = Object.fromEntries(
+	TOKENS.filter( ( a ) => a.includes( '=' ) ).map( ( a ) =>
+		a.split( /=(.*)/s ).slice( 0, 2 )
+	)
+);
+
+const HELP = `npm run bench -- [suite=<name>] [key=value …]
+
+Suites (suite=; default: host):
+  host       The host cost report: what the plugin adds to a server —
+             baseline/sync/delta/delta-% tables plus summary stats, ONE
+             engine per run. The baseline is the same people producing the
+             same document by editing IN SERIES (save-and-hand-off, plugin
+             deactivated) — so the delta isolates what real-time
+             collaboration itself costs. Arguments:
+               engine=     the one engine to measure (intent-log |
+                           yjs-server | de-rtc | current; default: the
+                           site's current engine — comparing engines is
+                           what suite=engines is for)
+               transport=  http-polling | http-long-polling | websocket
+                           (default: the site's current transport)
+               windows=    collaborator windows per engine phase (default 2)
+               edit-seconds=      editing seconds per person (default 120,
+                                  min 30)
+               idle-seconds=      idle seconds per phase (default 120;
+                                  0 skips)
+               polling-interval=  override the HTTP short-polling interval
+                                  for the run, in seconds 0-25 (0 = the
+                                  plugin's defaults; default: leave the
+                                  site's setting alone)
+               metrics=    comma list of table rows to print:
+                           requests,traffic,cpu,workers,memory,cache,queries,diskio (default all)
+               json=       write full results as JSON to this path
+               headed=1    visible browser (debugging)
+  engines    The engine-decision matrix and invariant sweeps (in-process,
+             wp-env cli). Arguments: engines=, scenarios=, seed=, out=,
+             certify=N (invariant sweep across N seeds), concurrency=N
+             (multi-process latency probe; requests=, paragraphs=).
+             scenarios=/certify=/concurrency= imply suite=engines.
+  transport  Two-browser edit-to-visible latency + wire traffic for one
+             transport (tests/benchmarks/transport/README.md).
+
+Debugging and analysis tools (not benchmarks, so not suites here — run
+them directly from tests/debugging/; each has comprehensive docs, see
+tests/debugging/README.md):
+  node tests/debugging/soak-transport.mjs   N-window hour-scale soak
+  node tests/debugging/replay/replay.mjs    replay a captured session
+                                            as HTTP load
+
+Arguments are key=value tokens; leading dashes are accepted and stripped
+(--suite=engines means suite=engines). Arguments after suite= are
+forwarded to the suite's script; each script's header documents its full
+list. Environment: WP_BASE_URL (default http://localhost:8889),
+WP_USERNAME/WP_PASSWORD.
+
+Examples:
+  npm run bench
+  npm run bench -- engine=de-rtc windows=3 polling-interval=2
+  npm run bench -- suite=engines scenarios=editorial-session
+  npm run bench -- certify=10
+`;
+
+if (
 	process.argv
 		.slice( 2 )
-		.filter( ( a ) => a.includes( '=' ) )
-		.map( ( a ) => a.split( /=(.*)/s ).slice( 0, 2 ) )
-);
+		.some( ( token ) => [ '--help', '-h', 'help' ].includes( token ) )
+) {
+	process.stdout.write( HELP );
+	process.exit( 0 );
+}
+
+// ---------------------------------------------------------------------
+// Suite dispatch: this file is the single benchmark entry point. The
+// default suite is the host cost report; the engine matrix and the
+// transport benchmark are selected with suite= — or implicitly by the
+// engines-suite-only arguments (scenarios=/certify=/concurrency=).
+// ---------------------------------------------------------------------
+const SUITE_SCRIPTS = {
+	host: 'tests/benchmarks/host/host-benchmark.mjs',
+	transport: 'tests/benchmarks/transport/benchmark-transport.mjs',
+};
+// The soak and replay lanes are debugging/analysis tools, not
+// benchmarks — deliberately NOT offered here. Point at their direct
+// invocations instead of silently running them.
+const TOOL_COMMANDS = {
+	soak: 'node tests/debugging/soak-transport.mjs (see tests/debugging/README.md)',
+	replay: 'node tests/debugging/replay/replay.mjs (see tests/debugging/replay/README.md)',
+};
+// scenarios=/certify=/concurrency= exist only in the engines suite, so
+// any of them selects it; everything else defaults to the host report,
+// which refuses arguments it does not know (engines= included).
+const impliesEngines = args.certify || args.concurrency || args.scenarios;
+const SUITE = String( args.suite ?? ( impliesEngines ? 'engines' : 'host' ) );
+// Say which suite is running and why, so a surprising suite selection is
+// visible in the first line rather than minutes into the wrong run.
+const suiteReason = args.suite
+	? `suite=${ SUITE }`
+	: `${
+			impliesEngines
+				? 'implied by scenarios=/certify=/concurrency='
+				: 'default'
+	  } — npm run bench -- --help for arguments`;
+console.log( `suite: ${ SUITE } (${ suiteReason })` );
+if ( 'engines' !== SUITE ) {
+	const script = SUITE_SCRIPTS[ SUITE ];
+	if ( ! script ) {
+		if ( TOOL_COMMANDS[ SUITE ] ) {
+			console.error(
+				`"${ SUITE }" is a debugging/analysis tool, not a benchmark — run it directly:\n  ${ TOOL_COMMANDS[ SUITE ] }`
+			);
+		} else {
+			console.error(
+				`unknown suite "${ SUITE }" — known: host (default), engines, transport`
+			);
+		}
+		process.exit( 1 );
+	}
+	// Forward the NORMALIZED tokens (dashes stripped), minus suite=.
+	const forwarded = TOKENS.filter(
+		( token ) => ! token.startsWith( 'suite=' )
+	);
+	const child = spawnSync( 'node', [ script, ...forwarded ], {
+		stdio: 'inherit',
+	} );
+	process.exit( child.status ?? 1 );
+}
 
 const ENV_CONFIG = process.env.BENCH_WPENV_CONFIG ?? '.wp-env.tests.json';
 const ENV_CWD = `wp-content/plugins/${ path.basename( process.cwd() ) }`;
