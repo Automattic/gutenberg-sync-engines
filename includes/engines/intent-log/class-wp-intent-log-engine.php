@@ -213,7 +213,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 			return array(
 				self::UPDATE_TYPE_INTENT,
 				self::UPDATE_TYPE_SNAPSHOT,
-				self::UPDATE_TYPE_PROPOSAL,
+				self::UPDATE_TYPE_PARKED,
 				self::UPDATE_TYPE_VOIDED,
 				self::UPDATE_TYPE_RESOLVED,
 				self::UPDATE_TYPE_CANCEL,
@@ -607,7 +607,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 					$stored    = $this->add_row(
 						$room,
 						$client_id,
-						self::UPDATE_TYPE_PROPOSAL,
+						self::UPDATE_TYPE_PARKED,
 						array(
 							'intent'  => $intent,
 							'actorId' => $intent['actorId'],
@@ -654,7 +654,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 					$proposal['context'] = array(
 						'excerpt' => self::proposal_excerpt( $doc_at( $head_seq ), $row['intent'] ),
 					);
-					$stored              = $this->add_row( $room, $client_id, self::UPDATE_TYPE_PROPOSAL, $proposal );
+					$stored              = $this->add_row( $room, $client_id, self::UPDATE_TYPE_PARKED, $proposal );
 					// Same-request resolutions can target it.
 					$state['proposals_open'][ $intent_id ] = true;
 				} else {
@@ -1117,7 +1117,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 						break;
 					}
 					if (
-						self::UPDATE_TYPE_PROPOSAL === $row['type'] &&
+						self::UPDATE_TYPE_PARKED === $row['type'] &&
 						! isset( $resolved_ids[ $decoded['intent']['intentId'] ?? '' ] )
 					) {
 						$below[] = $decoded;
@@ -1125,7 +1125,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 				}
 				if ( $found_previous ) {
 					foreach ( $below as $proposal ) {
-						$this->add_row( $room, 0, self::UPDATE_TYPE_PROPOSAL, $proposal );
+						$this->add_row( $room, 0, self::UPDATE_TYPE_PARKED, $proposal );
 					}
 				}
 			}
@@ -1366,7 +1366,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 						$log[]                           = $decoded;
 						$settled[ $decoded['intentId'] ] = array( 'status' => 'applied' );
 						break;
-					case self::UPDATE_TYPE_PROPOSAL:
+					case self::UPDATE_TYPE_PARKED:
 						$settled[ $decoded['intent']['intentId'] ]        = array(
 							'status' => 'escalated',
 							'reason' => $decoded['reason'],
