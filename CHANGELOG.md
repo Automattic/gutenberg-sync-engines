@@ -33,6 +33,21 @@ them under a version heading when a version ships.
     `tests/benchmarks/README.md`
     ([#60](https://github.com/Automattic/gutenberg-sync-engines/issues/60)).
 
+### Changed
+
+-   A person editing alone no longer generates background sync traffic.
+    Until now, a lone editor tab asked the server for updates every 4
+    seconds — around 21,600 requests per day per open tab — just to
+    notice a second person arriving. The tab now goes silent once it has
+    nothing to send, and the "did someone join me?" question rides the
+    heartbeat WordPress already sends from every editor screen. A second
+    person opening the post starts syncing immediately, the first tab
+    joins within one heartbeat (about 10 seconds), and nothing typed
+    while alone is lost. The websocket transport likewise closes its
+    idle solo connection. The `gutenberg_sync_engines_solo_quiet_enabled`
+    filter restores the old always-on behavior
+    ([#72](https://github.com/Automattic/gutenberg-sync-engines/issues/72)).
+
 ### Fixed
 
 -   Under the de-rtc engine, a long-running collaboration session could

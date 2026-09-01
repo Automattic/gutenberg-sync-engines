@@ -25,6 +25,23 @@ Settings → Collaboration slows active-tab polling down to 25 seconds
 for hosts that want fewer requests (see
 `src/providers/http-polling/README.md` for the exact semantics).
 
+The idle rows above only apply while people actually collaborate. A
+person editing alone costs almost nothing on any transport: once the
+session has nothing left to send or receive, the polling loop stops
+scheduling itself and the websocket transport closes its idle
+connection. The question "did someone join me?" rides the heartbeat
+WordPress already sends from every editor screen (every 10 seconds on
+a focused editor tab); the server answers it from a per-tab presence
+record plus the room's live awareness, both read without creating any
+storage. A second person opening the post starts syncing immediately —
+the first tab's presence is stamped when their editor page renders —
+and the first tab resumes within one heartbeat. Editing alone with a
+sendable backlog (typing under intent-log or yjs-server) still drains
+at the solo cadence, so unsaved solo work keeps reaching the room; the
+silence applies to the idle watch, which is almost all of a solo tab's
+lifetime. The `gutenberg_sync_engines_solo_quiet_enabled` filter turns
+the lane off.
+
 Two websocket specifics. The one-time auth token rides the
 `Sec-WebSocket-Protocol` offer list rather than the URL query string,
 because query strings end up in server and proxy access logs. And
