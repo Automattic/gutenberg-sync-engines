@@ -162,11 +162,10 @@ of this benchmark differ for engine reasons too — compare transports under
 one engine at a time, and use the engine benchmark for engine-vs-engine
 server cost.
 
-## The N-window soak (moved)
+## The N-window soak
 
-The soak — the hour-scale multi-window validation run that used to live
-here as `soak-transport.mjs` — is a debugging and analysis tool, not a
-benchmark, and now lives at `tests/debugging/soak-transport.mjs` with
-its documentation in `tests/debugging/README.md`. It still imports this
-directory's `lib.mjs`, so both use identical counters, tagging, and
-server-log collection.
+The hour-scale multi-window validation run is a debugging and analysis
+tool, not a benchmark: it lives at `tests/debugging/soak-transport.mjs`
+with its documentation in `tests/debugging/README.md`. It imports this
+directory's `lib.mjs`, so the soak and this benchmark use identical
+counters, tagging, and server-log collection.

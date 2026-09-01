@@ -1,8 +1,8 @@
 /**
  * Shared plumbing for the browser-driven tools:
  * benchmark-transport.mjs (two-window latency/traffic benchmark), the
- * host benchmark (../host/), and the N-window soak (now at
- * tests/debugging/soak-transport.mjs). Everything here was extracted
+ * host benchmark (../host/), and the N-window soak
+ * (tests/debugging/soak-transport.mjs). Everything here was extracted
  * verbatim from benchmark-transport.mjs — behavior changes belong in
  * the tools, not the library.
  */

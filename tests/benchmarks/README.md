@@ -34,9 +34,9 @@ the difference against the workflow the plugin replaces:
   (`php_io_reads`/`php_io_writes`) — ~0 with a warm opcache, which is
   exactly the column that spikes in the cold-opcache-after-deploy
   scenario;
-- a whole-job total: what producing the same final document cost;
 - storage held per collaborative post at rest, and a derived
-  editors-per-worker capacity estimate.
+  editors-per-worker capacity estimate (whole-job totals for producing
+  the same final document land in the `json=` report as `engine.job`).
 
 The workload model follows the lowest-common-denominator assumptions
 the plugin itself makes: HTTP short-polling is the default transport
@@ -65,8 +65,8 @@ collaborating live on the chosen engine, typing the same scripts — so
 both phases end with a document of the same size and shape, and the
 delta isolates what real-time collaboration itself costs. The RESULTS
 section prints two markdown tables (editing, then idle), columns
-baseline/sync/delta/delta-%, followed by the summary stats (job
-totals, room storage, derived capacity).
+baseline/sync/delta/delta-%, followed by the summary stats (room
+storage, derived capacity).
 The run opens by stating the configuration it resolved (engine,
 transport, durations, polling), marking defaults. Arguments target
 what you need: `engine=` (one per run — comparing engines is
@@ -76,7 +76,7 @@ the run (restored afterwards), `metrics=` to print only some rows, `json=` for t
 data — `npm run bench -- --help` prints the complete list. The server-side
 columns come from the whole-request measurement mu-plugin
 (`tests/benchmarks/host/mu-bench-log.php`, mapped into mu-plugins by
-this repo's wp-env configs — restart the env once after pulling this),
+this repo's wp-env configs),
 which measures every tagged request even with the plugin deactivated;
 that is what makes CPU, worker, and memory true over-baseline deltas.
 One trap: it is a single-FILE mount, and Docker file mounts go stale
@@ -104,7 +104,7 @@ a real decision (which engine, which transport):
 
 | Suite              | What it is                                                    |
 | ------------------ | ------------------------------------------------------------- |
-| `suite=engines`    | The engine-decision matrix and invariant sweeps — the harness documented in the rest of this README. `scenarios=`, `certify=`, and `concurrency=` imply it, so documented invocations keep working without `suite=`. (`engines=` alone belongs to the host report — its one-table-per-engine list.) |
+| `suite=engines`    | The engine-decision matrix and invariant sweeps — the harness documented in the rest of this README. `scenarios=`, `certify=`, and `concurrency=` exist only in this suite, so passing any of them selects it without `suite=` (CI's certify job invokes it that way). |
 | `suite=transport`  | Two-browser edit-to-visible latency + wire traffic per transport (`transport/README.md`). |
 
 The **debugging and analysis tools** — lanes that generate load or

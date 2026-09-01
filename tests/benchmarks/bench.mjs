@@ -20,12 +20,12 @@
  *   node tests/debugging/replay/replay.mjs …
  *
  * Every suite other than `engines` forwards the remaining arguments to
- * its own script (see each script's header for its argument list). The
- * engines-suite arguments `scenarios=`, `certify=`, and `concurrency=`
- * keep working without `suite=engines` — they imply it. The host
- * report takes `engine=` (singular, one per run); a bare `engines=`
- * without one of those three lands on the host suite, which refuses it
- * with a pointer to both spellings.
+ * its own script (see each script's header for its argument list).
+ * `scenarios=`, `certify=`, and `concurrency=` belong only to the
+ * engines suite, so passing one selects it without `suite=engines`
+ * (CI's certify job invokes it that way). The host report takes
+ * `engine=` — singular, one per run — and refuses arguments it does
+ * not know.
  *
  * The engines suite: the whole engine-decision matrix, or an
  * invariant-certification sweep, from a single invocation.
@@ -143,8 +143,8 @@ if (
 // ---------------------------------------------------------------------
 // Suite dispatch: this file is the single benchmark entry point. The
 // default suite is the host cost report; the engine matrix and the
-// browser-driven lanes are selected with suite= (legacy engines-suite
-// arguments imply suite=engines so documented invocations keep working).
+// transport benchmark are selected with suite= — or implicitly by the
+// engines-suite-only arguments (scenarios=/certify=/concurrency=).
 // ---------------------------------------------------------------------
 const SUITE_SCRIPTS = {
 	host: 'tests/benchmarks/host/host-benchmark.mjs',
@@ -153,14 +153,13 @@ const SUITE_SCRIPTS = {
 // The soak and replay lanes are debugging/analysis tools, not
 // benchmarks — deliberately NOT offered here. Point at their direct
 // invocations instead of silently running them.
-const RETIRED_SUITES = {
+const TOOL_COMMANDS = {
 	soak: 'node tests/debugging/soak-transport.mjs (see tests/debugging/README.md)',
 	replay: 'node tests/debugging/replay/replay.mjs (see tests/debugging/replay/README.md)',
 };
-// engines= deliberately does NOT imply the engines suite (a bare
-// engines= reaches the host suite, which refuses it with guidance);
-// scenarios=/certify=/concurrency= are unambiguous engines-suite modes
-// and keep working without suite=.
+// scenarios=/certify=/concurrency= exist only in the engines suite, so
+// any of them selects it; everything else defaults to the host report,
+// which refuses arguments it does not know (engines= included).
 const impliesEngines = args.certify || args.concurrency || args.scenarios;
 const SUITE = String( args.suite ?? ( impliesEngines ? 'engines' : 'host' ) );
 // Say which suite is running and why, so a surprising suite selection is
@@ -176,9 +175,9 @@ console.log( `suite: ${ SUITE } (${ suiteReason })` );
 if ( 'engines' !== SUITE ) {
 	const script = SUITE_SCRIPTS[ SUITE ];
 	if ( ! script ) {
-		if ( RETIRED_SUITES[ SUITE ] ) {
+		if ( TOOL_COMMANDS[ SUITE ] ) {
 			console.error(
-				`"${ SUITE }" is a debugging/analysis tool, not a benchmark — run it directly:\n  ${ RETIRED_SUITES[ SUITE ] }`
+				`"${ SUITE }" is a debugging/analysis tool, not a benchmark — run it directly:\n  ${ TOOL_COMMANDS[ SUITE ] }`
 			);
 		} else {
 			console.error(

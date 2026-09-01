@@ -9,32 +9,26 @@ them under a version heading when a version ships.
 
 ### Added
 
--   `npm run bench` is now the single entry point for every benchmark,
-    and by default prints a host cost report — one engine per run: two
-    baseline/sync/delta/delta-% tables (editing and idle) with the
-    handful of numbers a hosting provider needs (requests per minute,
-    network traffic, server CPU, PHP worker share, peak PHP memory),
-    plus summary stats including a whole-job total for producing the
-    same document. The baseline is the workflow the plugin replaces:
-    the same number of people writing the same document by editing in
+-   `npm run bench` is the single entry point for the benchmarks, and
+    by default prints a host cost report: what real-time collaboration
+    adds to a server, one engine per run, as two
+    baseline/sync/delta/delta-% tables (editing and idle) of the
+    numbers a hosting provider sizes for — requests per minute, network
+    traffic, server CPU, PHP worker share, peak PHP memory,
+    options-cache invalidations, and database disk I/O (data-file
+    reads/writes and fsyncs from the database server's own counters) —
+    plus storage held per collaborative post and a derived
+    editors-per-worker capacity estimate. The baseline is the workflow
+    the plugin replaces: the same people writing the same document in
     series — type, save, hand off — with the plugin deactivated, so
-    the delta isolates what real-time collaboration itself costs. A whole-request measurement mu-plugin
-    (community-harness model, mapped by the wp-env configs) measures
-    every request the editor windows make — page loads, heartbeat,
-    autosaves, sync — even while the plugin is deactivated, which is
-    what makes the CPU/worker/memory columns true over-baseline deltas.
-    Community feedback added host-facing rows: options-cache
-    invalidations per minute (options-API writes, the cost persistent
-    object caches pay), database disk I/O per minute (data-file reads,
-    writes, and fsyncs from the database server's own counters —
-    fsyncs/min is the number to hold against a plan's IOPS ceiling),
-    storage held per collaborative post at rest (history is bounded on
-    the write path — no cron involved), and a derived
-    editors-per-worker capacity estimate with a pointer to the
-    measured queueing probe. The engine matrix and transport benchmark
-    remain behind `suite=engines` and `suite=transport`; the soak and
-    replay lanes are classified as debugging/analysis tools, run
-    directly by their own scripts. The community-harness compatibility
+    the delta isolates what live collaboration itself costs; a
+    measurement mu-plugin (community-harness model, mounted by the
+    wp-env configs) measures every request the editor windows make,
+    plugin active or not, which is what makes the server-side columns
+    true over-baseline deltas. The engine matrix and transport
+    benchmark sit behind `suite=engines` and `suite=transport`; the
+    soak and replay lanes are debugging/analysis tools run directly
+    from `tests/debugging/`. The community-harness compatibility
     statement (what matches, what diverges and why) is in
     `tests/benchmarks/README.md`
     ([#60](https://github.com/Automattic/gutenberg-sync-engines/issues/60)).

@@ -5,7 +5,8 @@
  * the plugin deactivated. One engine per run (comparing engines is the
  * engines suite's job); the RESULTS section prints two markdown tables
  * (editing, idle) with columns baseline/sync/delta/delta-%, then the
- * summary stats (job totals, room storage, derived capacity).
+ * summary stats (room storage, derived capacity; whole-job totals are
+ * in the json= report as engine.job).
  *
  *   npm run bench                            # this report, defaults
  *   npm run bench -- engine=de-rtc windows=3
@@ -66,8 +67,8 @@
  *   --help      print the argument list and exit
  *
  * Requires a running environment with the plugin active at start (the
- * tests env: npm run env:tests start — restart it once after pulling
- * this change so the mu-plugin mapping mounts), Playwright's chromium,
+ * tests env: npm run env:tests start; this repo's wp-env configs mount
+ * the mu-plugin), Playwright's chromium,
  * and — for the server-side columns — the diagnostics request log
  * (local/development sites, or GUTENBERG_SYNC_ENGINES_DIAGNOSTICS).
  * Environment: WP_BASE_URL / WP_USERNAME / WP_PASSWORD as usual.
@@ -123,11 +124,30 @@ if ( opts.help || opts.h ) {
 	process.exit( 0 );
 }
 
-if ( undefined !== opts.engines ) {
+// A mistyped argument silently measuring the wrong thing costs a whole
+// multi-minute run, so unknown keys refuse up front.
+const KNOWN_ARGS = [
+	'engine',
+	'transport',
+	'windows',
+	'edit-seconds',
+	'idle-seconds',
+	'polling-interval',
+	'metrics',
+	'json',
+	'headed',
+];
+const unknownArgs = Object.keys( opts ).filter(
+	( key ) => ! KNOWN_ARGS.includes( key )
+);
+if ( unknownArgs.length ) {
 	console.error(
-		'the host report measures ONE engine per run — use engine=<slug> ' +
-			'(e.g. npm run bench -- engine=de-rtc); comparing all three is ' +
-			'what suite=engines is for'
+		`unknown argument(s): ${ unknownArgs.join(
+			', '
+		) } — known: ${ KNOWN_ARGS.join( ', ' ) }` +
+			( unknownArgs.includes( 'engines' )
+				? '\n(the host report measures ONE engine per run — engine=<slug>; comparing engines is what suite=engines is for)'
+				: '' )
 	);
 	process.exit( 1 );
 }
@@ -141,16 +161,6 @@ if ( ENGINE.includes( ',' ) ) {
 }
 const TRANSPORT = String( opts.transport ?? 'current' );
 const WINDOWS = Math.max( 1, Number( opts.windows ?? 2 ) );
-for ( const [ old, renamed ] of [
-	[ 'edit', 'edit-seconds' ],
-	[ 'idle', 'idle-seconds' ],
-	[ 'poll', 'polling-interval' ],
-] ) {
-	if ( undefined !== opts[ old ] ) {
-		console.error( `${ old }= was renamed — use ${ renamed }=` );
-		process.exit( 1 );
-	}
-}
 const EDIT_SECONDS = Number( opts[ 'edit-seconds' ] ?? 120 );
 const IDLE_SECONDS = Number( opts[ 'idle-seconds' ] ?? 120 );
 const POLL_OVERRIDE =
