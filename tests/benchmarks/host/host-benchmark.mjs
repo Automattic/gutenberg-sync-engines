@@ -15,9 +15,9 @@
  *
  *   1. BASELINE — the plugin is deactivated (every active copy, via the
  *      REST plugins endpoint) and `windows` people edit the same draft
- *      IN SERIES: person i types their part for `edit` seconds, saves,
+ *      IN SERIES: person i types their part for `edit-seconds`, saves,
  *      and leaves, then the next person takes a turn; after the last
- *      turn the tab sits idle for `idle` seconds. This is the workflow
+ *      turn the tab sits idle for `idle-seconds`. This is the workflow
  *      the plugin replaces — the post lock forces turn-taking — and
  *      each person types the same script their window types in phase
  *      2, so both phases produce the same final document.
@@ -53,11 +53,12 @@
  *   transport=  http-polling | http-long-polling | websocket | current
  *   windows=    people per phase: collaborator windows, and the same
  *               number of one-after-the-other baseline turns (default 2)
- *   edit=       editing seconds per person (default 120, min 30)
- *   idle=       idle seconds per phase (default 120; 0 skips)
- *   poll=       override the HTTP short-polling interval for the run, in
- *               seconds 0-25 (0 = the plugin's defaults; default: leave
- *               the site's setting alone; restored afterwards)
+ *   edit-seconds=      editing seconds per person (default 120, min 30)
+ *   idle-seconds=      idle seconds per phase (default 120; 0 skips)
+ *   polling-interval=  override the HTTP short-polling interval for the
+ *                      run, in seconds 0-25 (0 = the plugin's defaults;
+ *                      default: leave the site's setting alone; restored
+ *                      afterwards)
  *   metrics=    comma list to report: requests,traffic,cpu,workers,memory,cache,diskio
  *               (default all)
  *   json=       write full results as JSON to this path
@@ -102,11 +103,12 @@ const HELP = `node tests/benchmarks/host/host-benchmark.mjs [key=value …]
               (default: the site's current transport)
   windows=    people per phase: collaborator windows, and the same
               number of one-after-the-other baseline turns (default 2)
-  edit=       editing seconds per person (default 120, min 30)
-  idle=       idle seconds per phase (default 120; 0 skips)
-  poll=       override the HTTP short-polling interval for the run, in
-              seconds 1-25 (0 = the plugin's defaults; default: leave
-              the site's setting alone; restored afterwards)
+  edit-seconds=      editing seconds per person (default 120, min 30)
+  idle-seconds=      idle seconds per phase (default 120; 0 skips)
+  polling-interval=  override the HTTP short-polling interval for the
+                     run, in seconds 0-25 (0 = the plugin's defaults;
+                     default: leave the site's setting alone; restored
+                     afterwards)
   metrics=    comma list of table rows to print:
               requests,traffic,cpu,workers,memory,cache,diskio (default all)
   json=       write full results as JSON to this path
@@ -139,12 +141,22 @@ if ( ENGINE.includes( ',' ) ) {
 }
 const TRANSPORT = String( opts.transport ?? 'current' );
 const WINDOWS = Math.max( 1, Number( opts.windows ?? 2 ) );
-const EDIT_SECONDS = Number( opts.edit ?? 120 );
-const IDLE_SECONDS = Number( opts.idle ?? 120 );
+for ( const [ old, renamed ] of [
+	[ 'edit', 'edit-seconds' ],
+	[ 'idle', 'idle-seconds' ],
+	[ 'poll', 'polling-interval' ],
+] ) {
+	if ( undefined !== opts[ old ] ) {
+		console.error( `${ old }= was renamed — use ${ renamed }=` );
+		process.exit( 1 );
+	}
+}
+const EDIT_SECONDS = Number( opts[ 'edit-seconds' ] ?? 120 );
+const IDLE_SECONDS = Number( opts[ 'idle-seconds' ] ?? 120 );
 const POLL_OVERRIDE =
-	undefined === opts.poll
+	undefined === opts[ 'polling-interval' ]
 		? null
-		: Math.max( 0, Math.min( 25, Number( opts.poll ) ) );
+		: Math.max( 0, Math.min( 25, Number( opts[ 'polling-interval' ] ) ) );
 const JSON_PATH = opts.json ? String( opts.json ) : null;
 const HEADED = Boolean( opts.headed );
 const ALL_METRICS = [
@@ -721,10 +733,12 @@ function summarize( phase, baseline, rows, engine ) {
 
 async function main() {
 	if ( ! Number.isFinite( EDIT_SECONDS ) || EDIT_SECONDS < 30 ) {
-		throw new Error( 'edit must be at least 30 seconds' );
+		throw new Error( 'edit-seconds must be at least 30' );
 	}
 	if ( null !== POLL_OVERRIDE && ! Number.isFinite( POLL_OVERRIDE ) ) {
-		throw new Error( 'poll must be a number of seconds (0-25)' );
+		throw new Error(
+			'polling-interval must be a number of seconds (0-25)'
+		);
 	}
 	const unknownMetrics = METRICS.filter(
 		( metric ) => ! ALL_METRICS.includes( metric )
@@ -842,11 +856,23 @@ async function main() {
 		console.log( '  suite=host' );
 		console.log( `  engine=${ engine }` );
 		console.log( `  transport=${ originalSettings.active.transport }` );
-		console.log( `  edit=${ EDIT_SECONDS }` );
-		console.log( `  idle=${ IDLE_SECONDS }` );
+		console.log( `  edit-seconds=${ EDIT_SECONDS }` );
+		console.log( `  idle-seconds=${ IDLE_SECONDS }` );
 		console.log( `  windows=${ WINDOWS }` );
-		if ( null !== POLL_OVERRIDE ) {
-			console.log( `  poll=${ POLL_OVERRIDE }` );
+		// The interval only governs the HTTP short-polling transport;
+		// under the other transports the line would mislead. 0 stored
+		// means the plugin defaults, which during a session with
+		// collaborators is one second — print the effective value.
+		if ( 'http-polling' === originalSettings.active.transport ) {
+			if ( null !== POLL_OVERRIDE ) {
+				console.log( `  polling-interval=${ POLL_OVERRIDE }` );
+			} else if ( originalPoll > 0 ) {
+				console.log(
+					`  polling-interval=${ originalPoll } (site setting)`
+				);
+			} else {
+				console.log( '  polling-interval=1 (default)' );
+			}
 		}
 		if ( undefined !== opts.metrics ) {
 			console.log( `  metrics=${ METRICS.join( ',' ) }` );
@@ -1239,9 +1265,8 @@ function printReport( report ) {
 		renderTable( 'metric (idle)', buildSpanRows( entry, 'idle' ) );
 	}
 
-	// Stats: single-value results that fit no table — both phases
-	// produced the same final document, so the job totals compare 1:1.
-	const job = entry.job;
+	// Stats: single-value results that fit no table. (The whole-job
+	// totals stay in the JSON report as engine.job.)
 	console.log( '' );
 	console.log( 'stats:' );
 	if ( entry.roomSize ) {

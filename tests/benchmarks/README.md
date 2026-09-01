@@ -70,10 +70,9 @@ totals, room storage, derived capacity).
 The run opens by stating the configuration it resolved (engine,
 transport, durations, polling), marking defaults. Arguments target
 what you need: `engine=` (one per run — comparing engines is
-`suite=engines`), `transport=`, `windows=`, `edit=`/`idle=` durations,
-`poll=` to
-override the HTTP short-polling interval for the run (restored
-afterwards), `metrics=` to print only some rows, `json=` for the full
+`suite=engines`), `transport=`, `windows=`, `edit-seconds=`/`idle-seconds=`,
+`polling-interval=` to override the HTTP short-polling interval for
+the run (restored afterwards), `metrics=` to print only some rows, `json=` for the full
 data — `npm run bench -- --help` prints the complete list. The server-side
 columns come from the whole-request measurement mu-plugin
 (`tests/benchmarks/host/mu-bench-log.php`, mapped into mu-plugins by

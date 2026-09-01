@@ -91,11 +91,14 @@ Suites (suite=; default: host):
                transport=  http-polling | http-long-polling | websocket
                            (default: the site's current transport)
                windows=    collaborator windows per engine phase (default 2)
-               edit=       editing seconds per phase (default 120, min 30)
-               idle=       idle seconds per phase (default 120; 0 skips)
-               poll=       override the HTTP short-polling interval for the
-                           run, in seconds 1-25 (0 = the plugin's defaults;
-                           default: leave the site's setting alone)
+               edit-seconds=      editing seconds per person (default 120,
+                                  min 30)
+               idle-seconds=      idle seconds per phase (default 120;
+                                  0 skips)
+               polling-interval=  override the HTTP short-polling interval
+                                  for the run, in seconds 0-25 (0 = the
+                                  plugin's defaults; default: leave the
+                                  site's setting alone)
                metrics=    comma list of table rows to print:
                            requests,traffic,cpu,workers,memory,cache,diskio (default all)
                json=       write full results as JSON to this path
@@ -123,7 +126,7 @@ WP_USERNAME/WP_PASSWORD.
 
 Examples:
   npm run bench
-  npm run bench -- engine=de-rtc windows=3 poll=2
+  npm run bench -- engine=de-rtc windows=3 polling-interval=2
   npm run bench -- suite=engines scenarios=editorial-session
   npm run bench -- certify=10
 `;
