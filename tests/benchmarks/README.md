@@ -222,8 +222,8 @@ registered. This plugin registers three:
   room document, compacts by itself, and materializes post content.
 - **`de-rtc`** (`WP_De_RTC_Engine`) — server-governed three-way merges:
   clients propose whole content against a named base version; the server
-  merges each proposal with the ported DE-RTC merge core and broadcasts
-  canonical content rows; genuine conflicts escalate.
+  merges each proposal with the ported DE-RTC merge core and announces
+  each accepted version; genuine conflicts escalate.
 
 (A fourth engine, `yjs-relay` — a dumb relay whose merge happened in each
 client's CRDT — has been removed; historical numbers for it remain below
@@ -278,7 +278,7 @@ whole-content proposals: each simulated client keeps a local working copy
 and its base version (base = last version applied to the doc, the client
 adapter's rule; an APPLIED proposal advances it at settle time, mirroring
 the accepted row the polling transport returns in the same response as
-the dispositions), adopts the server's canonical content rows on read, and —
+the dispositions), adopts the server's canonical snapshots on read, and —
 because retry is part of that protocol — re-proposes edits the engine
 voided at an aged-out base as a coalesced follow-up proposal against the
 base it just observed (one retry per edit); payload and storage bytes are
