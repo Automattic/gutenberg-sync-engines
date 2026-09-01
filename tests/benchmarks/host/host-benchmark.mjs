@@ -839,20 +839,20 @@ async function main() {
 		// Say exactly what this run will measure, and where it runs,
 		// before spending minutes measuring it.
 		console.log( 'configuration:' );
-		console.log( '  --suite=host' );
-		console.log( `  --engine=${ engine }` );
-		console.log( `  --transport=${ originalSettings.active.transport }` );
-		console.log( `  --windows=${ WINDOWS }` );
-		console.log( `  --edit=${ EDIT_SECONDS }` );
-		console.log( `  --idle=${ IDLE_SECONDS }` );
+		console.log( '  suite=host' );
+		console.log( `  engine=${ engine }` );
+		console.log( `  transport=${ originalSettings.active.transport }` );
+		console.log( `  edit=${ EDIT_SECONDS }` );
+		console.log( `  idle=${ IDLE_SECONDS }` );
+		console.log( `  windows=${ WINDOWS }` );
 		if ( null !== POLL_OVERRIDE ) {
-			console.log( `  --poll=${ POLL_OVERRIDE }` );
+			console.log( `  poll=${ POLL_OVERRIDE }` );
 		}
 		if ( undefined !== opts.metrics ) {
-			console.log( `  --metrics=${ METRICS.join( ',' ) }` );
+			console.log( `  metrics=${ METRICS.join( ',' ) }` );
 		}
 		if ( JSON_PATH ) {
-			console.log( `  --json=${ JSON_PATH }` );
+			console.log( `  json=${ JSON_PATH }` );
 		}
 
 		const envResponse = await rest.get( '/rtc-test/v1/env' );
@@ -1242,22 +1242,8 @@ function printReport( report ) {
 	// Stats: single-value results that fit no table — both phases
 	// produced the same final document, so the job totals compare 1:1.
 	const job = entry.job;
-	const cpu = ( value ) =>
-		null === value ? '—' : `${ value.toFixed( 1 ) } CPU-s`;
 	console.log( '' );
 	console.log( 'stats:' );
-	console.log(
-		`  produced document: ${ job.base.requests } requests / ` +
-			`${ cpu( job.base.serverCpuS ) } / ${ Math.round(
-				job.base.kb
-			) } KB in series → ${ job.sync.requests } / ${ cpu(
-				job.sync.serverCpuS
-			) } / ${ Math.round( job.sync.kb ) } KB in sync ` +
-			`(${ pct( job.base.requests, job.sync.requests ) } / ${ pct(
-				job.base.serverCpuS,
-				job.sync.serverCpuS
-			) } / ${ pct( job.base.kb, job.sync.kb ) })`
-	);
 	if ( entry.roomSize ) {
 		console.log(
 			`  room storage: ${ entry.roomSize.rows } rows, ${ Math.round(
