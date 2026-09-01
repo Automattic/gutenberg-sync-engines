@@ -469,12 +469,25 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			 * descriptor-carrying proposals use those partial-acceptance
 			 * lanes at all.
 			 */
-			$rejection = $this->validate_and_drop_client_update( $room, $state, $proposal );
+			$engine_aware = ! empty( $proposal['clientUpdate'] );
+			$rejection    = $this->validate_and_drop_client_update( $room, $state, $proposal );
 			if ( null !== $rejection ) {
 				return $rejection;
 			}
 
 			$proposed_content = $proposal['proposedContent'];
+
+			/*
+			 * Durable block identity, adopted: a proposal that round-tripped
+			 * post_content without ids (an engine-unaware writer, or a copy
+			 * read before the first aware save) lines up with the identified
+			 * base by path, so its untouched blocks compare equal to the base
+			 * instead of reading as a rewrite of every block. Runs after the
+			 * descriptor drop (validate once, then rewrite freely).
+			 */
+			if ( class_exists( 'WP_De_RTC_Block_Identity' ) ) {
+				$proposed_content = WP_De_RTC_Block_Identity::adopt( $proposed_content, $base_content );
+			}
 
 			/*
 			 * The capability lane, at ingest: an author without
@@ -542,12 +555,23 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 						);
 					}
 				}
-				$result = wp_de_rtc_get_automerge_retry_save_result(
-					$base_content,
-					$state['content'],
-					$proposed_content,
-					$proposal['clientUpdate'] ?? null
-				);
+
+				/*
+				 * Identity first: with every block carrying a durable id,
+				 * the proposal merges block-for-block at every depth
+				 * (nested edits land, only true conflicts park). The
+				 * identity merge declines whenever it cannot be sure, and
+				 * the positional core below decides exactly as before.
+				 */
+				$result = $this->merge_by_identity( $room, $client_id, $proposal, $base_content, (string) $state['content'], $proposed_content, $review, $salvage_parked );
+				if ( null === $result ) {
+					$result = wp_de_rtc_get_automerge_retry_save_result(
+						$base_content,
+						$state['content'],
+						$proposed_content,
+						$proposal['clientUpdate'] ?? null
+					);
+				}
 
 				if ( is_wp_error( $result ) ) {
 					if ( 'de_rtc_rebase_failed' === $result->get_error_code() ) {
@@ -601,6 +625,21 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				$next_seq     = (int) $state['version_seq'] + 1;
 				$next_version = 'v' . $next_seq;
 				$merged       = (string) $result['merged_content'];
+
+				/*
+				 * Durable block identity for engine-unaware writers: a
+				 * proposal without a descriptor came from a script or a
+				 * plain save, which never stamps ids — its new blocks get
+				 * random creation ids as they become canonical. Sessions
+				 * (descriptor-carrying) stamp in the editor, and the server
+				 * deliberately does NOT second-guess them: an id stamped
+				 * here would collide with the one the editor assigns a
+				 * moment later, and the two "changes" to the same block
+				 * would park it.
+				 */
+				if ( ! $engine_aware && class_exists( 'WP_De_RTC_Block_Identity' ) ) {
+					$merged = WP_De_RTC_Block_Identity::stamp_creations( $merged );
+				}
 
 				// Entity-property registers ride the proposal beside the
 				// content: a per-property three-way merge against the same base
@@ -1378,6 +1417,51 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		}
 
 		/**
+		 * Merges a proposal by block identity at every depth, parking only
+		 * the blocks that truly conflict (see WP_De_RTC_Identity_Merge).
+		 * Null when identity cannot decide, in which case the caller runs
+		 * the positional merge core exactly as before.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $room             Room identifier.
+		 * @param int    $client_id        Proposing client id.
+		 * @param array  $proposal         Decoded proposal payload.
+		 * @param string $base_content     Content of the proposal's base version.
+		 * @param string $current_content  Current canonical content.
+		 * @param string $proposed_content Proposed content (post-kses lane).
+		 * @param array  $review           Review ledger (lazily loaded, by reference).
+		 * @param int    $parked_count     Accumulates how many blocks parked (by reference).
+		 * @return array|null array{merged_content: string} or null.
+		 */
+		private function merge_by_identity( string $room, int $client_id, array $proposal, string $base_content, string $current_content, string $proposed_content, &$review, &$parked_count ): ?array {
+			if ( ! class_exists( 'WP_De_RTC_Identity_Merge' ) || hash_equals( wp_de_rtc_hash_content( $base_content ), wp_de_rtc_hash_content( $current_content ) ) ) {
+				return null; // A current-base proposal needs no merge at all.
+			}
+			$identity = WP_De_RTC_Identity_Merge::merge( $base_content, $current_content, $proposed_content );
+			if ( ! is_array( $identity ) ) {
+				return null;
+			}
+			if ( array() !== $identity['conflicts'] ) {
+				if ( null === $review ) {
+					$review = $this->load_review_ledger( $room );
+				}
+				$parked_id = (string) $proposal['proposalId'];
+				$was_open  = isset( $review['open'][ $parked_id ] ) || isset( $review['resolved'][ $parked_id ] );
+				$this->park_changed_blocks( $room, $client_id, $parked_id, 'manual-conflict-required', (string) $proposal['baseVersion'], $identity['conflicts'], $review, false );
+				if ( ! $was_open ) {
+					$parked_count += count( $identity['conflicts'] );
+				}
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+				do_action( 'qm/debug', 'wp-sync: de-rtc identity merge in ' . $room . ' — ' . count( $identity['conflicts'] ) . ' block(s) parked, the remainder lands' );
+			}
+			return array(
+				'merged_content' => $identity['merged_content'],
+				'merge_strategy' => $identity['merge_strategy'],
+			);
+		}
+
+		/**
 		 * The block name of a serialized top-level block.
 		 *
 		 * @since 0.4.0
@@ -1883,8 +1967,28 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				$base = (string) $state['content'];
 			}
 
+			// The external copy carries no identity: line it up with the
+			// base by path so untouched blocks compare equal (see ingest).
+			if ( class_exists( 'WP_De_RTC_Block_Identity' ) ) {
+				$stripped = WP_De_RTC_Block_Identity::adopt( $stripped, $base );
+			}
+
+			$external_proposal = array(
+				'proposalId'      => 'external-' . substr( $external_hash, 0, 12 ),
+				'baseVersion'     => null !== $base_version ? $base_version : $state['version'],
+				'proposedContent' => $stripped,
+				'clientUpdate'    => null,
+			);
+			$review            = null;
+
 			for ( $attempt = 0; $attempt < 3; $attempt++ ) {
-				$result = wp_de_rtc_get_automerge_retry_save_result( $base, (string) $state['content'], $stripped, null );
+				// Identity first (nested edits land block-for-block), the
+				// positional core when identity declines — as at ingest.
+				$heal_identity_parked = 0;
+				$result               = $this->merge_by_identity( $room, self::SERVER_CLIENT_ID, $external_proposal, $base, (string) $state['content'], $stripped, $review, $heal_identity_parked );
+				if ( null === $result ) {
+					$result = wp_de_rtc_get_automerge_retry_save_result( $base, (string) $state['content'], $stripped, null );
+				}
 
 				if ( is_wp_error( $result ) ) {
 					if ( 'de_rtc_rebase_failed' === $result->get_error_code() ) {
@@ -1892,13 +1996,9 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 						// work. Try per-block salvage first (the clean part
 						// of the external edit lands; only the collision
 						// parks) — then fall back to parking it whole.
-						$review              = $this->load_review_ledger( $room );
-						$external_proposal   = array(
-							'proposalId'      => 'external-' . substr( $external_hash, 0, 12 ),
-							'baseVersion'     => null !== $base_version ? $base_version : $state['version'],
-							'proposedContent' => $stripped,
-							'clientUpdate'    => null,
-						);
+						if ( null === $review ) {
+							$review = $this->load_review_ledger( $room );
+						}
 						$heal_salvage_parked = 0;
 						$salvaged            = $this->salvage_conflicting_blocks( $room, self::SERVER_CLIENT_ID, $external_proposal, $base, (string) $state['content'], $stripped, $review, $heal_salvage_parked );
 						if ( null !== $salvaged && $salvaged !== $stripped ) {
@@ -1931,6 +2031,11 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				$next_seq     = (int) $state['version_seq'] + 1;
 				$next_version = 'v' . $next_seq;
 				$merged       = (string) $result['merged_content'];
+				// An out-of-band writer never carries identity: stamp the
+				// blocks it introduced as they become canonical.
+				if ( class_exists( 'WP_De_RTC_Block_Identity' ) ) {
+					$merged = WP_De_RTC_Block_Identity::stamp_creations( $merged );
+				}
 
 				$state['sync_meta'] = wp_de_rtc_update_automerge_version_snapshots(
 					is_array( $state['sync_meta'] ) ? $state['sync_meta'] : array(),
@@ -2023,22 +2128,54 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				return $base_content;
 			}
 
-			$records = wp_de_rtc_get_top_level_serialized_block_records( $base_content );
-			if ( is_wp_error( $records ) ) {
-				return $base_content;
-			}
-
-			$changed = false;
-			foreach ( $block_bases as $index => $block_version ) {
-				$index = (int) $index;
-				if ( ! is_string( $block_version ) || '' === $block_version || ! isset( $records[ $index ] ) ) {
+			/*
+			 * By identity first: a key is either a top-level index of the
+			 * proposal (the block's id is read off the proposed content) or
+			 * a syncId outright, and the block's true-base form replaces it
+			 * in the base wherever the block sits — so a kept block inside
+			 * a container declares its base as honestly as a top-level one.
+			 * Entries identity cannot place fall through to the positional
+			 * rule below.
+			 */
+			$positional = array();
+			foreach ( $block_bases as $key => $block_version ) {
+				if ( ! is_string( $block_version ) || '' === $block_version ) {
 					continue;
+				}
+				$sync_id = null;
+				if ( class_exists( 'WP_De_RTC_Identity_Merge' ) ) {
+					$sync_id = is_numeric( $key )
+						? WP_De_RTC_Identity_Merge::top_level_id_at( (string) $proposal['proposedContent'], (int) $key )
+						: (string) $key;
 				}
 				$block_base = $this->resolve_base_content( $state, $block_version );
 				if ( null === $block_base ) {
 					$block_base = $this->resolve_base_from_revisions( $room, $block_version );
 				}
 				if ( null === $block_base ) {
+					continue;
+				}
+				$substituted = null !== $sync_id ? WP_De_RTC_Identity_Merge::substitute( $base_content, $sync_id, $block_base ) : null;
+				if ( is_string( $substituted ) ) {
+					$base_content = $substituted;
+					continue;
+				}
+				if ( is_numeric( $key ) ) {
+					$positional[ (int) $key ] = $block_base;
+				}
+			}
+			if ( array() === $positional ) {
+				return $base_content;
+			}
+
+			$records = wp_de_rtc_get_top_level_serialized_block_records( $base_content );
+			if ( is_wp_error( $records ) ) {
+				return $base_content;
+			}
+
+			$changed = false;
+			foreach ( $positional as $index => $block_base ) {
+				if ( ! isset( $records[ $index ] ) ) {
 					continue;
 				}
 				$block_records = wp_de_rtc_get_top_level_serialized_block_records( $block_base );
@@ -2153,10 +2290,12 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			$content    = '';
 			$sync_meta  = array();
 			$properties = array();
+			$post_id    = 0;
 			$parsed     = class_exists( 'WP_Sync_Config' ) ? WP_Sync_Config::parse_room( $room ) : null;
 			if ( null !== $parsed && 'postType' === $parsed['entity_kind'] && ! empty( $parsed['object_id'] ) ) {
 				$post = get_post( (int) $parsed['object_id'] );
 				if ( $post instanceof WP_Post ) {
+					$post_id = (int) $post->ID;
 					$content = (string) $post->post_content;
 					// The shared REST-shaped seed every field-syncing engine
 					// uses (scalars, taxonomies by rest_base, meta.<key>) —
@@ -2194,6 +2333,28 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				$version     = 'v' . $adopted_seq;
 				$version_seq = $adopted_seq;
 			}
+
+			/*
+			 * Remember the content used to create the room. This prevents
+			 * the external-save check from treating an unchanged post as a
+			 * new change after older snapshots expire. Hashed BEFORE identity
+			 * stamping: the check compares against the post_content WordPress
+			 * holds, which is the unstamped form until the first aware save.
+			 */
+			$healed_hash = wp_de_rtc_hash_content( $content );
+
+			/*
+			 * Durable block identity: every block of the saved post gets its
+			 * deterministic genesis syncId (postId, 0, path) — the same ids
+			 * the editor-side stamper derives for a pristine load, so a tab
+			 * that stamped before the snapshot arrived already agrees with
+			 * the room. Deterministic, so racing initializers stay
+			 * idempotent (see WP_De_RTC_Block_Identity).
+			 */
+			if ( class_exists( 'WP_De_RTC_Block_Identity' ) ) {
+				$content = WP_De_RTC_Block_Identity::stamp_genesis( $content, $post_id );
+			}
+
 			$state = array(
 				'version'               => $version,
 				'version_seq'           => $version_seq,
@@ -2201,13 +2362,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				'sync_meta'             => wp_de_rtc_update_automerge_version_snapshots( $sync_meta, $version, $content ),
 				'properties'            => $properties,
 				'properties_by_version' => array( $version => $properties ),
-
-				/*
-				 * Remember the content used to create the room. This prevents
-				 * the external-save check from treating an unchanged post as a
-				 * new change after older snapshots expire.
-				 */
-				'healed_hash'           => wp_de_rtc_hash_content( $content ),
+				'healed_hash'           => $healed_hash,
 			);
 
 			$stored = $this->add_row(

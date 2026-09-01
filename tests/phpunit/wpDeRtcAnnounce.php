@@ -80,9 +80,9 @@ class Tests_Collaboration_WpDeRtcAnnounce extends WP_UnitTestCase {
 
 	public function test_accepted_proposal_stores_an_announce_row_without_content() {
 		$engine = $this->engine();
-		$this->assertSame( self::GENESIS_CONTENT, $engine->materialize( $this->room() ) );
+		$this->assertSame( $this->genesis(), $engine->materialize( $this->room() ) );
 
-		$proposed = str_replace( 'Alpha block original text.', 'Alpha edited under the announce model.', self::GENESIS_CONTENT );
+		$proposed = str_replace( 'Alpha block original text.', 'Alpha edited under the announce model.', $this->genesis() );
 		$result   = $engine->handle_updates( $this->room(), 101, 0, array( $this->proposal( 'p-1', 'v1', $proposed ) ), array() );
 		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
 		$this->assertSame( 'v2', $result['dispositions'][0]['version'] );
@@ -179,11 +179,11 @@ class Tests_Collaboration_WpDeRtcAnnounce extends WP_UnitTestCase {
 
 	public function test_convergence_via_announce_and_fetch_round_trip() {
 		$engine = $this->engine();
-		$this->assertSame( self::GENESIS_CONTENT, $engine->materialize( $this->room() ) );
+		$this->assertSame( $this->genesis(), $engine->materialize( $this->room() ) );
 
 		// Client A edits; client B (bootstrapped at v1) sees the announce,
 		// fetches, and lands its own edit against the fetched version.
-		$a_edit = str_replace( 'Alpha block original text.', 'Alpha by A.', self::GENESIS_CONTENT );
+		$a_edit = str_replace( 'Alpha block original text.', 'Alpha by A.', $this->genesis() );
 		$engine->handle_updates( $this->room(), 101, 0, array( $this->proposal( 'p-a', 'v1', $a_edit ) ), array() );
 
 		$engine->handle_updates( $this->room(), 202, 0, array( $this->fetch_row( 'v1' ) ), array() );
@@ -198,5 +198,15 @@ class Tests_Collaboration_WpDeRtcAnnounce extends WP_UnitTestCase {
 		$final = (string) $this->engine()->materialize( $this->room() );
 		$this->assertStringContainsString( 'Alpha by A.', $final );
 		$this->assertStringContainsString( 'Beta by B.', $final );
+	}
+
+	/**
+	 * The room's genesis content: the saved post with every block stamped
+	 * with its deterministic identity (what the room actually serves).
+	 *
+	 * @return string Stamped genesis content.
+	 */
+	private function genesis(): string {
+		return WP_De_RTC_Block_Identity::stamp_genesis( self::GENESIS_CONTENT, self::$post_id );
 	}
 }

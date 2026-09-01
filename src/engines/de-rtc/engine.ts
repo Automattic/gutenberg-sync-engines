@@ -40,7 +40,10 @@ import {
 	DE_RTC_REMOTE_ORIGIN,
 	DE_RTC_RESTORE_ORIGIN,
 	parseCanonicalBlocks,
+	replaceBlockBySyncId,
+	syncIdOf,
 	unflattenProperties,
+	type DeRtcContestKey,
 } from './doc-bridge';
 import {
 	createDeRtcReviewState,
@@ -164,17 +167,24 @@ export function createDeRtcEngine(): SyncEngine & {
 		getItems: () => ReturnType< SyncReviewSource[ 'getOpenItems' ] >;
 		restore: ( proposalId: string ) => void;
 		/** Adopt a contested block's latest canonical form. */
-		adoptContested: ( index: number ) => boolean;
+		adoptContested: ( key: DeRtcContestKey ) => boolean;
 		/** Reject a contest, keeping the local block. */
-		rejectContested: ( index: number ) => boolean;
+		rejectContested: ( key: DeRtcContestKey ) => boolean;
 	}
 
-	/** The contested-item id convention on the review surface. */
+	/**
+	 * The contested-item id convention on the review surface: the
+	 * prefix plus the contest key — the block's syncId, or its top-level
+	 * index for documents without identity.
+	 */
 	const CONTESTED_PREFIX = 'contested-';
-	const contestedIndexOf = ( proposalId: string ): number | null =>
-		proposalId.startsWith( CONTESTED_PREFIX )
-			? Number( proposalId.slice( CONTESTED_PREFIX.length ) )
-			: null;
+	const contestedKeyOf = ( proposalId: string ): DeRtcContestKey | null => {
+		if ( ! proposalId.startsWith( CONTESTED_PREFIX ) ) {
+			return null;
+		}
+		const key = proposalId.slice( CONTESTED_PREFIX.length );
+		return /^\d+$/.test( key ) ? Number( key ) : key;
+	};
 	const entityReviews = new Map< string, EntityReviewHandle >();
 	// Per-entity authorship trackers: block-grain "who last
 	// touched this", derived from the canonical row feed.
@@ -214,11 +224,11 @@ export function createDeRtcEngine(): SyncEngine & {
 			const handle = entityReviews.get(
 				reviewKey( objectType, objectId )
 			);
-			const index = contestedIndexOf( proposalId );
-			if ( null !== index ) {
+			const contestKey = contestedKeyOf( proposalId );
+			if ( null !== contestKey ) {
 				// Any resolution of a contested item that is not an
 				// adoption is a REJECT: keep the local block.
-				handle?.rejectContested( index );
+				handle?.rejectContested( contestKey );
 				return;
 			}
 			handle?.review.resolve( proposalId, resolution );
@@ -227,10 +237,10 @@ export function createDeRtcEngine(): SyncEngine & {
 			const handle = entityReviews.get(
 				reviewKey( objectType, objectId )
 			);
-			const index = contestedIndexOf( proposalId );
-			if ( null !== index ) {
+			const contestKey = contestedKeyOf( proposalId );
+			if ( null !== contestKey ) {
 				// Restore of a contested item is the ADOPT verb.
-				handle?.adoptContested( index );
+				handle?.adoptContested( contestKey );
 				return;
 			}
 			handle?.restore( proposalId );
@@ -363,6 +373,20 @@ export function createDeRtcEngine(): SyncEngine & {
 						String( changed?.html ?? '' )
 					);
 					parsed.forEach( ( block, offset ) => {
+						// By identity first: the parked block replaces the
+						// block carrying its syncId wherever it sits (a
+						// nested leaf restores into its container). Then
+						// by recorded index; a block with no place appends.
+						const syncId =
+							0 === offset && 'string' === typeof changed.syncId
+								? changed.syncId
+								: syncIdOf( block );
+						if (
+							syncId &&
+							replaceBlockBySyncId( next, syncId, block )
+						) {
+							return;
+						}
 						const index = Number( changed.index ) + offset;
 						if (
 							next[ index ] &&
@@ -388,20 +412,21 @@ export function createDeRtcEngine(): SyncEngine & {
 			 * (Adopt = restore, Reject = dismiss).
 			 */
 			const contested = new Map<
-				number,
-				{ version: string; html: string; edits: number }
+				DeRtcContestKey,
+				{ version: string; html: string; edits: number; index: number }
 			>();
 			bridge.onContested( ( event ) => {
-				const existing = contested.get( event.index );
-				contested.set( event.index, {
+				const existing = contested.get( event.key );
+				contested.set( event.key, {
 					version: event.version,
 					html: event.html,
 					edits: ( existing?.edits ?? 0 ) + 1,
+					index: event.index,
 				} );
 				notifyKey( key );
 			} );
-			bridge.onContestResolved( ( index ) => {
-				if ( contested.delete( index ) ) {
+			bridge.onContestResolved( ( contestKey ) => {
+				if ( contested.delete( contestKey ) ) {
 					notifyKey( key );
 				}
 			} );
@@ -421,10 +446,10 @@ export function createDeRtcEngine(): SyncEngine & {
 
 			entityReviews.set( key, {
 				review,
-				adoptContested: ( index ) =>
-					bridge.adoptContestedBlock( index ),
-				rejectContested: ( index ) =>
-					bridge.rejectContestedBlock( index ),
+				adoptContested: ( contestKey ) =>
+					bridge.adoptContestedBlock( contestKey ),
+				rejectContested: ( contestKey ) =>
+					bridge.rejectContestedBlock( contestKey ),
 				getItems: () => [
 					...review.getOpen().map( ( parked ) => ( {
 						id: parked.proposalId,
@@ -441,20 +466,28 @@ export function createDeRtcEngine(): SyncEngine & {
 							( parked.revisions ?? 1 ) > 1
 								? `${ parked.excerpt } (${ parked.revisions } revisions)`
 								: parked.excerpt || undefined,
-						// De-rtc addresses blocks positionally: the first
-						// changed block anchors the inline card (B3).
+						// The first changed block anchors the inline card:
+						// by identity (a nested block anchors to itself),
+						// with its top-level index as the fallback.
+						...( 'string' ===
+						typeof parked.changedBlocks?.[ 0 ]?.syncId
+							? { targetId: parked.changedBlocks[ 0 ].syncId }
+							: {} ),
 						targetIndex: parked.changedBlocks?.[ 0 ]?.index,
 					} ) ),
 					...Array.from( contested.entries() ).map(
-						( [ index, item ] ) => ( {
-							id: `contested-${ index }`,
-							unitId: `contested-${ index }`,
+						( [ contestKey, item ] ) => ( {
+							id: `contested-${ contestKey }`,
+							unitId: `contested-${ contestKey }`,
 							isLocal: false,
 							actorId: '',
 							reason: 'frame-conflict',
 							intentType: 'proposal',
 							summary: contestedExcerpt( item ),
-							targetIndex: index,
+							...( 'string' === typeof contestKey
+								? { targetId: contestKey }
+								: {} ),
+							targetIndex: item.index,
 						} )
 					),
 				],

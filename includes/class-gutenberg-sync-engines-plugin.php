@@ -115,6 +115,8 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			if ( ! function_exists( 'wp_de_rtc_get_reason_codes' ) ) {
 				require_once $engines . 'de-rtc/merge-core.php';
 			}
+			require_once $engines . 'de-rtc/class-wp-de-rtc-block-identity.php';
+			require_once $engines . 'de-rtc/class-wp-de-rtc-identity-merge.php';
 			require_once $engines . 'de-rtc/class-wp-de-rtc-engine.php';
 			require_once $engines . 'de-rtc/class-wp-de-rtc-sync-meta-colocation.php';
 			require_once $engines . 'de-rtc/class-wp-de-rtc-base-version-preflight.php';
@@ -307,7 +309,9 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 
 			$storage = gutenberg_sync_engines_storage();
 			$engines = new WP_Sync_Engine_Registry( $storage );
-			if ( 'intent-log' !== $engines->get_engine_slug_for_room( '' ) ) {
+			// The editor-side identity stamper serves every engine whose
+			// blocks carry `metadata.syncId` — intent-log and de-rtc.
+			if ( ! in_array( $engines->get_engine_slug_for_room( '' ), array( 'intent-log', 'de-rtc' ), true ) ) {
 				return;
 			}
 			$stamper = GUTENBERG_SYNC_ENGINES_PATH . 'includes/engines/intent-log/sync-id.js';
