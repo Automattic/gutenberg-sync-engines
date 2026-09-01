@@ -38,8 +38,8 @@ This plugin provides:
   `de-rtc` (Distributed Editing's save-centric model on the room protocol:
   clients propose whole content against a named base version; the server
   three-way-merges every proposal with the merge core ported verbatim from
-  the wordpress-develop `add/distributed-editing` branch and broadcasts
-  canonical content rows; genuine conflicts escalate instead of silently
+  the wordpress-develop `add/distributed-editing` branch and announces
+  each accepted version; genuine conflicts escalate instead of silently
   merging).
   The framework's conventional default engine
   (`WP_Sync_Engine_Registry::DEFAULT_ENGINE`) is **intent-log** — that's

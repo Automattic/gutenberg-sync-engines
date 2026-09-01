@@ -52,7 +52,7 @@ export interface DeRtcUndoFeedRow {
 	content: string;
 	/** Whether this row is the local client's own accepted proposal. */
 	own: boolean;
-	/** Server-stamped author user id (stamped on content rows). */
+	/** Server-stamped author user id (stamped on announce rows). */
 	author?: number;
 	/** The authoring transport client id. */
 	authorClientId?: number;

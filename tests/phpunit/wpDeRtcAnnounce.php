@@ -95,8 +95,8 @@ class Tests_Collaboration_WpDeRtcAnnounce extends WP_UnitTestCase {
 			}
 			// The transport never carries the document in stored rows: only
 			// the genesis snapshot (a bootstrap necessity) has content.
-			if ( WP_De_RTC_Engine::UPDATE_TYPE_CONTENT === $update['type'] ) {
-				$this->fail( 'No legacy content rows may be written under the announce model.' );
+			if ( WP_De_RTC_Engine::UPDATE_TYPE_SNAPSHOT !== $update['type'] ) {
+				$this->assertArrayNotHasKey( 'content', (array) json_decode( $update['data'], true ), 'Only snapshot rows may carry content under the announce model.' );
 			}
 		}
 

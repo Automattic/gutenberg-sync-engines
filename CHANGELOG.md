@@ -7,6 +7,15 @@ them under a version heading when a version ships.
 
 ## Unreleased
 
+### Removed
+
+-   The de-rtc engine no longer reads the transition-era data written
+    before the announce model: the protocol-1 `content` rows and the
+    `de_rtc_doc` room meta. Rooms written before that model are not
+    migrated (the plugin has no installed base); reset them instead. The
+    polling transport's deprecated `COMPACTION_THRESHOLD` constant is
+    gone too (compaction has been engine-owned since 7.2.0).
+
 ### Added
 
 -   `npm run bench` is the single entry point for the benchmarks, and

@@ -418,7 +418,7 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 				if ( ! is_string( $decoded['version'] ?? null ) || ( ! $is_announce && ! is_string( $decoded['content'] ?? null ) ) ) {
 					continue;
 				}
-				if ( in_array( $row['type'] ?? '', array( 'content', WP_De_RTC_Engine::UPDATE_TYPE_ANNOUNCE ), true ) && is_string( $decoded['baseVersion'] ?? null ) ) {
+				if ( $is_announce && is_string( $decoded['baseVersion'] ?? null ) ) {
 					$version = $decoded['version'];
 					if ( isset( $this->row_lineage[ $version ] ) && $this->row_lineage[ $version ] !== $decoded['baseVersion'] ) {
 						$this->observe_failures[] = array(

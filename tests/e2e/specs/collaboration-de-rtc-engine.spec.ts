@@ -17,7 +17,7 @@ import {
  * Editing's save-centric model on the room protocol. Clients propose
  * whole content against the version they last incorporated; the SERVER
  * three-way-merges every proposal with the ported DE-RTC merge core and
- * broadcasts canonical content rows.
+ * announces each canonical version.
  *
  * These specs flip the site's `wp_sync_engine` option to `de-rtc` and
  * exercise the full stack: editor changes → de-rtc session codec →

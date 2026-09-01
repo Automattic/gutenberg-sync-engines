@@ -163,7 +163,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 		$engine = $this->engine();
 		$this->assertSame( 'de-rtc', $engine->get_slug() );
 		$this->assertSame( 2, $engine->get_protocol_version() );
-		$this->assertSame( array( 'proposal', 'content', 'announce', 'fetch', 'snapshot', 'parked', 'resolved' ), $engine->get_update_types() );
+		$this->assertSame( array( 'proposal', 'announce', 'fetch', 'snapshot', 'parked', 'resolved' ), $engine->get_update_types() );
 	}
 
 	public function test_genesis_snapshot_and_lineage() {
@@ -202,7 +202,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
 		$this->assertSame( 'v2', $result['dispositions'][0]['version'] );
 
-		// A second client sees the accepted content row.
+		// A second client sees the accepted version.
 		$peer_response = $this->engine()->get_updates_since( $this->room(), 2, 0, array() );
 		$peer_latest   = $this->latest_from_response( $peer_response );
 		$this->assertSame( 'v2', $peer_latest['version'] );
@@ -336,7 +336,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 			array(
 				array(
 					'data' => '{}',
-					'type' => WP_De_RTC_Engine::UPDATE_TYPE_CONTENT,
+					'type' => WP_De_RTC_Engine::UPDATE_TYPE_ANNOUNCE,
 				),
 			),
 			array()

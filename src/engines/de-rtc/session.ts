@@ -38,14 +38,6 @@ export const DE_RTC_ENGINE_PROTOCOL = 2;
 export const DE_RTC_PROPOSAL_TYPE = 'proposal';
 
 /**
- * Server-emitted row type: accepted canonical content at a version.
- * Matches WP_De_RTC_Engine::UPDATE_TYPE_CONTENT. Receive-only.
- * LEGACY (protocol 1): rooms written before the announce model still
- * replay these; the server no longer writes them.
- */
-export const DE_RTC_CONTENT_TYPE = 'content';
-
-/**
  * Server-emitted row type: a canonical version ANNOUNCEMENT — version,
  * base version, content hash, author attribution, merged properties, NO
  * content (the transport carries advisories, not documents).
@@ -139,20 +131,22 @@ export function setDeRtcBurstQuietMsForTesting( ms: number ): void {
  *
  * The wire is DE-RTC's save-centric shape mapped onto the room protocol:
  * the client sends whole-content PROPOSALS against the version it last
- * incorporated, and the server answers with three-way-merged canonical
- * CONTENT rows plus per-proposal dispositions. Two rules keep the client
- * honest without doing any merging of its own:
+ * incorporated, and the server three-way-merges each one and answers
+ * with an ANNOUNCE row (version + content hash, no content) plus
+ * per-proposal dispositions; a client that is behind FETCHES one
+ * canonical snapshot. Two rules keep the client honest without doing
+ * any merging of its own:
  *
  * - ONE proposal in flight, coalesced: local edits mark the doc dirty;
  *   a proposal is built from the doc's current content only when none is
  *   pending, so a burst of typing costs one proposal per poll cycle. The
  *   base version is the version last APPLIED to the doc — a stale base is
  *   fine, that is exactly what the server's three-way merge is for.
- * - Canonical rows are DEFERRED while local edits are dirty or in
+ * - Canonical snapshots are DEFERRED while local edits are dirty or in
  *   flight: applying the server's content would overwrite edits the
- *   server has not seen yet. The newest deferred row applies once the
- *   local state settles (the accepted row for our own proposal already
- *   contains our edits, merged). On a genuine conflict the server
+ *   server has not seen yet. The newest deferred snapshot applies once
+ *   the local state settles (our own unchanged proposal is confirmed by
+ *   hash and needs no content at all). On a genuine conflict the server
  *   escalates: it sets the proposal aside as a parked review row (see
  *   review.ts and the framework review panel), and the canonical state
  *   wins locally once applied — a person then decides what to keep.
@@ -506,19 +500,12 @@ export function createDeRtcSessionCodec(
 				? ( decoded.properties as Record< string, unknown > )
 				: undefined;
 
-		// The revert-edit undo manager derives from canonical
-		// rows: feed it every row, tagging our own accepted proposals.
-		if (
-			DE_RTC_CONTENT_TYPE === update.type ||
-			DE_RTC_SNAPSHOT_TYPE === update.type
-		) {
-			if (
-				'string' === typeof decoded.version &&
-				'string' === typeof decoded.content
-			) {
-				// The descriptor builder's base-content ledger.
-				recordCanonicalContent( decoded.version, decoded.content );
-			}
+		// The revert-edit undo manager derives from canonical rows: feed
+		// it every snapshot (our own accepted proposals are fed from the
+		// announce path, where the hash confirms them).
+		if ( DE_RTC_SNAPSHOT_TYPE === update.type ) {
+			// The descriptor builder's base-content ledger.
+			recordCanonicalContent( decoded.version, decoded.content );
 			options.undoFeed?.noteRow( {
 				version: decoded.version,
 				baseVersion:
@@ -526,9 +513,7 @@ export function createDeRtcSessionCodec(
 						? decoded.baseVersion
 						: null,
 				content: decoded.content,
-				own:
-					DE_RTC_CONTENT_TYPE === update.type &&
-					decoded.authorClientId === doc.clientID,
+				own: false,
 				...( 'number' === typeof decoded.author
 					? { author: decoded.author }
 					: {} ),
@@ -667,73 +652,7 @@ export function createDeRtcSessionCodec(
 				if ( ! inFlight ) {
 					settleQueued();
 				}
-				return;
 			}
-
-			case DE_RTC_CONTENT_TYPE:
-				if (
-					decoded.authorClientId === doc.clientID &&
-					decoded.proposalId === inFlightProposalId
-				) {
-					// The accepted row for OUR CURRENT proposal, merged by
-					// the server: the in-flight slot is free again
-					// (dispositions confirm the same thing when this row and
-					// they share a response). Rows for older proposals fall
-					// through to the generic path — settling on them would
-					// free the slot early and let a peer row clobber
-					// unproposed local edits.
-					inFlight = false;
-					inFlightProposalId = null;
-					if ( decoded.content === lastProposedContent ) {
-						// Round-tripped unchanged: the doc already holds this
-						// content (plus any NEWER local keystrokes, which an
-						// application would clobber). Advance the version
-						// only, so the next coalesced chunk proposes against
-						// it instead of colliding with our own accepted edit.
-						// Properties the server merged from peers (values we
-						// did not touch since proposing) still incorporate.
-						pendingCanonical = null;
-						if ( rowProperties ) {
-							bridge.incorporateProperties(
-								rowProperties,
-								lastProposedProperties
-							);
-						}
-						bridge.advanceVersion( decoded.version );
-						settleQueued();
-						return;
-					}
-					if (
-						null !== lastProposedContent &&
-						bridge.incorporateCanonicalPreservingLocalEdits(
-							decoded.version,
-							decoded.content,
-							lastProposedContent
-						)
-					) {
-						// The server merged peers' work into our proposal:
-						// adopt their blocks, keep the blocks we edited since
-						// proposing (the next proposal reconciles them), and
-						// rebase onto the new version.
-						pendingCanonical = null;
-						if ( rowProperties ) {
-							bridge.incorporateProperties(
-								rowProperties,
-								lastProposedProperties
-							);
-						}
-						settleQueued();
-						return;
-					}
-				}
-				applyOrDeferCanonical(
-					decoded.version,
-					decoded.content,
-					rowProperties
-				);
-				if ( ! inFlight ) {
-					settleQueued();
-				}
 		}
 	}
 
@@ -761,8 +680,8 @@ export function createDeRtcSessionCodec(
 		// ONLY the disposition for the CURRENT in-flight proposal
 		// settles the slot: a previous proposal's disposition arrives in
 		// the response that follows the one whose rows already settled
-		// it, after a NEWER proposal may have gone out. Applied rows
-		// have already been (or will be) received as content rows;
+		// it, after a NEWER proposal may have gone out. Applied
+		// proposals have already been (or will be) announced;
 		// escalated/voided proposals are abandoned — the canonical state
 		// wins locally when it applies.
 		const settlesCurrent = dispositions.some(
