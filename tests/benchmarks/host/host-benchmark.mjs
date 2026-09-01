@@ -42,9 +42,9 @@
  *
  * Table rows: requests per minute, network traffic, server CPU per
  * minute, the share of one PHP worker held, options-cache
- * invalidations, database disk I/O, and (editing) peak PHP memory per
- * request. Caveats and how to read each metric live in
- * tests/benchmarks/README.md, which the report points at.
+ * invalidations, database queries, database disk I/O, and (editing)
+ * peak PHP memory per request. Caveats and how to read each metric
+ * live in tests/benchmarks/README.md, which the report points at.
  *
  * Arguments (bare key=value, like every benchmark here):
  *
@@ -60,7 +60,7 @@
  *                      run, in seconds 0-25 (0 = the plugin's defaults;
  *                      default: leave the site's setting alone; restored
  *                      afterwards)
- *   metrics=    comma list to report: requests,traffic,cpu,workers,memory,cache,diskio
+ *   metrics=    comma list to report: requests,traffic,cpu,workers,memory,cache,queries,diskio
  *               (default all)
  *   json=       write full results as JSON to this path
  *   headed=1    visible browser (debugging)
@@ -111,7 +111,7 @@ const HELP = `node tests/benchmarks/host/host-benchmark.mjs [key=value …]
                      default: leave the site's setting alone; restored
                      afterwards)
   metrics=    comma list of table rows to print:
-              requests,traffic,cpu,workers,memory,cache,diskio (default all)
+              requests,traffic,cpu,workers,memory,cache,queries,diskio (default all)
   json=       write full results as JSON to this path
   headed=1    visible browser (debugging)
 
@@ -176,6 +176,7 @@ const ALL_METRICS = [
 	'workers',
 	'memory',
 	'cache',
+	'queries',
 	'diskio',
 ];
 const METRICS = opts.metrics
@@ -761,7 +762,14 @@ async function main() {
 		);
 	}
 
-	const browser = await chromium.launch( { headless: ! HEADED } );
+	// Playwright's own signal handling would close the browser the
+	// instant Ctrl+C lands, killing the REST transport the site-state
+	// restore below runs through — so signals are handled here instead.
+	const browser = await chromium.launch( {
+		headless: ! HEADED,
+		handleSIGINT: false,
+		handleSIGTERM: false,
+	} );
 	const context = await browser.newContext();
 	const tag = { scenario: 'setup', approach: 'baseline' };
 	const measuredPages = new Set();
@@ -775,6 +783,72 @@ async function main() {
 	let pollChanged = false;
 	let adminPage = null;
 	let rest = null;
+
+	// The run mutates real site state (plugin activation, the polling
+	// interval, engine/transport, the experiment). Restoring it must
+	// survive Ctrl+C, or an interrupted run leaves the site quietly
+	// misconfigured — a 25 s polling interval left behind, for example,
+	// makes every later measurement wrong while looking healthy.
+	let cleanedUp = false;
+	const cleanup = async () => {
+		if ( cleanedUp ) {
+			return;
+		}
+		cleanedUp = true;
+		for ( const plugin of deactivated ) {
+			await setPluginStatus( rest, plugin, 'active' ).catch( ( error ) =>
+				console.warn(
+					`WARNING: could not reactivate ${ plugin }: ${ error }`
+				)
+			);
+		}
+		deactivated = [];
+		if ( pollChanged && rest ) {
+			await rest
+				.post( '/wp/v2/settings', {
+					body: { [ POLLING_INTERVAL_SETTING ]: originalPoll },
+				} )
+				.catch( ( error ) =>
+					console.warn(
+						`WARNING: failed to restore the polling interval: ${ error }`
+					)
+				);
+		}
+		if (
+			originalSettings &&
+			adminPage &&
+			lastActive &&
+			( originalSettings.previous.engine !== lastActive.engine ||
+				originalSettings.previous.transport !== lastActive.transport )
+		) {
+			await restoreSettings( adminPage, originalSettings.previous ).catch(
+				( error ) =>
+					console.warn(
+						`WARNING: failed to restore settings: ${ error }`
+					)
+			);
+		}
+		if ( false === experimentWasOn && rest ) {
+			const current = await rest.get( '/wp/v2/settings' );
+			const experiments = {
+				...( current.data?.[ 'gutenberg-experiments' ] || {} ),
+			};
+			delete experiments[ COLLABORATION_EXPERIMENT ];
+			await rest
+				.post( '/wp/v2/settings', {
+					body: { 'gutenberg-experiments': experiments },
+				} )
+				.catch( () => null );
+		}
+		await browser.close().catch( () => null );
+	};
+	const onSignal = ( signal ) => {
+		console.error( `\n${ signal } — restoring site state before exit…` );
+		cleanup().finally( () => process.exit( 130 ) );
+	};
+	process.once( 'SIGINT', () => onSignal( 'SIGINT' ) );
+	process.once( 'SIGTERM', () => onSignal( 'SIGTERM' ) );
+
 	try {
 		adminPage = await login( context );
 		rest = await makeRestClient( adminPage );
@@ -1068,53 +1142,7 @@ async function main() {
 			console.log( `\njson written: ${ JSON_PATH }` );
 		}
 	} finally {
-		// Whatever happened, put the site back: reactivate anything still
-		// deactivated, restore engine/transport, restore the experiment.
-		for ( const plugin of deactivated ) {
-			await setPluginStatus( rest, plugin, 'active' ).catch( ( error ) =>
-				console.warn(
-					`WARNING: could not reactivate ${ plugin }: ${ error }`
-				)
-			);
-		}
-		if ( pollChanged && rest ) {
-			await rest
-				.post( '/wp/v2/settings', {
-					body: { [ POLLING_INTERVAL_SETTING ]: originalPoll },
-				} )
-				.catch( ( error ) =>
-					console.warn(
-						`WARNING: failed to restore the polling interval: ${ error }`
-					)
-				);
-		}
-		if (
-			originalSettings &&
-			adminPage &&
-			lastActive &&
-			( originalSettings.previous.engine !== lastActive.engine ||
-				originalSettings.previous.transport !== lastActive.transport )
-		) {
-			await restoreSettings( adminPage, originalSettings.previous ).catch(
-				( error ) =>
-					console.warn(
-						`WARNING: failed to restore settings: ${ error }`
-					)
-			);
-		}
-		if ( false === experimentWasOn && rest ) {
-			const current = await rest.get( '/wp/v2/settings' );
-			const experiments = {
-				...( current.data?.[ 'gutenberg-experiments' ] || {} ),
-			};
-			delete experiments[ COLLABORATION_EXPERIMENT ];
-			await rest
-				.post( '/wp/v2/settings', {
-					body: { 'gutenberg-experiments': experiments },
-				} )
-				.catch( () => null );
-		}
-		await browser.close();
+		await cleanup();
 	}
 }
 
@@ -1223,6 +1251,13 @@ function printReport( report ) {
 			'options-cache invalidations/min',
 			span.baseServer?.optionWritesPerMinute ?? null,
 			span.server?.optionWritesPerMinute ?? null,
+			1
+		);
+		push(
+			'queries',
+			'DB queries/min',
+			span.baseServer?.dbQueriesPerMinute ?? null,
+			span.server?.dbQueriesPerMinute ?? null,
 			1
 		);
 		push(

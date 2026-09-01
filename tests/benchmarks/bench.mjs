@@ -100,7 +100,7 @@ Suites (suite=; default: host):
                                   plugin's defaults; default: leave the
                                   site's setting alone)
                metrics=    comma list of table rows to print:
-                           requests,traffic,cpu,workers,memory,cache,diskio (default all)
+                           requests,traffic,cpu,workers,memory,cache,queries,diskio (default all)
                json=       write full results as JSON to this path
                headed=1    visible browser (debugging)
   engines    The engine-decision matrix and invariant sweeps (in-process,

@@ -19,6 +19,8 @@ the difference against the workflow the plugin replaces:
   invalidates the shared options cache on hosts running a persistent
   object cache — the plugin's lock and counter primitives deliberately
   bypass that API, and this row proves it);
+- database queries per minute — every query the tagged requests ran,
+  WordPress load included, per person;
 - database disk I/O per minute — data-file reads, writes, and fsyncs,
   sampled from the database server's own InnoDB counters at span
   boundaries. Fsyncs are the number that dominates real-world burst
@@ -54,6 +56,28 @@ environments; the report's environment block names the versions to
 quote. The report measures ONE engine per run (`engine=`) so its
 baseline/sync comparison stays a single readable pair — comparing
 engines against each other is the engines suite's job.
+
+Fleet math: the load scales with open editor tabs, so capacity
+planning starts from the per-tab request rate. With the plugin active,
+an open editor polls every 4 seconds while its person edits alone
+(the solo cadence exists only to notice a second person arriving —
+`src/providers/http-polling/config.ts`), every second while
+collaborators are present, and every 25 seconds from a backgrounded
+tab. Per day that is roughly 21,600 requests for a focused solo tab,
+86,400 for a collaborating one, and 3,500 backgrounded; WordPress's
+own editor heartbeat — present with or without this plugin — is one
+request per 15 seconds focused, about 5,800 per day. For figures from
+your own run, multiply the idle table's requests/min by 1,440, then by
+your fleet's typical count of open editor tabs for the platform total.
+The Settings → Collaboration polling interval (or a
+`polling-interval=` run) stretches the with-collaborators term
+proportionally. Editing alone is the overwhelmingly common case, so
+the solo term dominates fleet totals: measure it directly with
+`windows=1`, where the delta is what the plugin costs an editor who is
+alone. Issue [#72](https://github.com/Automattic/gutenberg-sync-engines/issues/72)
+(presence detection through the existing heartbeat) would collapse
+that solo term to the heartbeat baseline — this report is the
+before/after measurement for it.
 
 It runs two real-browser phases against a live site (the tests env:
 `npm run env:tests start`). The **baseline** is the same number of

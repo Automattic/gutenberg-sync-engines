@@ -15,7 +15,7 @@ them under a version heading when a version ships.
     baseline/sync/delta/delta-% tables (editing and idle) of the
     numbers a hosting provider sizes for — requests per minute, network
     traffic, server CPU, PHP worker share, peak PHP memory,
-    options-cache invalidations, and database disk I/O (data-file
+    options-cache invalidations, database queries, and database disk I/O (data-file
     reads/writes and fsyncs from the database server's own counters) —
     plus storage held per collaborative post and a derived
     editors-per-worker capacity estimate. The baseline is the workflow
