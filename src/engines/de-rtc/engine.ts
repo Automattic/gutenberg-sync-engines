@@ -135,7 +135,7 @@ function createInertDeRtcCollectionCodec(
  * as an ordinary proposal in the shared history.
  *
  * Conflict review: a proposal the server escalates parks as a durable
- * `proposal-parked` row; the entity's review registry presents it
+ * `parked` row; the entity's review registry presents it
  * through the framework's review surface (panel, notices) via the
  * engine's `review` source (createSyncManager drives the handlers and
  * the resolution verbs from it), and a reviewer restores (overlaying

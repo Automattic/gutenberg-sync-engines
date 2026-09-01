@@ -25,7 +25,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 	 *   those rows to every client (including the author, who needs the
 	 *   authoritative transformed form). The engine log = intent rows in
 	 *   storage order; an intent's `baseSeq` counts intent rows.
-	 * - `proposal` (server → clients): JSON `{ intent, actorId, reason }` —
+	 * - `parked` (server → clients): JSON `{ intent, actorId, reason }` —
 	 *   an escalated intent parked for review (the proposal lane).
 	 * - `voided` (server → clients): JSON `{ intentId, reason }` — a voided
 	 *   disposition marker, persisted so redelivered intents settle
@@ -92,12 +92,12 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 		const UPDATE_TYPE_SNAPSHOT = 'snapshot';
 
 		/**
-		 * Update type: escalated intent in the proposal lane.
+		 * Update type: an escalated intent parked for review (the proposal lane).
 		 *
 		 * @since 7.2.0
 		 * @var string
 		 */
-		const UPDATE_TYPE_PROPOSAL = 'proposal';
+		const UPDATE_TYPE_PARKED = 'parked';
 
 		/**
 		 * Update type: persisted voided-disposition marker.
@@ -1036,7 +1036,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 		 * Retention invariant: rows from the previous checkpoint onward are
 		 * always kept, so any client within one full checkpoint interval of
 		 * the head resumes normally. Older clients hit the floor and receive
-		 * the retained checkpoint as a reset snapshot. Proposal rows that
+		 * the retained checkpoint as a reset snapshot. Parked rows that
 		 * would fall behind the floor are re-appended first — escalated work
 		 * parked for review must survive compaction.
 		 *

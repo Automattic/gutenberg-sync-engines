@@ -122,6 +122,11 @@ them under a version heading when a version ships.
 
 ### Changed
 
+-   Both engines with a review lane now store an edit set aside for review
+    under the same row type, `parked` (intent-log wrote `proposal`, de-rtc
+    wrote `proposal-parked`). The `resolved` row is unchanged. The name
+    shows in the browser wire inspector and the `wp collaboration rooms`
+    diagnostics; rooms written before this change are not migrated.
 -   Adopt and Reject decisions now travel only over their own REST route,
     for every content type. The server rejects the older way (folded in
     with ordinary sync messages) and the browser no longer falls back to
