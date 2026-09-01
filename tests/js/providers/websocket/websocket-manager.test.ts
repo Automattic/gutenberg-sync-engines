@@ -1,7 +1,14 @@
 /**
  * External dependencies
  */
-import { afterEach, describe, expect, it, jest } from '@jest/globals';
+import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	jest,
+} from '@jest/globals';
 
 /**
  * WordPress dependencies
@@ -18,6 +25,25 @@ import {
 import type { EngineSessionCodec } from '@wordpress/sync';
 
 jest.mock( '@wordpress/api-fetch' );
+
+// The solo-presence lane defaults to unavailable, so tests outside the
+// quiet-while-alone describe keep today's always-connected behavior.
+jest.mock( '../../../../src/providers/solo-presence', () => ( {
+	isSoloPresenceAvailable: jest.fn( () => false ),
+	othersLikely: jest.fn( () => false ),
+	onOthersArrived: jest.fn(),
+	setSyncClientId: jest.fn(),
+} ) );
+
+// eslint-disable-next-line @wordpress/dependency-group -- test-only import of the mock above.
+import * as soloPresence from '../../../../src/providers/solo-presence';
+
+const mockSoloPresence = soloPresence as unknown as {
+	isSoloPresenceAvailable: jest.Mock< () => boolean >;
+	othersLikely: jest.Mock< () => boolean >;
+	onOthersArrived: jest.Mock< ( cb: () => void ) => void >;
+	setSyncClientId: jest.Mock< ( id: number ) => void >;
+};
 
 // A minimal fake WebSocket capturing sends and exposing lifecycle triggers.
 class FakeWebSocket {
@@ -204,5 +230,106 @@ describe( 'websocket manager', () => {
 
 		websocketManager.unregisterRoom( 'postType/post:1' );
 		expect( ws.readyState ).toBe( 3 );
+	} );
+
+	describe( 'quiet while alone', () => {
+		beforeEach( () => {
+			jest.useFakeTimers();
+			mockSoloPresence.isSoloPresenceAvailable.mockReturnValue( true );
+			mockSoloPresence.othersLikely.mockReturnValue( false );
+		} );
+
+		afterEach( () => {
+			jest.clearAllTimers();
+			jest.useRealTimers();
+			mockSoloPresence.isSoloPresenceAvailable.mockReturnValue( false );
+			mockSoloPresence.othersLikely.mockReturnValue( false );
+			mockSoloPresence.onOthersArrived.mockReset();
+		} );
+
+		async function openSoloSocket() {
+			setup();
+			const onStatusChange = jest.fn();
+			const session = fakeSession();
+			websocketManager.registerRoom( {
+				room: 'postType/post:1',
+				session,
+				onStatusChange,
+			} );
+			await Promise.resolve();
+			await Promise.resolve();
+			const ws = FakeWebSocket.instances[ 0 ];
+			ws.open();
+			onStatusChange.mockClear();
+			return { ws, session, onStatusChange };
+		}
+
+		it( 'closes the idle solo socket without a reconnect loop', async () => {
+			const { ws, onStatusChange } = await openSoloSocket();
+
+			// Idle past the quiet threshold: the keepalive tick closes the
+			// socket instead of refreshing awareness forever.
+			await jest.advanceTimersByTimeAsync( 40000 );
+			expect( ws.readyState ).toBe( 3 );
+
+			// A deliberate quiet close: no disconnect status, no reconnect.
+			expect( onStatusChange ).not.toHaveBeenCalled();
+			await jest.advanceTimersByTimeAsync( 60000 );
+			expect( FakeWebSocket.instances ).toHaveLength( 1 );
+		} );
+
+		it( 'stays connected while peers or traffic are around', async () => {
+			const { ws } = await openSoloSocket();
+
+			// A peer's awareness arrives just before the threshold.
+			await jest.advanceTimersByTimeAsync( 25000 );
+			ws.receive( {
+				type: 'sync',
+				rooms: [
+					{
+						room: 'postType/post:1',
+						awareness: { 101: {}, 2: {} },
+						updates: [],
+						end_cursor: 1,
+					},
+				],
+			} );
+
+			// The idle clock restarted: 25 more seconds is not enough.
+			await jest.advanceTimersByTimeAsync( 25000 );
+			expect( ws.readyState ).toBe( FakeWebSocket.OPEN );
+
+			// Ten more with nothing new crosses it.
+			await jest.advanceTimersByTimeAsync( 10000 );
+			expect( ws.readyState ).toBe( 3 );
+		} );
+
+		it( 'reconnects when the presence lane reports an arrival', async () => {
+			const { ws } = await openSoloSocket();
+			await jest.advanceTimersByTimeAsync( 40000 );
+			expect( ws.readyState ).toBe( 3 );
+
+			expect( mockSoloPresence.onOthersArrived ).toHaveBeenCalled();
+			mockSoloPresence.othersLikely.mockReturnValue( true );
+			mockSoloPresence.onOthersArrived.mock.calls[ 0 ][ 0 ]();
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect( FakeWebSocket.instances ).toHaveLength( 2 );
+		} );
+
+		it( 'reconnects for a local update made while quiet', async () => {
+			const { ws, session } = await openSoloSocket();
+			await jest.advanceTimersByTimeAsync( 40000 );
+			expect( ws.readyState ).toBe( 3 );
+
+			(
+				session as unknown as { emitLocal: ( u: unknown ) => void }
+			 ).emitLocal( { type: 'intent', data: 'CCCC' } );
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect( FakeWebSocket.instances ).toHaveLength( 2 );
+		} );
 	} );
 } );

@@ -46,6 +46,15 @@ jest.mock( '../../../../src/providers/http-polling/utils', () => ( {
 	postSyncUpdateNonBlocking: jest.fn(),
 } ) );
 
+// The solo-presence lane defaults to unavailable, so every test outside the
+// quiet-while-alone describe keeps today's always-on polling behavior.
+jest.mock( '../../../../src/providers/solo-presence', () => ( {
+	isSoloPresenceAvailable: jest.fn( () => false ),
+	othersLikely: jest.fn( () => false ),
+	onOthersArrived: jest.fn(),
+	setSyncClientId: jest.fn(),
+} ) );
+
 interface PollingManager {
 	registerRoom: ( options: {
 		room: string;
@@ -168,6 +177,12 @@ describe( 'polling-manager', () => {
 		typeof import('../../../../src/providers/http-polling/utils').postSyncUpdateNonBlocking
 	>;
 	let mockApplyFilters: jest.Mock;
+	let mockSoloPresence: {
+		isSoloPresenceAvailable: jest.Mock< () => boolean >;
+		othersLikely: jest.Mock< () => boolean >;
+		onOthersArrived: jest.Mock< ( cb: () => void ) => void >;
+		setSyncClientId: jest.Mock< ( id: number ) => void >;
+	};
 	let setLongPollMode: ( enabled: boolean ) => void;
 	let inspector: typeof import('../../../../src/providers/http-polling/../../../src/debug/inspector').syncDebugApi;
 
@@ -185,6 +200,7 @@ describe( 'polling-manager', () => {
 			mockPostSyncUpdateNonBlocking =
 				require( '../../../../src/providers/http-polling/utils' ).postSyncUpdateNonBlocking;
 			mockApplyFilters = require( '@wordpress/hooks' ).applyFilters;
+			mockSoloPresence = require( '../../../../src/providers/solo-presence' );
 			// Same isolated registry as the polling manager: the inspector
 			// buffer must be the instance the tap writes to.
 			inspector =
@@ -2678,6 +2694,199 @@ describe( 'polling-manager', () => {
 			expect(
 				resent.rooms[ 0 ].updates.map( ( entry ) => entry.data )
 			).toContain( update.data );
+		} );
+	} );
+
+	describe( 'quiet while alone', () => {
+		const emptyResponse = {
+			rooms: [
+				{
+					room: 'test-room',
+					end_cursor: 1,
+					awareness: { 1: {} },
+					updates: [],
+				},
+			],
+		};
+
+		// A codec that keeps its queue draining while solo (like intent-log
+		// and yjs-server) but starts with nothing queued.
+		function createSoloSession() {
+			const session = createMockSession( 1 );
+			session.getInitialUpdates = jest.fn( () => [] );
+			return { ...session, syncWhileSolo: true };
+		}
+
+		function registerSoloRoom( session = createSoloSession() ) {
+			pollingManager.registerRoom( {
+				room: 'test-room',
+				session,
+				log: jest.fn(),
+				onStatusChange: jest.fn(),
+			} );
+			return session;
+		}
+
+		beforeEach( () => {
+			mockSoloPresence.isSoloPresenceAvailable.mockReturnValue( true );
+			mockSoloPresence.othersLikely.mockReturnValue( false );
+			mockPostSyncUpdate.mockResolvedValue( emptyResponse );
+		} );
+
+		it( 'stops polling after two settled solo cycles', async () => {
+			registerSoloRoom();
+
+			// Immediate poll plus one scheduled cycle: two settled cycles.
+			await jest.advanceTimersByTimeAsync( 0 );
+			await jest.advanceTimersByTimeAsync( 4000 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+
+			// The loop has stopped: no further requests, ever.
+			await jest.advanceTimersByTimeAsync( 60000 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+		} );
+
+		it( 'keeps polling while the lane is unavailable', async () => {
+			mockSoloPresence.isSoloPresenceAvailable.mockReturnValue( false );
+			registerSoloRoom();
+
+			await jest.advanceTimersByTimeAsync( 0 );
+			await jest.advanceTimersByTimeAsync( 40000 );
+			expect(
+				mockPostSyncUpdate.mock.calls.length
+			).toBeGreaterThanOrEqual( 10 );
+		} );
+
+		it( 'keeps polling while the lane believes others are around', async () => {
+			mockSoloPresence.othersLikely.mockReturnValue( true );
+			registerSoloRoom();
+
+			await jest.advanceTimersByTimeAsync( 0 );
+			await jest.advanceTimersByTimeAsync( 40000 );
+			expect(
+				mockPostSyncUpdate.mock.calls.length
+			).toBeGreaterThanOrEqual( 10 );
+		} );
+
+		it( 'delivered rows reset the settle count', async () => {
+			mockPostSyncUpdate.mockResolvedValueOnce( {
+				rooms: [
+					{
+						room: 'test-room',
+						end_cursor: 1,
+						awareness: { 1: {} },
+						updates: [ { data: '', type: 'snapshot' } ],
+					},
+				],
+			} );
+			registerSoloRoom();
+
+			// Cycle 1 delivers a row, so settling takes two MORE cycles.
+			await jest.advanceTimersByTimeAsync( 0 );
+			await jest.advanceTimersByTimeAsync( 4000 );
+			await jest.advanceTimersByTimeAsync( 4000 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 3 );
+
+			await jest.advanceTimersByTimeAsync( 60000 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 3 );
+		} );
+
+		it( 'never goes quiet with a collaborator in the room', async () => {
+			mockPostSyncUpdate.mockResolvedValue( {
+				rooms: [
+					{
+						room: 'test-room',
+						end_cursor: 1,
+						awareness: { 1: {}, 2: {} },
+						updates: [],
+					},
+				],
+			} );
+			registerSoloRoom();
+
+			await jest.advanceTimersByTimeAsync( 0 );
+			await jest.advanceTimersByTimeAsync( 40000 );
+			expect(
+				mockPostSyncUpdate.mock.calls.length
+			).toBeGreaterThanOrEqual( 10 );
+		} );
+
+		it( 'wakes when the presence lane reports an arrival', async () => {
+			registerSoloRoom();
+			expect( mockSoloPresence.onOthersArrived ).toHaveBeenCalled();
+			const wake = mockSoloPresence.onOthersArrived.mock.calls[ 0 ][ 0 ];
+
+			await jest.advanceTimersByTimeAsync( 0 );
+			await jest.advanceTimersByTimeAsync( 4000 );
+			await jest.advanceTimersByTimeAsync( 60000 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+
+			// Someone joined: the belief flips and the wake callback fires.
+			mockSoloPresence.othersLikely.mockReturnValue( true );
+			wake();
+			await jest.advanceTimersByTimeAsync( 0 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 3 );
+
+			// And polling keeps running now.
+			await jest.advanceTimersByTimeAsync( 8000 );
+			expect(
+				mockPostSyncUpdate.mock.calls.length
+			).toBeGreaterThanOrEqual( 4 );
+		} );
+
+		it( 'wakes to drain a sendable local update, then settles again', async () => {
+			const session = registerSoloRoom();
+
+			await jest.advanceTimersByTimeAsync( 0 );
+			await jest.advanceTimersByTimeAsync( 4000 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+
+			const update = createMockUpdate( 4 );
+			getOnLocalUpdate( session )( update, 4 );
+			await jest.advanceTimersByTimeAsync( 0 );
+
+			// The wake poll carried the update.
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 3 );
+			const sent = mockPostSyncUpdate.mock.calls[ 2 ][ 0 ] as {
+				rooms: Array< { updates: Array< { data: string } > } >;
+			};
+			expect(
+				sent.rooms[ 0 ].updates.map( ( entry ) => entry.data )
+			).toContain( update.data );
+
+			// Two settled cycles later the loop stops again.
+			await jest.advanceTimersByTimeAsync( 4000 );
+			await jest.advanceTimersByTimeAsync( 4000 );
+			const settledCalls = mockPostSyncUpdate.mock.calls.length;
+			await jest.advanceTimersByTimeAsync( 60000 );
+			expect( mockPostSyncUpdate.mock.calls.length ).toBe( settledCalls );
+		} );
+
+		it( 'ignores a local update held by a paused queue', async () => {
+			// No syncWhileSolo: the queue stays paused while solo.
+			const session = createMockSession( 1 );
+			session.getInitialUpdates = jest.fn( () => [] );
+			pollingManager.registerRoom( {
+				room: 'test-room',
+				session,
+				log: jest.fn(),
+				onStatusChange: jest.fn(),
+			} );
+
+			await jest.advanceTimersByTimeAsync( 0 );
+			await jest.advanceTimersByTimeAsync( 4000 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+
+			getOnLocalUpdate( session )( createMockUpdate( 4 ), 4 );
+			await jest.advanceTimersByTimeAsync( 60000 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+		} );
+
+		it( 'names the primary session client id for the presence probe', () => {
+			registerSoloRoom();
+			expect( mockSoloPresence.setSyncClientId ).toHaveBeenCalledWith(
+				1
+			);
 		} );
 	} );
 } );

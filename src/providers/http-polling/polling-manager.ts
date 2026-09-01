@@ -42,6 +42,12 @@ import {
 	postSyncUpdateNonBlocking,
 	rotateWindow,
 } from './utils';
+import {
+	isSoloPresenceAvailable,
+	onOthersArrived,
+	othersLikely,
+	setSyncClientId,
+} from '../solo-presence';
 
 type LogFunction = (
 	message: string,
@@ -351,6 +357,43 @@ let longPollMode = false;
 let inFlightParkController: AbortController | null = null;
 let parkAbortedForLocalUpdate = false;
 
+/*
+ * Quiet-while-alone: once a solo session has nothing left to say — this many
+ * consecutive polls that sent nothing and received nothing — the loop stops
+ * scheduling itself instead of idling against the server forever. It wakes on
+ * a sendable local update (see onLocalUpdate) or when the solo-presence lane
+ * reports another participant (a heartbeat answer or the page-load flag).
+ * Only active when the solo-presence lane is available; otherwise the loop
+ * keeps today's always-on cadence.
+ */
+const SETTLED_SOLO_CYCLES_BEFORE_QUIET = 2;
+let settledSoloCycles = 0;
+let soloWakeInstalled = false;
+
+/**
+ * Whether any room has updates a poll would actually send (paused queues
+ * hold their updates back, so they don't count).
+ */
+function hasPendingSendableUpdates(): boolean {
+	for ( const state of roomStates.values() ) {
+		if ( state.updateQueue.peek().length > 0 ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * Restarts the stopped poll loop (a quiet solo session waking up).
+ */
+function wakeFromQuiet(): void {
+	if ( isPolling || pollingTimeoutId || 0 === roomStates.size ) {
+		return;
+	}
+	settledSoloCycles = 0;
+	poll();
+}
+
 /**
  * Enables long-poll cadence on the shared manager.
  *
@@ -651,9 +694,21 @@ function poll(): void {
 			// Reset before checking each room
 			hasCollaborators = false;
 
+			// Whether this cycle delivered anything (rows, acks, or a
+			// compaction request). Feeds the quiet-while-alone decision.
+			let receivedActivity = false;
+
 			rooms.forEach( ( room ) => {
 				if ( ! roomStates.has( room.room ) ) {
 					return;
+				}
+
+				if (
+					room.updates.length > 0 ||
+					( room.dispositions?.length ?? 0 ) > 0 ||
+					room.should_compact
+				) {
+					receivedActivity = true;
 				}
 
 				const roomState = roomStates.get( room.room )!;
@@ -801,6 +856,33 @@ function poll(): void {
 				pollInterval = POLLING_INTERVAL_IN_MS;
 			} else {
 				pollInterval = POLLING_INTERVAL_BACKGROUND_TAB_IN_MS;
+			}
+
+			/*
+			 * Quiet-while-alone: a solo session whose pipeline has settled
+			 * (nothing sent, nothing received, nothing queued to send, for
+			 * SETTLED_SOLO_CYCLES_BEFORE_QUIET consecutive cycles) stops
+			 * scheduling polls entirely. The solo-presence lane — riding the
+			 * heartbeat WordPress already sends from the editor — wakes it
+			 * when another participant appears; a sendable local update wakes
+			 * it too (see onLocalUpdate). Never engages while a collaborator
+			 * is visible, while the presence lane believes someone else is
+			 * around, or when the lane is unavailable on this page.
+			 */
+			if ( isPureReceive && ! receivedActivity ) {
+				settledSoloCycles++;
+			} else {
+				settledSoloCycles = 0;
+			}
+			if (
+				isSoloPresenceAvailable() &&
+				! hasCollaborators &&
+				! othersLikely() &&
+				settledSoloCycles >= SETTLED_SOLO_CYCLES_BEFORE_QUIET &&
+				! hasPendingSendableUpdates()
+			) {
+				isPolling = false;
+				return;
 			}
 		} catch ( error ) {
 			if ( parkAbortedForLocalUpdate ) {
@@ -1090,6 +1172,17 @@ function registerRoom( {
 
 		updateQueue.add( update );
 
+		// A quiet solo session wakes to drain sendable work (a paused queue
+		// holds its updates back, so it never wakes the loop).
+		if (
+			! isPolling &&
+			! pollingTimeoutId &&
+			updateQueue.peek().length > 0
+		) {
+			wakeFromQuiet();
+			return;
+		}
+
 		if ( longPollMode && inFlightParkController ) {
 			// Wake the parked poll: local work must not wait out the hold.
 			parkAbortedForLocalUpdate = true;
@@ -1133,6 +1226,18 @@ function registerRoom( {
 
 	session.onLocalUpdate( onLocalUpdate );
 	roomStates.set( room, roomState );
+
+	if ( isSoloPresenceAvailable() ) {
+		// The presence probe names the primary session's client id so the
+		// server can tell this tab's own awareness entry apart from a peer's.
+		if ( isPrimaryRoom ) {
+			setSyncClientId( session.clientId );
+		}
+		if ( ! soloWakeInstalled ) {
+			soloWakeInstalled = true;
+			onOthersArrived( wakeFromQuiet );
+		}
+	}
 
 	if ( ! areListenersRegistered ) {
 		window.addEventListener( 'beforeunload', handleBeforeUnload );
@@ -1184,6 +1289,7 @@ function unregisterRoom(
 		hasCheckedConnectionLimit = false;
 		consecutiveFailures = 0;
 		roomOverflowOffset = 0;
+		settledSoloCycles = 0;
 		syncRequestBodySizeLimit = MAX_SYNC_REQUEST_BODY_SIZE_IN_BYTES;
 	}
 }
@@ -1201,6 +1307,9 @@ function retryNow(): void {
 		clearTimeout( pollingTimeoutId );
 		pollingTimeoutId = null;
 		poll();
+	} else if ( ! isPolling && roomStates.size > 0 ) {
+		// A stopped loop (quiet solo session) restarts on a manual retry.
+		wakeFromQuiet();
 	}
 }
 

@@ -19,6 +19,12 @@ import {
 	registerDebugSession,
 	unregisterDebugSession,
 } from '../../debug/inspector';
+import {
+	isSoloPresenceAvailable,
+	onOthersArrived,
+	othersLikely,
+	setSyncClientId,
+} from '../solo-presence';
 
 /**
  * A codec-driven WebSocket transport, symmetric with the HTTP polling
@@ -64,6 +70,23 @@ let reconnectAttempts = 0;
 let reconnectTimer: ReturnType< typeof setTimeout > | null = null;
 let awarenessTimer: ReturnType< typeof setInterval > | null = null;
 let connecting = false;
+
+/*
+ * Quiet-while-alone: a solo session whose socket has moved nothing and seen
+ * no peers for this long closes the socket instead of keeping a per-tab
+ * daemon connection alive forever. The solo-presence lane (riding the
+ * WordPress heartbeat) reopens it when another participant appears; a local
+ * update reopens it too (sendUpdate already reconnects a closed socket).
+ * Only engages when the solo-presence lane is available on this page.
+ */
+const QUIET_AFTER_IDLE_MS = 30000;
+let quietHold = false;
+let lastActivityAt = 0;
+let soloWakeInstalled = false;
+
+function noteActivity(): void {
+	lastActivityAt = Date.now();
+}
 
 /**
  * Fetches a one-time WebSocket token.
@@ -148,6 +171,12 @@ function sendFrame( pending: Map< string, EngineUpdate[] > ): void {
 		return;
 	}
 	socket.send( buildSyncFrame( pending ) );
+	for ( const updates of pending.values() ) {
+		if ( updates.length > 0 ) {
+			noteActivity();
+			break;
+		}
+	}
 	if ( ! isSyncDebugEnabled() ) {
 		return;
 	}
@@ -231,6 +260,16 @@ function applyServerRoom( serverRoom: ServerRoom ): void {
 
 	state.session.applyRemoteAwareness( serverRoom.awareness );
 
+	// Peers in the room, delivered rows, or acks all count as company or
+	// traffic for the quiet-while-alone idle clock.
+	if (
+		Object.keys( serverRoom.awareness ?? {} ).length > 1 ||
+		( serverRoom.updates?.length ?? 0 ) > 0 ||
+		( serverRoom.dispositions?.length ?? 0 ) > 0
+	) {
+		noteActivity();
+	}
+
 	const responses: EngineUpdate[] = [];
 	for ( const update of serverRoom.updates ?? [] ) {
 		try {
@@ -302,6 +341,21 @@ function sendAwareness(): void {
 	) {
 		return;
 	}
+
+	// Quiet-while-alone: instead of refreshing awareness forever for a tab
+	// nobody shares a room with, close the socket once the session has been
+	// idle and alone long enough. The solo-presence lane or a local update
+	// reopens it.
+	if (
+		isSoloPresenceAvailable() &&
+		! othersLikely() &&
+		Date.now() - lastActivityAt > QUIET_AFTER_IDLE_MS
+	) {
+		quietHold = true;
+		socket.close();
+		return;
+	}
+
 	sendFrame( new Map() );
 }
 
@@ -315,6 +369,10 @@ function connect(): void {
 	if ( socket && WebSocket.OPEN === socket.readyState ) {
 		return;
 	}
+	// Any explicit connect intent ends a quiet hold and restarts the idle
+	// clock.
+	quietHold = false;
+	noteActivity();
 	connecting = true;
 	rooms.forEach( ( state ) =>
 		state.onStatusChange( { status: 'connecting' } )
@@ -366,6 +424,11 @@ function onClose(): void {
 		clearInterval( awarenessTimer );
 		awarenessTimer = null;
 	}
+	if ( quietHold ) {
+		// A deliberate quiet close: no error to surface, no reconnect loop.
+		// The session stays usable; wake paths call connect() directly.
+		return;
+	}
 	rooms.forEach( ( state ) =>
 		state.onStatusChange( { status: 'disconnected' } )
 	);
@@ -410,6 +473,22 @@ export interface WebSocketManager {
  * @param {WebSocketRoomOptions} options Room options.
  */
 function registerRoom( options: WebSocketRoomOptions ): void {
+	if ( isSoloPresenceAvailable() ) {
+		// The first room is the primary entity; its client id lets the
+		// server tell this tab's own awareness entry apart from a peer's.
+		if ( 0 === rooms.size ) {
+			setSyncClientId( options.session.clientId );
+		}
+		if ( ! soloWakeInstalled ) {
+			soloWakeInstalled = true;
+			onOthersArrived( () => {
+				if ( rooms.size > 0 ) {
+					connect();
+				}
+			} );
+		}
+	}
+
 	const state: RoomState = {
 		room: options.room,
 		session: options.session,
@@ -482,4 +561,7 @@ export function resetWebSocketManagerForTesting(): void {
 	socket = null;
 	connecting = false;
 	reconnectAttempts = 0;
+	quietHold = false;
+	lastActivityAt = 0;
+	soloWakeInstalled = false;
 }
