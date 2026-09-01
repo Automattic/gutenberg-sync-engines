@@ -61,15 +61,6 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		const AWARENESS_TIMEOUT = 30;
 
 		/**
-		 * Threshold used to signal clients to send a compaction update.
-		 *
-		 * @since 7.0.0
-		 * @deprecated 7.2.0 Compaction policy is engine-owned.
-		 * @var int
-		 */
-		const COMPACTION_THRESHOLD = 50;
-
-		/**
 		 * Maximum total size (in bytes) of the request body.
 		 *
 		 * @since 7.0.0
