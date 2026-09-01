@@ -59,6 +59,15 @@ From `config.ts`:
 - **Background tab**: 25 000 ms (kept below the server's 30 s awareness
   timeout so backgrounded tabs are not marked disconnected).
 
+The solo cadence only runs while there is something to say. Once a solo
+session's pipeline settles — nothing sent, nothing received, nothing
+queued to send, for two consecutive cycles — the loop stops scheduling
+polls entirely. A sendable local update wakes it to drain and settle
+again, and the solo-presence lane (`../solo-presence.ts`, riding the
+WordPress heartbeat) wakes it permanently when another participant
+appears. Without the lane's injected settings or the heartbeat API, the
+loop keeps the always-on cadence above.
+
 Site administrators can *slow down* active-tab polling with the "Polling
 interval" field on Settings → Collaboration (1-25 seconds; 0 keeps the
 defaults). The chosen interval becomes the with-collaborators cadence; solo
