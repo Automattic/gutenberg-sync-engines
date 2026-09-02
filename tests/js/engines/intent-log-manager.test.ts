@@ -72,6 +72,7 @@ import {
 	createDocument,
 	getBlock,
 } from '../../../src/engines/intent-log/document.js';
+import type { BlockSpec } from '../../../src/engines/intent-log/document.js';
 // The frozen core's real server: the regression harness below runs two
 // managers against it to reproduce cross-client schedules.
 import {
@@ -130,7 +131,7 @@ function makeHandlers(): RecordHandlers & { edits: unknown[] } {
 }
 
 const snapshotRow = (
-	blocks: Array< Record< string, unknown > >,
+	blocks: BlockSpec[],
 	props: Record< string, unknown > = {}
 ) => ( {
 	data: JSON.stringify( { doc: createDocument( blocks, props ) } ),

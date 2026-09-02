@@ -44,6 +44,51 @@ import {
 import { mintSyncId } from '../../../../src/engines/intent-log/sync-id.js';
 import { genesisSyncId } from './genesis-sync-id.js';
 
+/** @typedef {import('../../../../src/engines/intent-log/engine-types').EngineDocument} EngineDocument */
+/** @typedef {import('../../../../src/engines/intent-log/engine-types').EngineBlock} EngineBlock */
+/** @typedef {import('../../../../src/engines/intent-log/engine-types').EngineField} EngineField */
+/** @typedef {import('../../../../src/engines/intent-log/engine-types').IntentEnvelope} IntentEnvelope */
+/** @typedef {import('../../../../src/engines/intent-log/engine-types').IntentDisposition} IntentDisposition */
+/** @typedef {import('../../../../src/engines/intent-log/engine-types').ClientReplica} ClientReplica */
+/** @typedef {import('../../../../src/engines/intent-log/engine-types').IntentLogServer} IntentLogServer */
+
+/**
+ * Seeded RNG returning [0, 1).
+ *
+ * @typedef {() => number} Rng
+ */
+
+/** @typedef {import('./genesis-sync-id.js').GenesisRevision} Revision */
+
+/**
+ * One row of a flush's prediction report: what the replica predicted for
+ * an intent versus what the server actually decided.
+ *
+ * @typedef {import('../../../../src/engines/intent-log/client.js').FlushReportRow} PredictionRow
+ */
+
+/**
+ * The last batch a client flushed, kept for at-least-once redelivery.
+ *
+ * @typedef {Object} LastFlush
+ * @property {IntentEnvelope[]}                   batch        Intents as flushed.
+ * @property {Array<IntentDisposition|undefined>} dispositions Server dispositions,
+ *                                                             in flush order (the
+ *                                                             report fills every
+ *                                                             row's `actual`).
+ */
+
+/**
+ * Result of one seeded run.
+ *
+ * @typedef {Object} SimulationResult
+ * @property {IntentLogServer}             server     Server state after the drain.
+ * @property {ClientReplica[]}             clients    Drained replicas.
+ * @property {Map<string, IntentEnvelope>} authored   Every authored intent by intentId.
+ * @property {EngineDocument}              finalDoc   Fresh replay of the full log.
+ * @property {string[]}                    violations Oracle violations (empty = clean run).
+ */
+
 /**
  * Small, high-quality seeded PRNG (mulberry32).
  *
@@ -82,17 +127,29 @@ const WORDS = [
 const FORMATS = [ 'bold', 'em', 'code' ];
 const ATTR_KEYS = [ 'align', 'dropCap', 'fontSize' ];
 
+/**
+ * @template T
+ * @param {Rng}              rng  Seeded RNG.
+ * @param {ReadonlyArray<T>} list Candidates (non-empty).
+ * @return {T} One element.
+ */
 const pick = ( rng, list ) => list[ Math.floor( rng() * list.length ) ];
+/**
+ * @param {Rng}    rng          Seeded RNG.
+ * @param {number} maxExclusive Upper bound (exclusive).
+ * @return {number} Integer in [0, maxExclusive).
+ */
 const randInt = ( rng, maxExclusive ) => Math.floor( rng() * maxExclusive );
 
 /**
  * A "legacy post" genesis document: block identity minted deterministically
  * from the revision descriptor, exactly as independent clients would.
  *
- * @param {Object} revision { postId, revisionId }.
- * @return {Object} Document.
+ * @param {Revision} revision { postId, revisionId }.
+ * @return {EngineDocument} Document.
  */
 export function makeGenesisDoc( revision ) {
+	/** @param {number[]} path */
 	const id = ( path ) => genesisSyncId( revision, path );
 	return createDocument( [
 		{
@@ -137,14 +194,21 @@ export function makeGenesisDoc( revision ) {
 /**
  * Creates a virtual client (a real replica; see src/engines/intent-log/client.js).
  *
- * @param {string} actorId    Actor id.
- * @param {Object} initialDoc Genesis document.
- * @return {Object} Client state.
+ * @param {string}         actorId    Actor id.
+ * @param {EngineDocument} initialDoc Genesis document.
+ * @return {ClientReplica} Client state.
  */
 export function makeClient( actorId, initialDoc ) {
 	return createClient( actorId, initialDoc );
 }
 
+/**
+ * Envelope fields for the client's next intent, authored at its cursor.
+ *
+ * @param {ClientReplica}      client  Client.
+ * @param {{ txnId?: string }} [extra] Extra envelope fields (atomic group).
+ * @return {{ actorId: string, baseSeq: number, intentId: string, txnId?: string }} Envelope.
+ */
 function envelopeFor( client, extra = {} ) {
 	return {
 		actorId: client.actorId,
@@ -165,11 +229,11 @@ const PROPERTY_NAMES = [ 'title', 'excerpt' ];
  * opt-in: enabling them consumes extra RNG draws, so the frozen vector
  * seeds (generated without them) stay byte-identical.
  *
- * @param {Object}       client                Client.
- * @param {() => number} rng                   Seeded RNG.
- * @param {Object}       [options]             Options.
- * @param {boolean}      [options.propertyOps] Author set_property intents.
- * @return {Object[]} The authored intents (empty if the document is empty).
+ * @param {ClientReplica} client                Client.
+ * @param {Rng}           rng                   Seeded RNG.
+ * @param {Object}        [options]             Options.
+ * @param {boolean}       [options.propertyOps] Author set_property intents.
+ * @return {IntentEnvelope[]} The authored intents (empty if the document is empty).
  */
 export function authorRandomIntent( client, rng, options = {} ) {
 	if ( options.propertyOps && rng() < 0.1 ) {
@@ -191,11 +255,13 @@ export function authorRandomIntent( client, rng, options = {} ) {
 		return [];
 	}
 	const syncId = pick( rng, ids );
-	const block = getBlock( client.doc, syncId );
+	// Ids come from allSyncIds( client.doc ), so the lookup cannot miss.
+	const block = /** @type {EngineBlock} */ ( getBlock( client.doc, syncId ) );
 	const field = pick( rng, Object.keys( block.fields ) );
 	const fieldText = block.fields[ field ].text;
 	const textLength = fieldText.length;
 	const roll = rng();
+	/** @type {IntentEnvelope|null} */
 	let intent = null;
 
 	if ( roll < 0.24 ) {
@@ -302,7 +368,10 @@ export function authorRandomIntent( client, rng, options = {} ) {
 			envelopeFor( client )
 		);
 	} else if ( roll < 0.79 ) {
-		const location = locateBlock( client.doc, syncId );
+		const location =
+			/** @type {NonNullable<ReturnType<typeof locateBlock>>} */ (
+				locateBlock( client.doc, syncId )
+			);
 		const nextSibling = location.siblings[ location.index + 1 ];
 		if ( nextSibling && nextSibling.children.length === 0 ) {
 			intent = createIntent(
@@ -366,7 +435,9 @@ export function authorRandomIntent( client, rng, options = {} ) {
 			envelopeFor( client, { txnId } )
 		);
 		authorIntent( client, first );
-		const otherBlock = getBlock( client.doc, other );
+		const otherBlock = /** @type {EngineBlock} */ (
+			getBlock( client.doc, other )
+		);
 		const otherField = pick( rng, Object.keys( otherBlock.fields ) );
 		const second = createIntent(
 			IntentTypes.INSERT_TEXT,
@@ -396,9 +467,9 @@ export function authorRandomIntent( client, rng, options = {} ) {
  * Full sync cycle: catch up (rebasing pending work), push the outbox, catch
  * up over the accepted entries. Returns the per-intent prediction report.
  *
- * @param {Object} server Server.
- * @param {Object} client Client.
- * @return {Object[]} { intentId, predicted, actual } per flushed intent.
+ * @param {IntentLogServer} server Server.
+ * @param {ClientReplica}   client Client.
+ * @return {PredictionRow[]} { intentId, predicted, actual } per flushed intent.
  */
 export function syncClient( server, client ) {
 	return flushClient( server, client );
@@ -407,21 +478,27 @@ export function syncClient( server, client ) {
 /**
  * Runs one seeded schedule.
  *
- * @param {Object}  options               Options.
- * @param {number}  options.seed          PRNG seed.
- * @param {number}  [options.steps]       Schedule steps.
- * @param {number}  [options.clientCount] Number of clients.
- * @param {number}  [options.agentChance] Chance per step of a server-agent
- *                                        write (bot/CLI path, authored at
- *                                        head).
- * @param {boolean} [options.propertyOps] Author entity set_property intents
- *                                        (opt-in: changes RNG draws, so the
- *                                        pre-entity vector seeds keep it
- *                                        off).
- * @param {Array}   [options.recorder]    Ingest transcript recorder; every
- *                                        serverIngestBatch call is pushed
- *                                        onto it (vector generation).
- * @return {Object} { server, clients, authored, finalDoc, violations }.
+ * @param {Object}                  options               Options.
+ * @param {number}                  options.seed          PRNG seed.
+ * @param {number}                  [options.steps]       Schedule steps.
+ * @param {number}                  [options.clientCount] Number of clients.
+ * @param {number}                  [options.agentChance] Chance per step of a
+ *                                                        server-agent write
+ *                                                        (bot/CLI path,
+ *                                                        authored at head).
+ * @param {boolean}                 [options.propertyOps] Author entity
+ *                                                        set_property intents
+ *                                                        (opt-in: changes RNG
+ *                                                        draws, so the
+ *                                                        pre-entity vector
+ *                                                        seeds keep it off).
+ * @param {IntentEnvelope[][]|null} [options.recorder]    Ingest transcript
+ *                                                        recorder; every
+ *                                                        serverIngestBatch
+ *                                                        call is pushed onto
+ *                                                        it (vector
+ *                                                        generation).
+ * @return {SimulationResult} { server, clients, authored, finalDoc, violations }.
  */
 export function runSimulation( {
 	seed,
@@ -442,10 +519,14 @@ export function runSimulation( {
 		makeClient( `actor-${ i }`, initialDoc )
 	);
 	const agent = makeClient( 'agent', initialDoc );
+	/** @type {Map<string, IntentEnvelope>} */
 	const authored = new Map();
+	/** @type {string[]} */
 	const violations = [];
+	/** @type {Map<string, LastFlush>} */
 	const lastFlush = new Map(); // actorId → { batch, dispositions }.
 
+	/** @param {PredictionRow[]} report */
 	const checkPredictions = ( report ) => {
 		for ( const row of report ) {
 			const predicted = JSON.stringify( row.predicted );
@@ -458,6 +539,7 @@ export function runSimulation( {
 		}
 	};
 
+	/** @param {ClientReplica} client */
 	const flush = ( client ) => {
 		const batch = [ ...client.outbox ];
 		const report = syncClient( server, client );
@@ -478,7 +560,9 @@ export function runSimulation( {
 			const ids = allSyncIds( agent.doc );
 			if ( ids.length > 0 ) {
 				const targetId = pick( rng, ids );
-				const targetBlock = getBlock( agent.doc, targetId );
+				const targetBlock = /** @type {EngineBlock} */ (
+					getBlock( agent.doc, targetId )
+				);
 				const intent = createIntent(
 					IntentTypes.REPLACE_ATTR_CONTENT,
 					{
@@ -507,7 +591,9 @@ export function runSimulation( {
 		} else if ( action < 0.34 && lastFlush.has( client.actorId ) ) {
 			// At-least-once transport: redeliver the last flushed batch and
 			// hold the server to idempotency.
-			const { batch, dispositions } = lastFlush.get( client.actorId );
+			const { batch, dispositions } = /** @type {LastFlush} */ (
+				lastFlush.get( client.actorId )
+			);
 			const logLengthBefore = server.log.length;
 			const redelivered = serverIngestBatch( server, batch );
 			if ( server.log.length !== logLengthBefore ) {
@@ -545,6 +631,13 @@ export function runSimulation( {
 	return { server, clients, authored, finalDoc, violations };
 }
 
+/**
+ * @param {string} text     Source text.
+ * @param {number} start    Splice start.
+ * @param {number} end      Splice end.
+ * @param {string} inserted Replacement.
+ * @return {string} Spliced text.
+ */
 const spliced = ( text, start, end, inserted ) =>
 	text.slice( 0, start ) + inserted + text.slice( end );
 
@@ -554,17 +647,28 @@ const spliced = ( text, start, end, inserted ) =>
  * log position. This is the "applied (effect verifiable)" half of the
  * accounting oracle.
  *
- * @param {Object} before Document before the entry.
- * @param {Object} after  Document after the entry.
- * @param {Object} entry  Applied log entry.
+ * @param {EngineDocument} before Document before the entry.
+ * @param {EngineDocument} after  Document after the entry.
+ * @param {IntentEnvelope} entry  Applied log entry.
  * @return {string|null} A violation description, or null.
  */
 export function verifyEffect( before, after, entry ) {
+	// Payload fields are read per intent type below; the envelope only
+	// promises an open record, so the checks index it loosely.
+	/** @type {{ type: string, payload: Record<string, any> }} */
 	const { type, payload } = entry;
+	/** @param {string} what */
 	const fail = ( what ) => `${ entry.intentId } (${ type }): ${ what }`;
+	/** @param {string} id */
 	const blockBefore = ( id ) => getBlock( before, id );
+	/** @param {string} id */
 	const blockAfter = ( id ) => getBlock( after, id );
+	/** @type {EngineField} */
 	const emptyField = { text: '', formats: [] };
+	/**
+	 * @param {EngineBlock|null} block Block, or null when it is gone.
+	 * @return {EngineField} Its target field, or an empty field.
+	 */
 	const fieldOf = ( block ) => block?.fields[ payload.field ] ?? emptyField;
 
 	switch ( type ) {
@@ -636,7 +740,10 @@ export function verifyEffect( before, after, entry ) {
 				return fail( 'split halves do not partition the field text' );
 			}
 			// The head keeps its other fields whole.
-			const sourceBlock = blockBefore( payload.syncId );
+			// Both halves exist after the split, so the source did before it.
+			const sourceBlock = /** @type {EngineBlock} */ (
+				blockBefore( payload.syncId )
+			);
 			for ( const [ name, sourceOther ] of Object.entries(
 				sourceBlock.fields
 			) ) {
@@ -754,13 +861,14 @@ export function verifyEffect( before, after, entry ) {
  * (Prediction and idempotency are checked inline during the run; this
  * covers the end-state properties.)
  *
- * @param {Object} server   Server.
- * @param {Object} clients  Clients (drained).
- * @param {Map}    authored All authored intents by intentId.
- * @param {Object} finalDoc Fresh replay of the full log.
+ * @param {IntentLogServer}             server   Server.
+ * @param {ClientReplica[]}             clients  Clients (drained).
+ * @param {Map<string, IntentEnvelope>} authored All authored intents by intentId.
+ * @param {EngineDocument}              finalDoc Fresh replay of the full log.
  * @return {string[]} Violations.
  */
 export function checkOracles( server, clients, authored, finalDoc ) {
+	/** @type {string[]} */
 	const violations = [];
 	const finalJson = canonicalJson( finalDoc );
 
