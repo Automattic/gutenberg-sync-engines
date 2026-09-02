@@ -56,6 +56,13 @@ interface SyncEnvelopeFromServer {
 	awareness: AwarenessState;
 	dispositions?: EngineDisposition[];
 	end_cursor: number; // use as `after` in next request
+	/**
+	 * The room's generation token: changes whenever the server restarts
+	 * the room (resets it to a fresh genesis). A client that sees a
+	 * different value from the one it bootstrapped under must drop its
+	 * room-bound state and start over from cursor 0.
+	 */
+	generation?: string;
 	should_compact?: boolean;
 	room: string;
 	updates: SyncUpdate[];

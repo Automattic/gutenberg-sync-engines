@@ -988,6 +988,13 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 				$room_response              = $this->sync->get_engine_registry()->get_engine_for_room( $room )->get_updates_since( $room, $client_id, $cursor, array() );
 				$room_response['awareness'] = $awareness_map;
 
+				// The room generation rides pushed frames too, so a socket
+				// client notices a room restart between its own requests.
+				$generation = $this->sync->room_generation( $room, (int) ( $room_response['end_cursor'] ?? 0 ) );
+				if ( null !== $generation ) {
+					$room_response['generation'] = $generation;
+				}
+
 				$this->clients[ $other_key ]['rooms'][ $room ]['cursor'] = $room_response['end_cursor'];
 
 				$other['conn']->send_text(

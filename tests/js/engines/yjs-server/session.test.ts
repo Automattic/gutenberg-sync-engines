@@ -139,4 +139,45 @@ describe( 'createYjsServerSessionCodec', () => {
 		Y.applyUpdateV2( replica, base64ToUint8Array( update.data ) );
 		expect( replica.getMap( 'document' ).get( 'title' ) ).toBe( 'State' );
 	} );
+
+	describe( 'room restart', () => {
+		it( 'rejoins when the new genesis is byte-identical to the one it started from', () => {
+			const genesis = new Y.Doc();
+			genesis.getMap( 'document' ).set( 'title', 'Saved' );
+			const doc = new Y.Doc();
+			const session = createYjsServerSessionCodec( { doc } );
+			session.receiveUpdate( snapshotRowFor( genesis ) );
+			doc.getMap( 'document' ).set( 'title', 'Edited locally' );
+
+			expect(
+				session.onRoomRestart!( [ snapshotRowFor( genesis ) ] )
+			).toBe( 'rebootstrap' );
+			// The initial sync then carries the full local state, which the
+			// server merges as an ordinary update against the same genesis.
+			expect( session.getInitialUpdates() ).toHaveLength( 1 );
+		} );
+
+		it( 'leaves the room when the new genesis differs (the saved post changed)', () => {
+			const genesis = new Y.Doc();
+			genesis.getMap( 'document' ).set( 'title', 'Saved' );
+			const changed = new Y.Doc();
+			changed.getMap( 'document' ).set( 'title', 'Saved again' );
+			const doc = new Y.Doc();
+			const session = createYjsServerSessionCodec( { doc } );
+			session.receiveUpdate( snapshotRowFor( genesis ) );
+
+			expect(
+				session.onRoomRestart!( [ snapshotRowFor( changed ) ] )
+			).toBe( 'disconnect' );
+		} );
+
+		it( 'leaves the room when it never saw a genesis or the restart carries none', () => {
+			const doc = new Y.Doc();
+			const session = createYjsServerSessionCodec( { doc } );
+			expect( session.onRoomRestart!( [] ) ).toBe( 'disconnect' );
+			const genesis = new Y.Doc();
+			session.receiveUpdate( snapshotRowFor( genesis ) );
+			expect( session.onRoomRestart!( [] ) ).toBe( 'disconnect' );
+		} );
+	} );
 } );

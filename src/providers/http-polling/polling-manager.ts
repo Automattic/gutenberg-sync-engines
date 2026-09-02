@@ -53,6 +53,7 @@ import {
 } from '../advisory/signaling';
 import { registerSaveFlush } from './save-flush';
 import type { ConnectionStatus, EngineSessionCodec } from '@wordpress/sync';
+import type { TransportSessionCodec } from '../session-extensions';
 import {
 	installSyncDebug,
 	isSyncDebugEnabled,
@@ -117,6 +118,8 @@ export interface ReleasedRoom {
 
 interface RoomState {
 	endCursor: number;
+	/** The room generation this session bootstrapped under (see types). */
+	generation?: string;
 	isPrimaryRoom: boolean;
 	/** The awareness map the last poll response carried for this room. */
 	lastServerAwareness: AwarenessState;
@@ -383,6 +386,11 @@ let isPolling = false;
 let isUnloadPending = false;
 let pollInterval = POLLING_INTERVAL_IN_MS;
 let pollingTimeoutId: ReturnType< typeof setTimeout > | null = null;
+/*
+ * Set when a room restarted under us during this poll: the next poll must
+ * follow at once (cursor 0) instead of waiting out the interval.
+ */
+let repollImmediately = false;
 let syncRequestBodySizeLimit = MAX_SYNC_REQUEST_BODY_SIZE_IN_BYTES;
 
 /*
@@ -1191,6 +1199,23 @@ function poll(): void {
 					} );
 				}
 
+				/*
+				 * Room generation: the server restarted this room (reset to
+				 * a fresh genesis from the saved post) if the token differs
+				 * from the one we bootstrapped under. Nothing else in this
+				 * response is ours to apply — its rows belong to the new
+				 * room and are re-fetched from cursor 0 by the immediate
+				 * re-poll (or the room is dropped, per the session).
+				 */
+				if ( 'string' === typeof room.generation ) {
+					if ( undefined === roomState.generation ) {
+						roomState.generation = room.generation;
+					} else if ( roomState.generation !== room.generation ) {
+						restartRoom( roomState, room.generation, room.updates );
+						return;
+					}
+				}
+
 				roomState.endCursor = room.end_cursor;
 
 				// If a limit is exceeded, disconnect immediately without processing updates.
@@ -1529,11 +1554,77 @@ function poll(): void {
 			}
 		}
 
+		if ( repollImmediately ) {
+			// A room restarted under us during this poll: the next poll
+			// must follow at once (cursor 0) instead of waiting out the
+			// interval.
+			repollImmediately = false;
+			scheduleNext( 0 );
+			return;
+		}
 		scheduleNext( succeeded ? nextDelay : pollInterval );
 	}
 
 	// Start polling.
 	void start();
+}
+
+/**
+ * Handles a room whose generation changed mid-session: the server reset it
+ * to a fresh genesis. The session decides whether it can rejoin (drop its
+ * room-bound state and re-bootstrap from cursor 0) or must leave (its
+ * local state cannot safely meet the new room); sessions without an
+ * opinion re-bootstrap.
+ *
+ * @param roomState  The room's transport state.
+ * @param generation The new generation token.
+ * @param updates    The rows the response carried for the new room.
+ */
+function restartRoom(
+	roomState: RoomState,
+	generation: string,
+	updates: SyncUpdate[]
+): void {
+	const session = roomState.session as TransportSessionCodec;
+	const previous = roomState.generation;
+	let decision: 'rebootstrap' | 'disconnect' = 'rebootstrap';
+	try {
+		decision = session.onRoomRestart?.( updates ) ?? 'rebootstrap';
+	} catch ( error ) {
+		roomState.log(
+			'Session failed to handle the room restart; disconnecting',
+			{ error },
+			'error',
+			true // force
+		);
+		decision = 'disconnect';
+	}
+	roomState.log(
+		'Room restarted by the server',
+		{ from: previous, to: generation, decision },
+		'error',
+		true // force
+	);
+
+	if ( 'disconnect' === decision ) {
+		roomState.onStatusChange( {
+			status: 'disconnected',
+			error: new ConnectionError(
+				ConnectionErrorCode.UNKNOWN_ERROR,
+				'The shared document was restarted by the server'
+			),
+		} );
+		unregisterRoom( roomState.room, { sendDisconnectSignal: true } );
+		return;
+	}
+
+	roomState.generation = generation;
+	roomState.endCursor = 0;
+	// The queue held work written against the old room; the session
+	// re-derives anything still relevant after it re-bootstraps.
+	roomState.updateQueue.clear();
+	roomState.updateQueue.restoreExact( session.getInitialUpdates() );
+	repollImmediately = true;
 }
 
 function registerRoom( {
@@ -1668,11 +1759,7 @@ function registerRoom( {
 				'error',
 				true // force
 			);
-			(
-				session as EngineSessionCodec & {
-					onUpdatesDiscarded?: ( updates: SyncUpdate[] ) => void;
-				}
-			 ).onUpdatesDiscarded?.( unsent );
+			( session as TransportSessionCodec ).onUpdatesDiscarded?.( unsent );
 		}
 		session.destroy();
 	}

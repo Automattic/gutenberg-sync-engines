@@ -1234,4 +1234,48 @@ class Tests_Collaboration_WpHttpPollingSyncServer extends WP_Test_REST_Controlle
 		);
 		$this->assertArrayNotHasKey( 'advisory', rest_get_server()->dispatch( $request )->get_data() );
 	}
+
+	/**
+	 * The room generation token: absent until the room has rows, stable
+	 * across requests, and different after the room is reset — the signal a
+	 * client uses to notice that its rows and cursor are gone.
+	 */
+	public function test_room_generation_is_stable_until_the_room_is_reset(): void {
+		wp_set_current_user( self::$editor_id );
+		$room   = $this->get_post_room();
+		$update = array(
+			array(
+				'data' => base64_encode( 'first' ),
+				'type' => Test_Opaque_Relay_Engine::UPDATE_TYPE_UPDATE,
+			),
+		);
+
+		$first = $this->dispatch_sync( array( $this->build_room( $room, 1, 0, array(), $update ) ) )->get_data()['rooms'][0];
+		$this->assertArrayHasKey( 'generation', $first );
+		$this->assertIsString( $first['generation'] );
+		$this->assertNotSame( '', $first['generation'] );
+
+		// A second client reading the room sees the same token.
+		$second = $this->dispatch_sync( array( $this->build_room( $room, 2, 0 ) ) )->get_data()['rooms'][0];
+		$this->assertSame( $first['generation'], $second['generation'] );
+
+		// Reset the room (rows, lineage, room meta): the next write mints a
+		// new token, so a client holding the old one learns of the restart.
+		$storage = new WP_Sync_Post_Meta_Storage();
+		$this->assertTrue( $storage->reset_room( $room ) );
+		$after = $this->dispatch_sync( array( $this->build_room( $room, 1, (int) $first['end_cursor'], array(), $update ) ) )->get_data()['rooms'][0];
+		$this->assertArrayHasKey( 'generation', $after );
+		$this->assertNotSame( $first['generation'], $after['generation'] );
+	}
+
+	/**
+	 * A room with no rows has nothing to restart, so it carries no token.
+	 */
+	public function test_room_generation_is_absent_for_an_empty_room(): void {
+		wp_set_current_user( self::$editor_id );
+		$room     = 'taxonomy/category';
+		$response = $this->dispatch_sync( array( $this->build_room( $room ) ) )->get_data()['rooms'][0];
+		$this->assertSame( 0, $response['end_cursor'] );
+		$this->assertArrayNotHasKey( 'generation', $response );
+	}
 }

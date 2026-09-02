@@ -61,6 +61,13 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		const AWARENESS_TIMEOUT = 30;
 
 		/**
+		 * Room meta key of the room's generation token (see room_generation()).
+		 *
+		 * @since n.e.x.t
+		 */
+		const GENERATION_META_KEY = 'generation';
+
+		/**
 		 * Maximum total size (in bytes) of the request body.
 		 *
 		 * @since 7.0.0
@@ -424,6 +431,11 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 			$room_response              = $engine->get_updates_since( $room, $client_id, $cursor, $context );
 			$room_response['awareness'] = $merged_awareness;
 
+			$generation = $this->room_generation( $room, (int) ( $room_response['end_cursor'] ?? 0 ) );
+			if ( null !== $generation ) {
+				$room_response['generation'] = $generation;
+			}
+
 			// Engines that produce per-update dispositions (an intent log's
 			// applied/escalated/voided outcomes) surface them; relay-style
 			// engines omit the key entirely.
@@ -432,6 +444,91 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 			}
 
 			return $room_response;
+		}
+
+		/**
+		 * The room's generation token, minted on the first read after the
+		 * room's first row is written and stable until the room is reset.
+		 *
+		 * A reset (`WP_Sync_Storage::reset_room()`) deletes every row and
+		 * every room-meta key, so the next read finds no token and mints a
+		 * fresh one — and a client that bootstrapped under the old token
+		 * knows its rows and cursor are gone. The token is derived from the
+		 * id of the room's FIRST stored row where the storage exposes it
+		 * (racing first readers derive the same value), else a random id.
+		 * Rooms without rows have no generation yet (nothing to restart).
+		 *
+		 * Shared with the WebSocket daemon, which stamps its pushed frames
+		 * the same way.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $room       Room identifier.
+		 * @param int    $end_cursor The room's current cursor (0 = no rows).
+		 * @return string|null The generation token, or null when the room has
+		 *                     no rows or the storage keeps no room meta.
+		 */
+		public function room_generation( string $room, int $end_cursor ): ?string {
+			if (
+				$end_cursor <= 0 ||
+				! method_exists( $this->storage, 'get_room_meta' ) ||
+				! method_exists( $this->storage, 'set_room_meta' )
+			) {
+				return null;
+			}
+
+			$stored = $this->storage->get_room_meta( $room, self::GENERATION_META_KEY );
+			if ( is_string( $stored ) && '' !== $stored ) {
+				return $stored;
+			}
+
+			$generation = $this->derive_room_generation( $room );
+			$this->storage->set_room_meta( $room, self::GENERATION_META_KEY, $generation );
+			return $generation;
+		}
+
+		/**
+		 * Derives a fresh generation token for a room that has rows but no
+		 * token yet. With the postmeta storage the id of the room's first row
+		 * is used: it is unique per genesis (ids are site-wide monotonic) and
+		 * identical for two first readers racing to mint it. Other storages
+		 * get a random id.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @global wpdb $wpdb WordPress database abstraction object.
+		 *
+		 * @param string $room Room identifier.
+		 * @return string Generation token.
+		 */
+		private function derive_room_generation( string $room ): string {
+			if ( $this->storage instanceof WP_Sync_Post_Meta_Storage ) {
+				global $wpdb;
+
+				// phpcs:disable WordPress.DB.DirectDatabaseQuery -- Read-only lookups against the storage post; the storage class exposes no first-row accessor and its own accessors bypass the meta cache the same way.
+				$post_id = (int) $wpdb->get_var(
+					$wpdb->prepare(
+						"SELECT ID FROM {$wpdb->posts} WHERE post_name = %s AND post_type = %s ORDER BY ID ASC LIMIT 1",
+						md5( $room ),
+						WP_Sync_Post_Meta_Storage::POST_TYPE
+					)
+				);
+				if ( $post_id > 0 ) {
+					$first_row = (int) $wpdb->get_var(
+						$wpdb->prepare(
+							"SELECT MIN(meta_id) FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s",
+							$post_id,
+							WP_Sync_Post_Meta_Storage::SYNC_UPDATE_META_KEY
+						)
+					);
+					// phpcs:enable WordPress.DB.DirectDatabaseQuery
+					if ( $first_row > 0 ) {
+						return 'g' . $first_row;
+					}
+				}
+			}
+
+			return wp_generate_uuid4();
 		}
 
 		/**

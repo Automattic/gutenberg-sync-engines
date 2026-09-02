@@ -15,6 +15,7 @@ import type {
 } from '@wordpress/sync';
 import { applyServerAwarenessStates } from '../awareness-sync';
 import { announceLocalWrite } from '../../providers/advisory/announce';
+import type { TransportSessionExtensions } from '../../providers/session-extensions';
 import type { DeRtcCommitAdapter } from './commit';
 import { buildDeRtcClientUpdate, hashDeRtcContent } from './descriptor';
 import { DE_RTC_REMOTE_ORIGIN, type DeRtcDocBridge } from './doc-bridge';
@@ -157,10 +158,11 @@ export function setDeRtcBurstQuietMsForTesting( ms: number ): void {
  */
 export function createDeRtcSessionCodec(
 	options: DeRtcSessionOptions
-): EngineSessionCodec & {
-	prepareForSave: () => Promise< () => void >;
-	sendsWhileAlone: true;
-} {
+): EngineSessionCodec &
+	Pick< TransportSessionExtensions, 'onRoomRestart' > & {
+		prepareForSave: () => Promise< () => void >;
+		sendsWhileAlone: true;
+	} {
 	const { bridge, review } = options;
 	const doc = bridge.doc;
 	const awareness = options.awareness ?? new Awareness( doc );
@@ -429,6 +431,12 @@ export function createDeRtcSessionCodec(
 	 */
 	let lastLocalEditAt = 0;
 	let deferredSnapshotRow: EngineUpdate | null = null;
+	// Set by onRoomRestart: the next snapshot is the NEW room's genesis.
+	// If the doc holds content that differs from it, that content is the
+	// person's unsaved work and is re-proposed against the new genesis
+	// (the server three-way-merges from that base) instead of being
+	// overwritten by it.
+	let restartPending = false;
 	let quietRetryTimer: ReturnType< typeof setTimeout > | null = null;
 
 	function typingQuiet(): boolean {
@@ -605,6 +613,26 @@ export function createDeRtcSessionCodec(
 			}
 
 			case DE_RTC_SNAPSHOT_TYPE: {
+				if ( restartPending ) {
+					restartPending = false;
+					const localContent = bridge.buildContent();
+					recordCanonicalContent( decoded.version, decoded.content );
+					if (
+						hashDeRtcContent( localContent ) ===
+						hashDeRtcContent( decoded.content )
+					) {
+						bridge.applyCanonical(
+							decoded.version,
+							decoded.content,
+							rowProperties
+						);
+						return;
+					}
+					bridge.adoptVersion( decoded.version );
+					dirty = true;
+					maybePropose();
+					return;
+				}
 				if ( ! typingQuiet() ) {
 					// Mid-burst: stash (newest wins) and re-inject at quiet
 					// (see BURST_QUIET_MS above).
@@ -800,6 +828,25 @@ export function createDeRtcSessionCodec(
 		receiveUpdate: ( update ) => processRow( update ),
 		receiveDispositions: ( dispositions: EngineDisposition[] ) =>
 			handleDispositions( dispositions ),
+		/*
+		 * Room restart: every version this session knows is gone. Drop the
+		 * lineage and every in-flight or deferred row; the new genesis
+		 * that follows either matches the doc (plain apply) or is the base
+		 * the doc's content is re-proposed against (see restartPending).
+		 */
+		onRoomRestart: () => {
+			bridge.resetLineage();
+			inFlight = false;
+			inFlightProposalId = null;
+			pendingCanonical = null;
+			deferredSnapshotRow = null;
+			behindSeq = 0;
+			fetchInFlightSeq = 0;
+			pendingOwnMergeSeq = 0;
+			canonicalContents.clear();
+			restartPending = true;
+			return 'rebootstrap';
+		},
 		/**
 		 * Prepares an editor SAVE: holds new commits and waits for the
 		 * in-flight one to settle, so the save can never self-conflict

@@ -12,6 +12,8 @@ import type {
 	EngineSessionCodec,
 	EngineUpdate,
 } from '@wordpress/sync';
+import { ConnectionError, ConnectionErrorCode } from '../../framework';
+import type { TransportSessionCodec } from '../session-extensions';
 import {
 	installSyncDebug,
 	isSyncDebugEnabled,
@@ -57,6 +59,8 @@ interface RoomState {
 	room: string;
 	session: EngineSessionCodec;
 	cursor: number;
+	/** The room generation this session bootstrapped under. */
+	generation?: string;
 	onStatusChange: ( status: ConnectionStatus ) => void;
 	/** Whether short polling currently serves this room (socket down). */
 	parked: boolean;
@@ -69,6 +73,8 @@ interface ServerRoom {
 	awareness: AwarenessState;
 	updates: EngineUpdate[];
 	end_cursor: number;
+	/** Changes whenever the server restarts the room (fresh genesis). */
+	generation?: string;
 	dispositions?: unknown[];
 }
 
@@ -262,6 +268,25 @@ function applyServerRoom( serverRoom: ServerRoom ): void {
 		} );
 	}
 
+	/*
+	 * Room generation: a changed token means the server reset the room to
+	 * a fresh genesis. The session decides whether it can re-bootstrap
+	 * (cursor 0, initial sync re-sent) or must leave; the rows in this
+	 * frame belong to the new room and are re-delivered from cursor 0.
+	 */
+	if ( 'string' === typeof serverRoom.generation ) {
+		if ( undefined === state.generation ) {
+			state.generation = serverRoom.generation;
+		} else if ( state.generation !== serverRoom.generation ) {
+			restartRoom(
+				state,
+				serverRoom.generation,
+				serverRoom.updates ?? []
+			);
+			return;
+		}
+	}
+
 	state.session.applyRemoteAwareness( serverRoom.awareness );
 
 	const responses: EngineUpdate[] = [];
@@ -287,6 +312,44 @@ function applyServerRoom( serverRoom: ServerRoom ): void {
 		pending.set( serverRoom.room, responses );
 		sendFrame( pending );
 	}
+}
+
+/**
+ * Handles a room whose generation changed: see the polling manager's twin.
+ * Re-bootstrapping re-sends the room's initial sync at cursor 0 so the
+ * daemon delivers the new room from its genesis.
+ *
+ * @param state      The room's state.
+ * @param generation The new generation token.
+ * @param updates    The rows the frame carried for the new room.
+ */
+function restartRoom(
+	state: RoomState,
+	generation: string,
+	updates: EngineUpdate[]
+): void {
+	const session = state.session as TransportSessionCodec;
+	let decision: 'rebootstrap' | 'disconnect' = 'rebootstrap';
+	try {
+		decision = session.onRoomRestart?.( updates ) ?? 'rebootstrap';
+	} catch {
+		decision = 'disconnect';
+	}
+	if ( 'disconnect' === decision ) {
+		state.onStatusChange( {
+			status: 'disconnected',
+			error: new ConnectionError(
+				ConnectionErrorCode.UNKNOWN_ERROR,
+				'The shared document was restarted by the server'
+			),
+		} );
+		unregisterRoom( state.room );
+		return;
+	}
+	state.generation = generation;
+	state.cursor = 0;
+	publishDebugState();
+	sendFrame( new Map( [ [ state.room, session.getInitialUpdates() ] ] ) );
 }
 
 /**
