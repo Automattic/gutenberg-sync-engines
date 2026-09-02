@@ -123,11 +123,15 @@ The framework/plugin split is complete: the framework ships **neither** engines
 - `src/` — client JS/TS (webpack entry `src/index.ts` → `build/sync-engines.js`,
   externalizes `@wordpress/sync`→`wp.sync` and `yjs`→`wp.sync.Y`):
   - `engines/intent-log/` — the **frozen cross-language core** (byte-matched
-    against its PHP twin + JSON vectors). Excluded from lint/format. `genesisSyncId`
-    lives at `src/engines/intent-log/sync-id.js`. Don't casually edit — changes
-    must stay in lockstep with the PHP core and test vectors. Its Jest harness
-    lives in `tests/js/engines/intent-log/`; its vector generators in
-    `tests/tools/`. One file is client-only: `client.js` (the replica —
+    against its PHP twin + JSON vectors). Excluded from lint/format. Don't
+    casually edit — changes must stay in lockstep with the PHP core and test
+    vectors. Its Jest harness lives in `tests/js/engines/intent-log/`, which
+    also holds the Node-only pieces that are NOT shipped: the deterministic
+    simulator (`simulator.js`, the spec's validation oracle) and the JS
+    reference `genesisSyncId` (`genesis-sync-id.js`, on `node:crypto`; the
+    editor never mints genesis ids — the server and the build-free stamper
+    `includes/engines/intent-log/sync-id.js` do). Its vector generators are
+    in `tests/tools/`. One file is client-only: `client.js` (the replica —
     outbox, optimistic replan, log retention) has no PHP twin and no vector
     coverage, since the server plans with the planner directly. It is still
     core, still frozen-by-default; changes there are additive and covered by
@@ -154,9 +158,9 @@ The framework/plugin split is complete: the framework ships **neither** engines
   `tests/benchmarks/` (the BENCHMARKS behind one command, `npm run
   bench` — by default the HOST COST REPORT in `tests/benchmarks/host/`,
   what the plugin adds to a server vs the same site with the plugin
-  deactivated; `suite=engines` is the engine-decision matrix (`wp
+  deactivated; `--suite=engines` is the engine-decision matrix (`wp
   eval-file tests/benchmarks/benchmark.php` per run) and
-  `suite=transport` the browser-driven transport-experience benchmark
+  `--suite=transport` the browser-driven transport-experience benchmark
   in `tests/benchmarks/transport/`),
   `tests/debugging/` (the debugging/analysis TOOLS, deliberately NOT
   behind `npm run bench` — run directly: the N-window soak
@@ -597,7 +601,7 @@ applies.
 - **yjs-server known gaps** (docs/engine-comparison.md has the full list):
   ingest cost is real y-php CPU — the canonical doc is
   decoded/merged/re-encoded per request, the most expensive per-ingest
-  path of the three engines (run `npm run bench -- suite=engines` for
+  path of the three engines (run `npm run bench -- --suite=engines` for
   numbers), no
   review lane
   (register conflicts LWW silently), kses is sanitize-and-compensate (no

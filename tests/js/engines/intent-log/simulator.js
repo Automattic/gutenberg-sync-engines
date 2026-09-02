@@ -7,7 +7,7 @@
  * divergence depth, not wall-clock time, is the stressor. Every run is
  * exactly reproducible from its seed.
  *
- * Clients are REAL replicas (src/client.js): they apply their intents
+ * Clients are REAL replicas (src/engines/intent-log/client.js): they apply their intents
  * optimistically, rebase pending work over received entries, and predict the
  * server's disposition for everything they flush. The oracles compare those
  * predictions and the optimistic documents against the server's ground
@@ -24,16 +24,25 @@ import {
 	createDocument,
 	getBlock,
 	locateBlock,
-} from './document.js';
-import { IntentTypes, createIntent } from './intents.js';
+} from '../../../../src/engines/intent-log/document.js';
+import {
+	IntentTypes,
+	createIntent,
+} from '../../../../src/engines/intent-log/intents.js';
 import {
 	ESCALATION_REASONS,
 	createServer,
 	serverDocAt,
 	serverIngestBatch,
-} from './rebase.js';
-import { authorIntent, catchUp, createClient, flushClient } from './client.js';
-import { genesisSyncId, mintSyncId } from './sync-id.js';
+} from '../../../../src/engines/intent-log/rebase.js';
+import {
+	authorIntent,
+	catchUp,
+	createClient,
+	flushClient,
+} from '../../../../src/engines/intent-log/client.js';
+import { mintSyncId } from '../../../../src/engines/intent-log/sync-id.js';
+import { genesisSyncId } from './genesis-sync-id.js';
 
 /**
  * Small, high-quality seeded PRNG (mulberry32).
@@ -126,7 +135,7 @@ export function makeGenesisDoc( revision ) {
 }
 
 /**
- * Creates a virtual client (a real replica; see src/client.js).
+ * Creates a virtual client (a real replica; see src/engines/intent-log/client.js).
  *
  * @param {string} actorId    Actor id.
  * @param {Object} initialDoc Genesis document.

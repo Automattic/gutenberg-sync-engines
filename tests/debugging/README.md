@@ -15,7 +15,7 @@ developers and agents rather than plugin evaluators.
 
 ## The N-window soak (`soak-transport.mjs`)
 
-The transport benchmark (`npm run bench -- suite=transport`) answers
+The transport benchmark (`npm run bench -- --suite=transport`) answers
 "what does one edit cost"; the soak answers "what does an hour of real
 co-editing cost per user" — the end-to-end validation of the hosting
 cost cards' composed projections:

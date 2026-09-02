@@ -33,15 +33,6 @@ export function setSyncApiPath( path: string ): void {
 	syncApiPath = path;
 }
 
-/**
- * The current sync endpoint path.
- *
- * @return REST path.
- */
-export function getSyncApiPath(): string {
-	return syncApiPath;
-}
-
 export function uint8ArrayToBase64( data: Uint8Array ): string {
 	let binary = '';
 	const len = data.byteLength;

@@ -93,10 +93,10 @@ baseline/sync/delta/delta-%, followed by the summary stats (room
 storage, derived capacity).
 The run opens by stating the configuration it resolved (engine,
 transport, durations, polling), marking defaults. Arguments target
-what you need: `engine=` (one per run — comparing engines is
-`suite=engines`), `transport=`, `windows=`, `edit-seconds=`/`idle-seconds=`,
-`polling-interval=` to override the HTTP short-polling interval for
-the run (restored afterwards), `metrics=` to print only some rows, `json=` for the full
+what you need: `--engine=` (one per run — comparing engines is
+`--suite=engines`), `--transport=`, `--windows=`, `--edit-seconds=`/`--idle-seconds=`,
+`--polling-interval=` to override the HTTP short-polling interval for
+the run (restored afterwards), `--metrics=` to print only some rows, `--json=` for the full
 data — `npm run bench -- --help` prints the complete list. The server-side
 columns come from the whole-request measurement mu-plugin
 (`tests/benchmarks/host/mu-bench-log.php`, mapped into mu-plugins by
@@ -119,17 +119,17 @@ that environment — cold-cache and slow-disk behavior are properties of
 the host, measured there rather than simulated here. And the
 editors-per-worker capacity line is DERIVED from the measured worker
 share, which assumes requests do not queue; the measured check for the
-queueing knee is `npm run bench -- suite=engines concurrency=N`. Two honest limits, printed with the report: server rows cover
+queueing knee is `npm run bench -- --suite=engines --concurrency=N`. Two honest limits, printed with the report: server rows cover
 requests that reach PHP (static files appear only in the client-side
 rows), and runs are only comparable across identical environments.
 
-Two more **benchmarks** live behind `suite=` — measurements that inform
+Two more **benchmarks** live behind `--suite=` — measurements that inform
 a real decision (which engine, which transport):
 
-| Suite              | What it is                                                    |
-| ------------------ | ------------------------------------------------------------- |
-| `suite=engines`    | The engine-decision matrix and invariant sweeps — the harness documented in the rest of this README. `scenarios=`, `certify=`, and `concurrency=` exist only in this suite, so passing any of them selects it without `suite=` (CI's certify job invokes it that way). |
-| `suite=transport`  | Two-browser edit-to-visible latency + wire traffic per transport (`transport/README.md`). |
+| Suite               | What it is                                                    |
+| ------------------- | ------------------------------------------------------------- |
+| `--suite=engines`   | The engine-decision matrix and invariant sweeps — the harness documented in the rest of this README. `--scenarios=`, `--certify=`, and `--concurrency=` exist only in this suite, so passing any of them selects it without `--suite=` (CI's certify job invokes it that way). |
+| `--suite=transport` | Two-browser edit-to-visible latency + wire traffic per transport (`transport/README.md`). |
 
 The **debugging and analysis tools** — lanes that generate load or
 validate projections rather than answer a decision — live in
@@ -142,7 +142,7 @@ node tests/debugging/soak-transport.mjs \
                                            # validates the cost cards
                                            # end to end
 node tests/debugging/replay/replay.mjs \
-    my-session-clean.json speed=1          # replay a captured session as
+    my-session-clean.json --speed=1        # replay a captured session as
                                            # real HTTP load
 ```
 
@@ -201,7 +201,7 @@ Divergences, each deliberate:
 
 ---
 
-# The engines suite (`suite=engines`)
+# The engines suite (`--suite=engines`)
 
 Compares server sync engines **through the production seam** — the same
 `WP_Sync_Engine::handle_updates()` / `get_updates_since()` calls the polling
@@ -503,7 +503,7 @@ The fastest way to the whole decision picture is the one-command runner
 subtree built; it activates the plugins itself):
 
 ```bash
-npm run bench -- suite=engines       # every engine x the decision matrix
+npm run bench -- --suite=engines     # every engine x the decision matrix
                                      # (steady concurrency, deep-lag
                                      #  settlement, structural churn, remove
                                      #  contention, field-sync registers, a
@@ -511,18 +511,18 @@ npm run bench -- suite=engines       # every engine x the decision matrix
                                      #  comparison tables and hosting cost
                                      #  cards; FAILS on any lost work or
                                      #  convergence failure
-npm run bench -- engines=de-rtc scenarios=editorial-session
-npm run bench -- certify=10          # invariant sweep: 10 seeds x engines x
+npm run bench -- --engines=de-rtc --scenarios=editorial-session
+npm run bench -- --certify=10        # invariant sweep: 10 seeds x engines x
                                      # adversarial scenarios + both save-lane
                                      # sessions — certifies "no edit is ever
                                      # silently dropped" at scale; CI runs
-                                     # certify=3 on every push/PR
+                                     # --certify=3 on every push/PR
 ```
 
 Multi-process concurrency measurement is OPT-IN behind one flag:
 
 ```bash
-npm run bench -- concurrency=4       # 4 worker processes, same room, REAL
+npm run bench -- --concurrency=4     # 4 worker processes, same room, REAL
                                      # postmeta storage: latency including
                                      # genuine lock waits and 503s, vs a
                                      # 1-worker uncontended baseline

@@ -182,7 +182,7 @@ jobs:
         run: npm run env:tests start
 
       - name: Certify sweep
-        run: npm run bench -- certify=3
+        run: npm run bench -- --certify=3
 
   e2e:
     name: End-to-end (Playwright)

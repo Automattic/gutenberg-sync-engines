@@ -319,6 +319,18 @@ export interface IntentLogSession extends EngineSessionCodec {
 }
 
 /**
+ * Mints a session clientId in [1, 2^31 - 1], a positive signed 32-bit
+ * integer like a Yjs clientID, drawn from crypto randomness so that tabs
+ * sharing a site never share an id in practice.
+ *
+ * @return A fresh clientId.
+ */
+export function randomClientId(): number {
+	const [ word ] = globalThis.crypto.getRandomValues( new Uint32Array( 1 ) );
+	return ( word % ( 2 ** 31 - 1 ) ) + 1;
+}
+
+/**
  * Creates an intent-log session codec.
  *
  * @param options Session options.
@@ -327,8 +339,7 @@ export interface IntentLogSession extends EngineSessionCodec {
 export function createIntentLogSession(
 	options: IntentLogSessionOptions
 ): IntentLogSession {
-	const clientId =
-		options.clientId ?? Math.floor( Math.random() * ( 2 ** 31 - 1 ) ) + 1;
+	const clientId = options.clientId ?? randomClientId();
 	const actorId = `u${ options.userId }c${ clientId }`;
 
 	let replica: ReturnType< typeof createClient > | null = null;

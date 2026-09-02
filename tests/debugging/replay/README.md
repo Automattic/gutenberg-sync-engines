@@ -25,7 +25,7 @@ npx wp-env run cli wp collaboration capture export my-session > my-session.json
 node tests/debugging/replay/sanitize.mjs my-session.json out=my-session-clean.json
 
 # 3. REPLAY (against any site running this plugin with the same engine)
-node tests/debugging/replay/replay.mjs my-session-clean.json speed=1
+node tests/debugging/replay/replay.mjs my-session-clean.json --speed=1
 ```
 
 `wp collaboration capture list` shows captured sessions;
@@ -70,15 +70,15 @@ update payloads and `base_content` by construction. Sanitization removes
   against its own live cursor (tracked from each response's `end_cursor`);
   different clients interleave concurrently on the captured schedule, so
   genuinely overlapping requests overlap at replay too.
-- **Pacing.** `speed=1` preserves captured inter-frame timing; `speed=4` is
-  4× faster; `speed=0` sends as fast as the per-client ordering allows
+- **Pacing.** `--speed=1` preserves captured inter-frame timing; `--speed=4` is
+  4× faster; `--speed=0` sends as fast as the per-client ordering allows
   (stress mode — the community harness's `POLL_DELAY=0` analog).
 - **Retargeting.** Frames replay into a fresh draft post seeded from the
-  fixture's base state (or `post=<id>` to reuse one).
+  fixture's base state (or `--post=<id>` to reuse one).
 - **Engine fence.** A fixture replays meaningfully only under the engine
   that captured it — the wire vocabulary, room lineage stamp, and
   update-type validation are engine-specific. The tool aborts on a
-  mismatch (`force=1` overrides; expect voids/409s, which is itself a way
+  mismatch (`--force` overrides; expect voids/409s, which is itself a way
   to observe the rejection path).
 - **Awareness.** Captured awareness states replay verbatim; sanitized
   (empty) awareness replays as `null` — a synthetic state without a real
@@ -87,11 +87,11 @@ update payloads and `base_content` by construction. Sanitization removes
 - **Reporting.** The tool prints status-code and disposition histograms
   (applied/escalated/voided by reason) plus client-side latency
   percentiles, and — when the target site has the diagnostics request log
-  (below) — the server-side per-request report. `json=out.json` writes
+  (below) — the server-side per-request report. `--json=out.json` writes
   per-frame results.
 
-Run `node tests/debugging/replay/replay.mjs` with no arguments for the
-full option list. Environment: `WP_BASE_URL` (default
+Run `node tests/debugging/replay/replay.mjs --help` for the full option
+list. Environment: `WP_BASE_URL` (default
 `http://localhost:8889`), `WP_USERNAME` / `WP_PASSWORD` (default
 `admin` / `password`).
 
