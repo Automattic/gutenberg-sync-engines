@@ -11,6 +11,20 @@ use these terms freely; none of them is standard outside this project
   server from the post's saved content when the first person opens it.
 - **Materialize** — turn the shared document back into ordinary
   `post_content` so WordPress can save it.
+- **Advisory channel** — the browser-to-browser link (WebRTC) between the
+  tabs editing one post. It carries presence and "I landed rows, go and
+  poll" notices, never content; nothing on it is trusted for anything
+  but display and a decision to poll sooner.
+- **Signaling** — how tabs find each other and exchange the WebRTC
+  handshake: a per-tab presence token and a mailbox, both riding the
+  heartbeat WordPress already sends from every editor screen.
+- **Safety poll** — the slow (25 s) timer poll a tab keeps even when
+  every peer is reachable over the advisory channel, for rows written by
+  anyone not on the channel (scripts, WP-CLI, a dropped peer).
+- **Coverage** — the advisory channel's answer to "is every peer I know
+  about reachable?": every discovered token and every client id in the
+  last awareness map has an open channel. Only full coverage lets a tab
+  leave the timer cadence.
 - **Cursor** — a client's position in the room's update history. Opaque
   to clients; they echo it back to say "give me everything after this."
 - **Disposition** — the server's verdict on one update: applied, parked

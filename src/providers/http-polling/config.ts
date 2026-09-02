@@ -120,3 +120,17 @@ export const POLLING_INTERVAL_WITH_COLLABORATORS_IN_MS =
 		'sync.pollingManager.pollingIntervalWithCollaborators',
 		BASE_POLLING_INTERVAL_WITH_COLLABORATORS_IN_MS
 	);
+
+/*
+ * Advisory-channel cadences (docs/plan/advisory-channel.md). While every
+ * known peer is reachable over the channel, the timer only runs a slow
+ * SAFETY poll (it also keeps the server's 30-second awareness record
+ * alive); polls otherwise happen on demand — shortly after the first
+ * queued local update, and shortly after a peer announces new rows
+ * (coalesced, with a floor that bounds a storm of announcements).
+ */
+export const ADVISORY_SAFETY_POLL_INTERVAL_IN_MS =
+	POLLING_INTERVAL_BACKGROUND_TAB_IN_MS;
+export const LOCAL_UPDATE_POLL_DELAY_MS = 300;
+export const ANNOUNCE_POLL_COALESCE_MS = 150;
+export const ANNOUNCE_POLL_MIN_GAP_MS = 250;

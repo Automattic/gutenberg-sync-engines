@@ -59,7 +59,6 @@ export interface YjsServerSessionCodec extends EngineSessionCodec {
 	 * back to the room's stale state. Ingest is idempotent (redelivered
 	 * updates settle as benign already-merged voids), so solo sends are safe.
 	 */
-	syncWhileSolo: true;
 }
 
 /**
@@ -165,7 +164,6 @@ export function createYjsServerSessionCodec(
 		clientId: doc.clientID,
 		engineSlug: YJS_SERVER_ENGINE_SLUG,
 		engineProtocol: YJS_SERVER_ENGINE_PROTOCOL,
-		syncWhileSolo: true,
 		// The server compacts by itself and never nominates a client, so
 		// the optional compaction members are omitted. Unknown-outcome
 		// recovery re-sends full state; the server stores only what it was

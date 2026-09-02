@@ -18,6 +18,7 @@ import { createIntentLogSession } from '../../../../src/engines/intent-log-sessi
 
 // Mock all external dependencies before imports.
 jest.mock( '@wordpress/hooks', () => ( {
+	addAction: jest.fn(),
 	applyFilters: jest.fn(
 		( _hook: string, defaultValue: unknown ) => defaultValue
 	),
@@ -656,200 +657,42 @@ describe( 'polling-manager', () => {
 		} );
 	} );
 
-	describe( 'collaborator queue resumption', () => {
-		it( 'resumes non-primary room queues when collaborators are detected on primary room', async () => {
-			// First poll: primary room has collaborators, collection room has none.
-			mockPostSyncUpdate.mockResolvedValue( {
+	describe( 'queues are never held', () => {
+		function twoRoomResponse( clients: number, cursor: number ) {
+			const awareness: Record< number, object > = {};
+			for ( let id = 1; id <= clients; id++ ) {
+				awareness[ id ] = { collaboratorInfo: { id: id * 100 } };
+			}
+			return {
 				rooms: [
 					{
 						room: 'primary-room',
-						end_cursor: 1,
-						awareness: {
-							1: { collaboratorInfo: { id: 100 } },
-							2: { collaboratorInfo: { id: 200 } },
-						},
+						end_cursor: cursor,
+						awareness,
 						updates: [],
 					},
 					{
 						room: 'collection-room',
-						end_cursor: 1,
+						end_cursor: cursor,
 						awareness: {},
 						updates: [],
 					},
 				],
-			} );
-
-			// Register primary room first (becomes isPrimaryRoom).
-			pollingManager.registerRoom( {
-				room: 'primary-room',
-				session: createMockSession( 1 ),
-				log: jest.fn(),
-				onStatusChange: jest.fn(),
-			} );
-
-			pollingManager.registerRoom( {
-				room: 'collection-room',
-				session: createMockSession( 2 ),
-				log: jest.fn(),
-				onStatusChange: jest.fn(),
-			} );
-
-			// First poll: detects collaborators on primary room, resumes all queues.
-			await jest.advanceTimersByTimeAsync( 0 );
-
-			// Second poll: collection room queue should now be unpaused,
-			// so its initial sync_step1 update should be included.
-			mockPostSyncUpdate.mockResolvedValue( {
-				rooms: [
-					{
-						room: 'primary-room',
-						end_cursor: 2,
-						awareness: {
-							1: { collaboratorInfo: { id: 100 } },
-							2: { collaboratorInfo: { id: 200 } },
-						},
-						updates: [],
-					},
-					{
-						room: 'collection-room',
-						end_cursor: 2,
-						awareness: {},
-						updates: [],
-					},
-				],
-			} );
-
-			await jest.advanceTimersByTimeAsync( 1000 );
-
-			// The second call should include non-empty updates for the collection room.
-			const secondCallPayload = mockPostSyncUpdate.mock.calls[ 1 ][ 0 ];
-			const collectionRoom = secondCallPayload.rooms.find(
-				( r: { room: string } ) => r.room === 'collection-room'
-			);
-			expect( collectionRoom!.updates.length ).toBeGreaterThan( 0 );
-		} );
-
-		it( 'does not resume non-primary room queues when no collaborators are detected', async () => {
-			// Only 1 client (self) — no collaborators.
-			mockPostSyncUpdate.mockResolvedValue( {
-				rooms: [
-					{
-						room: 'primary-room',
-						end_cursor: 1,
-						awareness: { 1: { collaboratorInfo: { id: 100 } } },
-						updates: [],
-					},
-					{
-						room: 'collection-room',
-						end_cursor: 1,
-						awareness: {},
-						updates: [],
-					},
-				],
-			} );
-
-			pollingManager.registerRoom( {
-				room: 'primary-room',
-				session: createMockSession( 1 ),
-				log: jest.fn(),
-				onStatusChange: jest.fn(),
-			} );
-
-			pollingManager.registerRoom( {
-				room: 'collection-room',
-				session: createMockSession( 2 ),
-				log: jest.fn(),
-				onStatusChange: jest.fn(),
-			} );
-
-			// First poll: no collaborators.
-			await jest.advanceTimersByTimeAsync( 0 );
-
-			// Second poll: collection room queue should still be paused.
-			await jest.advanceTimersByTimeAsync( 4000 );
-
-			const secondCallPayload = mockPostSyncUpdate.mock.calls[ 1 ][ 0 ];
-			const collectionRoom = secondCallPayload.rooms.find(
-				( r: { room: string } ) => r.room === 'collection-room'
-			);
-			expect( collectionRoom!.updates ).toEqual( [] );
-		} );
-
-		it( 'flushes updates while solo for sessions with the syncWhileSolo capability', async () => {
-			// Intent-log opts out of the solo queue pause: ingest is
-			// idempotent by intentId, and flushing every poll bounds the
-			// unsent-work window to one poll interval.
-			mockPostSyncUpdate.mockResolvedValue( {
-				rooms: [
-					{
-						room: 'test-room',
-						end_cursor: 1,
-						awareness: { 1: {} },
-						updates: [],
-					},
-				],
-			} );
-
-			const session = {
-				...createMockSession( 1 ),
-				syncWhileSolo: true as const,
 			};
-			pollingManager.registerRoom( {
-				room: 'test-room',
-				session,
-				log: jest.fn(),
-				onStatusChange: jest.fn(),
-			} );
+		}
 
-			// First poll: solo. The queue starts UNPAUSED, so even the
-			// initial updates go out.
-			await jest.advanceTimersByTimeAsync( 0 );
-			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
-
-			// Typed while still solo.
-			const onLocalUpdate = getOnLocalUpdate( session );
-			const typed = createMockUpdate( 3 );
-			onLocalUpdate( typed, 3 );
-
-			// Next solo poll carries the update — no collaborator needed.
-			await jest.advanceTimersByTimeAsync( 4000 );
-			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
-			const payload = mockPostSyncUpdate.mock.calls[ 1 ][ 0 ] as {
-				rooms: Array< {
-					updates: Array< { type: string; data: string } >;
-				} >;
-			};
-			expect( payload.rooms[ 0 ].updates ).toContainEqual( typed );
-		} );
-
-		it( 'sends accumulated collection room updates after collaborator detection', async () => {
-			// First poll: no collaborators.
-			mockPostSyncUpdate.mockResolvedValue( {
-				rooms: [
-					{
-						room: 'primary-room',
-						end_cursor: 1,
-						awareness: { 1: { collaboratorInfo: { id: 100 } } },
-						updates: [],
-					},
-					{
-						room: 'collection-room',
-						end_cursor: 1,
-						awareness: {},
-						updates: [],
-					},
-				],
-			} );
+		it( "sends every room's initial and local updates without waiting for a collaborator", async () => {
+			// Only 1 client (self) — no collaborators, no signaling lane on
+			// this page: the always-on solo cadence.
+			mockPostSyncUpdate.mockResolvedValue( twoRoomResponse( 1, 1 ) );
 
 			const collectionSession = createMockSession( 2 );
-
 			pollingManager.registerRoom( {
 				room: 'primary-room',
 				session: createMockSession( 1 ),
 				log: jest.fn(),
 				onStatusChange: jest.fn(),
 			} );
-
 			pollingManager.registerRoom( {
 				room: 'collection-room',
 				session: collectionSession,
@@ -857,88 +700,51 @@ describe( 'polling-manager', () => {
 				onStatusChange: jest.fn(),
 			} );
 
-			// First poll: no collaborators, queues stay paused.
+			// First poll (built when the primary room registered): its
+			// initial sync_step1 goes out at once.
 			await jest.advanceTimersByTimeAsync( 0 );
+			const firstCallPayload = mockPostSyncUpdate.mock.calls[ 0 ][ 0 ];
+			expect( firstCallPayload.rooms[ 0 ].updates ).toHaveLength( 1 );
 
-			// Simulate a local doc update on the collection room (e.g., a note was saved).
-			const onLocalUpdate = getOnLocalUpdate( collectionSession );
-			onLocalUpdate( createMockUpdate( 3 ), 3 );
-
-			// Second poll: still no collaborators, collection room updates should be empty.
-			mockPostSyncUpdate.mockResolvedValue( {
-				rooms: [
-					{
-						room: 'primary-room',
-						end_cursor: 2,
-						awareness: { 1: { collaboratorInfo: { id: 100 } } },
-						updates: [],
-					},
-					{
-						room: 'collection-room',
-						end_cursor: 2,
-						awareness: {},
-						updates: [],
-					},
-				],
-			} );
+			// A local update on the collection room goes out on the next
+			// poll together with that room's initial update, still with
+			// nobody else around.
+			getOnLocalUpdate( collectionSession )( createMockUpdate( 3 ), 3 );
+			mockPostSyncUpdate.mockResolvedValue( twoRoomResponse( 1, 2 ) );
 			await jest.advanceTimersByTimeAsync( 4000 );
 
 			const secondCallPayload = mockPostSyncUpdate.mock.calls[ 1 ][ 0 ];
-			const collectionRoomPoll2 = secondCallPayload.rooms.find(
+			const collectionRoom = secondCallPayload.rooms.find(
 				( r: { room: string } ) => r.room === 'collection-room'
 			);
-			expect( collectionRoomPoll2!.updates ).toEqual( [] );
+			expect( collectionRoom!.updates.map( ( u ) => u.type ) ).toEqual( [
+				'sync_step1',
+				'update',
+			] );
+		} );
 
-			// Third poll: collaborator joins — queues should be resumed.
-			mockPostSyncUpdate.mockResolvedValue( {
-				rooms: [
-					{
-						room: 'primary-room',
-						end_cursor: 3,
-						awareness: {
-							1: { collaboratorInfo: { id: 100 } },
-							2: { collaboratorInfo: { id: 200 } },
-						},
-						updates: [],
-					},
-					{
-						room: 'collection-room',
-						end_cursor: 3,
-						awareness: {},
-						updates: [],
-					},
-				],
-			} );
-			await jest.advanceTimersByTimeAsync( 4000 );
+		it( 'speeds up to the with-collaborators cadence when the primary room shows company', async () => {
+			mockPostSyncUpdate.mockResolvedValue( twoRoomResponse( 2, 1 ) );
 
-			// Fourth poll: collection room should now send accumulated updates.
-			mockPostSyncUpdate.mockResolvedValue( {
-				rooms: [
-					{
-						room: 'primary-room',
-						end_cursor: 4,
-						awareness: {
-							1: { collaboratorInfo: { id: 100 } },
-							2: { collaboratorInfo: { id: 200 } },
-						},
-						updates: [],
-					},
-					{
-						room: 'collection-room',
-						end_cursor: 4,
-						awareness: {},
-						updates: [],
-					},
-				],
+			pollingManager.registerRoom( {
+				room: 'primary-room',
+				session: createMockSession( 1 ),
+				log: jest.fn(),
+				onStatusChange: jest.fn(),
 			} );
+			pollingManager.registerRoom( {
+				room: 'collection-room',
+				session: createMockSession( 2 ),
+				log: jest.fn(),
+				onStatusChange: jest.fn(),
+			} );
+
+			await jest.advanceTimersByTimeAsync( 0 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
+
+			// Company: the next poll comes at the 1 s cadence, not 4 s.
 			await jest.advanceTimersByTimeAsync( 1000 );
-
-			const fourthCallPayload = mockPostSyncUpdate.mock.calls[ 3 ][ 0 ];
-			const collectionRoomPoll4 = fourthCallPayload.rooms.find(
-				( r: { room: string } ) => r.room === 'collection-room'
-			);
-			// Should include the initial sync_step1 update + the local update.
-			expect( collectionRoomPoll4!.updates.length ).toBeGreaterThan( 0 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
 		} );
 	} );
 
@@ -2566,9 +2372,11 @@ describe( 'polling-manager', () => {
 				// …and the inspector captured the decoded traffic.
 				const records = inspector.log( { room: 'test-room' } );
 				expect( records ).toHaveLength( 1 );
-				expect( records[ 0 ].rows[ 0 ].summary ).toContain(
-					'remove_block -p1'
-				);
+				// The first poll also carries the session's initial update;
+				// the decoded intent is the row after it.
+				expect(
+					records[ 0 ].rows.map( ( row ) => row.summary ).join( ' ' )
+				).toContain( 'remove_block -p1' );
 				expect( records[ 0 ].serverDebug ).toEqual( { head_seq: 1 } );
 			} finally {
 				window.localStorage.removeItem( 'wp_sync_debug' );
