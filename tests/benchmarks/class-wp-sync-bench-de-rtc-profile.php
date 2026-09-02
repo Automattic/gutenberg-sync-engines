@@ -1389,6 +1389,14 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 		/**
 		 * A fresh client-born paragraph block whose body is its marker.
 		 *
+		 * It carries a random `metadata.syncId`, exactly as the editor-side
+		 * stamper gives every block born in a session before the client
+		 * proposes it. Without one the engine would treat this profile's
+		 * descriptor-less proposal as an engine-unaware writer's and stamp
+		 * the id server-side — a canonical that differs from the proposed
+		 * content on what the model expects to be a plain fast-forward, so
+		 * the client copy never converges.
+		 *
 		 * @param string $marker Identity marker.
 		 * @return array Parsed-block-shaped array.
 		 */
@@ -1396,7 +1404,7 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 			$html = "\n<p>" . $marker . "</p>\n";
 			return array(
 				'blockName'    => 'core/paragraph',
-				'attrs'        => array(),
+				'attrs'        => array( 'metadata' => array( 'syncId' => wp_generate_uuid4() ) ),
 				'innerBlocks'  => array(),
 				'innerHTML'    => $html,
 				'innerContent' => array( $html ),
