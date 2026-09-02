@@ -279,3 +279,177 @@ describe( 'identity on the review surface (engine)', () => {
 		);
 	} );
 } );
+
+describe( 'authorship by identity (nested)', () => {
+	it( 'credits the nested block that changed, not its container, and survives structural rows', async () => {
+		const { createDeRtcAuthorship } = await import(
+			'../../../../src/engines/de-rtc/authorship'
+		);
+		const { createDeRtcUndoFeed } = await import(
+			'../../../../src/engines/de-rtc/revert-undo'
+		);
+		const feed = createDeRtcUndoFeed();
+		const tracker = createDeRtcAuthorship( feed );
+
+		feed.noteRow( {
+			version: 'v1',
+			baseVersion: null,
+			content: contentOf( group( [ p( 'One', 'a' ), p( 'Two', 'b' ) ] ) ),
+			own: false,
+		} );
+		feed.noteRow( {
+			version: 'v2',
+			baseVersion: 'v1',
+			content: contentOf(
+				group( [ p( 'One', 'a' ), p( 'Two by 7', 'b' ) ] )
+			),
+			own: false,
+			author: 7,
+			authorClientId: 701,
+		} );
+		expect( tracker.getBlockAuthorshipById() ).toEqual( {
+			b: { author: 7, authorClientId: 701, version: 'v2' },
+		} );
+		// The container's top-level view carries no credit of its own.
+		expect( tracker.getBlockAuthorship() ).toEqual( [ null ] );
+
+		// A structural row (an insert by 8) credits only the new block
+		// and keeps the earlier record.
+		feed.noteRow( {
+			version: 'v3',
+			baseVersion: 'v2',
+			content: contentOf(
+				group( [ p( 'One', 'a' ), p( 'Two by 7', 'b' ) ] ),
+				p( 'Added by 8', 'c' )
+			),
+			own: false,
+			author: 8,
+			authorClientId: 801,
+		} );
+		expect( tracker.getBlockAuthorshipById() ).toEqual( {
+			b: { author: 7, authorClientId: 701, version: 'v2' },
+			c: { author: 8, authorClientId: 801, version: 'v3' },
+		} );
+		expect( tracker.getBlockAuthorship() ).toEqual( [
+			null,
+			{ author: 8, authorClientId: 801, version: 'v3' },
+		] );
+	} );
+} );
+
+describe( 'revert-edit undo by identity (nested)', () => {
+	async function harness() {
+		const { createDeRtcRevertUndoManager, createDeRtcUndoFeed } =
+			await import( '../../../../src/engines/de-rtc/revert-undo' );
+		const doc = new Y.Doc();
+		const bridge = createDeRtcDocBridge( doc, makeSyncConfig() );
+		const feed = createDeRtcUndoFeed();
+		const manager = createDeRtcRevertUndoManager();
+		const applied: unknown[][] = [];
+		manager.attachEntity( {
+			key: doc.getMap( CRDT_RECORD_MAP_KEY ) as Y.Map< unknown >,
+			bridge,
+			feed,
+			applyRevert: ( blocks ) => {
+				applied.push( blocks );
+				doc.getMap( CRDT_RECORD_MAP_KEY ).set( 'blocks', blocks );
+			},
+		} );
+		const canonical = ( version: string, content: string, own = false ) => {
+			bridge.applyCanonical( version, content );
+			feed.noteRow( {
+				version,
+				baseVersion: own
+					? `v${ Number( version.slice( 1 ) ) - 1 }`
+					: null,
+				content,
+				own,
+			} );
+		};
+		return { doc, bridge, manager, applied, canonical };
+	}
+	const local = ( doc: Y.Doc ) =>
+		doc.getMap( CRDT_RECORD_MAP_KEY ).get( 'blocks' ) as any[];
+
+	it( 'reverts a nested own edit in place and leaves a peer-touched sibling alone', async () => {
+		const { doc, manager, applied, canonical } = await harness();
+		canonical(
+			'v1',
+			contentOf( group( [ p( 'One', 'a' ), p( 'Two', 'b' ) ] ) )
+		);
+		// My row edits Two inside the group.
+		canonical(
+			'v2',
+			contentOf( group( [ p( 'One', 'a' ), p( 'Two mine', 'b' ) ] ) ),
+			true
+		);
+		// A peer then edits One (a foreign row), so the document moved on.
+		canonical(
+			'v3',
+			contentOf( group( [ p( 'One peer', 'a' ), p( 'Two mine', 'b' ) ] ) )
+		);
+
+		manager.undo();
+		expect( applied ).toHaveLength( 1 );
+		expect(
+			local( doc )[ 0 ].innerBlocks.map(
+				( b: any ) => b.attributes.content
+			)
+		).toEqual( [ 'One peer', 'Two' ] );
+
+		manager.redo();
+		expect(
+			local( doc )[ 0 ].innerBlocks.map(
+				( b: any ) => b.attributes.content
+			)
+		).toEqual( [ 'One peer', 'Two mine' ] );
+	} );
+
+	it( 'undoes a nested insert and a nested delete, re-inserting next to the sibling it followed', async () => {
+		const { doc, manager, canonical } = await harness();
+		canonical(
+			'v1',
+			contentOf( group( [ p( 'One', 'a' ), p( 'Two', 'b' ) ] ) )
+		);
+		// My row inserts New between One and Two, and deletes... nothing yet.
+		canonical(
+			'v2',
+			contentOf(
+				group( [ p( 'One', 'a' ), p( 'New', 'n' ), p( 'Two', 'b' ) ] )
+			),
+			true
+		);
+		manager.undo();
+		expect(
+			local( doc )[ 0 ].innerBlocks.map(
+				( b: any ) => b.attributes.content
+			)
+		).toEqual( [ 'One', 'Two' ] );
+
+		// Redo re-inserts it after One.
+		manager.redo();
+		expect(
+			local( doc )[ 0 ].innerBlocks.map(
+				( b: any ) => b.attributes.content
+			)
+		).toEqual( [ 'One', 'New', 'Two' ] );
+	} );
+
+	it( 'does not remove an inserted block a peer has since edited', async () => {
+		const { doc, manager, applied, canonical } = await harness();
+		canonical( 'v1', contentOf( group( [ p( 'One', 'a' ) ] ) ) );
+		canonical(
+			'v2',
+			contentOf( group( [ p( 'One', 'a' ), p( 'New', 'n' ) ] ) ),
+			true
+		);
+		canonical(
+			'v3',
+			contentOf( group( [ p( 'One', 'a' ), p( 'New, peer', 'n' ) ] ) )
+		);
+
+		manager.undo();
+		expect( applied ).toHaveLength( 0 );
+		expect( local( doc )[ 0 ].innerBlocks ).toHaveLength( 2 );
+	} );
+} );

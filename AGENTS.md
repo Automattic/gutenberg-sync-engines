@@ -645,7 +645,10 @@ applies.
   whenever identity declines: id-less blocks, classic content between
   blocks, irregular containers); parked rows carry `syncId` + `path`
   beside `index`, the client restores/contests/anchors by syncId
-  (`DeRtcContestKey`), and `blockBaseVersions` keys may be syncIds;
+  (`DeRtcContestKey`), `blockBaseVersions` keys may be syncIds, kses
+  sequestration (`WP_De_RTC_Identity_Merge::sequester`), authorship
+  (`getBlockAuthorshipById`) and revert-undo all work by identity at
+  every depth with the positional rules as the id-less fallback;
   truly concurrent SAME-block edits merge from their TRUE base
   (`blockBaseVersions`) or raise a contested pending item
   (Adopt/Reject) — the old silent client-side block LWW is

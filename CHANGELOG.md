@@ -45,7 +45,13 @@ them under a version heading when a version ships.
     blocks up by their top-level position and treated a Group as one
     unit, so any two edits inside the same Group parked one of them.
     Only a true clash on the same block is held back now, and the
-    review card attaches to that block wherever it sits.
+    review card attaches to that block wherever it sits. The same
+    identity drives three more things: an author without permission
+    to publish raw HTML has only the risky block itself held back
+    (not the whole container it sits in), the "who last edited this"
+    record credits the block that changed rather than its container,
+    and undo reverts a nested edit in place, removes a block you added,
+    or brings back one you deleted.
 
 -   `npm run bench` is the single entry point for the benchmarks, and
     by default prints a host cost report: what real-time collaboration

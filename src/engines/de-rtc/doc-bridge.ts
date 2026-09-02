@@ -388,7 +388,8 @@ export function replaceBlockBySyncId(
 	return false;
 }
 
-type IdentityNode = {
+/** One block of an identity map (see flattenByIdentity). */
+export type IdentityNode = {
 	block: any;
 	parent: string | null;
 	/** The block's own form: name + attributes, children excluded. */
@@ -403,7 +404,7 @@ type IdentityNode = {
  * @param blocks Block tree.
  * @return Map by syncId, with the root order under the empty key.
  */
-function flattenByIdentity(
+export function flattenByIdentity(
 	blocks: unknown[]
 ): { nodes: Map< string, IdentityNode >; roots: string[] } | null {
 	const nodes = new Map< string, IdentityNode >();

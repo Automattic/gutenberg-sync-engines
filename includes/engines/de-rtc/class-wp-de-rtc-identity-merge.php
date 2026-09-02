@@ -244,6 +244,105 @@ if ( ! class_exists( 'WP_De_RTC_Identity_Merge' ) ) {
 		}
 
 		/**
+		 * Sequesters a filtered author's kses-risky blocks by identity, at
+		 * every depth: a risky block that exists in the base reverts its OWN
+		 * form (name and attributes; the proposal's children stay), a risky
+		 * new block drops with its subtree, and every risky block is listed
+		 * for review. A block is risky when the kses post filter would alter
+		 * its own form, unless that form is unchanged from the base or its
+		 * exact subtree was previously approved.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $base     Base stripped content.
+		 * @param string $proposed Proposed stripped content.
+		 * @param array  $approved Approved subtree hashes (see the engine's
+		 *                         approved-blocks record).
+		 * @return array|null array{laundered: string, risky: array} or null
+		 *                    to decline (the positional lane applies).
+		 */
+		public static function sequester( string $base, string $proposed, array $approved = array() ): ?array {
+			$b = self::model( wp_de_rtc_canonicalize_post_content_core_block_names( $base ) );
+			$p = self::model( wp_de_rtc_canonicalize_post_content_core_block_names( $proposed ) );
+			if ( null === $b || null === $p ) {
+				return null;
+			}
+			$winner  = array();
+			$dropped = array();
+			$risky   = array();
+			foreach ( $p['nodes'] as $id => $node ) {
+				$ancestor = $node['parent'];
+				while ( '' !== $ancestor && ! isset( $dropped[ $ancestor ] ) ) {
+					$ancestor = $p['nodes'][ $ancestor ]['parent'];
+				}
+				if ( '' !== $ancestor ) {
+					continue; // Inside a dropped subtree.
+				}
+				$base_node = $b['nodes'][ $id ] ?? null;
+				$own_html  = self::own_html( $node );
+				$is_risky  = wp_kses_post( $own_html ) !== $own_html
+					&& ! ( $base_node && $base_node['own'] === $node['own'] )
+					&& ! isset( $approved[ wp_de_rtc_hash_content( $node['subtree'] ) ] );
+				if ( ! $is_risky ) {
+					$winner[ $id ] = array( 'from' => 'p' );
+					continue;
+				}
+				$risky[] = array(
+					'index'  => (int) $node['path'][0],
+					'syncId' => $id,
+					'path'   => $node['path'],
+					'html'   => $node['subtree'],
+				);
+				if ( $base_node && $base_node['name'] === $node['name'] ) {
+					$winner[ $id ] = array( 'from' => 'b' );
+				} else {
+					$dropped[ $id ] = true;
+				}
+			}
+			$order = array();
+			foreach ( array_merge( array( '' ), array_keys( $winner ) ) as $parent_id ) {
+				$list                = '' === $parent_id ? $p['roots'] : $p['nodes'][ $parent_id ]['children'];
+				$order[ $parent_id ] = array_values(
+					array_filter(
+						$list,
+						static function ( $child_id ) use ( $winner ) {
+							return isset( $winner[ $child_id ] );
+						}
+					)
+				);
+			}
+			$built = array();
+			foreach ( $order[''] as $id ) {
+				$html = self::build( $id, $winner, $order, $b, $p, $p );
+				if ( null === $html ) {
+					return null;
+				}
+				$built[] = $html;
+			}
+			return array(
+				'laundered' => implode( "\n\n", $built ),
+				'risky'     => $risky,
+			);
+		}
+
+		/**
+		 * A block's own serialized form: the block with its children
+		 * removed (a leaf is itself).
+		 *
+		 * @param array $node Model node.
+		 * @return string Serialized own form.
+		 */
+		private static function own_html( array $node ): string {
+			if ( $node['layout']['leaf'] ) {
+				return $node['subtree'];
+			}
+			$block                 = $node['block'];
+			$block['innerBlocks']  = array();
+			$block['innerContent'] = array( $node['layout']['prefix'] . $node['layout']['suffix'] );
+			return serialize_block( $block );
+		}
+
+		/**
 		 * Substitutes one identified block of a base document with that
 		 * block's form in another version (the per-block true-base rule of
 		 * `blockBaseVersions`, by identity: the block may sit anywhere).

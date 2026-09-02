@@ -16,9 +16,11 @@ import type { SyncUndoManager } from '@wordpress/sync';
  */
 import {
 	changedBlockIndexes,
+	flattenByIdentity,
 	parseCanonicalBlocks,
 	serializeBlock,
 	type DeRtcDocBridge,
+	type IdentityNode,
 } from './doc-bridge';
 
 /*
@@ -40,10 +42,17 @@ import {
  *   mergeable with everyone, exactly like upstream prescribes.
  * - redo() re-applies the reverted row's base→row delta the same way.
  * - Blocks peers have since edited are left alone (their work is never
- *   collateral), structural divergence makes a row underivable (it is
- *   dropped and the next older row is tried — the intent-log undo's
- *   walk-back rule), and a revert that the server merges further simply
+ *   collateral), and a revert that the server merges further simply
  *   becomes a new own row like any other edit.
+ * - Grain: by block identity, at every depth. A block the row changed
+ *   reverts its OWN form (name and attributes; children stay as they
+ *   are now) wherever it sits; a block the row inserted is removed if it
+ *   is still exactly as inserted; a block the row deleted comes back
+ *   next to the sibling it followed. A move is left alone. Documents
+ *   whose blocks carry no identity fall back to the positional rule,
+ *   where structural divergence makes a row underivable (it is dropped
+ *   and the next older row is tried — the intent-log undo's walk-back
+ *   rule).
  *
  * The history-slider UI the vision sketches would read the same
  * version-content record this manager keeps; it remains future
@@ -84,6 +93,124 @@ export function createDeRtcUndoFeed(): DeRtcUndoFeed {
 			return () => listeners.delete( listener );
 		},
 	};
+}
+
+/**
+ * The identity-keyed revert (or redo): `from` is the state the row left
+ * the document in, `to` the state the step returns it to. Undefined when
+ * any side lacks identity (the positional rule applies); null when
+ * nothing of the row is still revertable.
+ *
+ * @param base    The row's base blocks.
+ * @param mine    The row's blocks.
+ * @param current The document as it stands now.
+ * @param forward Redo (base → row) rather than undo (row → base).
+ * @return The next block tree, null, or undefined.
+ */
+function deriveByIdentity(
+	base: unknown[],
+	mine: unknown[],
+	current: unknown[],
+	forward: boolean
+): unknown[] | null | undefined {
+	const B = flattenByIdentity( base );
+	const M = flattenByIdentity( mine );
+	const C = flattenByIdentity( current );
+	if ( ! B || ! M || ! C ) {
+		return undefined;
+	}
+	const from = forward ? B : M;
+	const to = forward ? M : B;
+	let reverted = false;
+
+	// Blocks the step re-inserts: present in `to`, absent from `from`,
+	// and not in the document now. Grouped by the parent they had.
+	const reinsert = new Map< string | null, string[] >();
+	for ( const [ id, node ] of to.nodes ) {
+		if ( ! from.nodes.has( id ) && ! C.nodes.has( id ) ) {
+			const list = reinsert.get( node.parent ) ?? [];
+			list.push( id );
+			reinsert.set( node.parent, list );
+		}
+	}
+
+	const rebuild = ( node: IdentityNode ): unknown => {
+		const id = node.block.attributes.metadata.syncId as string;
+		const fromNode = from.nodes.get( id );
+		const toNode = to.nodes.get( id );
+		let own: any = node.block;
+		if (
+			fromNode &&
+			toNode &&
+			fromNode.own !== toNode.own &&
+			node.own === fromNode.own
+		) {
+			own = toNode.block; // Untouched since: the row's own change reverts.
+			reverted = true;
+		}
+		return { ...own, innerBlocks: children( id, node.childIds ) };
+	};
+
+	const children = ( parent: string | null, ids: string[] ): unknown[] => {
+		const result: unknown[] = [];
+		const place = ( id: string ) => {
+			const node = C.nodes.get( id );
+			if ( ! node ) {
+				return;
+			}
+			const fromNode = from.nodes.get( id );
+			if (
+				fromNode &&
+				! to.nodes.has( id ) &&
+				serializeBlock( node.block ) ===
+					serializeBlock( fromNode.block )
+			) {
+				reverted = true; // The row inserted it; still as inserted: remove.
+				return;
+			}
+			result.push( rebuild( node ) );
+		};
+		// Re-inserted blocks land after the sibling they followed in `to`.
+		const revived = reinsert.get( parent ) ?? [];
+		const siblingsInTo =
+			null === parent ? to.roots : to.nodes.get( parent )?.childIds ?? [];
+		const revivedAfter = new Map< string | null, string[] >();
+		for ( const id of revived ) {
+			let anchor: string | null = null;
+			for (
+				let back = siblingsInTo.indexOf( id ) - 1;
+				back >= 0;
+				back--
+			) {
+				if ( ids.includes( siblingsInTo[ back ] ) ) {
+					anchor = siblingsInTo[ back ];
+					break;
+				}
+			}
+			const list = revivedAfter.get( anchor ) ?? [];
+			list.push( id );
+			revivedAfter.set( anchor, list );
+		}
+		const revive = ( id: string ) => {
+			const node = to.nodes.get( id )!;
+			result.push( {
+				...node.block,
+				innerBlocks: node.childIds.map(
+					( childId ) => to.nodes.get( childId )!.block
+				),
+			} );
+			reverted = true;
+		};
+		( revivedAfter.get( null ) ?? [] ).forEach( revive );
+		for ( const id of ids ) {
+			place( id );
+			( revivedAfter.get( id ) ?? [] ).forEach( revive );
+		}
+		return result;
+	};
+
+	const next = children( null, C.roots );
+	return reverted ? next : null;
 }
 
 /** Retained version contents per entity (the derivation window). */
@@ -186,6 +313,10 @@ export function createDeRtcRevertUndoManager(): DeRtcRevertUndoManager {
 		const base = parseCanonicalBlocks( baseContent );
 		const mine = parseCanonicalBlocks( rowContent );
 		const current = parseCanonicalBlocks( state.bridge.buildContent() );
+		const byIdentity = deriveByIdentity( base, mine, current, forward );
+		if ( undefined !== byIdentity ) {
+			return byIdentity;
+		}
 		const changed = changedBlockIndexes( base, mine );
 		if ( null === changed || current.length !== mine.length ) {
 			return null; // Structural divergence: positional selection lies.

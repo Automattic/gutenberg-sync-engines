@@ -324,4 +324,95 @@ class Tests_Collaboration_WpDeRtcIdentityMerge extends WP_UnitTestCase {
 		$this->assertSame( array( 0, 0 ), $row['changedBlocks'][0]['path'] );
 		$this->assertNotEmpty( $row['changedBlocks'][0]['syncId'] );
 	}
+
+	public function test_sequester_by_identity_reverts_only_the_risky_nested_block() {
+		$base = self::base();
+		$ids  = self::ids();
+		// An author without unfiltered_html rewrites Inner one with a
+		// script (risky), edits Inner two harmlessly, and appends a risky
+		// new Custom HTML block.
+		$proposed = str_replace( '<p>Inner one.</p>', '<p>Inner one.<script>alert(1)</script></p>', $base );
+		$proposed = str_replace( 'Inner two.', 'Inner two, safely edited.', $proposed );
+		$proposed = $proposed . "\n\n<!-- wp:html {\"metadata\":{\"syncId\":\"risky-new\"}} -->\n<script>alert(2)</script>\n<!-- /wp:html -->";
+
+		$result = WP_De_RTC_Identity_Merge::sequester( $base, $proposed );
+		$this->assertIsArray( $result );
+		$this->assertCount( 2, $result['risky'] );
+		$this->assertSame( array( $ids['0.0'], 'risky-new' ), array_column( $result['risky'], 'syncId' ) );
+		$this->assertSame( array( 0, 0 ), $result['risky'][0]['path'] );
+		$this->assertSame( 0, $result['risky'][0]['index'] );
+
+		$laundered = $result['laundered'];
+		$this->assertStringNotContainsString( '<script>', $laundered );
+		$this->assertStringContainsString( '<p>Inner one.</p>', $laundered, 'The risky nested block reverts to its base form.' );
+		$this->assertStringContainsString( 'Inner two, safely edited.', $laundered, 'The safe sibling inside the same Group lands.' );
+		$this->assertStringNotContainsString( 'wp:html', $laundered, 'The risky new block drops.' );
+		$this->assertIsArray( wp_de_rtc_get_top_level_serialized_block_records( $laundered ) );
+
+		// Nothing risky: the proposal passes through verbatim.
+		$safe = str_replace( 'Inner two.', 'Inner two, safely edited.', $base );
+		$this->assertSame(
+			array(
+				'laundered' => $safe,
+				'risky'     => array(),
+			),
+			WP_De_RTC_Identity_Merge::sequester( $base, $safe )
+		);
+
+		// Without identity the lane declines.
+		$this->assertNull( WP_De_RTC_Identity_Merge::sequester( self::NESTED, self::NESTED ) );
+	}
+
+	public function test_a_filtered_author_keeps_the_safe_half_of_a_group_through_the_engine() {
+		$author_id = self::factory()->user->create( array( 'role' => 'author' ) );
+		$engine    = $this->engine();
+		$response  = $engine->get_updates_since( $this->room(), 1, 0, array() );
+		$genesis   = json_decode( $response['updates'][0]['data'], true );
+
+		wp_set_current_user( $author_id );
+		$proposed = str_replace( '<p>Inner one.</p>', '<p>Inner one.<script>alert(1)</script></p>', $genesis['content'] );
+		$proposed = str_replace( 'Inner two.', 'Inner two, by the author.', $proposed );
+		$result   = $engine->handle_updates(
+			$this->room(),
+			5,
+			0,
+			array(
+				array(
+					'type' => WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL,
+					'data' => wp_json_encode(
+						array(
+							'proposalId'      => 'p-filtered',
+							'baseVersion'     => 'v1',
+							'proposedContent' => $proposed,
+							'clientUpdate'    => wp_de_rtc_create_automerge_update_for_content_change( $genesis['content'], $proposed, 'author' ),
+						)
+					),
+				),
+			),
+			array()
+		);
+		wp_set_current_user( self::$editor_id );
+
+		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
+		$canonical = $this->engine()->materialize( $this->room() );
+		$this->assertStringContainsString( 'Inner two, by the author.', $canonical );
+		$this->assertStringContainsString( '<p>Inner one.</p>', $canonical );
+		$this->assertStringNotContainsString( '<script>', $canonical );
+
+		$parked = array_values(
+			array_filter(
+				$this->engine()->get_updates_since( $this->room(), 6, 0, array() )['updates'],
+				static function ( array $row ): bool {
+					return WP_De_RTC_Engine::UPDATE_TYPE_PARKED === $row['type'];
+				}
+			)
+		);
+		$this->assertCount( 1, $parked );
+		$row = json_decode( $parked[0]['data'], true );
+		$this->assertSame( 'requires-unfiltered-html', $row['reason'] );
+		$this->assertCount( 1, $row['changedBlocks'] );
+		$this->assertSame( array( 0, 0 ), $row['changedBlocks'][0]['path'] );
+		$this->assertStringContainsString( '<script>alert(1)</script>', $row['changedBlocks'][0]['html'] );
+		wp_delete_user( $author_id );
+	}
 }

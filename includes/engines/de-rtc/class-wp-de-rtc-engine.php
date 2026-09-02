@@ -1265,6 +1265,25 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * @return string|null Laundered proposed content, or null.
 		 */
 		private function sequester_unfiltered_blocks( string $room, int $client_id, array $proposal, string $base_content, &$review ): ?string {
+			/*
+			 * By identity first, at every depth: only the risky block itself
+			 * reverts or drops (a risky paragraph inside a Group no longer
+			 * takes the whole Group with it), and it is matched to its base
+			 * form by id, not by position. Declines to the positional lane
+			 * below whenever identity cannot model either side.
+			 */
+			if ( class_exists( 'WP_De_RTC_Identity_Merge' ) ) {
+				$by_identity = WP_De_RTC_Identity_Merge::sequester( $base_content, (string) $proposal['proposedContent'], $this->get_approved_blocks( $room ) );
+				if ( is_array( $by_identity ) ) {
+					if ( array() !== $by_identity['risky'] ) {
+						$this->park_changed_blocks( $room, $client_id, (string) $proposal['proposalId'], 'requires-unfiltered-html', (string) $proposal['baseVersion'], $by_identity['risky'], $review, true );
+						// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+						do_action( 'qm/debug', 'wp-sync: de-rtc sequestered ' . count( $by_identity['risky'] ) . " risky block(s) by identity from a filtered author in {$room}" );
+					}
+					return $by_identity['laundered'];
+				}
+			}
+
 			$base_records     = wp_de_rtc_get_top_level_serialized_block_records( $base_content );
 			$proposed_records = wp_de_rtc_get_top_level_serialized_block_records( (string) $proposal['proposedContent'] );
 			if ( is_wp_error( $base_records ) || is_wp_error( $proposed_records ) ) {

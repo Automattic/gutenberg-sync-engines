@@ -160,6 +160,11 @@ export function createDeRtcEngine(): SyncEngine & {
 			objectType: string,
 			objectId: unknown
 		) => Array< DeRtcBlockAuthorship | null >;
+		/** By block identity, at any depth (empty without identity). */
+		getBlockAuthorshipById: (
+			objectType: string,
+			objectId: unknown
+		) => Record< string, DeRtcBlockAuthorship >;
 	};
 } {
 	interface EntityReviewHandle {
@@ -190,7 +195,10 @@ export function createDeRtcEngine(): SyncEngine & {
 	// touched this", derived from the canonical row feed.
 	const entityAuthorship = new Map<
 		string,
-		() => Array< DeRtcBlockAuthorship | null >
+		{
+			byIndex: () => Array< DeRtcBlockAuthorship | null >;
+			byId: () => Record< string, DeRtcBlockAuthorship >;
+		}
 	>();
 	const reviewKey = ( objectType: string, objectId: unknown ) =>
 		`${ objectType }:${ String( objectId ) }`;
@@ -257,8 +265,13 @@ export function createDeRtcEngine(): SyncEngine & {
 		review: reviewSource,
 		authorship: {
 			getBlockAuthorship: ( objectType, objectId ) =>
-				entityAuthorship.get( reviewKey( objectType, objectId ) )?.() ??
-				[],
+				entityAuthorship
+					.get( reviewKey( objectType, objectId ) )
+					?.byIndex() ?? [],
+			getBlockAuthorshipById: ( objectType, objectId ) =>
+				entityAuthorship
+					.get( reviewKey( objectType, objectId ) )
+					?.byId() ?? {},
 		},
 		createEntity( { syncConfig, objectType, objectId } ): EngineEntity {
 			const ydoc = createYjsDoc( { objectType } );
@@ -301,10 +314,10 @@ export function createDeRtcEngine(): SyncEngine & {
 				objectId,
 				saveControl
 			);
-			entityAuthorship.set(
-				reviewKey( objectType, objectId ),
-				authorship.getBlockAuthorship
-			);
+			entityAuthorship.set( reviewKey( objectType, objectId ), {
+				byIndex: authorship.getBlockAuthorship,
+				byId: authorship.getBlockAuthorshipById,
+			} );
 
 			// Edits made before the server snapshot arrives, replayed in
 			// order once it does.

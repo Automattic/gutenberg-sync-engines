@@ -377,8 +377,12 @@ their own (open work lives in GitHub Issues), grouped by engine.
   get a fresh one as they become canonical. The server merges by that
   identity at every depth and parks only the blocks that truly clash;
   the client incorporates, contests, restores and anchors review cards
-  by it too. Authorship and revert-undo still work at top-level grain
-  (a nested edit attributes to its container).
+  by it too. The kses lane for authors without `unfiltered_html`
+  reverts or drops only the risky block itself, wherever it sits, and
+  the safe rest of the same container lands. Authorship credits the
+  block that actually changed, at any depth, and revert-undo reverts a
+  block's own form in place, removes a block the row inserted, and
+  brings back one it deleted, next to the sibling it followed.
 - **Document-size costs live on the commit path, not in storage.**
   Stored rows are fixed-size advisories now, and a later joiner
   downloads one synthesized snapshot. The old tail that grew with the
