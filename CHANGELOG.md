@@ -7,6 +7,15 @@ them under a version heading when a version ships.
 
 ## Unreleased
 
+### Removed
+
+-   The de-rtc engine no longer reads the transition-era data written
+    before the announce model: the protocol-1 `content` rows and the
+    `de_rtc_doc` room meta. Rooms written before that model are not
+    migrated (the plugin has no installed base); reset them instead. The
+    polling transport's deprecated `COMPACTION_THRESHOLD` constant is
+    gone too (compaction has been engine-owned since 7.2.0).
+
 ### Added
 
 -   Activating the plugin now turns on Gutenberg's real-time collaboration
@@ -15,6 +24,12 @@ them under a version heading when a version ships.
     experiments are left as they are, and the experiment checkbox keeps
     working afterward. Network-wide activation turns it on for every site
     ([#82](https://github.com/Automattic/gutenberg-sync-engines/issues/82)).
+
+-   `npm run bench` and the session replay tool
+    (`tests/debugging/replay/replay.mjs`) take `--key=value` flags
+    (`npm run bench -- --suite=engines`, `--certify=3`,
+    `replay.mjs fixture.json --speed=2 --force`) instead of bare
+    `key=value` tokens; a bare token is now refused with the flag to use.
 -   `npm run bench` is the single entry point for the benchmarks, and
     by default prints a host cost report: what real-time collaboration
     adds to a server, one engine per run, as two
@@ -32,7 +47,7 @@ them under a version heading when a version ships.
     wp-env configs) measures every request the editor windows make,
     plugin active or not, which is what makes the server-side columns
     true over-baseline deltas. The engine matrix and transport
-    benchmark sit behind `suite=engines` and `suite=transport`; the
+    benchmark sit behind `--suite=engines` and `--suite=transport`; the
     soak and replay lanes are debugging/analysis tools run directly
     from `tests/debugging/`. The community-harness compatibility
     statement (what matches, what diverges and why) is in
@@ -40,6 +55,15 @@ them under a version heading when a version ships.
     ([#60](https://github.com/Automattic/gutenberg-sync-engines/issues/60)).
 
 ### Fixed
+
+-   Under the de-rtc engine, the per-block "who last edited this" record
+    credited every block in the document to whoever made the latest
+    edit, instead of only the blocks that edit actually changed. The
+    record compared blocks in a form that included the temporary id the
+    editor's parser assigns to each block on every read, so no two
+    readings of the same block ever looked equal. Blocks now compare by
+    their saved form, through the one comparison the engine's undo and
+    merge paths already share. Nothing on screen reads this record yet.
 
 -   Under the de-rtc engine, a long-running collaboration session could
     lose every accepted edit the moment a save request looked at the
@@ -128,6 +152,11 @@ them under a version heading when a version ships.
 
 ### Changed
 
+-   Both engines with a review lane now store an edit set aside for review
+    under the same row type, `parked` (intent-log wrote `proposal`, de-rtc
+    wrote `proposal-parked`). The `resolved` row is unchanged. The name
+    shows in the browser wire inspector and the `wp collaboration rooms`
+    diagnostics; rooms written before this change are not migrated.
 -   Adopt and Reject decisions now travel only over their own REST route,
     for every content type. The server rejects the older way (folded in
     with ordinary sync messages) and the browser no longer falls back to

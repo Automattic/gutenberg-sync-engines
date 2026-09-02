@@ -116,9 +116,10 @@ function createInertDeRtcCollectionCodec(
  * Distributed Editing's client obligations are deliberately small: it
  * never merges. The editor's edits land in the local doc; the session
  * codec proposes the doc's content against the version it last
- * incorporated; the SERVER three-way-merges every proposal and answers
- * with canonical content rows this entity folds back into the doc (and
- * so into the editor). Like the yjs-server engine:
+ * incorporated; the SERVER three-way-merges every proposal and announces
+ * each new version; the canonical content this entity folds back into
+ * the doc (and so into the editor) arrives as fetched snapshots. Like the
+ * yjs-server engine:
  *
  * - `hydrate` is a no-op: the server's genesis snapshot row is the
  *   document's origin (seeding from the loaded record would fork a
@@ -135,7 +136,7 @@ function createInertDeRtcCollectionCodec(
  * as an ordinary proposal in the shared history.
  *
  * Conflict review: a proposal the server escalates parks as a durable
- * `proposal-parked` row; the entity's review registry presents it
+ * `parked` row; the entity's review registry presents it
  * through the framework's review surface (panel, notices) via the
  * engine's `review` source (createSyncManager drives the handlers and
  * the resolution verbs from it), and a reviewer restores (overlaying

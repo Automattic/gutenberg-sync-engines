@@ -9,7 +9,7 @@ import type { RequestUtils } from '@wordpress/e2e-test-utils-playwright';
 import { test, expect } from '../config/collaboration-fixtures';
 // The engine's deterministic genesis id function (vector-pinned against the
 // PHP twin) — imported directly so the spec asserts EXACT id agreement.
-import { genesisSyncId } from '../../../src/engines/intent-log/sync-id.js';
+import { genesisSyncId } from '../../js/engines/intent-log/genesis-sync-id.js';
 
 /**
  * Two-client collaboration through the intent-log sync engine.

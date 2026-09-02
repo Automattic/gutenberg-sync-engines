@@ -13,11 +13,6 @@ import type { ProviderCreator } from '@wordpress/sync';
 export const LONG_POLL_API_PATH = '/wp-sync/v1/long-poll';
 
 /**
- * Transport slug (matches the server's WP_HTTP_Long_Polling_Sync_Server).
- */
-export const HTTP_LONG_POLLING_TRANSPORT_SLUG = 'http-long-polling';
-
-/**
  * Creates the HTTP long-polling provider.
  *
  * Long-polling is short-polling with the request HELD OPEN by the server

@@ -40,6 +40,7 @@ import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
 
 const __filename = fileURLToPath( import.meta.url );
 const FUZZER_ROOT = path.dirname( __filename );
@@ -74,116 +75,73 @@ const DEFAULT_ENGINES = [ 'intent-log', 'yjs-server', 'de-rtc' ];
 const ENGINE_CAPABILITIES = {};
 const DEFAULT_TRANSPORTS = [ 'http-polling', 'http-long-polling', 'websocket' ];
 
-function parseArgs( argv ) {
-	const args = {
-		combos: null,
-		engines: DEFAULT_ENGINES,
-		headed: false,
-		burstRate: null,
-		faultRate: null,
-		noFaults: false,
-		noLifecycle: false,
-		noReload: false,
-		out: path.join( FUZZER_ROOT, 'artifacts' ),
-		profile: null,
-		recheck: true,
-		shrink: false,
-		seedList: null,
-		seedStart: 1,
-		seeds: 5,
-		steps: 12,
-		trace: null,
-		users: 2,
+const CLI_OPTIONS = {
+	engines: { type: 'string' },
+	transports: { type: 'string' },
+	combos: { type: 'string' },
+	seeds: { type: 'string' },
+	'seed-start': { type: 'string' },
+	'seed-list': { type: 'string' },
+	steps: { type: 'string' },
+	users: { type: 'string' },
+	trace: { type: 'string' },
+	out: { type: 'string' },
+	'no-recheck': { type: 'boolean' },
+	shrink: { type: 'boolean' },
+	'no-faults': { type: 'boolean' },
+	'no-lifecycle': { type: 'boolean' },
+	'fault-rate': { type: 'string' },
+	'burst-rate': { type: 'string' },
+	profile: { type: 'string' },
+	'no-reload': { type: 'boolean' },
+	headed: { type: 'boolean' },
+	help: { type: 'boolean', short: 'h' },
+};
+
+function readArgs( argv ) {
+	const { values } = parseArgs( { args: argv, options: CLI_OPTIONS } );
+	if ( values.help ) {
+		printUsage();
+		process.exit( 0 );
+	}
+	const int = ( value, fallback ) =>
+		undefined === value ? fallback : Number.parseInt( value, 10 );
+	const list = ( value ) =>
+		undefined === value ? null : value.split( ',' ).filter( Boolean );
+	const combos = list( values.combos );
+	return {
+		combos:
+			combos &&
+			combos.map( ( token ) => {
+				const [ engine, transport ] = token.split( '/' );
+				if ( ! engine || ! transport ) {
+					throw new Error(
+						`--combos entries must be engine/transport, got "${ token }"`
+					);
+				}
+				return { engine, transport };
+			} ),
+		engines: list( values.engines ) ?? DEFAULT_ENGINES,
+		transports: list( values.transports ) ?? DEFAULT_TRANSPORTS,
+		headed: Boolean( values.headed ),
+		burstRate: values[ 'burst-rate' ] ?? null,
+		faultRate: values[ 'fault-rate' ] ?? null,
+		noFaults: Boolean( values[ 'no-faults' ] ),
+		noLifecycle: Boolean( values[ 'no-lifecycle' ] ),
+		noReload: Boolean( values[ 'no-reload' ] ),
+		out: values.out
+			? path.resolve( values.out )
+			: path.join( FUZZER_ROOT, 'artifacts' ),
+		profile: values.profile ?? null,
+		recheck: ! values[ 'no-recheck' ],
+		shrink: Boolean( values.shrink ),
+		seedList: list( values[ 'seed-list' ] ),
+		seedStart: int( values[ 'seed-start' ], 1 ),
+		seeds: int( values.seeds, 5 ),
+		steps: int( values.steps, 12 ),
+		trace: values.trace ?? null,
+		users: int( values.users, 2 ),
 	};
-	for ( const raw of argv ) {
-		const [ key, value ] = raw.includes( '=' )
-			? [
-					raw.slice( 0, raw.indexOf( '=' ) ),
-					raw.slice( raw.indexOf( '=' ) + 1 ),
-			  ]
-			: [ raw, '' ];
-		switch ( key ) {
-			case '--engines':
-				args.engines = value.split( ',' ).filter( Boolean );
-				break;
-			case '--transports':
-				args.transports = value.split( ',' ).filter( Boolean );
-				break;
-			case '--combos':
-				args.combos = value
-					.split( ',' )
-					.filter( Boolean )
-					.map( ( token ) => {
-						const [ engine, transport ] = token.split( '/' );
-						if ( ! engine || ! transport ) {
-							throw new Error(
-								`--combos entries must be engine/transport, got "${ token }"`
-							);
-						}
-						return { engine, transport };
-					} );
-				break;
-			case '--seeds':
-				args.seeds = Number.parseInt( value, 10 );
-				break;
-			case '--seed-start':
-				args.seedStart = Number.parseInt( value, 10 );
-				break;
-			case '--seed-list':
-				args.seedList = value.split( ',' ).filter( Boolean );
-				break;
-			case '--steps':
-				args.steps = Number.parseInt( value, 10 );
-				break;
-			case '--users':
-				args.users = Number.parseInt( value, 10 );
-				break;
-			case '--trace':
-				args.trace = value;
-				break;
-			case '--out':
-				args.out = path.resolve( value );
-				break;
-			case '--no-recheck':
-				args.recheck = false;
-				break;
-			case '--shrink':
-				args.shrink = true;
-				break;
-			case '--no-faults':
-				args.noFaults = true;
-				break;
-			case '--no-lifecycle':
-				args.noLifecycle = true;
-				break;
-			case '--fault-rate':
-				args.faultRate = value;
-				break;
-			case '--burst-rate':
-				args.burstRate = value;
-				break;
-			case '--profile':
-				args.profile = value;
-				break;
-			case '--no-reload':
-				args.noReload = true;
-				break;
-			case '--headed':
-				args.headed = true;
-				break;
-			case '--help':
-			case '-h':
-				printUsage();
-				process.exit( 0 );
-				break;
-			default:
-				throw new Error( `Unknown argument: ${ raw }` );
-		}
-	}
-	if ( ! args.transports ) {
-		args.transports = DEFAULT_TRANSPORTS;
-	}
-	return args;
 }
 
 function printUsage() {
@@ -682,7 +640,7 @@ async function runPlaywright( {
 }
 
 async function main() {
-	const args = parseArgs( process.argv.slice( 2 ) );
+	const args = readArgs( process.argv.slice( 2 ) );
 
 	// Fail fast on missing build prerequisites. An unbuilt subtree still
 	// activates as a plugin, but gutenberg.php refuses to load the

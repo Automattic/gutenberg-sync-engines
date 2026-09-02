@@ -1,7 +1,7 @@
 /**
  * Internal dependencies
  */
-import { parseCanonicalBlocks } from './doc-bridge';
+import { changedBlockIndexes, parseCanonicalBlocks } from './doc-bridge';
 import type { DeRtcUndoFeed, DeRtcUndoFeedRow } from './revert-undo';
 
 /*
@@ -49,8 +49,6 @@ export function createDeRtcAuthorship(
 	const versionContents = new Map< string, string >();
 	let authorship: Array< DeRtcBlockAuthorship | null > = [];
 
-	const serializeOne = ( block: unknown ): string => JSON.stringify( block );
-
 	feed.subscribe( ( row: DeRtcUndoFeedRow ) => {
 		versionContents.set( row.version, row.content );
 		while ( versionContents.size > 60 ) {
@@ -79,21 +77,19 @@ export function createDeRtcAuthorship(
 		) {
 			return; // Unattributable row (genesis, aged-out base).
 		}
-		const base = parseCanonicalBlocks( baseContent );
-		if ( base.length !== blocks.length ) {
+		const changed = changedBlockIndexes(
+			parseCanonicalBlocks( baseContent ),
+			blocks
+		);
+		if ( null === changed ) {
 			return; // Structural row: the reset above already applied.
 		}
-		for ( let index = 0; index < blocks.length; index++ ) {
-			if (
-				serializeOne( base[ index ] ) !==
-				serializeOne( blocks[ index ] )
-			) {
-				authorship[ index ] = {
-					author: row.author,
-					authorClientId: row.authorClientId,
-					version: row.version,
-				};
-			}
+		for ( const index of changed ) {
+			authorship[ index ] = {
+				author: row.author,
+				authorClientId: row.authorClientId,
+				version: row.version,
+			};
 		}
 	} );
 

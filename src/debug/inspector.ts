@@ -188,11 +188,18 @@ function decodeUpdate(
 			0,
 			12
 		) } @${ decoded.baseSeq })`;
-	} else if ( 'proposal' === update.type ) {
+	} else if ( 'parked' === update.type ) {
+		// Both review-lane engines park with this row type. intent-log parks
+		// one intent (`intent`, `actorId`); de-rtc parks a proposal
+		// (`proposalId`, `authorClientId`, `excerpt`).
 		const intent = decoded.intent as
 			| { type?: string; intentId?: string }
 			| undefined;
-		summary = `proposal ${ intent?.type } ${ intent?.intentId } (${ decoded.reason }, by ${ decoded.actorId })`;
+		summary = intent
+			? `parked ${ intent.type } ${ intent.intentId } (${ decoded.reason }, by ${ decoded.actorId })`
+			: `parked ${ decoded.proposalId } (${ decoded.reason }, by client ${
+					decoded.authorClientId
+			  })${ decoded.excerpt ? ` "${ decoded.excerpt }"` : '' }`;
 	} else if ( 'resolved' === update.type ) {
 		summary = `resolved ${ decoded.proposalId } ${ decoded.resolution }${
 			decoded.resolvedBy ? ` by ${ decoded.resolvedBy }` : ''

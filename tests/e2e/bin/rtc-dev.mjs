@@ -50,6 +50,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
+import { parseArgs } from 'node:util';
 
 const REPO_ROOT = process.cwd();
 const TEST_PROVIDER_PLUGIN_SLUG =
@@ -57,9 +58,17 @@ const TEST_PROVIDER_PLUGIN_SLUG =
 const TRANSPORT_OPTION = 'gutenberg_sync_engines_transport';
 const DAEMON_CONTAINER_NAME = 'wp-sync-ws-daemon';
 
+const { values: CLI } = parseArgs( {
+	options: {
+		mode: { type: 'string', default: 'websockets' },
+		port: { type: 'string' },
+		detach: { type: 'boolean', default: false },
+	},
+} );
+
 const DEFAULT_PORT = 8787;
 const WS_PORT = Number.parseInt(
-	getArg( 'port' ) || process.env.WP_SYNC_WEBSOCKET_PORT || '',
+	CLI.port || process.env.WP_SYNC_WEBSOCKET_PORT || '',
 	10
 );
 // The announced socket URL (ws://<WP_SYNC_WEBSOCKET_HOST>:<WP_SYNC_WEBSOCKET_PORT>)
@@ -67,13 +76,8 @@ const WS_PORT = Number.parseInt(
 // matched by WP_SYNC_WEBSOCKET_PORT in .wp-env.json's config.
 const PORT = Number.isNaN( WS_PORT ) ? DEFAULT_PORT : WS_PORT;
 
-function getArg( name ) {
-	const arg = process.argv.find( ( a ) => a.startsWith( `--${ name }=` ) );
-	return arg ? arg.slice( name.length + 3 ) : undefined;
-}
-
 function parseMode() {
-	const mode = getArg( 'mode' ) || 'websockets';
+	const mode = CLI.mode;
 	if ( ! [ 'websockets', 'daemon', 'http', 'doctor' ].includes( mode ) ) {
 		throw new Error(
 			`Unknown --mode=${ mode }. Expected "websockets", "daemon", "http", or "doctor".`
@@ -400,7 +404,7 @@ async function runWebSocketsMode( mode ) {
 
 	const composeFile = path.join( workDirectory, 'docker-compose.yml' );
 	const sitePort = devSitePort( composeFile );
-	const detach = process.argv.includes( '--detach' );
+	const detach = CLI.detach;
 
 	const daemon = spawn(
 		'docker',

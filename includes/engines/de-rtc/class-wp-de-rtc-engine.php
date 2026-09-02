@@ -65,17 +65,6 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		const UPDATE_TYPE_PROPOSAL = 'proposal';
 
 		/**
-		 * Server-emitted update type: accepted canonical content at a version.
-		 *
-		 * LEGACY (protocol 1): still understood on replay so rooms written
-		 * before the announce model catch clients up, but no longer written.
-		 *
-		 * @since 0.3.0
-		 * @var string
-		 */
-		const UPDATE_TYPE_CONTENT = 'content';
-
-		/**
 		 * Server-emitted update type: a canonical version ANNOUNCEMENT —
 		 * version, base version, content hash, author attribution, and the
 		 * merged property registers, but NO content. The transport carries
@@ -118,7 +107,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * @since 0.4.0
 		 * @var string
 		 */
-		const UPDATE_TYPE_PROPOSAL_PARKED = 'proposal-parked';
+		const UPDATE_TYPE_PARKED = 'parked';
 
 		/**
 		 * Client-sent update type: closes a parked proposal
@@ -139,14 +128,6 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * @var int
 		 */
 		const SERVER_CLIENT_ID = 2000000001;
-
-		/**
-		 * Room meta key: canonical document state.
-		 *
-		 * @since 0.3.0
-		 * @var string
-		 */
-		const META_DOC = 'de_rtc_doc';
 
 		/**
 		 * Room meta key: last checkpoint cursor.
@@ -293,11 +274,10 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		public function get_update_types(): array {
 			return array(
 				self::UPDATE_TYPE_PROPOSAL,
-				self::UPDATE_TYPE_CONTENT,
 				self::UPDATE_TYPE_ANNOUNCE,
 				self::UPDATE_TYPE_FETCH,
 				self::UPDATE_TYPE_SNAPSHOT,
-				self::UPDATE_TYPE_PROPOSAL_PARKED,
+				self::UPDATE_TYPE_PARKED,
 				self::UPDATE_TYPE_RESOLVED,
 			);
 		}
@@ -866,14 +846,10 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			 * One representation: content travels as content (the proposal
 			 * body / canonical state), never as a property register. A
 			 * `content` register would re-carry the ENTIRE document on
-			 * every announce (the double-carry trap). Stripped here
-			 * defensively for legacy clients; also scrubbed from any
-			 * previously-persisted canonical map.
+			 * every announce (the double-carry trap), so the client never
+			 * sends one and the server strips it regardless.
 			 */
 			unset( $proposed_props['content'] );
-			if ( is_array( $state['properties'] ?? null ) ) {
-				unset( $state['properties']['content'] );
-			}
 
 			$base_props      = $this->resolve_base_properties( $state, (string) $proposal['baseVersion'] );
 			$canonical_props = is_array( $state['properties'] ?? null ) ? $state['properties'] : array();
@@ -947,7 +923,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			$stored = $this->add_row(
 				$room,
 				$client_id,
-				self::UPDATE_TYPE_PROPOSAL_PARKED,
+				self::UPDATE_TYPE_PARKED,
 				wp_json_encode(
 					array(
 						'proposalId'     => $parked_id,
@@ -975,9 +951,9 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * Resolves the property map a proposal was authored against.
 		 *
 		 * Falls back to the canonical map when the base version's property
-		 * snapshot is unknown (legacy rooms written before property sync) —
-		 * the fallback treats concurrent property changes as absent, which
-		 * degrades to last-writer-wins for exactly those rooms.
+		 * snapshot is unknown (a base older than the retained per-version
+		 * window) — the fallback treats concurrent property changes as
+		 * absent, which degrades to last-writer-wins for exactly that case.
 		 *
 		 * @since 0.4.0
 		 *
@@ -1166,7 +1142,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			$stored = $this->add_row(
 				$room,
 				$client_id,
-				self::UPDATE_TYPE_PROPOSAL_PARKED,
+				self::UPDATE_TYPE_PARKED,
 				wp_json_encode( $payload )
 			);
 			if ( $stored ) {
@@ -1573,7 +1549,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				if ( ! is_array( $decoded ) || ! is_string( $decoded['proposalId'] ?? null ) ) {
 					continue;
 				}
-				if ( self::UPDATE_TYPE_PROPOSAL_PARKED === $row['type'] ) {
+				if ( self::UPDATE_TYPE_PARKED === $row['type'] ) {
 					$ledger['open'][ $decoded['proposalId'] ] = $decoded;
 				} elseif ( self::UPDATE_TYPE_RESOLVED === $row['type'] ) {
 					$ledger['resolved'][ $decoded['proposalId'] ] = true;
@@ -1702,10 +1678,10 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		/**
 		 * Loads (and lazily initializes) the canonical state for a room.
 		 *
-		 * The canonical snapshot in room meta reflects the log up to its
-		 * stamped cursor; `content` rows past that cursor are applied on top
-		 * (catch-up and lost-save-race repair). Without room-meta support the
-		 * state rebuilds from the retained rows every time.
+		 * Canonical truth is the chained options row (the announce model's
+		 * single content store). Stored rows never carry content except
+		 * snapshots (genesis and checkpoints), so when the chain row is
+		 * missing the state rebuilds from the retained snapshot rows.
 		 *
 		 * @since 0.3.0
 		 *
@@ -1717,16 +1693,9 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				return $this->room_states[ $room ];
 			}
 
-			// Canonical truth: the chained options row (the announce model's
-			// single content store). Legacy rooms fall back to the old
-			// de_rtc_doc room meta once; the next advance seeds the chain.
 			$meta = self::decode_canonical(
 				WP_Sync_Atomic_Option::read( $this->canonical_option_name( $room ) )
 			);
-			if ( null === $meta && method_exists( $this->storage, 'get_room_meta' ) ) {
-				$legacy = $this->storage->get_room_meta( $room, self::META_DOC );
-				$meta   = is_array( $legacy ) ? $legacy : null;
-			}
 
 			$state       = null;
 			$meta_cursor = 0;
@@ -1762,11 +1731,8 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			}
 
 			foreach ( $rows as $row ) {
-				if ( self::UPDATE_TYPE_PROPOSAL === $row['type'] ) {
-					continue; // Not stored by this engine, but be tolerant.
-				}
-				if ( in_array( $row['type'], array( self::UPDATE_TYPE_PROPOSAL_PARKED, self::UPDATE_TYPE_RESOLVED ), true ) ) {
-					continue; // Review-lane rows never carry canonical content.
+				if ( self::UPDATE_TYPE_SNAPSHOT !== $row['type'] ) {
+					continue; // Only snapshot rows carry canonical content.
 				}
 				$decoded = json_decode( (string) $row['data'], true );
 				if ( ! is_array( $decoded ) || ! is_string( $decoded['version'] ?? null ) || ! is_string( $decoded['content'] ?? null ) ) {
@@ -1790,13 +1756,6 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					$state['properties'] = $decoded['properties'];
 				}
 				$this->record_properties_snapshot( $state, $decoded['version'] );
-			}
-
-			// One-representation scrub: a legacy `content` property register
-			// persisted by older clients must not re-carry the document on
-			// every announce (see merge_proposed_properties).
-			if ( is_array( $state['properties'] ?? null ) ) {
-				unset( $state['properties']['content'] );
 			}
 
 			// Self-healing: fold in an out-of-band post_content write before
@@ -2562,7 +2521,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 						break;
 					}
 					if (
-						self::UPDATE_TYPE_PROPOSAL_PARKED === $row['type'] &&
+						self::UPDATE_TYPE_PARKED === $row['type'] &&
 						is_string( $decoded['proposalId'] ?? null ) &&
 						! isset( $resolved_ids[ $decoded['proposalId'] ] )
 					) {
@@ -2574,7 +2533,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				}
 				if ( $found_previous ) {
 					foreach ( $below as $parked ) {
-						$this->add_row( $room, $parked['client_id'], self::UPDATE_TYPE_PROPOSAL_PARKED, wp_json_encode( $parked['decoded'] ) );
+						$this->add_row( $room, $parked['client_id'], self::UPDATE_TYPE_PARKED, wp_json_encode( $parked['decoded'] ) );
 					}
 				}
 			}
@@ -2657,8 +2616,8 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 
 			$existing = WP_Sync_Atomic_Option::read( $name );
 			if ( null === $existing ) {
-				// Legacy room with no claim row: swap() seeds it at the
-				// current seq atomically, then performs the swap.
+				// No claim row (removed out of band): swap() seeds it at
+				// the current seq atomically, then performs the swap.
 				return WP_Sync_Atomic_Option::swap( $name, $current_seq . ':0', $next );
 			}
 

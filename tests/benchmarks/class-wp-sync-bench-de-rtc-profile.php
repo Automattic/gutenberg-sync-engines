@@ -15,7 +15,7 @@
  * property three-way against the same base version, so unchanged entries
  * are no-ops). Scalar properties, taxonomy term sets (rest_base names,
  * whole term-ID arrays the engine set-compares), and `meta.<key>` meta
- * registers are all just entries in that map. A conflicting property parks as its own `proposal-parked`
+ * registers are all just entries in that map. A conflicting property parks as its own `parked`
  * row while the proposal itself still reports `applied` — the engine's
  * escalation grain for fields is a property, not the proposal — so the
  * profile mirrors the engine's per-property three-way rule to know how
@@ -148,7 +148,7 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 		private $expected_parked_props = array();
 
 		/**
-		 * Property-conflict `proposal-parked` rows actually delivered on the
+		 * Property-conflict `parked` rows actually delivered on the
 		 * wire ( parked id => array( name, value ) ).
 		 *
 		 * @var array<string, array>
@@ -403,7 +403,7 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 				// the wire against the model's predicted parks. Rows are
 				// broadcast to every client — keyed by parked id, so
 				// re-observations are idempotent.
-				if ( WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED === ( $row['type'] ?? '' ) && is_array( $decoded['property'] ?? null ) ) {
+				if ( WP_De_RTC_Engine::UPDATE_TYPE_PARKED === ( $row['type'] ?? '' ) && is_array( $decoded['property'] ?? null ) ) {
 					$parked_id = (string) ( $decoded['proposalId'] ?? '' );
 					if ( '' !== $parked_id ) {
 						$this->observed_parked_props[ $parked_id ] = array(
@@ -418,7 +418,7 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 				if ( ! is_string( $decoded['version'] ?? null ) || ( ! $is_announce && ! is_string( $decoded['content'] ?? null ) ) ) {
 					continue;
 				}
-				if ( in_array( $row['type'] ?? '', array( 'content', WP_De_RTC_Engine::UPDATE_TYPE_ANNOUNCE ), true ) && is_string( $decoded['baseVersion'] ?? null ) ) {
+				if ( $is_announce && is_string( $decoded['baseVersion'] ?? null ) ) {
 					$version = $decoded['version'];
 					if ( isset( $this->row_lineage[ $version ] ) && $this->row_lineage[ $version ] !== $decoded['baseVersion'] ) {
 						$this->observe_failures[] = array(
@@ -971,7 +971,7 @@ if ( ! class_exists( 'WP_Sync_Bench_De_RTC_Profile' ) ) {
 		 * changed only by the client applies (canonical equals base, or
 		 * already equals the proposed value); a property changed BOTH by the
 		 * client and concurrently in canonical parks as its own
-		 * `proposal-parked` row (`property-conflict`) while the proposal
+		 * `parked` row (`property-conflict`) while the proposal
 		 * still reports applied — canonical keeps the concurrent winner. The
 		 * base value is the one captured from the client's adopted map when
 		 * the write was authored (the client adopts canonical wholesale, so
