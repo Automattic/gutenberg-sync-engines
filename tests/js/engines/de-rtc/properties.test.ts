@@ -13,7 +13,7 @@ import {
 	DE_RTC_ANNOUNCE_TYPE,
 	DE_RTC_PROPOSAL_TYPE,
 	DE_RTC_SNAPSHOT_TYPE,
-	DE_RTC_PROPOSAL_PARKED_TYPE,
+	DE_RTC_PARKED_TYPE,
 } from '../../../../src/engines/de-rtc/session';
 import {
 	propertyValuesEqual,
@@ -213,7 +213,7 @@ describe( 'de-rtc property sync (client)', () => {
 		);
 
 		session.receiveUpdate( {
-			type: DE_RTC_PROPOSAL_PARKED_TYPE,
+			type: DE_RTC_PARKED_TYPE,
 			data: JSON.stringify( {
 				proposalId: 'p-9-1:title',
 				reason: 'property-conflict',

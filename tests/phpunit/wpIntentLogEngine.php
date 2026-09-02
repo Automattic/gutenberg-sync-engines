@@ -224,7 +224,7 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 			array_filter(
 				$catchup['updates'],
 				static function ( $update ) {
-					return WP_Intent_Log_Engine::UPDATE_TYPE_PROPOSAL === $update['type'];
+					return WP_Intent_Log_Engine::UPDATE_TYPE_PARKED === $update['type'];
 				}
 			)
 		);
@@ -558,7 +558,7 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 			// The parked proposal SURVIVED the trim.
 			$proposals = array();
 			foreach ( $join['updates'] as $update ) {
-				if ( WP_Intent_Log_Engine::UPDATE_TYPE_PROPOSAL === $update['type'] ) {
+				if ( WP_Intent_Log_Engine::UPDATE_TYPE_PARKED === $update['type'] ) {
 					$proposals[] = json_decode( $update['data'], true );
 				}
 			}
@@ -683,14 +683,14 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 	public function test_proposals_carry_review_context_and_resolve_idempotently() {
 		$proposal_id = $this->escalate_attr_conflict( '1' );
 
-		// The proposal row carries review context: settlement seq, server
+		// The parked row carries review context: settlement seq, server
 		// time, and a content excerpt of the target block.
 		$catchup   = $this->poll( array(), array( 'client_id' => 303 ) );
 		$proposals = array_values(
 			array_filter(
 				$catchup['updates'],
 				static function ( $update ) {
-					return WP_Intent_Log_Engine::UPDATE_TYPE_PROPOSAL === $update['type'];
+					return WP_Intent_Log_Engine::UPDATE_TYPE_PARKED === $update['type'];
 				}
 			)
 		);
@@ -764,7 +764,7 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 			$join         = $this->poll( array(), array( 'client_id' => 606 ) );
 			$proposal_ids = array();
 			foreach ( $join['updates'] as $update ) {
-				if ( WP_Intent_Log_Engine::UPDATE_TYPE_PROPOSAL === $update['type'] ) {
+				if ( WP_Intent_Log_Engine::UPDATE_TYPE_PARKED === $update['type'] ) {
 					$decoded        = json_decode( $update['data'], true );
 					$proposal_ids[] = $decoded['intent']['intentId'];
 				}
@@ -988,7 +988,7 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 	}
 
 	/**
-	 * Proposal rows currently in the room feed, decoded.
+	 * Parked rows currently in the room feed, decoded.
 	 *
 	 * @param int $client_id Polling client.
 	 * @return array Decoded proposal payloads.
@@ -997,7 +997,7 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 		$catchup = $this->poll( array(), array( 'client_id' => $client_id ) );
 		$rows    = array();
 		foreach ( $catchup['updates'] as $update ) {
-			if ( WP_Intent_Log_Engine::UPDATE_TYPE_PROPOSAL === $update['type'] ) {
+			if ( WP_Intent_Log_Engine::UPDATE_TYPE_PARKED === $update['type'] ) {
 				$rows[] = json_decode( $update['data'], true );
 			}
 		}
@@ -1130,7 +1130,7 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 		$engine = new WP_Intent_Log_Engine( new WP_Sync_Post_Meta_Storage() );
 		$this->assertStringNotContainsString( '<script>', (string) $engine->materialize( $this->room() ) );
 
-		// Redelivery acks identically without a second proposal row.
+		// Redelivery acks identically without a second parked row.
 		$again = $this->poll(
 			array( self::object_block_intent( 'kses-1', '<script>alert(1)</script>' ) )
 		);

@@ -1569,7 +1569,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 		/*
 		 * Escalation notices derive from the SETTLED open-proposal list, on
 		 * a microtask after the delivery batch: a bootstrap replay delivers
-		 * proposal rows before their resolution rows, and notifying on raw
+		 * parked rows before their resolution rows, and notifying on raw
 		 * arrival would re-surface long-resolved conflicts on every reload.
 		 */
 		const notifiedProposalIds = new Set< string >();

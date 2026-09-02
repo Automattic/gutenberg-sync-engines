@@ -585,7 +585,7 @@ applies.
   and de-rtc via revert-edit undo (reverts derived from the client's
   own accepted canonical rows, proposed as ordinary new changes).
 - **Conflict review is cross-engine**: intent-log through its bespoke
-  manager; de-rtc parks escalations as durable `proposal-parked` rows and
+  manager; de-rtc parks escalations as durable `parked` rows and
   presents them through the framework review panel via
   `src/engines/review-manager-decorator.ts` (the plumbing any
   createSyncManager-composed engine can reuse); yjs-server has NO review
@@ -683,7 +683,7 @@ applies.
     to the review lane — parked, never lost — and normal merging resumes as
     soon as the editor observes the remote change. (The related
     one-keystroke DIVERGENCE this used to cause is FIXED: a settle that
-    bypasses `clientReceive` — proposal rows, voided markers, disposition
+    bypasses `clientReceive` — parked rows, voided markers, disposition
     acks — now replans the optimistic document, so a mispredicted escalated
     keystroke can no longer linger on the author's canvas forever; found by
     the fuzzer's concurrency profile, regression-tested in

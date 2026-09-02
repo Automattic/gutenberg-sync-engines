@@ -107,7 +107,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * @since 0.4.0
 		 * @var string
 		 */
-		const UPDATE_TYPE_PROPOSAL_PARKED = 'proposal-parked';
+		const UPDATE_TYPE_PARKED = 'parked';
 
 		/**
 		 * Client-sent update type: closes a parked proposal
@@ -277,7 +277,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				self::UPDATE_TYPE_ANNOUNCE,
 				self::UPDATE_TYPE_FETCH,
 				self::UPDATE_TYPE_SNAPSHOT,
-				self::UPDATE_TYPE_PROPOSAL_PARKED,
+				self::UPDATE_TYPE_PARKED,
 				self::UPDATE_TYPE_RESOLVED,
 			);
 		}
@@ -923,7 +923,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			$stored = $this->add_row(
 				$room,
 				$client_id,
-				self::UPDATE_TYPE_PROPOSAL_PARKED,
+				self::UPDATE_TYPE_PARKED,
 				wp_json_encode(
 					array(
 						'proposalId'     => $parked_id,
@@ -1142,7 +1142,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			$stored = $this->add_row(
 				$room,
 				$client_id,
-				self::UPDATE_TYPE_PROPOSAL_PARKED,
+				self::UPDATE_TYPE_PARKED,
 				wp_json_encode( $payload )
 			);
 			if ( $stored ) {
@@ -1549,7 +1549,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				if ( ! is_array( $decoded ) || ! is_string( $decoded['proposalId'] ?? null ) ) {
 					continue;
 				}
-				if ( self::UPDATE_TYPE_PROPOSAL_PARKED === $row['type'] ) {
+				if ( self::UPDATE_TYPE_PARKED === $row['type'] ) {
 					$ledger['open'][ $decoded['proposalId'] ] = $decoded;
 				} elseif ( self::UPDATE_TYPE_RESOLVED === $row['type'] ) {
 					$ledger['resolved'][ $decoded['proposalId'] ] = true;
@@ -2521,7 +2521,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 						break;
 					}
 					if (
-						self::UPDATE_TYPE_PROPOSAL_PARKED === $row['type'] &&
+						self::UPDATE_TYPE_PARKED === $row['type'] &&
 						is_string( $decoded['proposalId'] ?? null ) &&
 						! isset( $resolved_ids[ $decoded['proposalId'] ] )
 					) {
@@ -2533,7 +2533,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 				}
 				if ( $found_previous ) {
 					foreach ( $below as $parked ) {
-						$this->add_row( $room, $parked['client_id'], self::UPDATE_TYPE_PROPOSAL_PARKED, wp_json_encode( $parked['decoded'] ) );
+						$this->add_row( $room, $parked['client_id'], self::UPDATE_TYPE_PARKED, wp_json_encode( $parked['decoded'] ) );
 					}
 				}
 			}

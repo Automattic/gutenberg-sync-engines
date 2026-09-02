@@ -1,5 +1,5 @@
 /**
- * A parked (escalated) proposal as the server's `proposal-parked` row
+ * A parked (escalated) proposal as the server's `parked` row
  * carries it. `changedBlocks` are the proposal's top-level blocks that
  * differed from its base, with their indices, so a restore can overlay
  * them at sensible anchors.

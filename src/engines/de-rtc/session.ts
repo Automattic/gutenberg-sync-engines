@@ -60,9 +60,9 @@ export const DE_RTC_SNAPSHOT_TYPE = 'snapshot';
 
 /**
  * Server-emitted row type: an escalated proposal parked for review.
- * Matches WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED. Receive-only.
+ * Matches WP_De_RTC_Engine::UPDATE_TYPE_PARKED. Receive-only.
  */
-export const DE_RTC_PROPOSAL_PARKED_TYPE = 'proposal-parked';
+export const DE_RTC_PARKED_TYPE = 'parked';
 
 /**
  * Server-emitted row type closing a parked proposal (the server stamps
@@ -464,7 +464,7 @@ export function createDeRtcSessionCodec(
 		}
 
 		// Review-lane rows carry no canonical content; they feed the ledger.
-		if ( DE_RTC_PROPOSAL_PARKED_TYPE === update.type ) {
+		if ( DE_RTC_PARKED_TYPE === update.type ) {
 			if (
 				'string' === typeof decoded?.proposalId &&
 				'' !== decoded.proposalId &&

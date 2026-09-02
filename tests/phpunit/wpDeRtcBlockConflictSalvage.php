@@ -78,7 +78,7 @@ class Tests_Collaboration_WpDeRtcBlockConflictSalvage extends WP_UnitTestCase {
 			array_filter(
 				$response['updates'],
 				static function ( $update ) {
-					return WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED === $update['type'];
+					return WP_De_RTC_Engine::UPDATE_TYPE_PARKED === $update['type'];
 				}
 			)
 		);

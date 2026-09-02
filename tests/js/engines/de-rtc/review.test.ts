@@ -17,7 +17,7 @@ import * as Y from 'yjs';
 import { createDeRtcEngine } from '../../../../src/engines/de-rtc/engine';
 import {
 	DE_RTC_ANNOUNCE_TYPE,
-	DE_RTC_PROPOSAL_PARKED_TYPE,
+	DE_RTC_PARKED_TYPE,
 	DE_RTC_PROPOSAL_TYPE,
 	DE_RTC_RESOLVED_TYPE,
 	DE_RTC_SNAPSHOT_TYPE,
@@ -77,7 +77,7 @@ const parkedRow = (
 	changedBlocks: Array< { index: number; html: string } >,
 	excerpt = 'lost words'
 ) => ( {
-	type: DE_RTC_PROPOSAL_PARKED_TYPE,
+	type: DE_RTC_PARKED_TYPE,
 	data: JSON.stringify( {
 		proposalId,
 		reason,

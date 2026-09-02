@@ -401,7 +401,7 @@ editor would display — equals the last applied write in server order.
 Yjs-server: register conflicts resolve by CRDT rules (deterministic, NOT
 server order), so the oracle asserts all-client convergence plus that
 each register converged to a value somebody actually wrote. De-rtc: a
-conflicting property parks as its OWN `proposal-parked` row
+conflicting property parks as its OWN `parked` row
 (`property-conflict`) while the proposal it rode in still reports
 `applied` — the engine's escalation grain for fields is a property, not
 the proposal, so field conflicts do NOT appear in the `escalated`
