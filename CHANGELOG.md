@@ -13,10 +13,11 @@ them under a version heading when a version ships.
     that transport is active, automatic polling is held and nothing moves
     over the wire until the button (in the editor header, left of the
     settings toggle) is clicked; each click runs one send-and-receive
-    cycle, and a count on the button shows how many updates are waiting.
-    This makes conflict timing reproducible: edit in two windows, then
-    sync each window in the order the demo needs. Joining a session still
-    syncs once automatically so documents open normally.
+    cycle. This makes conflict timing reproducible: edit in two windows,
+    then sync each window in the order the demo needs. Joining a session
+    still syncs once automatically so documents open normally. The button
+    is currently switched off (its registration in `src/index.ts` is
+    commented out); short polling behaves normally until it is re-enabled.
 -   A prototype flow for reviewing conflicting edits, for UI design work.
     A block whose edits were set aside is replaced in place by a
     recovery-style card, the way an invalid block is: a "Review conflict"

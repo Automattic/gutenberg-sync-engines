@@ -8,10 +8,9 @@
  * window in the order the story needs.
  *
  * The button renders in the editor header's pinned-items cluster, immediately
- * left of the block/post settings toggle. It shows the number of queued
- * outgoing updates so the presenter can see when a just-typed edit has
- * reached the outbox (the intent-log engine captures typing bursts on a
- * short delay).
+ * left of the block/post settings toggle. Keep in mind the intent-log engine
+ * captures typing bursts on a short delay (about 1.2 seconds), so an edit
+ * reaches the outbox that long after typing stops.
  */
 
 /**
@@ -19,14 +18,13 @@
  */
 import { Button, Fill } from '@wordpress/components';
 import { useEffect, useSyncExternalStore } from '@wordpress/element';
-import { __, sprintf } from '@wordpress/i18n';
+import { __ } from '@wordpress/i18n';
 import { registerPlugin } from '@wordpress/plugins';
 
 /**
  * Internal dependencies
  */
 import {
-	getQueuedUpdateCount,
 	isSyncInFlight,
 	setManualSyncMode,
 	subscribeManualSync,
@@ -44,10 +42,6 @@ function ManualSyncButton() {
 	const isShortPolling =
 		'http-polling' === window._wpCollaborationSync?.transports?.[ 0 ];
 
-	const queued = useSyncExternalStore(
-		subscribeManualSync,
-		getQueuedUpdateCount
-	);
 	const inFlight = useSyncExternalStore(
 		subscribeManualSync,
 		isSyncInFlight
@@ -73,12 +67,6 @@ function ManualSyncButton() {
 	let label: string = __( 'Sync', 'gutenberg-sync-engines' );
 	if ( inFlight ) {
 		label = __( 'Syncing…', 'gutenberg-sync-engines' );
-	} else if ( queued > 0 ) {
-		label = sprintf(
-			/* translators: %d: number of queued sync updates. */
-			__( 'Sync (%d)', 'gutenberg-sync-engines' ),
-			queued
-		);
 	}
 
 	return (

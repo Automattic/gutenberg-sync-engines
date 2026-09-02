@@ -38,7 +38,9 @@ import { createDeRtcEngineAdapter } from './engines/de-rtc-adapter';
 import { createHttpPollingProvider } from './providers/http-polling/http-polling-provider';
 import { createHttpLongPollingProvider } from './providers/http-long-polling/http-long-polling-provider';
 import { createWebSocketProvider } from './providers/websocket/websocket-provider';
-import { registerManualSyncButton } from './manual-sync/manual-sync-button';
+// Disabled for now; uncomment together with the call below to bring back the
+// manual Sync button (demo tooling for the http-polling transport).
+// import { registerManualSyncButton } from './manual-sync/manual-sync-button';
 
 const { registerSyncEngine, registerSyncTransport } = unlock( privateApis );
 
@@ -66,5 +68,6 @@ registerSyncTransport( {
 } );
 
 // Demo tooling: on the http-polling transport, hold automatic polling and
-// sync on demand from a header button instead.
-registerManualSyncButton();
+// sync on demand from a header button instead. Disabled for now; uncomment
+// together with the import above to bring the button back.
+// registerManualSyncButton();
