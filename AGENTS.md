@@ -485,7 +485,12 @@ they exist so a failure is observable without re-instrumenting:
   `gutenberg-experiments` in `POST /wp/v2/settings` (the fixture's
   `setCollaboration`) and set `wp_sync_engine` the same way; the CLI tools
   (`rtc-dev.mjs`, the fuzzer) flip it with a `wp eval` on that option. All of
-  it only works with the plugins active.
+  it only works with the plugins active. ACTIVATING this plugin turns the
+  experiment on (`gutenberg_sync_engines_activate`, the entry file's
+  activation hook, per site on a network-wide activation); it does not pin
+  it, so turning the experiment off afterward still works — the e2e
+  fixture's `setCollaboration( false )` teardown and the host benchmark's
+  restore depend on that.
 - **Subtree build layout** (Gutenberg 23.x): built package JS lands at
   `gutenberg/build/scripts/<pkg>/`, not `gutenberg/build/<pkg>/`.
 - **Engine switches vs room lineage:** rooms are stamped with the engine

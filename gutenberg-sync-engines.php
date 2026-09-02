@@ -18,6 +18,77 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+if ( ! function_exists( 'gutenberg_sync_engines_activate' ) ) {
+	/**
+	 * Turns the Gutenberg real-time collaboration experiment on when this
+	 * plugin is activated.
+	 *
+	 * The framework gates real-time collaboration on the
+	 * `gutenberg-real-time-collaboration` experiment (the checkbox on the
+	 * Gutenberg → Experiments screen), and every fresh site starts with it
+	 * off. A site that installs this plugin wants collaboration, so
+	 * activation flips the experiment on — once, preserving every other
+	 * experiment. The checkbox stays live afterward: turning it off later
+	 * is honored until the plugin is activated again.
+	 *
+	 * On a network-wide activation the experiment is turned on for every
+	 * site in the network, because the option is per site.
+	 *
+	 * @since n.e.x.t
+	 *
+	 * @param bool $network_wide Whether the plugin is being activated for
+	 *                           the whole network.
+	 * @return void
+	 */
+	function gutenberg_sync_engines_activate( $network_wide = false ) {
+		if ( $network_wide && is_multisite() ) {
+			// 'number' => 0 lifts get_sites()' default cap of 100 sites.
+			$site_ids = get_sites(
+				array(
+					'fields' => 'ids',
+					'number' => 0,
+				)
+			);
+			foreach ( $site_ids as $site_id ) {
+				switch_to_blog( $site_id );
+				gutenberg_sync_engines_enable_collaboration_experiment();
+				restore_current_blog();
+			}
+			return;
+		}
+		gutenberg_sync_engines_enable_collaboration_experiment();
+	}
+}
+
+if ( ! function_exists( 'gutenberg_sync_engines_enable_collaboration_experiment' ) ) {
+	/**
+	 * Turns on the `gutenberg-real-time-collaboration` experiment for the
+	 * current site, leaving the other experiments as they are.
+	 *
+	 * @since n.e.x.t
+	 *
+	 * @return void
+	 */
+	function gutenberg_sync_engines_enable_collaboration_experiment() {
+		$experiments = get_option( 'gutenberg-experiments', array() );
+		if ( ! is_array( $experiments ) ) {
+			$experiments = array();
+		}
+		if ( ! empty( $experiments['gutenberg-real-time-collaboration'] ) ) {
+			return;
+		}
+		$experiments['gutenberg-real-time-collaboration'] = true;
+		update_option( 'gutenberg-experiments', $experiments );
+	}
+}
+
+/*
+ * Registered BEFORE the double-mount guard below: a worktree's second copy
+ * returns early from this file, and activating that copy should still turn
+ * the experiment on.
+ */
+register_activation_hook( __FILE__, 'gutenberg_sync_engines_activate' );
+
 /*
  * In a git worktree, wp-env mounts this plugin TWICE (under the checkout's
  * directory name and as gutenberg-sync-engines), and both copies can end up
