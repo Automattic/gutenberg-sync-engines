@@ -44,6 +44,15 @@ them under a version heading when a version ships.
 
 ### Fixed
 
+-   Under the de-rtc engine, the per-block "who last edited this" record
+    credited every block in the document to whoever made the latest
+    edit, instead of only the blocks that edit actually changed. The
+    record compared blocks in a form that included the temporary id the
+    editor's parser assigns to each block on every read, so no two
+    readings of the same block ever looked equal. Blocks now compare by
+    their saved form, through the one comparison the engine's undo and
+    merge paths already share. Nothing on screen reads this record yet.
+
 -   Under the de-rtc engine, a long-running collaboration session could
     lose every accepted edit the moment a save request looked at the
     room. The engine watches the saved post for outside changes, and its
