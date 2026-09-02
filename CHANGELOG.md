@@ -18,12 +18,18 @@ them under a version heading when a version ships.
 
 ### Added
 
+-   Activating the plugin now turns on Gutenberg's real-time collaboration
+    experiment, so collaboration works right after activation instead of
+    needing a second trip to the Gutenberg → Experiments screen. Other
+    experiments are left as they are, and the experiment checkbox keeps
+    working afterward. Network-wide activation turns it on for every site
+    ([#82](https://github.com/Automattic/gutenberg-sync-engines/issues/82)).
+
 -   `npm run bench` and the session replay tool
     (`tests/debugging/replay/replay.mjs`) take `--key=value` flags
     (`npm run bench -- --suite=engines`, `--certify=3`,
     `replay.mjs fixture.json --speed=2 --force`) instead of bare
     `key=value` tokens; a bare token is now refused with the flag to use.
-
 -   `npm run bench` is the single entry point for the benchmarks, and
     by default prints a host cost report: what real-time collaboration
     adds to a server, one engine per run, as two
