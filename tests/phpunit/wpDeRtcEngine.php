@@ -163,7 +163,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 		$engine = $this->engine();
 		$this->assertSame( 'de-rtc', $engine->get_slug() );
 		$this->assertSame( 2, $engine->get_protocol_version() );
-		$this->assertSame( array( 'proposal', 'content', 'announce', 'fetch', 'snapshot', 'proposal-parked', 'resolved' ), $engine->get_update_types() );
+		$this->assertSame( array( 'proposal', 'announce', 'fetch', 'snapshot', 'parked', 'resolved' ), $engine->get_update_types() );
 	}
 
 	public function test_genesis_snapshot_and_lineage() {
@@ -202,7 +202,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
 		$this->assertSame( 'v2', $result['dispositions'][0]['version'] );
 
-		// A second client sees the accepted content row.
+		// A second client sees the accepted version.
 		$peer_response = $this->engine()->get_updates_since( $this->room(), 2, 0, array() );
 		$peer_latest   = $this->latest_from_response( $peer_response );
 		$this->assertSame( 'v2', $peer_latest['version'] );
@@ -336,7 +336,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 			array(
 				array(
 					'data' => '{}',
-					'type' => WP_De_RTC_Engine::UPDATE_TYPE_CONTENT,
+					'type' => WP_De_RTC_Engine::UPDATE_TYPE_ANNOUNCE,
 				),
 			),
 			array()
@@ -388,7 +388,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 		$this->assertStringNotContainsString( '<script>', $this->engine()->materialize( $this->room() ) );
 		$parked = $this->rows_of_type(
 			$this->engine()->get_updates_since( $this->room(), 4, 0, array() ),
-			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+			WP_De_RTC_Engine::UPDATE_TYPE_PARKED
 		);
 		$this->assertCount( 1, $parked );
 		$this->assertSame( 'requires-unfiltered-html', $parked[0]['reason'] );
@@ -528,7 +528,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 		$this->escalate_conflict();
 
 		$response = $this->engine()->get_updates_since( $this->room(), 3, 0, array() );
-		$parked   = $this->rows_of_type( $response, WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED );
+		$parked   = $this->rows_of_type( $response, WP_De_RTC_Engine::UPDATE_TYPE_PARKED );
 
 		$this->assertCount( 1, $parked, 'the escalated proposal must park exactly one row' );
 		$row = $parked[0];
@@ -569,7 +569,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 		// …and the risky block parks for a privileged reviewer.
 		$parked = $this->rows_of_type(
 			$this->engine()->get_updates_since( $this->room(), 4, 0, array() ),
-			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+			WP_De_RTC_Engine::UPDATE_TYPE_PARKED
 		);
 		$this->assertCount( 1, $parked );
 		$this->assertSame( 'p-risky', $parked[0]['proposalId'] );
@@ -608,7 +608,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 		// Only the risky block parked (index 1 — the Beta paragraph).
 		$parked = $this->rows_of_type(
 			$this->engine()->get_updates_since( $this->room(), 4, 0, array() ),
-			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+			WP_De_RTC_Engine::UPDATE_TYPE_PARKED
 		);
 		$this->assertCount( 1, $parked );
 		$this->assertCount( 1, $parked[0]['changedBlocks'] );
@@ -641,7 +641,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 
 		$parked = $this->rows_of_type(
 			$this->engine()->get_updates_since( $this->room(), 4, 0, array() ),
-			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+			WP_De_RTC_Engine::UPDATE_TYPE_PARKED
 		);
 		$this->assertCount( 1, $parked, 'identical risky content must park once, not once per poll cycle' );
 	}
@@ -669,7 +669,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 
 		$parked = $this->rows_of_type(
 			$this->engine()->get_updates_since( $this->room(), 4, 0, array() ),
-			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+			WP_De_RTC_Engine::UPDATE_TYPE_PARKED
 		);
 		$this->assertCount( 1, $parked );
 		$this->assertSame( 'p-classic', $parked[0]['proposalId'] );
@@ -711,7 +711,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 
 		$parked = $this->rows_of_type(
 			$this->engine()->get_updates_since( $this->room(), 4, 0, array() ),
-			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+			WP_De_RTC_Engine::UPDATE_TYPE_PARKED
 		);
 		$this->assertCount( 1, $parked );
 		$this->assertSame( 'p-embed', $parked[0]['proposalId'] );
@@ -761,7 +761,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 
 		$parked = $this->rows_of_type(
 			$this->engine()->get_updates_since( $this->room(), 4, 0, array() ),
-			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+			WP_De_RTC_Engine::UPDATE_TYPE_PARKED
 		);
 		$this->assertCount( 2, $parked, 'current behavior: the already-approved block parks again' );
 		$this->assertSame( 'p-typo', $parked[1]['proposalId'] );
@@ -784,7 +784,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 
 		$parked = $this->rows_of_type(
 			$this->engine()->get_updates_since( $this->room(), 3, 0, array() ),
-			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+			WP_De_RTC_Engine::UPDATE_TYPE_PARKED
 		);
 		$this->assertCount( 1, $parked );
 	}
@@ -980,7 +980,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 		$this->assertSame( 'Excerpt by A', $props['excerpt'] );
 
 		// B's losing title parked as a property-conflict review row.
-		$parked = $this->rows_of_type( $after, WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED );
+		$parked = $this->rows_of_type( $after, WP_De_RTC_Engine::UPDATE_TYPE_PARKED );
 		$this->assertCount( 1, $parked );
 		$this->assertSame( 'p-props-b:title', $parked[0]['proposalId'] );
 		$this->assertSame( 'property-conflict', $parked[0]['reason'] );
@@ -1015,7 +1015,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 		$after = $this->engine()->get_updates_since( $this->room(), 2, 0, array() );
 		$this->assertSame(
 			array(),
-			$this->rows_of_type( $after, WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED ),
+			$this->rows_of_type( $after, WP_De_RTC_Engine::UPDATE_TYPE_PARKED ),
 			'a reordered identical set must never park a conflict'
 		);
 	}
@@ -1042,7 +1042,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 		$props = $this->latest_properties( $after );
 		$this->assertStringNotContainsString( '<script>', (string) ( $props['title'] ?? '' ) );
 
-		$parked = $this->rows_of_type( $after, WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED );
+		$parked = $this->rows_of_type( $after, WP_De_RTC_Engine::UPDATE_TYPE_PARKED );
 		$this->assertCount( 1, $parked );
 		$this->assertSame( 'requires-unfiltered-html', $parked[0]['reason'] );
 		$this->assertSame( 'title', $parked[0]['property']['name'] );
@@ -1090,7 +1090,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 
 			// A fresh joiner still receives the UNRESOLVED parked proposal…
 			$response = $this->engine()->get_updates_since( $this->room(), 9, 0, array() );
-			$parked   = $this->rows_of_type( $response, WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED );
+			$parked   = $this->rows_of_type( $response, WP_De_RTC_Engine::UPDATE_TYPE_PARKED );
 			$open_ids = array_column( $parked, 'proposalId' );
 			$this->assertContains( 'p-b', $open_ids, 'unresolved parked work must survive compaction' );
 
@@ -1156,7 +1156,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 
 		$parked = $this->rows_of_type(
 			$this->engine()->get_updates_since( $room, 4, 0, array() ),
-			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+			WP_De_RTC_Engine::UPDATE_TYPE_PARKED
 		);
 		$this->assertCount( 1, $parked );
 		$this->assertSame( 'p-risky-approval', $parked[0]['proposalId'] );
@@ -1219,7 +1219,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 		// Nothing new needed a human this time: no second parked row.
 		$parked_after = $this->rows_of_type(
 			$this->engine()->get_updates_since( $room, 4, 0, array() ),
-			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+			WP_De_RTC_Engine::UPDATE_TYPE_PARKED
 		);
 		$this->assertCount( 1, $parked_after, 'the plain edit must not create a second parked row' );
 	}
@@ -1259,7 +1259,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 
 		$parked = $this->rows_of_type(
 			$this->engine()->get_updates_since( $room, 4, 0, array() ),
-			WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED
+			WP_De_RTC_Engine::UPDATE_TYPE_PARKED
 		);
 		$this->assertCount( 2, $parked, 'the re-edit of approved content must park a second review row' );
 		$this->assertSame( 'p-reedit-approved', $parked[1]['proposalId'] );

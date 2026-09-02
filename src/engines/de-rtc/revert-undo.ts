@@ -14,7 +14,12 @@ import type { SyncUndoManager } from '@wordpress/sync';
 /**
  * Internal dependencies
  */
-import { parseCanonicalBlocks, type DeRtcDocBridge } from './doc-bridge';
+import {
+	changedBlockIndexes,
+	parseCanonicalBlocks,
+	serializeBlock,
+	type DeRtcDocBridge,
+} from './doc-bridge';
 
 /*
  * DE-RTC's revert-edit undo.
@@ -52,7 +57,7 @@ export interface DeRtcUndoFeedRow {
 	content: string;
 	/** Whether this row is the local client's own accepted proposal. */
 	own: boolean;
-	/** Server-stamped author user id (stamped on content rows). */
+	/** Server-stamped author user id (stamped on announce rows). */
 	author?: number;
 	/** The authoring transport client id. */
 	authorClientId?: number;
@@ -120,9 +125,6 @@ export function createDeRtcRevertUndoManager(): DeRtcRevertUndoManager {
 	const entities = new Map< Y.Map< unknown >, EntityUndoState >();
 	let recency = 0;
 
-	const serializeOne = ( block: unknown ): string =>
-		__unstableSerializeAndClean( [ block as any ] ).trim();
-
 	const notify = ( state: EntityUndoState ) => {
 		state.handlers.onUndoStackChange?.( {
 			hasUndo: 0 < state.undoStack.length,
@@ -184,7 +186,8 @@ export function createDeRtcRevertUndoManager(): DeRtcRevertUndoManager {
 		const base = parseCanonicalBlocks( baseContent );
 		const mine = parseCanonicalBlocks( rowContent );
 		const current = parseCanonicalBlocks( state.bridge.buildContent() );
-		if ( base.length !== mine.length || current.length !== mine.length ) {
+		const changed = changedBlockIndexes( base, mine );
+		if ( null === changed || current.length !== mine.length ) {
 			return null; // Structural divergence: positional selection lies.
 		}
 
@@ -192,15 +195,10 @@ export function createDeRtcRevertUndoManager(): DeRtcRevertUndoManager {
 		const to = forward ? mine : base;
 		const next = current.slice();
 		let reverted = false;
-		for ( let index = 0; index < mine.length; index++ ) {
+		for ( const index of changed ) {
 			if (
-				serializeOne( base[ index ] ) === serializeOne( mine[ index ] )
-			) {
-				continue; // The row did not change this block.
-			}
-			if (
-				serializeOne( current[ index ] ) !==
-				serializeOne( from[ index ] )
+				serializeBlock( current[ index ] ) !==
+				serializeBlock( from[ index ] )
 			) {
 				continue; // Touched since: a peer's work is never collateral.
 			}

@@ -1,19 +1,19 @@
 /**
  * One-command benchmark runner — the single front door to every
- * benchmark in this repo, selected with `suite=`:
+ * benchmark in this repo, selected with `--suite=`:
  *
  *   npm run bench                        # DEFAULT: the host cost report —
  *                                        # what the plugin adds to a server,
  *                                        # measured against the same site
  *                                        # with the plugin deactivated
  *                                        # (tests/benchmarks/host/)
- *   npm run bench -- engine=de-rtc windows=3     # host report, targeted
- *   npm run bench -- suite=engines       # engine-decision matrix (below)
- *   npm run bench -- suite=transport transport=http-polling trials=30
+ *   npm run bench -- --engine=de-rtc --windows=3     # host report, targeted
+ *   npm run bench -- --suite=engines     # engine-decision matrix (below)
+ *   npm run bench -- --suite=transport --transport=http-polling --trials=30
  *
  * Those are the BENCHMARKS: the host report (default), the engine
  * matrix, and the transport experience. The soak and replay lanes are
- * debugging/analysis tools, run directly (no suite=) from
+ * debugging/analysis tools, run directly (no --suite=) from
  * tests/debugging/:
  *
  *   node tests/debugging/soak-transport.mjs …
@@ -21,18 +21,18 @@
  *
  * Every suite other than `engines` forwards the remaining arguments to
  * its own script (see each script's header for its argument list).
- * `scenarios=`, `certify=`, and `concurrency=` belong only to the
- * engines suite, so passing one selects it without `suite=engines`
+ * `--scenarios=`, `--certify=`, and `--concurrency=` belong only to the
+ * engines suite, so passing one selects it without `--suite=engines`
  * (CI's certify job invokes it that way). The host report takes
- * `engine=` — singular, one per run — and refuses arguments it does
+ * `--engine=` — singular, one per run — and refuses arguments it does
  * not know.
  *
  * The engines suite: the whole engine-decision matrix, or an
  * invariant-certification sweep, from a single invocation.
  *
- *   npm run bench -- suite=engines       # every engine x the decision matrix
- *   npm run bench -- engines=de-rtc scenarios=editorial-session
- *   npm run bench -- certify=10          # invariant sweep across 10 seeds
+ *   npm run bench -- --suite=engines     # every engine x the decision matrix
+ *   npm run bench -- --engines=de-rtc --scenarios=editorial-session
+ *   npm run bench -- --certify=10        # invariant sweep across 10 seeds
  *
  * The matrix runs each engine over six complementary scenarios
  * (mixed-newsroom for steady concurrent editing, laggy-newsroom for
@@ -60,54 +60,55 @@
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { parseArgs } from 'node:util';
 
-// Arguments are bare key=value tokens (wp-cli would claim --flags on the
-// engines suite), but leading dashes are such a strong habit that they
-// are accepted and stripped: --suite=engines means suite=engines.
-const TOKENS = process.argv
-	.slice( 2 )
-	.map( ( token ) =>
-		token.includes( '=' ) ? token.replace( /^--?/, '' ) : token
-	);
-const args = Object.fromEntries(
-	TOKENS.filter( ( a ) => a.includes( '=' ) ).map( ( a ) =>
-		a.split( /=(.*)/s ).slice( 0, 2 )
-	)
-);
+// Arguments are --key=value flags. Each suite has its own argument list,
+// so parsing is non-strict: whatever this script does not consume is
+// forwarded. The engines suite runs its harness through `wp eval-file`,
+// and wp-cli claims --flags as its own, so that lane re-emits what it
+// consumed as bare key=value tokens (see runBenchmark); the host and transport
+// scripts take bare key=value tokens too, so forwarding strips the
+// dashes.
+const { values: args, positionals } = parseArgs( {
+	strict: false,
+	allowPositionals: true,
+} );
 
-const HELP = `npm run bench -- [suite=<name>] [key=value …]
+const HELP = `npm run bench -- [--suite=<name>] [--key=value …]
 
-Suites (suite=; default: host):
+Suites (--suite=; default: host):
   host       The host cost report: what the plugin adds to a server —
              baseline/sync/delta/delta-% tables plus summary stats, ONE
              engine per run. The baseline is the same people producing the
              same document by editing IN SERIES (save-and-hand-off, plugin
              deactivated) — so the delta isolates what real-time
              collaboration itself costs. Arguments:
-               engine=     the one engine to measure (intent-log |
-                           yjs-server | de-rtc | current; default: the
-                           site's current engine — comparing engines is
-                           what suite=engines is for)
-               transport=  http-polling | http-long-polling | websocket
-                           (default: the site's current transport)
-               windows=    collaborator windows per engine phase (default 2)
-               edit-seconds=      editing seconds per person (default 120,
-                                  min 30)
-               idle-seconds=      idle seconds per phase (default 120;
-                                  0 skips)
-               polling-interval=  override the HTTP short-polling interval
-                                  for the run, in seconds 0-25 (0 = the
-                                  plugin's defaults; default: leave the
-                                  site's setting alone)
-               metrics=    comma list of table rows to print:
-                           requests,traffic,cpu,workers,memory,cache,queries,diskio (default all)
-               json=       write full results as JSON to this path
-               headed=1    visible browser (debugging)
+               --engine=     the one engine to measure (intent-log |
+                             yjs-server | de-rtc | current; default: the
+                             site's current engine — comparing engines
+                             is what --suite=engines is for)
+               --transport=  http-polling | http-long-polling | websocket
+                             (default: the site's current transport)
+               --windows=    collaborator windows per engine phase
+                             (default 2)
+               --edit-seconds=      editing seconds per person (default
+                                    120, min 30)
+               --idle-seconds=      idle seconds per phase (default 120;
+                                    0 skips)
+               --polling-interval=  override the HTTP short-polling
+                                    interval for the run, in seconds 0-25
+                                    (0 = the plugin's defaults; default:
+                                    leave the site's setting alone)
+               --metrics=    comma list of table rows to print:
+                             requests,traffic,cpu,workers,memory,cache,queries,diskio (default all)
+               --json=       write full results as JSON to this path
+               --headed      visible browser (debugging)
   engines    The engine-decision matrix and invariant sweeps (in-process,
-             wp-env cli). Arguments: engines=, scenarios=, seed=, out=,
-             certify=N (invariant sweep across N seeds), concurrency=N
-             (multi-process latency probe; requests=, paragraphs=).
-             scenarios=/certify=/concurrency= imply suite=engines.
+             wp-env cli). Arguments: --engines=, --scenarios=, --seed=,
+             --out=, --certify=N (invariant sweep across N seeds),
+             --concurrency=N (multi-process latency probe; --requests=,
+             --paragraphs=).
+             --scenarios=/--certify=/--concurrency= imply --suite=engines.
   transport  Two-browser edit-to-visible latency + wire traffic for one
              transport (tests/benchmarks/transport/README.md).
 
@@ -118,33 +119,41 @@ tests/debugging/README.md):
   node tests/debugging/replay/replay.mjs    replay a captured session
                                             as HTTP load
 
-Arguments are key=value tokens; leading dashes are accepted and stripped
-(--suite=engines means suite=engines). Arguments after suite= are
+Arguments are --key=value flags. Arguments other than --suite= are
 forwarded to the suite's script; each script's header documents its full
 list. Environment: WP_BASE_URL (default http://localhost:8889),
 WP_USERNAME/WP_PASSWORD.
 
 Examples:
   npm run bench
-  npm run bench -- engine=de-rtc windows=3 polling-interval=2
-  npm run bench -- suite=engines scenarios=editorial-session
-  npm run bench -- certify=10
+  npm run bench -- --engine=de-rtc --windows=3 --polling-interval=2
+  npm run bench -- --suite=engines --scenarios=editorial-session
+  npm run bench -- --certify=10
 `;
 
-if (
-	process.argv
-		.slice( 2 )
-		.some( ( token ) => [ '--help', '-h', 'help' ].includes( token ) )
-) {
+if ( args.help || args.h || positionals.includes( 'help' ) ) {
 	process.stdout.write( HELP );
 	process.exit( 0 );
+}
+if ( positionals.length ) {
+	// A bare token is almost always the old key=value form (or a
+	// space-separated `--key value`); refuse it rather than silently run
+	// the default suite with the argument ignored.
+	console.error(
+		`arguments are --key=value flags (got "${ positionals[ 0 ] }"${
+			positionals[ 0 ].includes( '=' )
+				? `; use --${ positionals[ 0 ] }`
+				: ''
+		}) — npm run bench -- --help lists them`
+	);
+	process.exit( 1 );
 }
 
 // ---------------------------------------------------------------------
 // Suite dispatch: this file is the single benchmark entry point. The
 // default suite is the host cost report; the engine matrix and the
-// transport benchmark are selected with suite= — or implicitly by the
-// engines-suite-only arguments (scenarios=/certify=/concurrency=).
+// transport benchmark are selected with --suite= — or implicitly by the
+// engines-suite-only arguments (--scenarios=/--certify=/--concurrency=).
 // ---------------------------------------------------------------------
 const SUITE_SCRIPTS = {
 	host: 'tests/benchmarks/host/host-benchmark.mjs',
@@ -157,18 +166,18 @@ const TOOL_COMMANDS = {
 	soak: 'node tests/debugging/soak-transport.mjs (see tests/debugging/README.md)',
 	replay: 'node tests/debugging/replay/replay.mjs (see tests/debugging/replay/README.md)',
 };
-// scenarios=/certify=/concurrency= exist only in the engines suite, so
-// any of them selects it; everything else defaults to the host report,
-// which refuses arguments it does not know (engines= included).
+// --scenarios=/--certify=/--concurrency= exist only in the engines suite,
+// so any of them selects it; everything else defaults to the host report,
+// which refuses arguments it does not know (--engines= included).
 const impliesEngines = args.certify || args.concurrency || args.scenarios;
 const SUITE = String( args.suite ?? ( impliesEngines ? 'engines' : 'host' ) );
 // Say which suite is running and why, so a surprising suite selection is
 // visible in the first line rather than minutes into the wrong run.
 const suiteReason = args.suite
-	? `suite=${ SUITE }`
+	? `--suite=${ SUITE }`
 	: `${
 			impliesEngines
-				? 'implied by scenarios=/certify=/concurrency='
+				? 'implied by --scenarios=/--certify=/--concurrency='
 				: 'default'
 	  } — npm run bench -- --help for arguments`;
 console.log( `suite: ${ SUITE } (${ suiteReason })` );
@@ -186,10 +195,14 @@ if ( 'engines' !== SUITE ) {
 		}
 		process.exit( 1 );
 	}
-	// Forward the NORMALIZED tokens (dashes stripped), minus suite=.
-	const forwarded = TOKENS.filter(
-		( token ) => ! token.startsWith( 'suite=' )
-	);
+	// Forward everything but --suite= as the bare key=value tokens the
+	// suite scripts take (a value-less flag such as --headed becomes
+	// key=1, their spelling of a switch).
+	const forwarded = Object.entries( args )
+		.filter( ( [ key ] ) => 'suite' !== key )
+		.map(
+			( [ key, value ] ) => `${ key }=${ true === value ? '1' : value }`
+		);
 	const child = spawnSync( 'node', [ script, ...forwarded ], {
 		stdio: 'inherit',
 	} );

@@ -2141,7 +2141,7 @@ describe( 'intent-log manager', () => {
 				reason,
 				context: { excerpt: 'Around here' },
 			} ),
-			type: INTENT_LOG_UPDATE_TYPES.PROPOSAL,
+			type: INTENT_LOG_UPDATE_TYPES.PARKED,
 		} );
 
 		transport.captured.session!.receiveUpdate(
@@ -2190,7 +2190,7 @@ describe( 'intent-log manager', () => {
 				actorId: 'u9c9',
 				reason: 'frame-conflict',
 			} ),
-			type: INTENT_LOG_UPDATE_TYPES.PROPOSAL,
+			type: INTENT_LOG_UPDATE_TYPES.PARKED,
 		} );
 		await Promise.resolve();
 		expect( onProposalsChange ).toHaveBeenLastCalledWith( [
@@ -2212,7 +2212,7 @@ describe( 'intent-log manager', () => {
 				actorId: 'u9c9',
 				reason: 'property-conflict',
 			} ),
-			type: INTENT_LOG_UPDATE_TYPES.PROPOSAL,
+			type: INTENT_LOG_UPDATE_TYPES.PARKED,
 		} );
 		await Promise.resolve();
 		expect( onProposalsChange ).toHaveBeenLastCalledWith( [
@@ -2269,7 +2269,7 @@ describe( 'intent-log manager', () => {
 				actorId: 'u9c9',
 				reason: 'requires-approval',
 			} ),
-			type: INTENT_LOG_UPDATE_TYPES.PROPOSAL,
+			type: INTENT_LOG_UPDATE_TYPES.PARKED,
 		} );
 		await Promise.resolve();
 
@@ -2299,7 +2299,7 @@ describe( 'intent-log manager', () => {
 
 		transport.captured.session!.receiveUpdate( snapshotRow( [] ) );
 
-		// Bootstrap replay shape: proposal row immediately followed by its
+		// Bootstrap replay shape: parked row immediately followed by its
 		// resolution row (a long-resolved conflict).
 		transport.captured.session!.receiveUpdate( {
 			data: JSON.stringify( {
@@ -2312,7 +2312,7 @@ describe( 'intent-log manager', () => {
 				actorId: 'u9c9',
 				reason: 'frame-conflict',
 			} ),
-			type: INTENT_LOG_UPDATE_TYPES.PROPOSAL,
+			type: INTENT_LOG_UPDATE_TYPES.PARKED,
 		} );
 		transport.captured.session!.receiveUpdate( {
 			data: JSON.stringify( {
@@ -2338,7 +2338,7 @@ describe( 'intent-log manager', () => {
 				actorId: 'u9c9',
 				reason: 'frame-conflict',
 			} ),
-			type: INTENT_LOG_UPDATE_TYPES.PROPOSAL,
+			type: INTENT_LOG_UPDATE_TYPES.PARKED,
 		} );
 		await Promise.resolve();
 		expect( onEscalation ).toHaveBeenCalledTimes( 1 );
@@ -2384,7 +2384,7 @@ describe( 'intent-log manager', () => {
 				actorId: 'u9c9',
 				reason: 'frame-conflict',
 			} ),
-			type: INTENT_LOG_UPDATE_TYPES.PROPOSAL,
+			type: INTENT_LOG_UPDATE_TYPES.PARKED,
 		} );
 		await Promise.resolve();
 
@@ -2455,7 +2455,7 @@ describe( 'intent-log manager', () => {
 				actorId: 'u9c9',
 				reason: 'requires-approval',
 			} ),
-			type: INTENT_LOG_UPDATE_TYPES.PROPOSAL,
+			type: INTENT_LOG_UPDATE_TYPES.PARKED,
 		} );
 		await Promise.resolve();
 
@@ -2836,7 +2836,7 @@ describe( 'intent-log manager', () => {
 			for ( const proposal of server.proposals.slice( seenProposals ) ) {
 				session.receiveUpdate( {
 					data: JSON.stringify( proposal ),
-					type: INTENT_LOG_UPDATE_TYPES.PROPOSAL,
+					type: INTENT_LOG_UPDATE_TYPES.PARKED,
 				} );
 			}
 			deliveredProposals.set( session, server.proposals.length );

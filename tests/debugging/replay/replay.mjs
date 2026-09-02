@@ -6,7 +6,7 @@
  * format (either a raw `wp collaboration capture export` or a sanitized
  * fixture from sanitize.mjs).
  *
- *   node tests/debugging/replay/replay.mjs fixture.json [speed=1] [json=out.json]
+ *   node tests/debugging/replay/replay.mjs fixture.json [--speed=1] [--json=out.json]
  *
  * Each captured frame is re-sent to POST /wp-json/wp-sync/v1/updates at its
  * captured offset (scaled by `speed`), retargeted at a fresh post seeded
@@ -21,19 +21,19 @@
  * server-side metrics per request — the tool prints that report after the
  * replay (see includes/diagnostics/class-gutenberg-sync-engines-request-log.php).
  *
- * Arguments (bare key=value tokens, the benchmark convention):
+ * Arguments (--key=value flags):
  *
- *   fixture=    fixture path (or first positional argument)
- *   speed=      time scale: 2 = twice as fast, 0 = no pacing (default 1)
- *   post=       replay into this existing post id instead of creating one
- *   scenario=   scenario label for tagged requests (default: replay)
- *   approach=   approach label; default lets the server auto-label
- *               <engine>/<transport>
- *   force=1     replay even when the fixture's engine differs from the
- *               site's active engine (expect voids/409s — the room fence
- *               and update-type validation are engine-specific)
- *   clearlog=1  DELETE the server-side benchmark log before replaying
- *   json=       write the full per-frame results as JSON here
+ *   --fixture=    fixture path (or first positional argument)
+ *   --speed=      time scale: 2 = twice as fast, 0 = no pacing (default 1)
+ *   --post=       replay into this existing post id instead of creating one
+ *   --scenario=   scenario label for tagged requests (default: replay)
+ *   --approach=   approach label; default lets the server auto-label
+ *                 <engine>/<transport>
+ *   --force       replay even when the fixture's engine differs from the
+ *                 site's active engine (expect voids/409s — the room fence
+ *                 and update-type validation are engine-specific)
+ *   --clearlog    DELETE the server-side benchmark log before replaying
+ *   --json=       write the full per-frame results as JSON here
  *
  * Environment: WP_BASE_URL (default http://localhost:8889, the wp-env
  * tests site), WP_USERNAME/WP_PASSWORD (default admin/password). The user
@@ -41,35 +41,40 @@
  * the site (the route 404s otherwise).
  */
 import fs from 'node:fs';
+import { parseArgs } from 'node:util';
 
 const BASE = process.env.WP_BASE_URL ?? 'http://localhost:8889';
 const USER = process.env.WP_USERNAME ?? 'admin';
 const PASS = process.env.WP_PASSWORD ?? 'password';
 
-const argv = process.argv.slice( 2 );
-const positional = argv.filter( ( token ) => ! token.includes( '=' ) );
-const opts = Object.fromEntries(
-	argv
-		.filter( ( token ) => token.includes( '=' ) )
-		.map( ( token ) => {
-			const eq = token.indexOf( '=' );
-			return [ token.slice( 0, eq ), token.slice( eq + 1 ) ];
-		} )
-);
+const { values: opts, positionals } = parseArgs( {
+	allowPositionals: true,
+	options: {
+		fixture: { type: 'string' },
+		speed: { type: 'string', default: '1' },
+		post: { type: 'string' },
+		scenario: { type: 'string', default: 'replay' },
+		approach: { type: 'string' },
+		force: { type: 'boolean', default: false },
+		clearlog: { type: 'boolean', default: false },
+		json: { type: 'string' },
+		help: { type: 'boolean', short: 'h', default: false },
+	},
+} );
 
-const FIXTURE_PATH = opts.fixture ?? positional[ 0 ];
-const SPEED = Number( opts.speed ?? 1 );
-const SCENARIO = String( opts.scenario ?? 'replay' );
-const APPROACH = opts.approach ? String( opts.approach ) : null;
-const FORCE = '1' === String( opts.force ?? '' );
-const CLEAR_LOG = '1' === String( opts.clearlog ?? '' );
-const JSON_PATH = opts.json ? String( opts.json ) : null;
+const FIXTURE_PATH = opts.fixture ?? positionals[ 0 ];
+const SPEED = Number( opts.speed );
+const SCENARIO = opts.scenario;
+const APPROACH = opts.approach ?? null;
+const FORCE = opts.force;
+const CLEAR_LOG = opts.clearlog;
+const JSON_PATH = opts.json ?? null;
 
-if ( ! FIXTURE_PATH ) {
+if ( opts.help || ! FIXTURE_PATH ) {
 	console.error(
-		'Usage: node tests/debugging/replay/replay.mjs <fixture.json> [speed=1] [post=<id>] [json=out.json]'
+		'Usage: node tests/debugging/replay/replay.mjs <fixture.json> [--speed=1] [--post=<id>] [--scenario=<label>] [--approach=<label>] [--force] [--clearlog] [--json=out.json]'
 	);
-	process.exit( 1 );
+	process.exit( opts.help ? 0 : 1 );
 }
 if ( ! Number.isFinite( SPEED ) || SPEED < 0 ) {
 	throw new Error( 'speed must be a non-negative number (0 = no pacing)' );
@@ -233,7 +238,7 @@ async function main() {
 		if ( activeEngine && activeEngine !== fixture.engine ) {
 			const message =
 				`Fixture was captured under engine "${ fixture.engine }" but the site runs ` +
-				`"${ activeEngine }". Switch the engine (Settings → Collaboration) or pass force=1.`;
+				`"${ activeEngine }". Switch the engine (Settings → Collaboration) or pass --force.`;
 			if ( ! FORCE ) {
 				throw new Error( message );
 			}

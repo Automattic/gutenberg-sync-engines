@@ -7,7 +7,7 @@
  * divergence depth, not wall-clock time, is the stressor. Every run is
  * exactly reproducible from its seed.
  *
- * Clients are REAL replicas (src/client.js): they apply their intents
+ * Clients are REAL replicas (src/engines/intent-log/client.js): they apply their intents
  * optimistically, rebase pending work over received entries, and predict the
  * server's disposition for everything they flush. The oracles compare those
  * predictions and the optimistic documents against the server's ground
@@ -24,24 +24,33 @@ import {
 	createDocument,
 	getBlock,
 	locateBlock,
-} from './document.js';
-import { IntentTypes, createIntent } from './intents.js';
+} from '../../../../src/engines/intent-log/document.js';
+import {
+	IntentTypes,
+	createIntent,
+} from '../../../../src/engines/intent-log/intents.js';
 import {
 	ESCALATION_REASONS,
 	createServer,
 	serverDocAt,
 	serverIngestBatch,
-} from './rebase.js';
-import { authorIntent, catchUp, createClient, flushClient } from './client.js';
-import { genesisSyncId, mintSyncId } from './sync-id.js';
+} from '../../../../src/engines/intent-log/rebase.js';
+import {
+	authorIntent,
+	catchUp,
+	createClient,
+	flushClient,
+} from '../../../../src/engines/intent-log/client.js';
+import { mintSyncId } from '../../../../src/engines/intent-log/sync-id.js';
+import { genesisSyncId } from './genesis-sync-id.js';
 
-/** @typedef {import('./engine-types').EngineDocument} EngineDocument */
-/** @typedef {import('./engine-types').EngineBlock} EngineBlock */
-/** @typedef {import('./engine-types').EngineField} EngineField */
-/** @typedef {import('./engine-types').IntentEnvelope} IntentEnvelope */
-/** @typedef {import('./engine-types').IntentDisposition} IntentDisposition */
-/** @typedef {import('./engine-types').ClientReplica} ClientReplica */
-/** @typedef {import('./engine-types').IntentLogServer} IntentLogServer */
+/** @typedef {import('../../../../src/engines/intent-log/engine-types').EngineDocument} EngineDocument */
+/** @typedef {import('../../../../src/engines/intent-log/engine-types').EngineBlock} EngineBlock */
+/** @typedef {import('../../../../src/engines/intent-log/engine-types').EngineField} EngineField */
+/** @typedef {import('../../../../src/engines/intent-log/engine-types').IntentEnvelope} IntentEnvelope */
+/** @typedef {import('../../../../src/engines/intent-log/engine-types').IntentDisposition} IntentDisposition */
+/** @typedef {import('../../../../src/engines/intent-log/engine-types').ClientReplica} ClientReplica */
+/** @typedef {import('../../../../src/engines/intent-log/engine-types').IntentLogServer} IntentLogServer */
 
 /**
  * Seeded RNG returning [0, 1).
@@ -49,13 +58,13 @@ import { genesisSyncId, mintSyncId } from './sync-id.js';
  * @typedef {() => number} Rng
  */
 
-/** @typedef {import('./sync-id.js').GenesisRevision} Revision */
+/** @typedef {import('./genesis-sync-id.js').GenesisRevision} Revision */
 
 /**
  * One row of a flush's prediction report: what the replica predicted for
  * an intent versus what the server actually decided.
  *
- * @typedef {import('./client.js').FlushReportRow} PredictionRow
+ * @typedef {import('../../../../src/engines/intent-log/client.js').FlushReportRow} PredictionRow
  */
 
 /**
@@ -183,7 +192,7 @@ export function makeGenesisDoc( revision ) {
 }
 
 /**
- * Creates a virtual client (a real replica; see src/client.js).
+ * Creates a virtual client (a real replica; see src/engines/intent-log/client.js).
  *
  * @param {string}         actorId    Actor id.
  * @param {EngineDocument} initialDoc Genesis document.
@@ -359,9 +368,10 @@ export function authorRandomIntent( client, rng, options = {} ) {
 			envelopeFor( client )
 		);
 	} else if ( roll < 0.79 ) {
-		const location = /** @type {NonNullable<ReturnType<typeof locateBlock>>} */ (
-			locateBlock( client.doc, syncId )
-		);
+		const location =
+			/** @type {NonNullable<ReturnType<typeof locateBlock>>} */ (
+				locateBlock( client.doc, syncId )
+			);
 		const nextSibling = location.siblings[ location.index + 1 ];
 		if ( nextSibling && nextSibling.children.length === 0 ) {
 			intent = createIntent(

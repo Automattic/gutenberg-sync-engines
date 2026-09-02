@@ -119,7 +119,6 @@ if ( ! class_exists( 'WP_De_RTC_Sync_Meta_Colocation' ) ) {
 			$storage = gutenberg_sync_engines_storage();
 			if (
 				! method_exists( $storage, 'peek_room_engine' )
-				|| ! method_exists( $storage, 'get_room_meta' )
 				|| 'de-rtc' !== $storage->peek_room_engine( $room )
 			) {
 				return null;
@@ -127,8 +126,7 @@ if ( ! class_exists( 'WP_De_RTC_Sync_Meta_Colocation' ) ) {
 
 			/*
 			 * Canonical truth lives in the engine's chained options row
-			 * (`<seq>|<json>`; the announce model's ordered store), with the
-			 * legacy `de_rtc_doc` room meta as the pre-chain fallback.
+			 * (`<seq>|<json>`; the announce model's ordered store).
 			 */
 			$doc = null;
 			if ( class_exists( 'WP_Sync_Atomic_Option' ) ) {
@@ -142,9 +140,6 @@ if ( ! class_exists( 'WP_De_RTC_Sync_Meta_Colocation' ) ) {
 						}
 					}
 				}
-			}
-			if ( null === $doc ) {
-				$doc = $storage->get_room_meta( $room, WP_De_RTC_Engine::META_DOC );
 			}
 			if ( ! is_array( $doc ) || ! is_string( $doc['version'] ?? null ) ) {
 				return null;

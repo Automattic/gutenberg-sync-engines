@@ -36,7 +36,7 @@ import type {
  * - receive `snapshot` → bootstrap the local replica from the genesis doc;
  * - receive `intent`   → append the server's authoritative (transformed)
  *   form to the replica's log copy, replanning pending work over it;
- * - receive `proposal` → record an escalated intent for the review lane;
+ * - receive `parked`   → record an escalated intent for the review lane;
  * - receive `voided`   → informational marker (the ack path settles ours);
  * - send `intent` rows authored locally, optimistically applied;
  * - `dispositions` in the poll response are the ack, delivered AFTER the
@@ -68,7 +68,7 @@ export const INTENT_LOG_ENGINE_PROTOCOL = 1;
  */
 export const INTENT_LOG_UPDATE_TYPES = {
 	INTENT: 'intent',
-	PROPOSAL: 'proposal',
+	PARKED: 'parked',
 	RESOLVED: 'resolved',
 	SNAPSHOT: 'snapshot',
 	VOIDED: 'voided',
@@ -319,6 +319,18 @@ export interface IntentLogSession extends EngineSessionCodec {
 }
 
 /**
+ * Mints a session clientId in [1, 2^31 - 1], a positive signed 32-bit
+ * integer like a Yjs clientID, drawn from crypto randomness so that tabs
+ * sharing a site never share an id in practice.
+ *
+ * @return A fresh clientId.
+ */
+export function randomClientId(): number {
+	const [ word ] = globalThis.crypto.getRandomValues( new Uint32Array( 1 ) );
+	return ( word % ( 2 ** 31 - 1 ) ) + 1;
+}
+
+/**
  * Creates an intent-log session codec.
  *
  * @param options Session options.
@@ -327,8 +339,7 @@ export interface IntentLogSession extends EngineSessionCodec {
 export function createIntentLogSession(
 	options: IntentLogSessionOptions
 ): IntentLogSession {
-	const clientId =
-		options.clientId ?? Math.floor( Math.random() * ( 2 ** 31 - 1 ) ) + 1;
+	const clientId = options.clientId ?? randomClientId();
 	const actorId = `u${ options.userId }c${ clientId }`;
 
 	let replica: ReturnType< typeof createClient > | null = null;
@@ -600,7 +611,7 @@ export function createIntentLogSession(
 					notifyChange();
 					return;
 				}
-				case INTENT_LOG_UPDATE_TYPES.PROPOSAL: {
+				case INTENT_LOG_UPDATE_TYPES.PARKED: {
 					const proposal = decoded as IntentLogProposal;
 					// Same redelivery guard as intents: a duplicate row
 					// would double-list the proposal for review.

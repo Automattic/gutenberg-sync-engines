@@ -103,7 +103,7 @@ class Tests_Collaboration_WpDeRtcDescriptorEnforcement extends WP_UnitTestCase {
 		$response = $this->engine()->get_updates_since( $this->room(), 999, 0, array() );
 		$rows     = array();
 		foreach ( $response['updates'] as $update ) {
-			if ( WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED === $update['type'] ) {
+			if ( WP_De_RTC_Engine::UPDATE_TYPE_PARKED === $update['type'] ) {
 				$rows[] = json_decode( $update['data'], true );
 			}
 		}

@@ -1187,7 +1187,9 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 				'ext_object_cache'     => (bool) wp_using_ext_object_cache(),
 				'object_cache_type'    => wp_using_ext_object_cache() ? get_class( $GLOBALS['wp_object_cache'] ) : 'WP_Object_Cache (internal)',
 				'savequeries'          => defined( 'SAVEQUERIES' ) && SAVEQUERIES,
-				'compaction_threshold' => class_exists( 'WP_HTTP_Polling_Sync_Server' ) ? WP_HTTP_Polling_Sync_Server::COMPACTION_THRESHOLD : null,
+				// Compaction is engine-owned here; the key stays for
+				// column compatibility with the community harness.
+				'compaction_threshold' => null,
 				'awareness_timeout_s'  => class_exists( 'WP_HTTP_Polling_Sync_Server' ) ? WP_HTTP_Polling_Sync_Server::AWARENESS_TIMEOUT : null,
 				'captured_at'          => time(),
 				// Additive keys (absent from the community harness): the

@@ -40,7 +40,7 @@ const GENESIS_BLOCKS = [
  * A wire-level stand-in for WP_Intent_Log_Engine: rows in storage order
  * (snapshot first), planner-backed ingest, dispositions as the ack. Mirrors
  * the PHP engine's commit rules (accepted → intent rows, escalations →
- * proposal rows, voided → marker rows).
+ * parked rows, voided → marker rows).
  */
 function makeWireServer() {
 	const initialDoc = createDocument( GENESIS_BLOCKS );
@@ -69,7 +69,7 @@ function makeWireServer() {
 			) ) {
 				rows.push( {
 					data: JSON.stringify( proposal ),
-					type: INTENT_LOG_UPDATE_TYPES.PROPOSAL,
+					type: INTENT_LOG_UPDATE_TYPES.PARKED,
 				} );
 			}
 			const dispositions = intents.map(

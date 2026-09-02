@@ -227,6 +227,47 @@ export function parseCanonicalBlocks(
 }
 
 /**
+ * One block's comparison form: its serialized markup. Every parse mints
+ * a fresh clientId per block, so two independently parsed copies of the
+ * same block are never structurally equal; the serializer drops the id.
+ * It is the exact serializer core-data uses, so the form is also
+ * byte-consistent with proposal content.
+ *
+ * @param block An editor block.
+ * @return The block's serialized form.
+ */
+export function serializeBlock( block: unknown ): string {
+	return __unstableSerializeAndClean( [ block as any ] ).trim();
+}
+
+/**
+ * The indexes at which two block lists differ, compared position by
+ * position, or null when the lists differ in length: positional
+ * comparison is only meaningful across an unchanged structure.
+ *
+ * @param base One block list.
+ * @param next The other block list.
+ * @return Changed indexes, or null on a structural difference.
+ */
+export function changedBlockIndexes(
+	base: unknown[],
+	next: unknown[]
+): number[] | null {
+	if ( base.length !== next.length ) {
+		return null;
+	}
+	const changed: number[] = [];
+	for ( let index = 0; index < next.length; index++ ) {
+		if (
+			serializeBlock( base[ index ] ) !== serializeBlock( next[ index ] )
+		) {
+			changed.push( index );
+		}
+	}
+	return changed;
+}
+
+/**
  * Order-tolerant value equality for property registers: term-ID arrays
  * are sets (numeric lists compare sorted); everything else compares by
  * JSON encoding. The client twin of the server's property comparison.
@@ -461,17 +502,23 @@ export function createDeRtcDocBridge(
 				}
 			}
 
-			const serializeOne = ( block: any ) =>
-				__unstableSerializeAndClean( [ block ] ).trim();
+			// Both lists are proposal-length here (checked above), so
+			// neither diff can report a structural difference.
+			const locallyEdited = new Set(
+				changedBlockIndexes( localBlocks, proposedBlocks ) ?? []
+			);
+			const canonicalChanged = new Set(
+				changedBlockIndexes(
+					canonicalBlocks.slice( 0, proposedBlocks.length ),
+					proposedBlocks
+				) ?? []
+			);
 
 			const priorVersion = version;
 			const collided: number[] = [];
 			const merged = proposedBlocks
 				.map( ( proposedBlock, index ) => {
-					const locallyEdited =
-						serializeOne( localBlocks[ index ] ) !==
-						serializeOne( proposedBlock );
-					if ( ! locallyEdited ) {
+					if ( ! locallyEdited.has( index ) ) {
 						// Adopting canonical resolves any pending
 						// collision on this block.
 						blockBases.delete( index );
@@ -484,10 +531,7 @@ export function createDeRtcDocBridge(
 					// OLDEST pending base wins), so the next proposal
 					// tells the server the truth instead of presenting a
 					// clean sole-writer change.
-					if (
-						serializeOne( canonicalBlocks[ index ] ) !==
-						serializeOne( proposedBlock )
-					) {
+					if ( canonicalChanged.has( index ) ) {
 						if (
 							! blockBases.has( index ) &&
 							null !== priorVersion

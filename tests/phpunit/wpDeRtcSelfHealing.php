@@ -210,7 +210,7 @@ class Tests_Collaboration_WpDeRtcSelfHealing extends WP_UnitTestCase {
 		$parked   = array_filter(
 			$response['updates'],
 			static function ( $update ) {
-				return WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL_PARKED === $update['type'];
+				return WP_De_RTC_Engine::UPDATE_TYPE_PARKED === $update['type'];
 			}
 		);
 		$this->assertNotEmpty( $parked, 'A conflicting external edit must park for review.' );
