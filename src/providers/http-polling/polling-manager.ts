@@ -379,6 +379,87 @@ function notifyManualSyncListeners(): void {
 	manualSyncListeners.forEach( ( listener ) => listener() );
 }
 
+/*
+ * Clock-aligned polling (demo tooling): while set, every AUTOMATIC poll is
+ * scheduled for the next wall-clock moment that falls on the alignment's
+ * grid (every `periodMs`, at each of the `offsetsMs` within the period),
+ * instead of after the computed interval. Two windows on the same clock
+ * with different offsets then sync in a fixed, visible order, which is what
+ * makes a recorded two-browser demo predictable. The initial poll made when
+ * the first room registers, manual retries, and syncNow() still run
+ * immediately. Ignored in long-poll mode, where the server sets the cadence.
+ */
+export interface ClockAlignment {
+	periodMs: number;
+	offsetsMs: number[];
+}
+
+let clockAlignment: ClockAlignment | null = null;
+
+/**
+ * Milliseconds from `now` until the next grid moment of an alignment: the
+ * soonest of the offsets within the period. A moment exactly on the grid
+ * counts as already passed, so the result is always in (0, periodMs].
+ *
+ * @param now       Wall-clock time in milliseconds (Date.now()).
+ * @param alignment The grid to align to.
+ * @return Delay in milliseconds until the next grid moment.
+ */
+export function getDelayToNextAlignedPoll(
+	now: number,
+	alignment: ClockAlignment
+): number {
+	const { periodMs, offsetsMs } = alignment;
+	const delays = offsetsMs.map( ( offsetMs ) => {
+		const phase =
+			( ( ( now - offsetMs ) % periodMs ) + periodMs ) % periodMs;
+
+		return periodMs - phase;
+	} );
+
+	return Math.min( ...delays );
+}
+
+/**
+ * Delay before the next automatic poll: the computed interval, or the time
+ * to the next grid moment while clock alignment is on.
+ */
+function getNextPollDelay(): number {
+	if ( clockAlignment && ! longPollMode ) {
+		return getDelayToNextAlignedPoll( Date.now(), clockAlignment );
+	}
+
+	return pollInterval;
+}
+
+/**
+ * Turn clock-aligned polling on (with a grid) or off (null). A poll already
+ * waiting on a timer is rescheduled to the new cadence right away.
+ *
+ * @param alignment The grid to align automatic polls to, or null to stop.
+ */
+export function setClockAlignedPolling(
+	alignment: ClockAlignment | null
+): void {
+	if (
+		alignment &&
+		( ! Number.isFinite( alignment.periodMs ) || alignment.periodMs <= 0 )
+	) {
+		throw new Error( 'Clock alignment needs a positive period' );
+	}
+
+	if ( alignment && 0 === alignment.offsetsMs.length ) {
+		throw new Error( 'Clock alignment needs at least one offset' );
+	}
+
+	clockAlignment = alignment;
+
+	if ( pollingTimeoutId ) {
+		clearTimeout( pollingTimeoutId );
+		pollingTimeoutId = setTimeout( poll, getNextPollDelay() );
+	}
+}
+
 // When more rooms are registered than the server allows per request
 // (MAX_ROOMS_PER_REQUEST), the primary room is sent every poll and the
 // remaining "overflow" rooms are rotated across polls. This offset
@@ -447,8 +528,12 @@ function handleVisibilityChange() {
 		 * was idle between cycles. If no timeout is pending, a poll request
 		 * is already in-flight and will pick up the updated isActiveBrowser
 		 * value when it schedules the next cycle.
+		 *
+		 * Under clock-aligned polling the pending timeout already points
+		 * at the next grid moment (the background cadence is never used),
+		 * so it is left alone to keep the order of syncs predictable.
 		 */
-		if ( pollingTimeoutId ) {
+		if ( pollingTimeoutId && ! clockAlignment ) {
 			clearTimeout( pollingTimeoutId );
 			pollingTimeoutId = null;
 			poll();
@@ -1018,7 +1103,7 @@ function poll(): void {
 			return;
 		}
 
-		pollingTimeoutId = setTimeout( poll, pollInterval );
+		pollingTimeoutId = setTimeout( poll, getNextPollDelay() );
 	}
 
 	// Start polling.
@@ -1303,6 +1388,37 @@ export function syncNow(): void {
 	}
 
 	poll();
+}
+
+/**
+ * Presence-only round trip (demo tooling for manual sync mode): sends every
+ * room's awareness with NO queued updates and applies only the awareness
+ * that comes back. The cursor does not move and received rows are dropped,
+ * so nothing in the document changes; the server just sees this client as
+ * still here (its awareness entry expires after 30 quiet seconds) and the
+ * collaborator avatars stay put between manual syncs. Errors are ignored.
+ */
+export async function sendKeepalive(): Promise< void > {
+	const states = Array.from( roomStates.values() );
+	if ( 0 === states.length ) {
+		return;
+	}
+
+	const payload: SyncPayload = {
+		rooms: states.map( ( state ) => createPayloadRoom( state ) ),
+	};
+
+	try {
+		const { rooms } = await postSyncUpdate( payload );
+		for ( const room of rooms ) {
+			const state = roomStates.get( room.room );
+			if ( state ) {
+				state.session.applyRemoteAwareness( room.awareness );
+			}
+		}
+	} catch {
+		// Presence only; the next real sync reports any real problem.
+	}
 }
 
 /**

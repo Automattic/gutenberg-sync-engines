@@ -81,6 +81,15 @@ them under a version heading when a version ships.
 
 ### Fixed
 
+-   Under the default intent-log engine, the "Edit HTML" window on a
+    just-added Custom HTML block closed by itself about a second after
+    opening. The first sync push after creating a block handed the
+    editor a copy of the block under a fresh internal id, which
+    remounted it and reset any on-screen state local to that block
+    (the open window, focus, open dropdowns). The push now reuses the
+    editor's own id for blocks whose collaboration identity was just
+    assigned, so nothing remounts
+    ([#66](https://github.com/Automattic/gutenberg-sync-engines/issues/66)).
 -   Intent-log: a change to protected markup by an author without the
     `unfiltered_html` capability (editing a custom HTML block, for
     example) silently stripped the previously approved markup out of
@@ -110,6 +119,21 @@ them under a version heading when a version ships.
 
 ### Changed
 
+-   TEMPORARY: the editor no longer shows the "There is an autosave of this
+    post that is more recent than the version below" notice (the plugin
+    drops the `autosave` editor setting that triggers it) or the "The
+    backup of this post in your browser is different from the version
+    below" notice, or the "X has joined the post" and "X has left the post"
+    toasts (the client bundle removes those as soon as they are created).
+-   TEMPORARY: demo sync shortcut. Automatic short polling is held, and
+    Cmd+Shift+S (Ctrl+Shift+S elsewhere) in either editor window runs one
+    sync round (user ID 1's window, then user ID 2's, then each once more,
+    with short pauses) through a small server-side trigger route the
+    windows poll. A presence-only
+    keepalive keeps collaborator avatars visible between syncs. The plugin
+    passes the current user's ID to the client for this. (A wall-clock
+    grid variant, user 1 at :00 and :02 and user 2 at :01 of every ten
+    seconds, is in the tree but switched off.)
 -   Real-time collaboration is now turned on by the **Real-time
     collaboration** Gutenberg experiment instead of the Settings → Writing
     checkbox, following the framework

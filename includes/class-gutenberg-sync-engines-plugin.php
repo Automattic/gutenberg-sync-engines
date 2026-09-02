@@ -158,6 +158,9 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			}
 
 			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/admin/class-gutenberg-sync-engines-settings.php';
+
+			// TEMPORARY: server half of the demo sync shortcut (see the file).
+			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/temporary/class-gutenberg-sync-engines-demo-sync.php';
 		}
 
 		/**
@@ -178,8 +181,13 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			add_filter( 'wp_sync_transports', array( $this, 'register_transports' ), 10, 3 );
 			add_filter( 'wp_sync_transport_client_config', array( $this, 'filter_transport_client_config' ), 10, 2 );
 			add_action( 'enqueue_block_editor_assets', array( $this, 'enqueue_editor_assets' ) );
+			// TEMPORARY: see suppress_autosave_notice().
+			add_filter( 'block_editor_settings_all', array( $this, 'suppress_autosave_notice' ), 100 );
 
 			( new Gutenberg_Sync_Engines_Settings() )->register();
+
+			// TEMPORARY: see includes/temporary/class-gutenberg-sync-engines-demo-sync.php.
+			( new Gutenberg_Sync_Engines_Demo_Sync() )->register();
 		}
 
 		/**
@@ -286,6 +294,10 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 				 * stays untouched): the de-rtc commit cadence dial and the
 				 * short-polling interval, both stored in seconds and passed
 				 * in milliseconds for the client's timers.
+				 *
+				 * TEMPORARY: `currentUserId` feeds the clock-aligned sync demo
+				 * tooling (src/temporary/clock-aligned-sync.ts); drop it with
+				 * that module.
 				 */
 				$commit_interval  = 0;
 				$polling_interval = 0;
@@ -297,6 +309,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 					'gutenberg-sync-engines',
 					'window._gutenbergSyncEnginesSettings = ' . wp_json_encode(
 						array(
+							'currentUserId'         => get_current_user_id(),
 							'deRtcCommitIntervalMs' => max( 0, $commit_interval ) * 1000,
 							'httpPollingIntervalMs' => max( 0, min( 25, $polling_interval ) ) * 1000,
 						)
@@ -318,6 +331,30 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 				file_exists( $stamper ) ? (string) filemtime( $stamper ) : GUTENBERG_SYNC_ENGINES_VERSION,
 				true
 			);
+		}
+
+		/**
+		 * TEMPORARY: keeps the "There is an autosave of this post that is more
+		 * recent than the version below" notice from ever showing in the editor.
+		 *
+		 * Core flags a newer autosave through the `autosave` editor setting
+		 * (wp-admin/edit-form-blocks.php), and the editor turns that setting
+		 * into the notice. Dropping the setting drops the notice. Runs after
+		 * the framework's own filter (priority 10), which only annotates the
+		 * same setting, so nothing downstream depends on the key.
+		 *
+		 * Remove this hook and method once the notice is wanted again.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param array $settings Block editor settings.
+		 * @return array Settings without the autosave flag.
+		 */
+		public function suppress_autosave_notice( $settings ) {
+			if ( is_array( $settings ) ) {
+				unset( $settings['autosave'] );
+			}
+			return $settings;
 		}
 
 		/**
