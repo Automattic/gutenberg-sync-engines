@@ -31,7 +31,7 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "allowJs": true,
-    "checkJs": false,
+    "checkJs": true,
     "types": [
       "@wordpress/element"
     ]
@@ -43,6 +43,9 @@
   "exclude": [
     "node_modules",
     "build",
-    "src/engines/intent-log/*.js"
+    // The Jest harness for the intent-log core drives it with loose
+    // fixtures on purpose; the core itself (src/engines/intent-log/*.js)
+    // IS checked, via checkJs and its JSDoc.
+    "tests/js/**/*.js"
   ]
 }

@@ -123,7 +123,16 @@ The framework/plugin split is complete: the framework ships **neither** engines
 - `src/` — client JS/TS (webpack entry `src/index.ts` → `build/sync-engines.js`,
   externalizes `@wordpress/sync`→`wp.sync` and `yjs`→`wp.sync.Y`):
   - `engines/intent-log/` — the **frozen cross-language core** (byte-matched
-    against its PHP twin + JSON vectors). Excluded from lint/format. `genesisSyncId`
+    against its PHP twin + JSON vectors). Excluded from prettier (eslint
+    runs with relaxed rules), but TYPE-CHECKED: the modules are plain JavaScript (they run under Node
+    with no build step — the sweep and vector generators import them
+    directly) typed through JSDoc against the shared interfaces in
+    `engine-types.d.ts`; `tsconfig.json` sets `checkJs`, so `npm run
+    typecheck` (CI) checks the core and TypeScript consumers get their
+    types from the JSDoc itself. There are NO per-module `.d.ts` sidecars
+    — they drifted (a missing `planBatch` parameter, undeclared exports)
+    and were removed. A JSDoc edit is the one non-behavioral change the
+    core routinely takes. `genesisSyncId`
     lives at `src/engines/intent-log/sync-id.js`. Don't casually edit — changes
     must stay in lockstep with the PHP core and test vectors. Its Jest harness
     lives in `tests/js/engines/intent-log/`; its vector generators in
@@ -526,9 +535,11 @@ they exist so a failure is observable without re-instrumenting:
   PHPCompatibilityWP). JS/TS: `npm run lint:js` (lints `src` and `tests`,
   including the e2e specs) + `npm run format`
   (`@wordpress/prettier-config`).
-- The frozen `src/engines/intent-log/**` core and vendored
-  `src/engines/yjs/y-utilities/**` are excluded from lint/format — leave
-  them alone unless deliberately syncing the cross-language contract.
+- The frozen `src/engines/intent-log/**` core is excluded from prettier
+  (eslint still runs it, with relaxed rules, and `tsc` type-checks it via
+  `checkJs` + JSDoc); the vendored `src/engines/yjs/y-utilities/**` is
+  excluded from both — leave them alone unless deliberately syncing the
+  cross-language contract (JSDoc-only edits to the core are fine).
 
 ## Commits / PRs
 
