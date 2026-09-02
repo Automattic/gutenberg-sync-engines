@@ -18,12 +18,18 @@ them under a version heading when a version ships.
 
 ### Added
 
+-   Activating the plugin now turns on Gutenberg's real-time collaboration
+    experiment, so collaboration works right after activation instead of
+    needing a second trip to the Gutenberg → Experiments screen. Other
+    experiments are left as they are, and the experiment checkbox keeps
+    working afterward. Network-wide activation turns it on for every site
+    ([#82](https://github.com/Automattic/gutenberg-sync-engines/issues/82)).
+
 -   `npm run bench` and the session replay tool
     (`tests/debugging/replay/replay.mjs`) take `--key=value` flags
     (`npm run bench -- --suite=engines`, `--certify=3`,
     `replay.mjs fixture.json --speed=2 --force`) instead of bare
     `key=value` tokens; a bare token is now refused with the flag to use.
-
 -   Under the de-rtc engine, every block now carries a durable identity
     (`metadata.syncId`), the same scheme the intent-log engine uses.
     Blocks of a saved post get a deterministic id from the post id and
