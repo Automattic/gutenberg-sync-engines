@@ -17,34 +17,59 @@ export interface SyncConflict {
 	kind: 'merge' | 'sequestration';
 	/** The WordPress user id of whoever authored the proposed side. */
 	authorId: number;
+	/** What the three sides describe (block or property) */
+	target: SyncConflictTarget;
 	/**
-	 * The canvas block that shows the card: its syncId, or its top-level
-	 * index for engines without durable block identity.
-	 */
-	blockId?: string;
-	index?: number;
-	/*
-	 * The three sides cover the same span of blocks: only the blocks the
-	 * parked edit touches, chosen by the engine, never the whole post.
-	 */
-	/**
-	 * That span as the author started from it. Null when the engine can
+	 * The target as the author started from it. Null when the engine can
 	 * no longer recover it; the editor then compares proposed against
-	 * current.
+	 * current. Empty for a proposed insertion.
 	 */
 	base: string | null;
-	/** That span as the author intended it, with the parked edit applied. */
+	/** The target as the author intended it, with the parked edit applied. */
 	proposed: string;
-	/** That span as the document has it now. */
+	/**
+	 * The target as this client's document has it now.
+	 */
 	current: string;
 }
 
 /**
+ * A run of sibling blocks. `index` and `count` locate it among the
+ * children of `parentId` (the top level when absent), as of the record's
+ * latest publish. `ids` carries the covered blocks' durable ids when the
+ * engine has them, and they win over the position. A `count` of 0 is a
+ * proposed insertion: no block exists yet, and the card sits where the
+ * block would land.
+ */
+export interface SyncConflictTargetBlocks {
+	type: 'blocks';
+	ids?: string[];
+	parentId?: string;
+	index: number;
+	count: number;
+}
+
+/**
+ * One entity property, such as the title. There is no block to anchor;
+ * the editor shows the conflict on that field.
+ */
+export interface SyncConflictTargetProperty {
+	type: 'property';
+	name: string;
+}
+
+export type SyncConflictTarget =
+	| SyncConflictTargetBlocks
+	| SyncConflictTargetProperty;
+
+/**
  * The reviewer's decision.
  *
- * - `accept`: replace the conflicted blocks with `content` as an
- *   ordinary edit under the reviewer's account, then close the parked
- *   edit. Empty content removes the blocks.
+ * - `accept`: replace the target with `content` as an ordinary edit
+ *   under the reviewer's account, then close the parked edit. For
+ *   blocks, empty content removes them (for an insertion, nothing is
+ *   added). For a property, `content` is the new value in the same
+ *   encoding as the sides.
  * - `dismiss`: close the parked edit and keep the document as it is.
  */
 export type SyncConflictDecision =
@@ -61,7 +86,11 @@ export interface SyncConflictSource {
 		objectType: ObjectType,
 		objectId: ObjectID | null
 	) => SyncConflict[];
-	/** Called on every change to the open list. Returns an unsubscribe. */
+	/**
+	 * Called on every change to the open list: a record opened, closed,
+	 * or was published again with a new `current`. Returns an
+	 * unsubscribe.
+	 */
 	subscribe: (
 		objectType: ObjectType,
 		objectId: ObjectID | null,
@@ -80,16 +109,33 @@ export interface SyncConflictSource {
  *
  * A sync engine that sets edits aside for a person to decide publishes
  * them as a list of SyncConflict records. Each record is one card in the
- * canvas and one review dialog. The editor shows the two sides against
- * the base they started from, lets the reviewer edit a merged result, and
- * hands the decision back to the engine as content.
+ * canvas (or on a property field) and one review dialog. The editor
+ * shows the two sides against the base they started from, lets the
+ * reviewer edit a merged result, and hands the decision back to the
+ * engine as content.
  *
- * Every side is serialized block content (block comments plus markup),
- * whatever the block type. The editor picks the presentation from the
- * kind and the block name; the engine never says how a conflict should
- * look. The engine owns the replacement: it turns the accepted content
- * into the smallest edit against its own document and closes the parked
- * edits in the same round, so the two can never race each other.
+ * Every block side is serialized block content (block comments plus
+ * markup), whatever the block type. The editor picks the presentation
+ * from the kind, the target, and the block name; the engine never says
+ * how a conflict should look. The engine owns the replacement: it turns
+ * the accepted content into the smallest edit against its own document
+ * and closes the parked edit in the same round, so the two can never
+ * race each other. That edit merges like any other, so a change that
+ * lands between the record's last publish and the decision is merged or
+ * parked the way any edit would be.
+ *
+ * Two rules keep one record equal to one card:
+ *
+ * - One record per parked unit. Edits the engine set aside together (one
+ *   transaction, one proposal) form one record whose target is their
+ *   union, never one record per keystroke.
+ * - Open records never overlap. At most one open record covers any block
+ *   or property. An engine that parks a further edit against a target
+ *   already under review holds it back until the open record closes,
+ *   then publishes it against the document as it is then.
+ *
+ * `current` always means this client's document, whichever side the
+ * engine's own model treats as canonical.
  *
  * Example registration, from an engine adapter:
  *
@@ -113,6 +159,48 @@ export interface SyncConflictSource {
  *     protocolVersion: 1,
  *     createEntity,
  *     conflicts,
+ * } );
+ * ```
+ *
+ * A block type can replace the built-in dialog for its own conflicts.
+ * The editor hands a registered view the record and takes back a
+ * SyncConflictDecision; the view decides only how the sides look and how
+ * the merged result is edited, and never touches the document itself. A
+ * view applies when the target is a single block of that type; other
+ * spans keep the built-in dialog. The editor would expose a registration
+ * like this, here for a table block whose cells merge better as a grid
+ * than as text:
+ *
+ * ```tsx
+ * import { parse, serialize } from '@wordpress/blocks';
+ *
+ * function TableMergeView( { conflict, onDecide, onClose } ) {
+ *     const [ base ] = conflict.base ? parse( conflict.base ) : [ null ];
+ *     const [ proposed ] = parse( conflict.proposed );
+ *     const [ current ] = parse( conflict.current );
+ *     // Compare the three grids cell by cell, seed an editable table
+ *     // with the clean changes from both sides, and hand the reviewer's
+ *     // result back as content.
+ *     return (
+ *         <TableMergeDialog
+ *             base={ base }
+ *             proposed={ proposed }
+ *             current={ current }
+ *             onAccept={ ( merged ) =>
+ *                 onDecide( {
+ *                     action: 'accept',
+ *                     content: serialize( [ merged ] ),
+ *                 } )
+ *             }
+ *             onClose={ onClose }
+ *         />
+ *     );
+ * }
+ *
+ * registerSyncConflictView( {
+ *     blockName: 'core/table',
+ *     kind: 'merge',
+ *     render: TableMergeView,
  * } );
  * ```
  */
