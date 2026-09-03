@@ -24,9 +24,9 @@ release, which the release script generates from the commit history.
     `gutenberg_sync_engines_advisory_max_peers`; console:
     `wpSync.advisory()`. See `docs/plan/advisory-channel.md`.
 
--   Settings → Collaboration has a "Replacement transport" select
-    (none, long polling, websocket) and an "Advisory channel" select
-    (WebRTC or off, disabled while a replacement transport is chosen).
+-   Settings → Collaboration: the "Transport" select (short-polling,
+    long-polling, WebSocket; short-polling is always the fallback) gains
+    an "Advisory channel" select beside it (WebRTC or off).
 
 -   The websocket transport falls back to short polling whenever its
     socket is not open (the daemon unreachable, the token refused, the

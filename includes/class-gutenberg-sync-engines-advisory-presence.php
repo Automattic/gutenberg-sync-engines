@@ -170,11 +170,12 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		public static function is_enabled(): bool {
 			$enabled = true;
 			if ( class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
-				// Off when the site turned it off, or when a replacement
-				// transport (long polling, websocket) supplants the base.
-				$choice    = (string) get_option( Gutenberg_Sync_Engines_Settings::ADVISORY_OPTION, Gutenberg_Sync_Engines_Settings::ADVISORY_DEFAULT );
-				$transport = (string) get_option( Gutenberg_Sync_Engines_Settings::TRANSPORT_OPTION, '' );
-				$enabled   = '' !== $choice && ( '' === $transport || 'http-polling' === $transport );
+				// The settings screen's choice. Independent of the transport
+				// choice: the channel serves whenever short polling does,
+				// which under a preferred transport (long polling, websocket)
+				// is only while that transport is down.
+				$choice  = (string) get_option( Gutenberg_Sync_Engines_Settings::ADVISORY_OPTION, Gutenberg_Sync_Engines_Settings::ADVISORY_DEFAULT );
+				$enabled = '' !== $choice;
 			}
 
 			/**

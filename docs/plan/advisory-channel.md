@@ -69,33 +69,37 @@ its token first and offers once it knows whom to offer to):
     short polling, plus an announcement over the advisory channel to
     User B that there are new rows to poll.
 
-### Replacement channel
+### Preferred transport
 
-A replacement channel replaces the base transport entirely on successful connection.
-It moves everything the base transport does. It declares itself as "replacement".
-Once successfully connected, the client stops polling on the base transport and the default
-advisory channel.
+Short polling is always available as the fallback. When an admin
+selects another transport (long polling, websocket), that is their
+PREFERRED transport: it moves everything the base transport does while
+it is connected, and the client stops polling on the base transport and
+the advisory channel meanwhile. An example is the `websocket`
+transport, which moves all updates and presence over a single socket
+connection, so no advisory channel is needed while it is up.
 
-An example would be the `websocket` transport, which can be used to move all updates and
-presence over a single socket connection. Therefore, an advisory channel is not needed.
-
-The client would fall back to short polling if the replacement channel fails to connect,
-or if it is disconnected after a successful connection.
+If the preferred transport fails to connect, or is disconnected after a
+successful connection, the client falls back to short polling (and, if
+enabled, the advisory channel) until it is back.
 
 ## Plugin settings
 
-Transport plugin settings therefore have two parts:
+Two independent settings:
 
-1. An optional replacement channel slug, e.g., `long-polling` or `websocket`.
-    - If a replacement channel is selected, the advisory channel setting is disabled.
-2. The advisory channel slug, e.g., `web-rtc` (default) or `websocket-advisory` (future bundled transport).
+1. Transport: short-polling (default), long-polling, or WebSocket. The
+   default short-polling transport is always available as a fallback.
+2. Advisory channel: WebRTC (default) or off. An advisory channel
+   reduces polling by signaling to peers when updates are available.
+   It serves whenever short polling does, so under a preferred transport
+   it is only active while that transport is down.
 
 ## The rules, stated plainly
 
-1. **Everyone polls the base transport.** One transport slug is
-   announced. There is no mesh of transports. A site can configure a
-   replacement transport that supplants the default base transport and
-   disables the advisory channel.
+1. **Short polling is the base transport everyone has.** One transport
+   slug is announced. There is no mesh of transports. A site can prefer
+   another transport (long polling, websocket) that carries everything
+   while connected; short polling is always the fallback.
 2. **The advisory channel is a rumor.** A nudge carries a room name and
    nothing else. Nothing in it moves the cursor, applies a row, or
    proves who wrote what. Presence over the channel is display data,
@@ -133,9 +137,10 @@ Transport plugin settings therefore have two parts:
    poll when the loop is active (about a second at the company
    cadence), else the sender calls `wp.heartbeat.connectNow()`; the
    receiver still sees it on its own next request.
-7. **A replacement transport may switch the channel off, but only while connected.**
-   Long polling does this. The request is ignored while that transport
-   is disconnected.
+7. **A preferred transport switches the channel off, but only while
+   connected.** Long polling does this explicitly; websocket does it by
+   construction (the polling manager has no rooms while the socket
+   serves them). The channel comes back while the transport is down.
 
 ## Solo editing: held updates
 
@@ -198,11 +203,11 @@ Client:
     `sendsWhileAlone` are exempt), the announce-after-send, the base
     presence overlay (per client, on top of the poll response's copy),
     and the long-poll disable hook.
--   Settings → Collaboration: a "Replacement transport" select (none,
-    long polling, websocket) and an "Advisory channel" select (WebRTC or
-    off, disabled while a replacement is chosen).
+-   Settings → Collaboration: a "Transport" select (short-polling,
+    long-polling, WebSocket) and an "Advisory channel" select (WebRTC or
+    off), independent of each other.
 -   `src/providers/websocket/websocket-manager.ts`: the websocket
-    transport as a replacement channel. While its socket is open it
+    transport as a preferred transport. While its socket is open it
     moves everything; whenever it is not (token refused, daemon
     unreachable, socket dropped) each room is PARKED with the polling
     manager at the cursor the socket had reached, and reclaimed at the

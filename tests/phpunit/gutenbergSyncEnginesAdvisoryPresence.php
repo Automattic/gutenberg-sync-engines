@@ -309,11 +309,12 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 		);
 		delete_option( Gutenberg_Sync_Engines_Settings::ADVISORY_OPTION );
 
-		// A replacement transport supplants base polling and the channel.
+		// The transport choice does not gate the channel: it serves
+		// whenever short polling does (under websocket, while the socket
+		// is down).
 		update_option( Gutenberg_Sync_Engines_Settings::TRANSPORT_OPTION, 'websocket' );
-		$this->assertFalse( Gutenberg_Sync_Engines_Advisory_Presence::is_enabled() );
-		delete_option( Gutenberg_Sync_Engines_Settings::TRANSPORT_OPTION );
 		$this->assertTrue( Gutenberg_Sync_Engines_Advisory_Presence::is_enabled() );
+		delete_option( Gutenberg_Sync_Engines_Settings::TRANSPORT_OPTION );
 
 		// tok-b never made it in.
 		$this->assertSame( array(), $this->beat( 'tok-a' )['peers'] );

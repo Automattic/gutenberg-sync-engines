@@ -94,7 +94,7 @@ interface RegisterRoomOptions {
 	log: LogFunction;
 	onStatusChange: ( status: ConnectionStatus ) => void;
 	/**
-	 * Where to resume in the room's history: a replacement transport
+	 * Where to resume in the room's history: a preferred transport
 	 * (websocket) hands a room to short polling at the cursor its socket
 	 * had reached, so nothing is replayed or skipped.
 	 */
@@ -102,7 +102,7 @@ interface RegisterRoomOptions {
 }
 
 /**
- * What a replacement transport takes back when it reclaims a room from
+ * What a preferred transport takes back when it reclaims a room from
  * short polling (see releaseRoom).
  */
 export interface ReleasedRoom {
@@ -1704,7 +1704,7 @@ function unregisterRoom(
 }
 
 /**
- * Hands a room back to a replacement transport: waits for any request in
+ * Hands a room back to a preferred transport: waits for any request in
  * flight (so the cursor is final and nothing is delivered twice), then
  * drops the room WITHOUT destroying its session or telling the server it
  * left, returning the cursor to resume from and the updates that never

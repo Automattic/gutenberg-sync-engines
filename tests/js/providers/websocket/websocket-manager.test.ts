@@ -231,7 +231,7 @@ describe( 'websocket manager', () => {
 		expect( ws.readyState ).toBe( 3 );
 	} );
 
-	describe( 'replacement channel: short polling is the fallback', () => {
+	describe( 'preferred transport: short polling is the fallback', () => {
 		it( 'parks the room with short polling when the token cannot be minted', async () => {
 			setup();
 			( apiFetch as unknown as jest.Mock ).mockRejectedValue(

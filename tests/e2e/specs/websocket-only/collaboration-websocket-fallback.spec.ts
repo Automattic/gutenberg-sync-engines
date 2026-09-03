@@ -10,8 +10,8 @@ import { test, expect } from '../../config/collaboration-fixtures';
 import { SECOND_USER } from '../../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures/collaboration-utils';
 
 /**
- * The websocket transport is a REPLACEMENT channel: it supplants short
- * polling while its socket is open, and short polling is the fallback
+ * WebSocket is a PREFERRED transport: it carries everything while its
+ * socket is open, and short polling, the base transport, is the fallback
  * whenever it is not (docs/plan/advisory-channel.md). Here the socket can
  * never open — the one-time token route is blocked for both tabs — so both
  * tabs must fall back to short polling and still converge.

@@ -59,8 +59,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 
 		/**
 		 * Option holding the advisory channel choice: `web-rtc` (the default
-		 * browser-to-browser channel) or the empty string for off. Ignored
-		 * while a replacement transport supplants the base transport.
+		 * browser-to-browser channel) or the empty string for off.
 		 *
 		 * @since n.e.x.t
 		 * @var string
@@ -125,9 +124,9 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 */
 		public static function transport_choices(): array {
 			$labels  = array(
-				'http-polling'      => __( 'None: short polling only, the base transport (default)', 'gutenberg-sync-engines' ),
-				'http-long-polling' => __( 'HTTP long-polling (held open)', 'gutenberg-sync-engines' ),
-				'websocket'         => __( 'WebSocket (push; requires the sync-server daemon)', 'gutenberg-sync-engines' ),
+				'http-polling'      => __( 'Short-polling (default)', 'gutenberg-sync-engines' ),
+				'http-long-polling' => __( 'Long-polling', 'gutenberg-sync-engines' ),
+				'websocket'         => __( 'WebSocket', 'gutenberg-sync-engines' ),
 			);
 			$choices = array();
 
@@ -283,7 +282,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			);
 			add_settings_field(
 				self::TRANSPORT_OPTION,
-				__( 'Replacement transport', 'gutenberg-sync-engines' ),
+				__( 'Transport', 'gutenberg-sync-engines' ),
 				array( $this, 'render_transport_field' ),
 				self::PAGE,
 				'gutenberg_sync_engines_main'
@@ -445,7 +444,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			$this->render_select( self::TRANSPORT_OPTION, self::transport_choices(), (string) get_option( self::TRANSPORT_OPTION, 'http-polling' ) );
 			printf(
 				'<p class="description">%s</p>',
-				esc_html__( 'Every editor polls the server (short polling). A replacement transport takes over entirely once connected and falls back to short polling when it cannot connect; selecting one turns the advisory channel off.', 'gutenberg-sync-engines' )
+				esc_html__( 'The default short-polling transport is always available as a fallback.', 'gutenberg-sync-engines' )
 			);
 		}
 
@@ -462,10 +461,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		}
 
 		/**
-		 * Renders the advisory channel field. Disabled (live, following the
-		 * replacement transport select) while a replacement transport is
-		 * chosen, since that transport supplants both the base polling and
-		 * the channel; the stored choice survives for when it is unset.
+		 * Renders the advisory channel field.
 		 *
 		 * @since n.e.x.t
 		 *
@@ -482,23 +478,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			);
 			printf(
 				'<p class="description">%s</p>',
-				esc_html__( 'A direct browser-to-browser channel between the tabs editing a post. It carries who is present and "new changes, go and poll" notices, never content. With it connected, tabs poll on demand plus a slow safety poll instead of on a timer; tabs that cannot connect keep the timer.', 'gutenberg-sync-engines' )
-			);
-			printf(
-				'<script>( function () {
-					var input  = document.getElementById( %1$s );
-					var select = document.getElementById( %2$s );
-					if ( ! input || ! select ) {
-						return;
-					}
-					var toggle = function () {
-						input.disabled = "http-polling" !== select.value;
-					};
-					select.addEventListener( "change", toggle );
-					toggle();
-				} )();</script>',
-				wp_json_encode( self::ADVISORY_OPTION ),
-				wp_json_encode( self::TRANSPORT_OPTION )
+				esc_html__( 'An advisory channel reduces polling by signaling to peers when updates are available.', 'gutenberg-sync-engines' )
 			);
 		}
 

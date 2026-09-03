@@ -34,9 +34,9 @@ import { pollingManager } from '../http-polling/polling-manager';
  * (`/wp-sync/v1/ws-token`); the daemon validates it against the logged-in
  * cookie on handshake.
  *
- * REPLACEMENT CHANNEL (docs/plan/advisory-channel.md): the socket
- * supplants short polling entirely while it is open, and short polling is
- * the fallback whenever it is not — the daemon unreachable, the token
+ * A PREFERRED TRANSPORT (docs/plan/advisory-channel.md): the socket
+ * carries everything while it is open, and short polling, the base
+ * transport, is the fallback whenever it is not — the daemon unreachable, the token
  * refused, the socket dropped. A room the socket cannot serve is PARKED
  * with the polling manager at the cursor the socket had reached; when the
  * socket (re)opens, the room is reclaimed at the cursor polling reached,

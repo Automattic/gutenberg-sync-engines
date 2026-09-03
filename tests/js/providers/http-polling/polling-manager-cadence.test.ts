@@ -520,7 +520,7 @@ describe( 'polling-manager cadence', () => {
 		} );
 	} );
 
-	describe( 'handing a room to and from a replacement transport', () => {
+	describe( 'handing a room to and from a preferred transport', () => {
 		it( 'resumes at the given cursor and releases the room with its cursor and unsent work, keeping the session', async () => {
 			mockSignalingAvailable = false;
 			mockPostSyncUpdate.mockResolvedValue( response( [ 1 ], 9 ) );
