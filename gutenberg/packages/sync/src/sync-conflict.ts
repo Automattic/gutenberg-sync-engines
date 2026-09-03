@@ -23,14 +23,19 @@ export interface SyncConflict {
 	 */
 	blockId?: string;
 	index?: number;
+	/*
+	 * The three sides cover the same span of blocks: only the blocks the
+	 * parked edit touches, chosen by the engine, never the whole post.
+	 */
 	/**
-	 * What the author started from. Null when the engine can no longer
-	 * recover it; the editor then compares proposed against current.
+	 * That span as the author started from it. Null when the engine can
+	 * no longer recover it; the editor then compares proposed against
+	 * current.
 	 */
 	base: string | null;
-	/** The author's intended result, with the parked edit applied. */
+	/** That span as the author intended it, with the parked edit applied. */
 	proposed: string;
-	/** The document as it stands now. */
+	/** That span as the document has it now. */
 	current: string;
 }
 
@@ -48,7 +53,8 @@ export type SyncConflictDecision =
 
 /**
  * What an engine implements to take part in conflict review. Attach it
- * as the engine's `conflicts` member (see the example above).
+ * as the engine's `conflicts` member (see the example at the end of
+ * this file).
  */
 export interface SyncConflictSource {
 	getOpenConflicts: (
@@ -84,9 +90,9 @@ export interface SyncConflictSource {
  * look. The engine owns the replacement: it turns the accepted content
  * into the smallest edit against its own document and closes the parked
  * edits in the same round, so the two can never race each other.
- * 
+ *
  * Example registration, from an engine adapter:
- * 
+ *
  * ```ts
  * const conflicts: SyncConflictSource = {
  *     getOpenConflicts: ( objectType, objectId ) =>
