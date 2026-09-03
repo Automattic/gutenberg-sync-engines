@@ -152,6 +152,13 @@ The framework/plugin split is complete: the framework ships **neither** engines
     by eslint), inherited from the retired yjs-relay engine and used by
     yjs-server.
   - `providers/{http-polling,http-long-polling,websocket}/` — transports.
+  - `awareness/` — the HIGH-LATENCY AWARENESS prototype (block-level
+    presence on a 5-15 s cadence; off unless the "Awareness interval"
+    setting is set): beacon types, publisher, store, two channels (sync
+    transport, WordPress Heartbeat), and the editor UI (block stripe via
+    `editor.BlockListBlock`, phantom markers, sidebar panel). The
+    engines hand their awareness instance to `awareness/registry.ts`.
+    Server half: `includes/awareness/`. Design: `docs/awareness-high-latency.md`.
   - `framework.ts` — unlocks `@wordpress/sync` private APIs once and re-exports
     the framework runtime the adapters use.
 - `gutenberg/` — a **pinned, squashed git subtree of Gutenberg** (source only;

@@ -35,6 +35,7 @@ import {
 import { createDeRtcCommitAdapter } from './commit';
 import { registerSaveBaseVersion } from './save-base-version';
 import { applyServerAwarenessStates } from '../awareness-sync';
+import { registerAwareness } from '../../awareness/registry';
 import {
 	createDeRtcDocBridge,
 	DE_RTC_REMOTE_ORIGIN,
@@ -277,6 +278,7 @@ export function createDeRtcEngine(): SyncEngine & {
 			const ydoc = createYjsDoc( { objectType } );
 			const recordMap = ydoc.getMap( CRDT_RECORD_MAP_KEY );
 			const awareness = syncConfig.createAwareness?.( ydoc );
+			registerAwareness( objectType, objectId, awareness );
 			const bridge = createDeRtcDocBridge( ydoc, syncConfig );
 			const review = createDeRtcReviewState();
 			// The REST review lane (B5): resolutions are mutations, so they

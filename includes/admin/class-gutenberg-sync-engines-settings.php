@@ -58,6 +58,27 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		const POLLING_INTERVAL_OPTION = 'gutenberg_sync_engines_polling_interval';
 
 		/**
+		 * Option storing the high-latency awareness interval in SECONDS. 0
+		 * keeps the framework's realtime awareness (carets, 100 ms). Any
+		 * other value switches the editor to block-level awareness
+		 * exchanged at that cadence.
+		 *
+		 * @since n.e.x.t
+		 * @var string
+		 */
+		const AWARENESS_INTERVAL_OPTION = 'gutenberg_sync_engines_awareness_interval';
+
+		/**
+		 * Option storing the channel the awareness beacon travels on:
+		 * `sync` (the sync transport's awareness envelope) or `heartbeat`
+		 * (WordPress Heartbeat, a separate transport).
+		 *
+		 * @since n.e.x.t
+		 * @var string
+		 */
+		const AWARENESS_CHANNEL_OPTION = 'gutenberg_sync_engines_awareness_channel';
+
+		/**
 		 * Registers the admin page, settings, and the transport filter.
 		 *
 		 * @since 0.1.0
@@ -211,6 +232,52 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 					'default'           => 0,
 				)
 			);
+			register_setting(
+				self::PAGE,
+				self::AWARENESS_INTERVAL_OPTION,
+				array(
+					'type'              => 'integer',
+					'description'       => __( 'High-latency awareness interval in seconds (0 = realtime awareness)', 'gutenberg-sync-engines' ),
+					'sanitize_callback' => array( $this, 'sanitize_awareness_interval' ),
+					'show_in_rest'      => true,
+					'default'           => 0,
+				)
+			);
+			register_setting(
+				self::PAGE,
+				self::AWARENESS_CHANNEL_OPTION,
+				array(
+					'type'              => 'string',
+					'description'       => __( 'Channel for high-latency awareness: sync or heartbeat', 'gutenberg-sync-engines' ),
+					'sanitize_callback' => array( $this, 'sanitize_awareness_channel' ),
+					'show_in_rest'      => true,
+					'default'           => 'sync',
+				)
+			);
+		}
+
+		/**
+		 * Sanitizes the awareness interval: whole seconds, 0-300.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param mixed $value Submitted value.
+		 * @return int Interval in seconds.
+		 */
+		public function sanitize_awareness_interval( $value ): int {
+			return max( 0, min( 300, (int) $value ) );
+		}
+
+		/**
+		 * Sanitizes the awareness channel.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param mixed $value Submitted value.
+		 * @return string `sync` or `heartbeat`.
+		 */
+		public function sanitize_awareness_channel( $value ): string {
+			return 'heartbeat' === $value ? 'heartbeat' : 'sync';
 		}
 
 		/**
@@ -280,6 +347,54 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				self::PAGE,
 				'gutenberg_sync_engines_main'
 			);
+			add_settings_field(
+				self::AWARENESS_INTERVAL_OPTION,
+				__( 'Awareness interval', 'gutenberg-sync-engines' ),
+				array( $this, 'render_awareness_interval_field' ),
+				self::PAGE,
+				'gutenberg_sync_engines_main'
+			);
+			add_settings_field(
+				self::AWARENESS_CHANNEL_OPTION,
+				__( 'Awareness channel', 'gutenberg-sync-engines' ),
+				array( $this, 'render_awareness_channel_field' ),
+				self::PAGE,
+				'gutenberg_sync_engines_main'
+			);
+		}
+
+		/**
+		 * Renders the awareness interval field.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return void
+		 */
+		public function render_awareness_interval_field(): void {
+			$value = (int) get_option( self::AWARENESS_INTERVAL_OPTION, 0 );
+			printf(
+				'<input type="number" min="0" max="300" step="1" name="%1$s" id="%1$s" value="%2$d" class="small-text" /> %3$s<p class="description">%4$s</p>',
+				esc_attr( self::AWARENESS_INTERVAL_OPTION ),
+				(int) $value,
+				esc_html__( 'seconds', 'gutenberg-sync-engines' ),
+				esc_html__( 'Prototype of presence over a slow connection. 0 keeps the built-in realtime awareness (carets updated many times a second). Any other value replaces carets with block-level activity: each editor reports the block it is in and the blocks it touched, once per interval, and other editors see a colored stripe beside those blocks. Try 5, then 15.', 'gutenberg-sync-engines' )
+			);
+		}
+
+		/**
+		 * Renders the awareness channel field.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return void
+		 */
+		public function render_awareness_channel_field(): void {
+			$choices = array(
+				'sync'      => __( 'Sync transport (rides the same requests as document updates)', 'gutenberg-sync-engines' ),
+				'heartbeat' => __( 'WordPress Heartbeat (a separate request stream; the document keeps its own pace)', 'gutenberg-sync-engines' ),
+			);
+			$this->render_select( self::AWARENESS_CHANNEL_OPTION, $choices, (string) get_option( self::AWARENESS_CHANNEL_OPTION, 'sync' ) );
+			echo '<p class="description">' . esc_html__( 'Only used when the awareness interval is set. With Heartbeat, raise the polling interval to see awareness arrive before the content it refers to.', 'gutenberg-sync-engines' ) . '</p>';
 		}
 
 		/**

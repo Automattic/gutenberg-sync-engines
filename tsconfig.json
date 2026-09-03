@@ -14,6 +14,12 @@
       "@wordpress/block-serialization-default-parser": [
         "./gutenberg/node_modules/@wordpress/block-serialization-default-parser"
       ],
+      "@wordpress/data": [
+        "./gutenberg/node_modules/@wordpress/data/build-types"
+      ],
+      "@wordpress/plugins": [
+        "./gutenberg/node_modules/@wordpress/plugins/build-types"
+      ],
       "yjs": [
         "./gutenberg/node_modules/yjs"
       ],

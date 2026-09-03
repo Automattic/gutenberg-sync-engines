@@ -18,6 +18,7 @@ import { getBlockType, getSaveContent } from '@wordpress/blocks';
  * Internal dependencies
  */
 import { createAwarenessDoc } from './awareness-sync';
+import { registerAwareness } from '../awareness/registry';
 import {
 	applyDerivedIntents,
 	deriveIntents,
@@ -1085,6 +1086,7 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			createAwarenessDoc( clientId ) as never,
 			objectId
 		);
+		registerAwareness( objectType, objectId, awareness );
 		const session = createIntentLogSession( {
 			userId,
 			clientId,

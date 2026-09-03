@@ -15,6 +15,7 @@ Start here if you want to:
   through all three engines.
 - **Compare transports** → [transports.md](transports.md) — polling vs
   long-polling vs websocket, and the websocket operational notes.
+- **Presence over a slow connection** → [awareness-high-latency.md](awareness-high-latency.md) — block-level awareness on a 5-15 s cadence, the beacon shape, phantoms for blocks not yet received, and the affordances it enables.
 - **Understand de-rtc's relationship to its upstream design** →
   [de-rtc-fidelity.md](de-rtc-fidelity.md) — the audit of our port
   against the Distributed Editing vision.

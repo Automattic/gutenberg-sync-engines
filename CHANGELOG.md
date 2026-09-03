@@ -18,6 +18,17 @@ them under a version heading when a version ships.
 
 ### Added
 
+-   High-latency awareness prototype: Settings → Collaboration gains an
+    "Awareness interval" (0 keeps the realtime carets) and an "Awareness
+    channel" (the sync transport, or WordPress Heartbeat as a separate
+    request stream). With an interval set, editors exchange one beacon
+    per interval naming the block they are in and every block they
+    touched in the last 30 seconds, by durable block identity; peers see
+    a colored stripe beside those blocks (full strength under 15 seconds,
+    half after, updated only when a beacon lands) with a hover label, a
+    "Collaborator activity" sidebar panel, and dashed markers for blocks
+    whose content has not arrived yet. See
+    `docs/awareness-high-latency.md`.
 -   Activating the plugin now turns on Gutenberg's real-time collaboration
     experiment, so collaboration works right after activation instead of
     needing a second trip to the Gutenberg → Experiments screen. Other
