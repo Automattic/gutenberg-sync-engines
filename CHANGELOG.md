@@ -30,6 +30,35 @@ them under a version heading when a version ships.
     (`npm run bench -- --suite=engines`, `--certify=3`,
     `replay.mjs fixture.json --speed=2 --force`) instead of bare
     `key=value` tokens; a bare token is now refused with the flag to use.
+-   Under the de-rtc engine, every block now carries a durable identity
+    (`metadata.syncId`), the same scheme the intent-log engine uses.
+    Blocks of a saved post get a deterministic id from the post id and
+    the block's position, computed identically by the server and by
+    each editor, so nobody has to agree on it over the wire; blocks
+    added during a session get a random id in the editor; blocks
+    written by scripts that know nothing about identity adopt the id
+    of the block they replaced and get a fresh one when they are new.
+    The ids live in the block delimiters, so they persist into the
+    saved post, survive a reload, and let the editor keep a block's
+    internal id across incoming updates instead of remounting it.
+
+-   Under the de-rtc engine, edits inside nested blocks now merge
+    block by block. Two people editing different paragraphs inside the
+    same Group both land, a paragraph added inside a container lands
+    next to the one it followed, a block moved elsewhere keeps the edit
+    a peer made to it, and a deletion wins over a concurrent edit with
+    that edit held for review instead of lost. Before, the server lined
+    blocks up by their top-level position and treated a Group as one
+    unit, so any two edits inside the same Group parked one of them.
+    Only a true clash on the same block is held back now, and the
+    review card attaches to that block wherever it sits. The same
+    identity drives three more things: an author without permission
+    to publish raw HTML has only the risky block itself held back
+    (not the whole container it sits in), the "who last edited this"
+    record credits the block that changed rather than its container,
+    and undo reverts a nested edit in place, removes a block you added,
+    or brings back one you deleted.
+
 -   `npm run bench` is the single entry point for the benchmarks, and
     by default prints a host cost report: what real-time collaboration
     adds to a server, one engine per run, as two
@@ -88,6 +117,7 @@ them under a version heading when a version ships.
     assigned, so nothing remounts
 
     ([#66](https://github.com/Automattic/gutenberg-sync-engines/issues/66)).
+
 -   Pressing Ctrl+C did not stop the websocket sync server started by
     `npm run rtc:ws`, even though the server said it would: the terminal
     just sat there and the server kept running. Two things were in the

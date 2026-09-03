@@ -640,6 +640,20 @@ applies.
   and a container-shaped variant of exactly that symptom is open, see
   issue #38.
 - **de-rtc known gaps** (docs/engine-comparison.md has the full list):
+  every block carries a durable `metadata.syncId` (intent-log's scheme;
+  `WP_De_RTC_Block_Identity` stamps genesis deterministically and
+  engine-unaware writers' blocks, `adopt()` lines an id-less copy up
+  with its base by path, and the editor-side stamper in
+  `includes/engines/intent-log/sync-id.js` serves de-rtc too) and
+  `WP_De_RTC_Identity_Merge` three-way merges by that identity at every
+  depth BEFORE the frozen positional core (which stays the fallback
+  whenever identity declines: id-less blocks, classic content between
+  blocks, irregular containers); parked rows carry `syncId` + `path`
+  beside `index`, the client restores/contests/anchors by syncId
+  (`DeRtcContestKey`), `blockBaseVersions` keys may be syncIds, kses
+  sequestration (`WP_De_RTC_Identity_Merge::sequester`), authorship
+  (`getBlockAuthorshipById`) and revert-undo all work by identity at
+  every depth with the positional rules as the id-less fallback;
   truly concurrent SAME-block edits merge from their TRUE base
   (`blockBaseVersions`) or raise a contested pending item
   (Adopt/Reject) — the old silent client-side block LWW is

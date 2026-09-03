@@ -79,7 +79,7 @@ class Tests_Collaboration_WpDeRtcSelfHealing extends WP_UnitTestCase {
 	public function test_external_replacement_converges_the_room() {
 		$post_id = $this->make_post();
 		$room    = 'postType/post:' . $post_id;
-		$this->assertSame( self::GENESIS_CONTENT, $this->engine()->materialize( $room ) );
+		$this->assertSame( $this->genesis( $post_id ), $this->engine()->materialize( $room ) );
 
 		// An unaware integration replaces the whole post (no sync-meta).
 		$external = "<!-- wp:paragraph -->\n<p>Entirely new external content.</p>\n<!-- /wp:paragraph -->";
@@ -98,15 +98,15 @@ class Tests_Collaboration_WpDeRtcSelfHealing extends WP_UnitTestCase {
 		$post_id = $this->make_post();
 		$room    = 'postType/post:' . $post_id;
 		$engine  = $this->engine();
-		$this->assertSame( self::GENESIS_CONTENT, $engine->materialize( $room ) );
+		$this->assertSame( $this->genesis( $post_id ), $engine->materialize( $room ) );
 
 		// The session advances past genesis.
-		$proposed = str_replace( 'Alpha block original text.', 'Alpha advanced by the session.', self::GENESIS_CONTENT );
+		$proposed = str_replace( 'Alpha block original text.', 'Alpha advanced by the session.', $this->genesis( $post_id ) );
 		$result   = $engine->handle_updates( $room, 301, 0, array( $this->proposal( 'p-1', 'v1', $proposed ) ), array() );
 		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
 
 		// An unaware writer re-saves a stale copy (the genesis content).
-		$this->unaware_write( $post_id, self::GENESIS_CONTENT );
+		$this->unaware_write( $post_id, $this->genesis( $post_id ) );
 
 		$after = $this->engine()->materialize( $room );
 		$this->assertStringContainsString( 'Alpha advanced by the session.', $after, 'A stale copy must not roll the room back.' );
@@ -116,7 +116,7 @@ class Tests_Collaboration_WpDeRtcSelfHealing extends WP_UnitTestCase {
 		$post_id = $this->make_post();
 		$room    = 'postType/post:' . $post_id;
 		$engine  = $this->engine();
-		$this->assertSame( self::GENESIS_CONTENT, $engine->materialize( $room ) );
+		$this->assertSame( $this->genesis( $post_id ), $engine->materialize( $room ) );
 
 		/*
 		 * Advance the session far enough that the genesis content ages out
@@ -131,7 +131,7 @@ class Tests_Collaboration_WpDeRtcSelfHealing extends WP_UnitTestCase {
 		 */
 		$rounds  = wp_de_rtc_get_automerge_version_snapshot_limit() + 5;
 		$alpha   = 'Alpha block original text.';
-		$current = self::GENESIS_CONTENT;
+		$current = $this->genesis( $post_id );
 		for ( $i = 1; $i <= $rounds; $i++ ) {
 			$next_alpha = $alpha . " s{$i};";
 			$next       = str_replace( $alpha, $next_alpha, $current );
@@ -152,7 +152,7 @@ class Tests_Collaboration_WpDeRtcSelfHealing extends WP_UnitTestCase {
 		$post_id = $this->make_post();
 		$room    = 'postType/post:' . $post_id;
 		$engine  = $this->engine();
-		$this->assertSame( self::GENESIS_CONTENT, $engine->materialize( $room ) );
+		$this->assertSame( $this->genesis( $post_id ), $engine->materialize( $room ) );
 
 		// An aware save stamps v1 lineage into post_content.
 		wp_update_post(
@@ -165,7 +165,7 @@ class Tests_Collaboration_WpDeRtcSelfHealing extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'data-wp-sync-meta', $saved );
 
 		// The session advances Alpha AFTER that save.
-		$proposed = str_replace( 'Alpha block original text.', 'Alpha advanced by the session.', self::GENESIS_CONTENT );
+		$proposed = str_replace( 'Alpha block original text.', 'Alpha advanced by the session.', $this->genesis( $post_id ) );
 		$result   = $engine->handle_updates( $room, 302, 0, array( $this->proposal( 'p-1', 'v1', $proposed ) ), array() );
 		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
 
@@ -183,7 +183,7 @@ class Tests_Collaboration_WpDeRtcSelfHealing extends WP_UnitTestCase {
 		$post_id = $this->make_post();
 		$room    = 'postType/post:' . $post_id;
 		$engine  = $this->engine();
-		$this->assertSame( self::GENESIS_CONTENT, $engine->materialize( $room ) );
+		$this->assertSame( $this->genesis( $post_id ), $engine->materialize( $room ) );
 
 		wp_update_post(
 			array(
@@ -194,7 +194,7 @@ class Tests_Collaboration_WpDeRtcSelfHealing extends WP_UnitTestCase {
 		$saved = get_post( $post_id )->post_content;
 
 		// Session and external writer both rewrite the SAME text from v1.
-		$proposed = str_replace( 'Alpha block original text.', 'Alpha rewritten by the session.', self::GENESIS_CONTENT );
+		$proposed = str_replace( 'Alpha block original text.', 'Alpha rewritten by the session.', $this->genesis( $post_id ) );
 		$result   = $engine->handle_updates( $room, 303, 0, array( $this->proposal( 'p-1', 'v1', $proposed ) ), array() );
 		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
 
@@ -219,7 +219,7 @@ class Tests_Collaboration_WpDeRtcSelfHealing extends WP_UnitTestCase {
 	public function test_healing_is_idempotent_across_loads() {
 		$post_id = $this->make_post();
 		$room    = 'postType/post:' . $post_id;
-		$this->assertSame( self::GENESIS_CONTENT, $this->engine()->materialize( $room ) );
+		$this->assertSame( $this->genesis( $post_id ), $this->engine()->materialize( $room ) );
 
 		$external = "<!-- wp:paragraph -->\n<p>External once.</p>\n<!-- /wp:paragraph -->";
 		$this->unaware_write( $post_id, $external );
@@ -234,5 +234,16 @@ class Tests_Collaboration_WpDeRtcSelfHealing extends WP_UnitTestCase {
 			count( $second['updates'] ),
 			'Repeated loads must not re-heal the same external content.'
 		);
+	}
+
+	/**
+	 * The room's genesis content: the saved post with every block stamped
+	 * with its deterministic identity (what the room actually serves).
+	 *
+	 * @param int $post_id Post ID.
+	 * @return string Stamped genesis content.
+	 */
+	private function genesis( int $post_id ): string {
+		return WP_De_RTC_Block_Identity::stamp_genesis( self::GENESIS_CONTENT, $post_id );
 	}
 }

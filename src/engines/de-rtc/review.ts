@@ -1,7 +1,8 @@
 /**
  * A parked (escalated) proposal as the server's `parked` row
- * carries it. `changedBlocks` are the proposal's top-level blocks that
- * differed from its base, with their indices, so a restore can overlay
+ * carries it. `changedBlocks` are the proposal's blocks that differed
+ * from its base — identified by syncId (and path) when the server merged
+ * by identity, always with a top-level index — so a restore can overlay
  * them at sensible anchors.
  */
 export interface DeRtcParkedProposal {
@@ -13,7 +14,14 @@ export interface DeRtcParkedProposal {
 	/** Server time at escalation. */
 	at?: number;
 	baseVersion?: string;
-	changedBlocks: Array< { index: number; html: string } >;
+	changedBlocks: Array< {
+		index: number;
+		html: string;
+		/** The block's durable identity (identity-merged parks). */
+		syncId?: string;
+		/** The block's path in the proposal (child indices from the root). */
+		path?: number[];
+	} >;
 	/** A conflicting entity-property register (property-conflict rows). */
 	property?: { name: string; value: unknown };
 	excerpt?: string;
@@ -83,9 +91,10 @@ export function createDeRtcReviewState(): DeRtcReviewState {
 
 	/**
 	 * Merge-not-stack key: one review task per author per
-	 * target — a property register, or a block index set. A revised
-	 * parked proposal from the same author over the same target FOLDS
-	 * into the open task instead of raising a second one.
+	 * target — a property register, or a block set (by identity when
+	 * the blocks carry one, else by index). A revised parked proposal
+	 * from the same author over the same target FOLDS into the open
+	 * task instead of raising a second one.
 	 *
 	 * @param parked Parked proposal.
 	 * @return Fold key.
@@ -96,8 +105,12 @@ export function createDeRtcReviewState(): DeRtcReviewState {
 			: `blocks:${ parked.authorClientId }:${ (
 					parked.changedBlocks ?? []
 			  )
-					.map( ( block ) => Number( block.index ) )
-					.sort( ( a, b ) => a - b )
+					.map( ( block ) =>
+						'string' === typeof block.syncId
+							? block.syncId
+							: String( Number( block.index ) )
+					)
+					.sort()
 					.join( ',' ) }`;
 
 	return {

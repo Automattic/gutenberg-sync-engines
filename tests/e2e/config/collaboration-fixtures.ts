@@ -155,6 +155,55 @@ class HardenedCollaborationUtils extends CollaborationUtils {
 	}
 
 	/**
+	 * The subtree fixture compares the two editors' block trees as JSON
+	 * text, so the ORDER of attribute keys decides convergence. That order
+	 * is an artifact of how each block reached its editor: the framework's
+	 * block merge updates an existing block's attribute map in place, so
+	 * a block that changed type keeps its old keys first (`content,
+	 * metadata, level`), while the editor that made the change built the
+	 * block fresh (`content, level, metadata`). With every block carrying
+	 * `metadata.syncId` under de-rtc, that difference shows up on any
+	 * type-changing edit (a paste over the document). Sort keys before
+	 * comparing: two editors agree when their attributes agree.
+	 *
+	 * @param args getNormalizedPostState arguments (page).
+	 * @return The state with attribute keys in sorted order at every depth.
+	 */
+	async getNormalizedPostState(
+		...args: Parameters< CollaborationUtils[ 'getNormalizedPostState' ] >
+	): ReturnType< CollaborationUtils[ 'getNormalizedPostState' ] > {
+		const state = await super.getNormalizedPostState( ...args );
+		const sortKeys = ( value: unknown ): unknown => {
+			if ( Array.isArray( value ) ) {
+				return value.map( sortKeys );
+			}
+			if ( value && 'object' === typeof value ) {
+				return Object.fromEntries(
+					Object.keys( value as Record< string, unknown > )
+						.sort()
+						.map( ( key ) => [
+							key,
+							sortKeys(
+								( value as Record< string, unknown > )[ key ]
+							),
+						] )
+				);
+			}
+			return value;
+		};
+		type Block = ( typeof state.blocks )[ number ];
+		const sortBlocks = ( blocks: Block[] ): Block[] =>
+			blocks.map( ( block ) => ( {
+				...block,
+				attributes: sortKeys(
+					block.attributes
+				) as Block[ 'attributes' ],
+				innerBlocks: sortBlocks( block.innerBlocks as Block[] ),
+			} ) );
+		return { ...state, blocks: sortBlocks( state.blocks ) };
+	}
+
+	/**
 	 * The subtree's sync-cycle wait knows the HTTP transports (poll
 	 * responses) and the retired test WS provider fixture — the REAL
 	 * websocket transport has neither. When the suite runs on the real

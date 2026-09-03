@@ -71,9 +71,9 @@ class Tests_Collaboration_WpDeRtcSyncMetaColocation extends WP_UnitTestCase {
 	private function bootstrap_room( int $post_id ): string {
 		$room   = 'postType/post:' . $post_id;
 		$engine = $this->engine();
-		$this->assertSame( self::GENESIS_CONTENT, $engine->materialize( $room ) );
+		$this->assertSame( $this->genesis( $post_id ), $engine->materialize( $room ) );
 
-		$proposed = str_replace( 'Alpha block original text.', 'Alpha block collaborated text.', self::GENESIS_CONTENT );
+		$proposed = str_replace( 'Alpha block original text.', 'Alpha block collaborated text.', $this->genesis( $post_id ) );
 		$result   = $engine->handle_updates( $room, 201, 0, array( $this->proposal( 'p-1', 'v1', $proposed ) ), array() );
 		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
 		$this->assertSame( 'v2', $result['dispositions'][0]['version'] );
@@ -88,7 +88,7 @@ class Tests_Collaboration_WpDeRtcSyncMetaColocation extends WP_UnitTestCase {
 		wp_update_post(
 			array(
 				'ID'           => $post_id,
-				'post_content' => str_replace( 'Alpha block original text.', 'Alpha block collaborated text.', self::GENESIS_CONTENT ),
+				'post_content' => str_replace( 'Alpha block original text.', 'Alpha block collaborated text.', $this->genesis( $post_id ) ),
 			)
 		);
 
@@ -137,7 +137,7 @@ class Tests_Collaboration_WpDeRtcSyncMetaColocation extends WP_UnitTestCase {
 		wp_update_post(
 			array(
 				'ID'           => $post_id,
-				'post_content' => str_replace( 'Beta block original text.', 'Beta revised for the revision.', self::GENESIS_CONTENT ),
+				'post_content' => str_replace( 'Beta block original text.', 'Beta revised for the revision.', $this->genesis( $post_id ) ),
 			)
 		);
 
@@ -159,7 +159,7 @@ class Tests_Collaboration_WpDeRtcSyncMetaColocation extends WP_UnitTestCase {
 		wp_update_post(
 			array(
 				'ID'           => $post_id,
-				'post_content' => str_replace( 'Alpha block original text.', 'Alpha block collaborated text.', self::GENESIS_CONTENT ),
+				'post_content' => str_replace( 'Alpha block original text.', 'Alpha block collaborated text.', $this->genesis( $post_id ) ),
 			)
 		);
 
@@ -188,5 +188,16 @@ class Tests_Collaboration_WpDeRtcSyncMetaColocation extends WP_UnitTestCase {
 		$result   = $engine->handle_updates( $room, 202, 0, array( $this->proposal( 'p-2', 'v2', $proposed ) ), array() );
 		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
 		$this->assertSame( 'v3', $result['dispositions'][0]['version'], 'The resumed lineage must continue past the adopted version.' );
+	}
+
+	/**
+	 * The room's genesis content: the saved post with every block stamped
+	 * with its deterministic identity (what the room actually serves).
+	 *
+	 * @param int $post_id Post ID.
+	 * @return string Stamped genesis content.
+	 */
+	private function genesis( int $post_id ): string {
+		return WP_De_RTC_Block_Identity::stamp_genesis( self::GENESIS_CONTENT, $post_id );
 	}
 }

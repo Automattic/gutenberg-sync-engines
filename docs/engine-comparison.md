@@ -82,17 +82,26 @@ shows up.
 | P4 machine writers | **Met for read-modify-write.** A script that declares the version it read gets a real merge; one that declares nothing still bypasses the room ([note](#p4-how-scripts-and-plugins-join-in)) | **Accepted limitation.** Ingest speaks binary CRDT updates; a diff-to-CRDT lane would be semantically worse, not just costly | **Met.** Cooperating scripts merge through the room, and unaware ones are healed afterwards ([note](#p4-how-scripts-and-plugins-join-in)) |
 | P5 cheap hosting | **Meets.** Cheapest per-ingest CPU; Core-style options-row lock, topology-safe | **Partly.** No lock (good); heaviest per-ingest CPU, and it grows with document size | **Partly.** Cheap CPU; lock-free optimistic claims, topology-safe; upload bytes still grow with document size |
 | P6 measured economics | **Meets.** Real wire format in its benchmark profile | **Meets.** Real wire format; convergence oracle | **Meets.** Real wire format; disposition/lineage oracle |
-| P7 intent & identity | **Meets.** Typed intents end-to-end; syncIds persist in saved `post_content` and round-trip genesis | **Fails.** Snapshot-diff binding inherited from the relay; no semantic operations, no stable identity in the merge | **Designed for it, and wired up.** Block identity and rich-text operations live in the merge core, and each commit carries tamper evidence ([note](#p7-what-de-rtc-sends-with-each-commit)) |
+| P7 intent & identity | **Meets.** Typed intents end-to-end; syncIds persist in saved `post_content` and round-trip genesis | **Fails.** Snapshot-diff binding inherited from the relay; no semantic operations, no stable identity in the merge | **Meets.** Every block carries a durable syncId (the same scheme as intent-log, persisted in `post_content`), the server merges block-for-block at every depth by that identity, and each commit carries tamper evidence ([note](#p7-what-de-rtc-sends-with-each-commit)) |
 
 ### Notes on the longer verdicts
 
 #### P3: how de-rtc holds back only what clashes
 
 When two people's edits clash, de-rtc holds back just the blocks that
-actually clash. Everything else in the edit lands normally. It holds the
-whole edit back only when both sides changed the document's *structure* —
-added or removed blocks — because at that point the blocks can no longer
-be matched up one to one.
+actually clash. Everything else in the edit lands normally. Blocks are
+matched up by their durable identity (the syncId every block carries),
+at any depth: two people editing different paragraphs inside the same
+Group both land, a block added inside a container lands next to the
+block it followed, a block moved somewhere else keeps the edit a peer
+made to it meanwhile, and a deletion wins over a concurrent edit with
+that edit held for review rather than lost. Only when the two sides
+disagree about the *order* of the same blocks inside one container is
+that container held back; a disagreement about the order of top-level
+blocks falls back to the positional rule, which holds the whole edit
+back. Content whose blocks carry no identity (classic content between
+blocks, a document that never went through the editor) merges
+positionally, exactly as before.
 
 Each client also records which version every block it kept was really
 written against, and sends that with its next commit (the
@@ -359,6 +368,21 @@ their own (open work lives in GitHub Issues), grouped by engine.
 
 ### de-rtc
 
+- **Identity, not position, is how blocks line up.** Every block of a
+  de-rtc room carries `metadata.syncId`: the saved post's blocks get a
+  deterministic id from the post id and block path (the same function
+  the intent-log engine and the editor-side stamper use, so every
+  party derives it alone), blocks born in the editor get a random id
+  there, and blocks from scripts adopt the base's id at their path or
+  get a fresh one as they become canonical. The server merges by that
+  identity at every depth and parks only the blocks that truly clash;
+  the client incorporates, contests, restores and anchors review cards
+  by it too. The kses lane for authors without `unfiltered_html`
+  reverts or drops only the risky block itself, wherever it sits, and
+  the safe rest of the same container lands. Authorship credits the
+  block that actually changed, at any depth, and revert-undo reverts a
+  block's own form in place, removes a block the row inserted, and
+  brings back one it deleted, next to the sibling it followed.
 - **Document-size costs live on the commit path, not in storage.**
   Stored rows are fixed-size advisories now, and a later joiner
   downloads one synthesized snapshot. The old tail that grew with the

@@ -177,7 +177,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 
 		$genesis = json_decode( $response['updates'][0]['data'], true );
 		$this->assertSame( 'v1', $genesis['version'] );
-		$this->assertSame( self::GENESIS_CONTENT, $genesis['content'] );
+		$this->assertSame( $this->genesis(), $genesis['content'] );
 
 		$this->assertSame( 'de-rtc', $storage->get_room_engine( $this->room() ) );
 	}
@@ -1265,5 +1265,15 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 		$this->assertSame( 'p-reedit-approved', $parked[1]['proposalId'] );
 		$this->assertSame( 'requires-unfiltered-html', $parked[1]['reason'] );
 		$this->assertStringContainsString( 'worse()', $parked[1]['changedBlocks'][0]['html'] );
+	}
+
+	/**
+	 * The room's genesis content: the saved post with every block stamped
+	 * with its deterministic identity (what the room actually serves).
+	 *
+	 * @return string Stamped genesis content.
+	 */
+	private function genesis(): string {
+		return WP_De_RTC_Block_Identity::stamp_genesis( self::GENESIS_CONTENT, self::$post_id );
 	}
 }
