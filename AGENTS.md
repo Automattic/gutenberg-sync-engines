@@ -563,7 +563,11 @@ they exist so a failure is observable without re-instrumenting:
   refactors, or docs — the commit message and the issue record those. Why:
   nearly every branch used to touch the same lines of the changelog, so
   merges conflicted constantly. Keep each entry to one or two sentences
-  and link the issue. When in doubt, leave it out.
+  and link the issue. When in doubt, leave it out: when a version ships,
+  the release script appends every commit merged since the last release
+  under that version, each linked to its pull request, so nothing is
+  lost by leaving an entry out (`npm run release -- --dry-run` previews
+  that list).
 - This repo has commit **signing disabled locally**. Commit with `--no-verify`
   (the pre-commit hook is heavy/flaky).
 - Do **not** open PRs / push to shared branches / take other outward-facing

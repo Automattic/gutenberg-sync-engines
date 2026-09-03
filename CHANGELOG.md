@@ -3,9 +3,10 @@
 Significant changes to this plugin, newest first: new features, new
 settings or extension points, and behavior that is removed or works
 differently. Bug fixes, tests, developer tooling, refactors, and docs are
-not listed here — the commit history and the issues record them. Add
-entries under **Unreleased** as part of the change itself; they move under
-a version heading when a version ships.
+not listed here as highlights. Add entries under **Unreleased** as part
+of the change itself; when a version ships they move under its heading,
+followed by the full list of pull requests merged since the previous
+release, which the release script generates from the commit history.
 
 ## Unreleased
 
