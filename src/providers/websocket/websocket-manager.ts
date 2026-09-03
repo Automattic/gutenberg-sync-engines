@@ -47,6 +47,10 @@ import { pollingManager } from '../http-polling/polling-manager';
 const WS_TOKEN_API_PATH = '/wp-sync/v1/ws-token';
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
+// A connection attempt that has not opened by then hands the rooms to
+// short polling while it keeps trying (a black-holed port can take the
+// browser tens of seconds to give up on; a refused one fails at once).
+const CONNECT_ATTEMPT_MS = 5000;
 const AWARENESS_INTERVAL_MS = 10000;
 
 interface RoomState {
@@ -78,6 +82,14 @@ let reconnectAttempts = 0;
 let reconnectTimer: ReturnType< typeof setTimeout > | null = null;
 let awarenessTimer: ReturnType< typeof setInterval > | null = null;
 let connecting = false;
+let connectAttemptTimer: ReturnType< typeof setTimeout > | null = null;
+
+function clearConnectAttemptTimer(): void {
+	if ( connectAttemptTimer ) {
+		clearTimeout( connectAttemptTimer );
+		connectAttemptTimer = null;
+	}
+}
 
 /**
  * Fetches a one-time WebSocket token.
@@ -426,6 +438,13 @@ function connect(): void {
 	rooms.forEach( ( state ) =>
 		state.onStatusChange( { status: 'connecting' } )
 	);
+	clearConnectAttemptTimer();
+	connectAttemptTimer = setTimeout( () => {
+		connectAttemptTimer = null;
+		if ( connecting ) {
+			parkRooms();
+		}
+	}, CONNECT_ATTEMPT_MS );
 
 	fetchToken()
 		.then( ( token ) => {
@@ -440,6 +459,7 @@ function connect(): void {
 				const opened = socket;
 				publishDebugState();
 				connecting = false;
+				clearConnectAttemptTimer();
 				reconnectAttempts = 0;
 				const proceed = () => {
 					if ( socket !== opened ) {
@@ -470,6 +490,7 @@ function connect(): void {
 		} )
 		.catch( () => {
 			connecting = false;
+			clearConnectAttemptTimer();
 			parkRooms();
 			scheduleReconnect();
 		} );
@@ -482,6 +503,7 @@ function connect(): void {
 function onClose(): void {
 	publishDebugState();
 	connecting = false;
+	clearConnectAttemptTimer();
 	socket = null;
 	if ( awarenessTimer ) {
 		clearInterval( awarenessTimer );
@@ -587,6 +609,7 @@ function unregisterRoom( room: string ): void {
 			clearInterval( awarenessTimer );
 			awarenessTimer = null;
 		}
+		clearConnectAttemptTimer();
 		socket?.close();
 		socket = null;
 	}
@@ -612,5 +635,6 @@ export function resetWebSocketManagerForTesting(): void {
 	}
 	socket = null;
 	connecting = false;
+	clearConnectAttemptTimer();
 	reconnectAttempts = 0;
 }

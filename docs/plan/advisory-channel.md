@@ -213,7 +213,10 @@ Client:
     manager at the cursor the socket had reached, and reclaimed at the
     cursor polling reached when the socket reopens, carrying whatever
     polling never sent (`pollingManager.releaseRoom`). One lane serves a
-    room at a time, so nothing is replayed across the handoff.
+    room at a time, so nothing is replayed across the handoff. A
+    connection attempt that has not opened after 5 s parks the rooms
+    too, while it keeps trying: a black-holed port can take the browser
+    tens of seconds to give up on.
 -   `src/engines/de-rtc/session.ts`: announces after a commit lands
     through the autosave lane, since those rows never pass through the
     polling manager.

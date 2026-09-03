@@ -30,9 +30,9 @@ release, which the release script generates from the commit history.
 
 -   The websocket transport falls back to short polling whenever its
     socket is not open (the daemon unreachable, the token refused, the
-    socket dropped) and takes over again when it reconnects, resuming
-    where polling left off. Before, a tab with no socket simply never
-    synced.
+    socket dropped, or an attempt still not open after 5 seconds) and
+    takes over again when it reconnects, resuming where polling left
+    off. Before, a tab with no socket simply never synced.
 
 ### Changed
 

@@ -344,6 +344,50 @@ describe( 'websocket manager', () => {
 			}
 		} );
 
+		it( 'parks the rooms after 5 s when a connection attempt hangs, and reclaims them if it opens later', async () => {
+			jest.useFakeTimers();
+			try {
+				setup();
+				const session = fakeSession();
+				websocketManager.registerRoom( {
+					room: 'postType/post:1',
+					session,
+					onStatusChange: jest.fn(),
+				} );
+				await Promise.resolve();
+				await Promise.resolve();
+				const ws = FakeWebSocket.instances[ 0 ];
+				expect( ws ).toBeDefined();
+				// The socket neither opens nor closes.
+				await jest.advanceTimersByTimeAsync( 4999 );
+				expect( mockPolling.registerRoom ).not.toHaveBeenCalled();
+				await jest.advanceTimersByTimeAsync( 1 );
+				expect( mockPolling.registerRoom ).toHaveBeenCalledTimes( 1 );
+				expect(
+					mockPolling.registerRoom.mock.calls[ 0 ][ 0 ]
+				).toMatchObject( {
+					room: 'postType/post:1',
+					initialCursor: 0,
+				} );
+
+				// The attempt finally succeeds: the room comes back.
+				mockPolling.releaseRoom.mockResolvedValueOnce( {
+					cursor: 4,
+					unsent: [],
+				} as never );
+				ws.open();
+				await jest.advanceTimersByTimeAsync( 0 );
+				expect( mockPolling.releaseRoom ).toHaveBeenCalledWith(
+					'postType/post:1'
+				);
+				expect( JSON.parse( ws.sent[ 0 ] ).rooms[ 0 ] ).toMatchObject( {
+					after: 4,
+				} );
+			} finally {
+				jest.useRealTimers();
+			}
+		} );
+
 		it( "hands a parked room's teardown to the polling manager", async () => {
 			setup();
 			( apiFetch as unknown as jest.Mock ).mockRejectedValue(
