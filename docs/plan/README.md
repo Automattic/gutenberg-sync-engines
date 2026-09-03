@@ -155,6 +155,8 @@ gh issue list --label "agent:ready"
 
 ## When an issue ships
 
-Update `CHANGELOG.md` as part of the change, per `AGENTS.md`. Close the
+If the change is significant (a new feature, setting, or extension
+point, or a behavior change — not a bug fix or tooling work), add a
+`CHANGELOG.md` entry as part of the change, per `AGENTS.md`. Close the
 issue. If it taught us something that would save the next person a
 week, add a line to [history.md](history.md).

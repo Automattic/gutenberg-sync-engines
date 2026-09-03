@@ -554,11 +554,16 @@ they exist so a failure is observable without re-instrumenting:
 
 ## Commits / PRs
 
-- **Keep `CHANGELOG.md` updated.** Any bug fix, new feature, or material
-  change gets an entry under **Unreleased**, written as part of the change
-  itself (same commit or PR). Granularity is coarse — one line per
-  user-visible change, not per commit. Refactors, test-only, and doc-only
-  changes don't need entries.
+- **`CHANGELOG.md` records significant changes only.** Add an entry under
+  **Unreleased**, as part of the change itself (same commit or PR), when a
+  change is one of these: a new feature, a new setting or extension point,
+  behavior that is removed or works differently, or anything a site owner
+  or developer must know about when they upgrade. Do NOT add entries for
+  bug fixes, tests, benchmarks, the fuzzer or other developer tooling,
+  refactors, or docs — the commit message and the issue record those. Why:
+  nearly every branch used to touch the same lines of the changelog, so
+  merges conflicted constantly. Keep each entry to one or two sentences
+  and link the issue. When in doubt, leave it out.
 - This repo has commit **signing disabled locally**. Commit with `--no-verify`
   (the pre-commit hook is heavy/flaky).
 - Do **not** open PRs / push to shared branches / take other outward-facing
@@ -570,8 +575,9 @@ Releasing is a **human-only** action. Agents must never run `npm run
 release`, trigger either release workflow, push a `release/*` branch, tag a
 version, or bump the plugin version — not even when a release "seems ready".
 An agent's entire involvement in releasing is: keep the changelog's
-Unreleased section accurate and use `@since n.e.x.t` in new code (the
-release tooling stamps the real version).
+Unreleased section accurate (significant changes only, see Commits / PRs)
+and use `@since n.e.x.t` in new code (the release tooling stamps the real
+version).
 
 ## Known issues / out of scope
 
