@@ -37,13 +37,20 @@ jest.mock( '@wordpress/hooks', () => ( {
 } ) );
 
 jest.mock( '../../../../src/providers/advisory/signaling', () => ( {
+	applyAnswer: jest.fn(),
+	buildProbe: () => ( { room: 'postType/post:1', token: 'tok' } ),
 	installSignaling: jest.fn(),
 	installSignalingLifecycle: jest.fn(),
 	isSignalingAvailable: () => mockSignalingAvailable,
 	othersPresent: () => mockOthers,
 	onOthersChanged: ( cb: ( others: boolean ) => void ) =>
 		mockCallbacks.others.push( cb ),
+	setSignalCarrier: jest.fn(),
 	setSyncClientId: jest.fn(),
+} ) );
+
+jest.mock( '../../../../src/providers/http-polling/save-flush', () => ( {
+	registerSaveFlush: jest.fn(),
 } ) );
 
 jest.mock( '../../../../src/providers/advisory/channel', () => ( {
@@ -88,10 +95,11 @@ function response( clients: number[], cursor = 1 ) {
 	};
 }
 
-function createMockSession( clientId = 1 ) {
+function createMockSession( clientId = 1, sendsWhileAlone = false ) {
 	return {
 		applyRemoteAwareness: jest.fn(),
 		clientId,
+		...( sendsWhileAlone ? { sendsWhileAlone: true } : {} ),
 		destroy: jest.fn(),
 		getInitialUpdates: jest.fn( () => [] ),
 		getLocalAwareness: jest.fn( () => ( { user: clientId } ) ),
@@ -103,6 +111,7 @@ function createMockSession( clientId = 1 ) {
 describe( 'polling-manager cadence', () => {
 	let pollingManager: Manager[ 'pollingManager' ];
 	let setLongPollMode: Manager[ 'setLongPollMode' ];
+	let flushHeldUpdates: Manager[ 'flushHeldUpdates' ];
 	let mockPostSyncUpdate: jest.Mock<
 		typeof import('../../../../src/providers/http-polling/utils').postSyncUpdate
 	>;
@@ -123,6 +132,7 @@ describe( 'polling-manager cadence', () => {
 			const managerModule: Manager = require( '../../../../src/providers/http-polling/polling-manager' );
 			pollingManager = managerModule.pollingManager;
 			setLongPollMode = managerModule.setLongPollMode;
+			flushHeldUpdates = managerModule.flushHeldUpdates;
 			mockPostSyncUpdate =
 				require( '../../../../src/providers/http-polling/utils' ).postSyncUpdate;
 		} );
@@ -143,16 +153,18 @@ describe( 'polling-manager cadence', () => {
 		return session;
 	}
 
-	it( 'a lone tab stops scheduling polls after the first successful poll', async () => {
+	it( 'a lone tab drops to the safety poll after the first successful poll', async () => {
 		mockPostSyncUpdate.mockResolvedValue( response( [ 1 ] ) );
 		register();
 		await jest.advanceTimersByTimeAsync( 0 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
-		await jest.advanceTimersByTimeAsync( 60000 );
+		await jest.advanceTimersByTimeAsync( 24999 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
+		await jest.advanceTimersByTimeAsync( 1 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
 	} );
 
-	it( 'a lone tab still sends its own updates shortly after they are queued', async () => {
+	it( 'a lone tab holds its updates; a flush (before a save) sends them and holds again', async () => {
 		mockPostSyncUpdate.mockResolvedValue( response( [ 1 ] ) );
 		const session = register();
 		await jest.advanceTimersByTimeAsync( 0 );
@@ -162,24 +174,120 @@ describe( 'polling-manager cadence', () => {
 		) => void;
 		onLocalUpdate( { type: 'update', data: 'AA==' }, 1 );
 		onLocalUpdate( { type: 'update', data: 'AA==' }, 1 );
-		await jest.advanceTimersByTimeAsync( 299 );
-		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
-		await jest.advanceTimersByTimeAsync( 1 );
+		// Held: no on-demand poll, and the safety poll carries nothing.
+		await jest.advanceTimersByTimeAsync( 25000 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
 		expect(
 			mockPostSyncUpdate.mock.calls[ 1 ][ 0 ].rooms[ 0 ].updates
+		).toHaveLength( 0 );
+
+		// The save middleware's flush releases the queue and waits for the
+		// poll to return.
+		const flushed = flushHeldUpdates();
+		await jest.advanceTimersByTimeAsync( 0 );
+		await flushed;
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 3 );
+		expect(
+			mockPostSyncUpdate.mock.calls[ 2 ][ 0 ].rooms[ 0 ].updates
 		).toHaveLength( 2 );
-		// Rows landed: the peers on the channel are told to poll.
 		expect( mockAnnounceLocalWrite ).toHaveBeenCalledWith( 'test-room' );
-		// And the loop is quiet again.
-		await jest.advanceTimersByTimeAsync( 60000 );
-		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+
+		// Still alone: the next update is held again.
+		onLocalUpdate( { type: 'update', data: 'AA==' }, 1 );
+		await jest.advanceTimersByTimeAsync( 1000 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 3 );
 	} );
 
-	it( "updates queued while a lone tab's poll is in flight go out right after it returns", async () => {
+	it( 'a flush that lands while a poll is in flight waits for the successor that carries the work', async () => {
 		let release!: ( value: ReturnType< typeof response > ) => void;
 		mockPostSyncUpdate.mockResolvedValueOnce( response( [ 1 ] ) );
 		const session = register();
+		await jest.advanceTimersByTimeAsync( 0 );
+		const onLocalUpdate = session.onLocalUpdate.mock.calls[ 0 ][ 0 ] as (
+			update: unknown,
+			size: number
+		) => void;
+		onLocalUpdate( { type: 'update', data: 'AA==' }, 1 );
+
+		// A poll is in flight (built before the flush): hold it open.
+		mockPostSyncUpdate.mockImplementationOnce(
+			() =>
+				new Promise( ( resolve ) => {
+					release = resolve;
+				} )
+		);
+		await jest.advanceTimersByTimeAsync( 25000 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+		let flushed = false;
+		void flushHeldUpdates().then( () => {
+			flushed = true;
+		} );
+		mockPostSyncUpdate.mockResolvedValue( response( [ 1 ], 2 ) );
+		release( response( [ 1 ] ) );
+		await jest.advanceTimersByTimeAsync( 0 );
+		// Not resolved by the in-flight poll's end...
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 3 );
+		await jest.advanceTimersByTimeAsync( 0 );
+		// ...but by the successor, which carried the held update.
+		expect( flushed ).toBe( true );
+		expect(
+			mockPostSyncUpdate.mock.calls[ 2 ][ 0 ].rooms[ 0 ].updates
+		).toHaveLength( 1 );
+	} );
+
+	it( 'a lone tab going hidden flushes its held work once, unless a pagehide follows', async () => {
+		mockPostSyncUpdate.mockResolvedValue( response( [ 1 ] ) );
+		const session = register();
+		await jest.advanceTimersByTimeAsync( 0 );
+		const onLocalUpdate = session.onLocalUpdate.mock.calls[ 0 ][ 0 ] as (
+			update: unknown,
+			size: number
+		) => void;
+		onLocalUpdate( { type: 'update', data: 'AA==' }, 1 );
+
+		Object.defineProperty( document, 'visibilityState', {
+			configurable: true,
+			get: () => 'hidden',
+		} );
+		document.dispatchEvent( new Event( 'visibilitychange' ) );
+		// A reload hides first, then unloads: pagehide cancels the flush.
+		window.dispatchEvent( new Event( 'pagehide' ) );
+		await jest.advanceTimersByTimeAsync( 2000 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
+
+		// A real tab switch: the flush lands after the grace period.
+		document.dispatchEvent( new Event( 'visibilitychange' ) );
+		await jest.advanceTimersByTimeAsync( 1500 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+		expect(
+			mockPostSyncUpdate.mock.calls[ 1 ][ 0 ].rooms[ 0 ].updates
+		).toHaveLength( 1 );
+		Object.defineProperty( document, 'visibilityState', {
+			configurable: true,
+			get: () => 'visible',
+		} );
+	} );
+
+	it( 'a codec that sends while alone (de-rtc) is exempt from the hold and polls on demand', async () => {
+		mockPostSyncUpdate.mockResolvedValue( response( [ 1 ] ) );
+		const session = register( createMockSession( 1, true ) );
+		await jest.advanceTimersByTimeAsync( 0 );
+		const onLocalUpdate = session.onLocalUpdate.mock.calls[ 0 ][ 0 ] as (
+			update: unknown,
+			size: number
+		) => void;
+		onLocalUpdate( { type: 'fetch', data: 'AA==' }, 1 );
+		await jest.advanceTimersByTimeAsync( 300 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+		expect(
+			mockPostSyncUpdate.mock.calls[ 1 ][ 0 ].rooms[ 0 ].updates
+		).toHaveLength( 1 );
+	} );
+
+	it( "updates queued while a lone (exempt) tab's poll is in flight go out right after it returns", async () => {
+		let release!: ( value: ReturnType< typeof response > ) => void;
+		mockPostSyncUpdate.mockResolvedValueOnce( response( [ 1 ] ) );
+		const session = register( createMockSession( 1, true ) );
 		await jest.advanceTimersByTimeAsync( 0 );
 		const onLocalUpdate = session.onLocalUpdate.mock.calls[ 0 ][ 0 ] as (
 			update: unknown,
@@ -209,10 +317,15 @@ describe( 'polling-manager cadence', () => {
 		).toHaveLength( 1 );
 	} );
 
-	it( 'company from the heartbeat wakes a quiet tab onto the timer cadence', async () => {
+	it( 'company from the heartbeat wakes a lone tab onto the timer cadence and releases its queue', async () => {
 		mockPostSyncUpdate.mockResolvedValue( response( [ 1 ] ) );
-		register();
+		const session = register();
 		await jest.advanceTimersByTimeAsync( 0 );
+		const onLocalUpdate = session.onLocalUpdate.mock.calls[ 0 ][ 0 ] as (
+			update: unknown,
+			size: number
+		) => void;
+		onLocalUpdate( { type: 'update', data: 'AA==' }, 1 );
 		await jest.advanceTimersByTimeAsync( 10000 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
 
@@ -220,15 +333,20 @@ describe( 'polling-manager cadence', () => {
 		mockCallbacks.others.forEach( ( cb ) => cb( true ) );
 		await jest.advanceTimersByTimeAsync( 0 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+		expect(
+			mockPostSyncUpdate.mock.calls[ 1 ][ 0 ].rooms[ 0 ].updates
+		).toHaveLength( 1 );
 		// Nobody on the channel yet: the with-collaborators cadence.
 		await jest.advanceTimersByTimeAsync( 1000 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 3 );
 
-		// The heartbeat says they left: quiet again after the next poll.
+		// The heartbeat says they left: back to the safety cadence.
 		mockOthers = false;
 		mockCallbacks.others.forEach( ( cb ) => cb( false ) );
-		await jest.advanceTimersByTimeAsync( 60000 );
+		await jest.advanceTimersByTimeAsync( 24000 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 3 );
+		await jest.advanceTimersByTimeAsync( 1000 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 4 );
 	} );
 
 	it( 'an awareness map with company keeps the timer cadence even when the heartbeat is silent', async () => {
@@ -326,6 +444,26 @@ describe( 'polling-manager cadence', () => {
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
 	} );
 
+	it( 'a room registered mid-session polls soon instead of waiting for the safety timer', async () => {
+		mockPostSyncUpdate.mockResolvedValue( response( [ 1, 2 ] ) );
+		mockOthers = true;
+		mockCoverage = true;
+		register();
+		await jest.advanceTimersByTimeAsync( 0 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
+		pollingManager.registerRoom( {
+			room: 'taxonomy/category',
+			session: createMockSession( 3 ) as unknown as EngineSessionCodec,
+			log: jest.fn(),
+			onStatusChange: jest.fn(),
+		} );
+		await jest.advanceTimersByTimeAsync( 300 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+		expect(
+			mockPostSyncUpdate.mock.calls[ 1 ][ 0 ].rooms.map( ( r ) => r.room )
+		).toEqual( [ 'test-room', 'taxonomy/category' ] );
+	} );
+
 	it( 'losing coverage returns the pending timer to the with-collaborators cadence', async () => {
 		mockPostSyncUpdate.mockResolvedValue( response( [ 1, 2 ] ) );
 		mockOthers = true;
@@ -362,19 +500,23 @@ describe( 'polling-manager cadence', () => {
 
 	it( 'overlays channel presence on the poll response and re-applies it when it changes', async () => {
 		mockPostSyncUpdate.mockResolvedValue( response( [ 1, 2 ] ) );
-		mockChannelPresence = { 2: { user: 2, cursor: 'live' } };
+		mockChannelPresence = { 2: { name: 'live' }, 3: { name: 'new' } };
 		const session = register();
 		await jest.advanceTimersByTimeAsync( 0 );
+		// The channel's base presence overlays the server's copy per
+		// client (server-only fields such as cursors survive), and a peer
+		// the server has not reported yet appears from the channel alone.
 		expect( session.applyRemoteAwareness ).toHaveBeenLastCalledWith( {
 			1: { user: 1 },
-			2: { user: 2, cursor: 'live' },
+			2: { user: 2, name: 'live' },
+			3: { name: 'new' },
 		} );
 
-		mockChannelPresence = { 2: { user: 2, cursor: 'moved' } };
+		mockChannelPresence = { 2: { name: 'renamed' } };
 		mockCallbacks.presence.forEach( ( cb ) => cb( 'test-room' ) );
 		expect( session.applyRemoteAwareness ).toHaveBeenLastCalledWith( {
 			1: { user: 1 },
-			2: { user: 2, cursor: 'moved' },
+			2: { user: 2, name: 'renamed' },
 		} );
 	} );
 } );

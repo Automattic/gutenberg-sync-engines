@@ -20,10 +20,11 @@ carries presence and the sentence "I landed rows, go and poll", never
 content; every read and write stays on the REST sync endpoint. While
 every known peer is reachable over it, a tab polls only when it has
 something to send, when a peer announces, or on a 25-second safety poll.
-A tab that is alone stops scheduling polls after its first handshake
-(its own edits still go out, one request per typing burst). Any tab
-that cannot reach a peer keeps the cadence in the table. Long polling
-turns the channel off while its held request is connected. The
+A tab that is alone drops to the safety poll and holds its edits until
+company arrives, a save (flushed through the room first), or the tab
+going hidden. Any tab that cannot reach a peer keeps the cadence in the
+table. A replacement transport (long polling today, websocket next)
+supplants base polling and turns the channel off while connected. The
 reasoning, the rules, and the failure cases are in
 [plan/advisory-channel.md](plan/advisory-channel.md).
 

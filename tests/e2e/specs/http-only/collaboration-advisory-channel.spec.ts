@@ -54,7 +54,9 @@ async function waitForOpenPeer( page: Page, timeout: number ): Promise< void > {
 }
 
 /**
- * Counts the sync-endpoint requests a page makes over a window.
+ * Counts the sync-endpoint requests a page makes over a window. Matched
+ * without slashes: without pretty permalinks the route is URL-encoded
+ * inside `?rest_route=`.
  *
  * @param page     The page.
  * @param windowMs How long to watch.
@@ -62,7 +64,7 @@ async function waitForOpenPeer( page: Page, timeout: number ): Promise< void > {
 async function countSyncRequests( page: Page, windowMs: number ) {
 	let count = 0;
 	const onRequest = ( request: { url: () => string } ) => {
-		if ( request.url().includes( '/wp-sync/' ) ) {
+		if ( request.url().includes( 'wp-sync' ) ) {
 			count++;
 		}
 	};
@@ -95,17 +97,29 @@ test.describe( 'Collaboration - advisory channel', () => {
 		await page.waitForTimeout( 4000 );
 		expect( await countSyncRequests( page, 6000 ) ).toBe( 0 );
 
-		// Typing sends one request shortly after, then quiet again.
+		// Typing is held in the browser: still nothing leaves (the 25 s
+		// safety poll is the only timer, and it does not fire in this
+		// window).
 		await editor.canvas
 			.getByRole( 'document', { name: /Block: Paragraph/ } )
 			.first()
 			.click();
 		await page.keyboard.press( 'End' );
 		await page.keyboard.type( ' still typing' );
-		await page.waitForTimeout( 3000 );
-		expect( await countSyncRequests( page, 5000 ) ).toBeLessThanOrEqual(
-			1
-		);
+		expect( await countSyncRequests( page, 5000 ) ).toBe( 0 );
+
+		// A save flushes the held work through the room first, so a
+		// reload bootstraps from a room that saw it.
+		const held = countSyncRequests( page, 8000 );
+		await editor.saveDraft();
+		expect( await held ).toBeGreaterThanOrEqual( 1 );
+		await page.reload();
+		await collaborationUtils.waitForCollaborationReady( page );
+		await expect(
+			editor.canvas
+				.getByRole( 'document', { name: /Block: Paragraph/ } )
+				.first()
+		).toContainText( 'Alone still typing' );
 	} );
 
 	test( 'two tabs connect over the channel, keep converging, and poll on demand', async ( {

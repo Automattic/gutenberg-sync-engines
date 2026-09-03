@@ -80,6 +80,8 @@ let syncClientId: number | null = null;
 const outbox: OutgoingSignal[] = [];
 let connectNowScheduled = false;
 
+let signalCarrier: ( () => boolean ) | null = null;
+
 const signalListeners: Array< ( signal: Signal ) => void > = [];
 const peersListeners: Array< ( peers: DiscoveredPeer[] ) => void > = [];
 const othersListeners: Array< ( others: boolean ) => void > = [];
@@ -201,11 +203,47 @@ export function sendSignal( to: string, kind: SignalKind, data: string ): void {
 		return;
 	}
 	connectNowScheduled = true;
-	// Let a burst of signals (an offer plus late candidates) share one beat.
+	// Let a burst of signals (an offer plus late candidates) share one
+	// request. An active poll loop is the faster carrier (its next request
+	// is brought forward); a quiet tab beats the heartbeat now.
 	setTimeout( () => {
 		connectNowScheduled = false;
+		if ( signalCarrier?.() ) {
+			return;
+		}
 		getHeartbeat()?.connectNow?.();
 	}, 50 );
+}
+
+/**
+ * Registers a faster carrier for queued signals than the heartbeat: the
+ * polling manager, whose next poll carries the probe. The carrier returns
+ * true when it took the signals (a poll is coming), false when its loop is
+ * quiet and the heartbeat should beat instead.
+ *
+ * @param carrier The carrier, or null to fall back to the heartbeat.
+ */
+export function setSignalCarrier( carrier: ( () => boolean ) | null ): void {
+	signalCarrier = carrier;
+}
+
+/**
+ * The probe to attach to an outgoing request (a heartbeat beat or a sync
+ * poll): this tab's room and token, its sync client id, and the queued
+ * handshake messages, which it drains. Null off a per-post editor screen.
+ */
+export function buildProbe(): Record< string, unknown > | null {
+	const settings = getAdvisorySettings();
+	if ( ! settings ) {
+		return null;
+	}
+	const signals = outbox.splice( 0, outbox.length );
+	return {
+		room: settings.room,
+		token: settings.token,
+		...( null !== syncClientId ? { client_id: syncClientId } : {} ),
+		...( signals.length > 0 ? { signals } : {} ),
+	};
 }
 
 /**
@@ -325,18 +363,10 @@ export function installSignalingLifecycle(): void {
 }
 
 function onHeartbeatSend( data: Record< string, unknown > ): void {
-	const settings = getAdvisorySettings();
-	if ( ! settings ) {
-		return;
+	const probe = buildProbe();
+	if ( probe ) {
+		data[ HEARTBEAT_DATA_KEY ] = probe;
 	}
-
-	const signals = outbox.splice( 0, outbox.length );
-	data[ HEARTBEAT_DATA_KEY ] = {
-		room: settings.room,
-		token: settings.token,
-		...( null !== syncClientId ? { client_id: syncClientId } : {} ),
-		...( signals.length > 0 ? { signals } : {} ),
-	};
 }
 
 function samePeers( a: DiscoveredPeer[], b: DiscoveredPeer[] ): boolean {
@@ -352,14 +382,29 @@ function samePeers( a: DiscoveredPeer[], b: DiscoveredPeer[] ): boolean {
 }
 
 function onHeartbeatTick( data: Record< string, unknown > ): void {
-	const answer = data?.[ HEARTBEAT_DATA_KEY ] as
+	applyAnswer( data?.[ HEARTBEAT_DATA_KEY ] );
+}
+
+/**
+ * Reads the server's answer to a probe, whichever request carried it:
+ * company, the discovered peers, and this tab's mailbox. Listeners fire on
+ * changes and on each delivered message.
+ *
+ * @param raw The answer, or anything else (ignored).
+ */
+export function applyAnswer( raw: unknown ): void {
+	const answer = raw as
 		| {
 				others?: unknown;
 				peers?: unknown;
 				signals?: unknown;
 		  }
 		| undefined;
-	if ( ! answer || 'boolean' !== typeof answer.others ) {
+	if (
+		! answer ||
+		'object' !== typeof answer ||
+		'boolean' !== typeof answer.others
+	) {
 		return;
 	}
 
@@ -458,6 +503,7 @@ export function setAdvisorySettingsForTesting(
  */
 export function resetSignalingForTesting(): void {
 	settingsOverride = null;
+	signalCarrier = null;
 	othersBelieved = false;
 	believesInitialized = false;
 	peers = [];

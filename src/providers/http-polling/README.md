@@ -54,10 +54,13 @@ responses open server-side.
 The loop is driven by the cadence rules in `docs/plan/advisory-channel.md`
 (constants in `config.ts`):
 
-- **Alone** (the heartbeat-borne presence lane says nobody else is in this
-  post's room): no scheduled polls once the first poll has bootstrapped the
-  session. Local updates still go out, one request 300 ms after the first
-  queued update. Company restarts the loop.
+- **Alone** (the presence lane says nobody else is in this post's room):
+  only the 25 000 ms safety poll once the first poll has bootstrapped the
+  session, and the room queues are HELD: local updates wait in the browser
+  until company arrives, a save (an `apiFetch` middleware flushes them
+  first, `save-flush.ts`), or the tab going hidden. Codecs that declare
+  `sendsWhileAlone` (de-rtc) are exempt and send 300 ms after the first
+  queued update. Company restarts the timer cadence and releases the queues.
 - **Company, some peer not on the advisory channel**: 1000 ms (the
   "Polling interval" setting on Settings → Collaboration, 1-25 s, replaces
   this).
@@ -147,10 +150,13 @@ One request carries every open room (`types.ts`):
 Presence/cursor state travels with every poll. The server stores it per room
 and expires clients that have not polled within 30 seconds. When awareness
 shows more than one client, the manager treats the room as having company.
-Peers on the advisory channel also send presence directly to each other (a
-change every 250 ms at most); the manager overlays that fresher copy on the
-poll response's map before handing it to the session, so a 25-second-old
-server cursor never jumps a live one back.
+Peers on the advisory channel also send BASE presence (who they are: user
+info, name, activity) directly to each other; the manager overlays it per
+client on the poll response's map before handing it to the session. Cursors
+and selections stay on the polls by decision: over the channel they would
+point at content the receiver has not polled for yet. The poll request also
+carries the channel's signaling probe (`advisory`), answered alongside the
+rooms, so an active loop is a faster handshake carrier than the heartbeat.
 
 ## Limitations
 

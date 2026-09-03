@@ -285,6 +285,40 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 		$this->assertFalse( $response[ Gutenberg_Sync_Engines_Advisory_Presence::HEARTBEAT_KEY ]['others'] );
 	}
 
+	public function test_answer_probe_is_shared_by_the_poll_route_and_gated_by_the_settings() {
+		// The same answer, whichever request carried the probe.
+		$answer = $this->presence->answer_probe(
+			array(
+				'room'      => $this->room(),
+				'token'     => 'tok-a',
+				'client_id' => 11,
+			)
+		);
+		$this->assertSame( array( 'others', 'peers', 'signals' ), array_keys( $answer ) );
+		$this->assertFalse( $answer['others'] );
+
+		// Off on the settings screen: no answer, no token recorded.
+		update_option( Gutenberg_Sync_Engines_Settings::ADVISORY_OPTION, '' );
+		$this->assertNull(
+			$this->presence->answer_probe(
+				array(
+					'room'  => $this->room(),
+					'token' => 'tok-b',
+				)
+			)
+		);
+		delete_option( Gutenberg_Sync_Engines_Settings::ADVISORY_OPTION );
+
+		// A replacement transport supplants base polling and the channel.
+		update_option( Gutenberg_Sync_Engines_Settings::TRANSPORT_OPTION, 'websocket' );
+		$this->assertFalse( Gutenberg_Sync_Engines_Advisory_Presence::is_enabled() );
+		delete_option( Gutenberg_Sync_Engines_Settings::TRANSPORT_OPTION );
+		$this->assertTrue( Gutenberg_Sync_Engines_Advisory_Presence::is_enabled() );
+
+		// tok-b never made it in.
+		$this->assertSame( array(), $this->beat( 'tok-a' )['peers'] );
+	}
+
 	public function test_presence_reads_never_create_a_storage_post() {
 		$this->beat( 'tok-a' );
 		$posts = get_posts(

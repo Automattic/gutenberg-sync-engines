@@ -157,7 +157,10 @@ export function setDeRtcBurstQuietMsForTesting( ms: number ): void {
  */
 export function createDeRtcSessionCodec(
 	options: DeRtcSessionOptions
-): EngineSessionCodec & { prepareForSave: () => Promise< () => void > } {
+): EngineSessionCodec & {
+	prepareForSave: () => Promise< () => void >;
+	sendsWhileAlone: true;
+} {
 	const { bridge, review } = options;
 	const doc = bridge.doc;
 	const awareness = options.awareness ?? new Awareness( doc );
@@ -730,6 +733,13 @@ export function createDeRtcSessionCodec(
 				awareness,
 				DE_RTC_REMOTE_ORIGIN
 			),
+		/*
+		 * Exempt from the transport's solo hold: commits ride the autosave
+		 * lane and the undo stack is the session's own accepted rows, so
+		 * the advisory rows this codec queues (fetches, review decisions)
+		 * must flow while alone too.
+		 */
+		sendsWhileAlone: true,
 		clientId: doc.clientID,
 		engineSlug: DE_RTC_ENGINE_SLUG,
 		engineProtocol: DE_RTC_ENGINE_PROTOCOL,

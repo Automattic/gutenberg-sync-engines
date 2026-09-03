@@ -59,7 +59,7 @@ async function waitForSyncQuiet( page: Page ): Promise< void > {
 	const MAX_MS = 10000;
 	let lastRequestAt = Date.now();
 	const onRequest = ( request: { url: () => string } ) => {
-		if ( request.url().includes( '/wp-sync/' ) ) {
+		if ( request.url().includes( 'wp-sync' ) ) {
 			lastRequestAt = Date.now();
 		}
 	};
@@ -335,11 +335,17 @@ test.describe( 'Collaboration - yjs-server engine', () => {
 			.click();
 		await page.keyboard.type( 'Solo reload body' );
 
+		// A lone tab holds its work and flushes it through the room right
+		// before the save, so wait for the save's own response (saveDraft
+		// resolves on a notice) and then for the sync traffic to go quiet.
+		const saved = page.waitForResponse(
+			( response ) =>
+				decodeURIComponent( response.url() ).includes(
+					'/wp/v2/posts/'
+				) && 'POST' === response.request().method()
+		);
 		await editor.saveDraft();
-
-		// A lone tab polls on demand (shortly after each queued update) and
-		// otherwise schedules nothing, so "everything typed has reached the
-		// room" means the sync traffic has gone quiet, not N more polls.
+		await saved;
 		await waitForSyncQuiet( page );
 
 		await page.reload();

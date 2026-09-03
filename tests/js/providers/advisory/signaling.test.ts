@@ -178,6 +178,61 @@ describe( 'advisory signaling', () => {
 		expect( signaling.othersPresent() ).toBe( true );
 	} );
 
+	it( 'builds the same probe for a poll as for a beat, and prefers an active poll loop as the carrier', () => {
+		signaling.setSyncClientId( 7 );
+		signaling.sendSignal( 'tok-a', 'offer', 'o' );
+		// An active loop takes the signals on its next poll: the heartbeat
+		// is not beaten.
+		const carrier = jest.fn( () => true );
+		signaling.setSignalCarrier( carrier );
+		jest.advanceTimersByTime( 50 );
+		expect( carrier ).toHaveBeenCalledTimes( 1 );
+		expect( connectNow ).not.toHaveBeenCalled();
+
+		const probe = signaling.buildProbe();
+		expect( probe ).toEqual( {
+			room: 'postType/post:7',
+			token: 'tok-b',
+			client_id: 7,
+			signals: [ { to: 'tok-a', kind: 'offer', data: 'o' } ],
+		} );
+		// Drained: the next probe carries none.
+		expect( signaling.buildProbe() ).toEqual( {
+			room: 'postType/post:7',
+			token: 'tok-b',
+			client_id: 7,
+		} );
+
+		// A quiet loop declines: the heartbeat beats instead.
+		carrier.mockReturnValue( false );
+		signaling.sendSignal( 'tok-a', 'ice', 'c' );
+		jest.advanceTimersByTime( 50 );
+		expect( connectNow ).toHaveBeenCalledTimes( 1 );
+	} );
+
+	it( 'applies a poll-borne answer exactly like a heartbeat tick', () => {
+		const onPeers = jest.fn();
+		const onSignal = jest.fn();
+		signaling.onPeersChanged( onPeers );
+		signaling.onSignal( onSignal );
+		signaling.applyAnswer( {
+			others: true,
+			peers: [ { token: 'tok-c', client_id: 9, user_id: 2 } ],
+			signals: [ { from: 'tok-c', kind: 'offer', data: 'sdp' } ],
+		} );
+		expect( signaling.othersPresent() ).toBe( true );
+		expect( onPeers ).toHaveBeenCalledTimes( 1 );
+		expect( onSignal ).toHaveBeenCalledWith( {
+			from: 'tok-c',
+			kind: 'offer',
+			data: 'sdp',
+		} );
+		// Anything else is ignored.
+		signaling.applyAnswer( undefined );
+		signaling.applyAnswer( 'nope' );
+		expect( signaling.othersPresent() ).toBe( true );
+	} );
+
 	it( 'sends the leave beacon once with the room and token', () => {
 		const sendBeacon = jest.fn( () => true );
 		Object.defineProperty( navigator, 'sendBeacon', {

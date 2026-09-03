@@ -168,16 +168,25 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * @return bool Enabled state.
 		 */
 		public static function is_enabled(): bool {
+			$enabled = true;
+			if ( class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
+				// Off when the site turned it off, or when a replacement
+				// transport (long polling, websocket) supplants the base.
+				$choice    = (string) get_option( Gutenberg_Sync_Engines_Settings::ADVISORY_OPTION, Gutenberg_Sync_Engines_Settings::ADVISORY_DEFAULT );
+				$transport = (string) get_option( Gutenberg_Sync_Engines_Settings::TRANSPORT_OPTION, '' );
+				$enabled   = '' !== $choice && ( '' === $transport || 'http-polling' === $transport );
+			}
+
 			/**
 			 * Filters whether editor tabs open the advisory channel (browser
 			 * to browser presence and "new rows" nudges over WebRTC). When
-			 * false, tabs keep the always-on polling cadence.
+			 * false, tabs keep the timer polling cadence.
 			 *
 			 * @since n.e.x.t
 			 *
-			 * @param bool $enabled Defaults to true.
+			 * @param bool $enabled Defaults to the settings screen's choice.
 			 */
-			return (bool) apply_filters( 'gutenberg_sync_engines_advisory_enabled', true );
+			return (bool) apply_filters( 'gutenberg_sync_engines_advisory_enabled', $enabled );
 		}
 
 		/**
@@ -266,14 +275,33 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 			if ( ! is_array( $data ) || ! isset( $data[ self::HEARTBEAT_KEY ] ) ) {
 				return $response;
 			}
-			$probe = $data[ self::HEARTBEAT_KEY ];
+			$answer = $this->answer_probe( $data[ self::HEARTBEAT_KEY ] );
+			if ( null !== $answer ) {
+				$response[ self::HEARTBEAT_KEY ] = $answer;
+			}
+			return $response;
+		}
+
+		/**
+		 * Answers one probe, whichever request carried it (a heartbeat beat
+		 * or a sync poll): refreshes the tab's token, files the handshake
+		 * messages it sent, and reports the other tabs in the room plus
+		 * this tab's mailbox. Null for a malformed, disabled, or
+		 * unauthorized probe.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param mixed $probe The probe payload.
+		 * @return array<string, mixed>|null The answer, or null.
+		 */
+		public function answer_probe( $probe ): ?array {
 			if ( ! is_array( $probe ) || empty( $probe['room'] ) || empty( $probe['token'] ) ) {
-				return $response;
+				return null;
 			}
 			$room  = (string) $probe['room'];
 			$token = (string) $probe['token'];
 			if ( ! self::is_enabled() || ! $this->valid_token( $token ) || ! $this->can_probe_room( $room ) ) {
-				return $response;
+				return null;
 			}
 
 			$client_id = isset( $probe['client_id'] ) ? absint( $probe['client_id'] ) : 0;
@@ -296,13 +324,11 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 				);
 			}
 
-			$response[ self::HEARTBEAT_KEY ] = array(
+			return array(
 				'others'  => count( $peers ) > 0 || $this->has_live_awareness_besides( $room, $client_id ),
 				'peers'   => $peers,
 				'signals' => $this->take_mailbox( $room, $token ),
 			);
-
-			return $response;
 		}
 
 		/**

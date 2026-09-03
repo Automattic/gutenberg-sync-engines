@@ -122,6 +122,35 @@ async function stopCpuProfile(
 	}
 }
 
+/**
+ * Waits until a page's sync traffic has been quiet for a moment (no
+ * request to the sync endpoint for QUIET_MS, checked for up to MAX_MS).
+ *
+ * @param page The page to watch.
+ */
+async function waitForSyncQuiet( page: Page ): Promise< void > {
+	const QUIET_MS = 1500;
+	const MAX_MS = 10000;
+	let lastRequestAt = Date.now();
+	const onRequest = ( request: { url: () => string } ) => {
+		if ( request.url().includes( 'wp-sync' ) ) {
+			lastRequestAt = Date.now();
+		}
+	};
+	page.on( 'request', onRequest );
+	const deadline = Date.now() + MAX_MS;
+	try {
+		while ( Date.now() < deadline ) {
+			if ( Date.now() - lastRequestAt >= QUIET_MS ) {
+				return;
+			}
+			await page.waitForTimeout( 100 );
+		}
+	} finally {
+		page.off( 'request', onRequest );
+	}
+}
+
 class HardenedCollaborationUtils extends CollaborationUtils {
 	/**
 	 * The subtree fixture logs joining users in through wp-login.php,
@@ -201,6 +230,33 @@ class HardenedCollaborationUtils extends CollaborationUtils {
 				innerBlocks: sortBlocks( block.innerBlocks as Block[] ),
 			} ) );
 		return { ...state, blocks: sortBlocks( state.blocks ) };
+	}
+
+	/**
+	 * The subtree's discovery wait ends with three FUTURE poll responses
+	 * per page. With the advisory channel, tabs that have found each other
+	 * poll on demand plus a slow safety timer, so those polls may never
+	 * come. Discovery here means the collaborators list shows on every
+	 * page (awareness has seen the peer) and each page's sync traffic has
+	 * then gone quiet for a beat.
+	 *
+	 * @param options         Options.
+	 * @param options.timeout Maximum wait per page in ms.
+	 */
+	async waitForMutualDiscovery( { timeout }: { timeout?: number } = {} ) {
+		if ( '1' === process.env.GUTENBERG_RTC_REAL_WS ) {
+			return await super.waitForMutualDiscovery( { timeout } );
+		}
+		const pages = this.allPages;
+		const resolvedTimeout = timeout ?? 10000 + pages.length * 2500;
+		await Promise.all(
+			pages.map( ( pg ) =>
+				pg
+					.getByRole( 'button', { name: /Collaborators list/ } )
+					.waitFor( { timeout: resolvedTimeout } )
+			)
+		);
+		await Promise.all( pages.map( ( pg ) => waitForSyncQuiet( pg ) ) );
 	}
 
 	/**
