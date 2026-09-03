@@ -100,11 +100,17 @@ The framework/plugin split is complete: the framework ships **neither** engines
     Excluded from phpcs; frozen like y-php. Its own conformance suite runs
     in CI: `php includes/lib/automerge-php/tests/run.php` (<1 s, no
     WordPress; 680 mapped upstream tests). FULL parity needs the fixed
-    GB11 grapheme rules of PCRE2 ≥ 10.43, which PHP bundles from 8.4 —
-    under PHP ≤ 8.3 builds carrying PCRE2 10.42 (stock GitHub runners,
-    Ubuntu 24.04 packages) two adjacent emoji-ZWJ sequences count as ONE
-    `\X` cluster and exactly 2 of the 680 tests fail (grapheme cursor
-    tracking + a UTF-16-boundary splice); CI pins PHP 8.4 for this step.
+    GB11 grapheme rules of PCRE2 ≥ 10.43 — a property of the PCRE2
+    library PHP LINKS, not of the PHP version: PHP 8.4 bundles 10.44,
+    but distro-style builds (Ubuntu 24.04 packages, and since
+    2026-09-03 setup-php's PHP 8.4 on GitHub runners) link the system
+    libpcre2 10.42, under which two adjacent emoji-ZWJ sequences count
+    as ONE `\X` cluster and exactly 2 of the 680 tests fail (grapheme
+    cursor tracking + a UTF-16-boundary splice). CI therefore runs this
+    step in the official `php:8.4-cli` docker image (built against the
+    bundled PCRE2) behind a guard that fails with the cause when PCRE2
+    is too old; locally, check `php -r 'echo PCRE_VERSION;'` before
+    blaming the library for those two failures.
     The 11 upstream fixture files
     the runner reads live under `automerge-php/upstream/automerge/`
     (fetched from automerge/automerge; pin recorded in
