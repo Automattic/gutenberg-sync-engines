@@ -23,8 +23,11 @@ something to send, when a peer announces, or on a 25-second safety poll.
 A tab that is alone drops to the safety poll and holds its edits until
 company arrives, a save (flushed through the room first), or the tab
 going hidden. Any tab that cannot reach a peer keeps the cadence in the
-table. A replacement transport (long polling today, websocket next)
-supplants base polling and turns the channel off while connected. The
+table. A replacement transport (long polling, websocket) supplants base
+polling and turns the channel off while connected; the websocket
+transport parks its rooms with short polling whenever its socket is
+down and takes them back, at the cursor polling reached, when it
+reopens. The
 reasoning, the rules, and the failure cases are in
 [plan/advisory-channel.md](plan/advisory-channel.md).
 

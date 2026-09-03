@@ -80,6 +80,7 @@ type LogFunction = (
 
 interface PollingManager {
 	registerRoom: ( options: RegisterRoomOptions ) => void;
+	releaseRoom: ( room: string ) => Promise< ReleasedRoom >;
 	retryNow: () => void;
 	unregisterRoom: (
 		room: string,
@@ -92,6 +93,21 @@ interface RegisterRoomOptions {
 	session: EngineSessionCodec;
 	log: LogFunction;
 	onStatusChange: ( status: ConnectionStatus ) => void;
+	/**
+	 * Where to resume in the room's history: a replacement transport
+	 * (websocket) hands a room to short polling at the cursor its socket
+	 * had reached, so nothing is replayed or skipped.
+	 */
+	initialCursor?: number;
+}
+
+/**
+ * What a replacement transport takes back when it reclaims a room from
+ * short polling (see releaseRoom).
+ */
+export interface ReleasedRoom {
+	cursor: number;
+	unsent: SyncUpdate[];
 }
 
 interface RoomState {
@@ -1482,6 +1498,7 @@ function registerRoom( {
 	session,
 	log,
 	onStatusChange,
+	initialCursor = 0,
 }: RegisterRoomOptions ): void {
 	if ( roomStates.has( room ) ) {
 		return;
@@ -1617,7 +1634,7 @@ function registerRoom( {
 	}
 
 	const roomState: RoomState = {
-		endCursor: 0,
+		endCursor: initialCursor,
 		isPrimaryRoom,
 		lastServerAwareness: {},
 		holdWhileAlone,
@@ -1680,8 +1697,57 @@ function unregisterRoom(
 		}
 
 		state.unregister();
-		roomStates.delete( room );
+		dropRoom( room );
+		return;
 	}
+	unregisterDebugSession( room );
+}
+
+/**
+ * Hands a room back to a replacement transport: waits for any request in
+ * flight (so the cursor is final and nothing is delivered twice), then
+ * drops the room WITHOUT destroying its session or telling the server it
+ * left, returning the cursor to resume from and the updates that never
+ * went out.
+ *
+ * @param room The room.
+ */
+function releaseRoom( room: string ): Promise< ReleasedRoom > {
+	const state = roomStates.get( room );
+	if ( ! state ) {
+		return Promise.resolve( { cursor: 0, unsent: [] } );
+	}
+	const finish = (): ReleasedRoom => {
+		if ( roomStates.get( room ) !== state ) {
+			return { cursor: 0, unsent: [] };
+		}
+		const released = {
+			cursor: state.endCursor,
+			unsent: state.updateQueue.drain(),
+		};
+		dropRoom( room );
+		return released;
+	};
+	const inFlight = isPolling && null === pollingTimeoutId;
+	if ( ! inFlight ) {
+		return Promise.resolve( finish() );
+	}
+	return new Promise< ReleasedRoom >( ( resolve ) => {
+		pollDoneResolvers.push( {
+			target: pollsStarted,
+			resolve: () => resolve( finish() ),
+		} );
+	} );
+}
+
+/**
+ * Removes a room from the loop and, when it was the last one, resets the
+ * shared state. The session is left to the caller.
+ *
+ * @param room The room.
+ */
+function dropRoom( room: string ): void {
+	roomStates.delete( room );
 	unregisterDebugSession( room );
 
 	if ( 0 === roomStates.size && areListenersRegistered ) {
@@ -1728,6 +1794,7 @@ function retryNow(): void {
 
 export const pollingManager: PollingManager = {
 	registerRoom,
+	releaseRoom,
 	retryNow,
 	unregisterRoom,
 };

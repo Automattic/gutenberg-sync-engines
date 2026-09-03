@@ -28,6 +28,12 @@ release, which the release script generates from the commit history.
     (none, long polling, websocket) and an "Advisory channel" select
     (WebRTC or off, disabled while a replacement transport is chosen).
 
+-   The websocket transport falls back to short polling whenever its
+    socket is not open (the daemon unreachable, the token refused, the
+    socket dropped) and takes over again when it reconnects, resuming
+    where polling left off. Before, a tab with no socket simply never
+    synced.
+
 ### Changed
 
 -   A lone editor's updates are held in the browser until company

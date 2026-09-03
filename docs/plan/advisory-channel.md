@@ -200,9 +200,15 @@ Client:
     and the long-poll disable hook.
 -   Settings → Collaboration: a "Replacement transport" select (none,
     long polling, websocket) and an "Advisory channel" select (WebRTC or
-    off, disabled while a replacement is chosen). The websocket
-    transport does not yet fall back to short polling when it cannot
-    connect; that composition is the remaining replacement-channel work.
+    off, disabled while a replacement is chosen).
+-   `src/providers/websocket/websocket-manager.ts`: the websocket
+    transport as a replacement channel. While its socket is open it
+    moves everything; whenever it is not (token refused, daemon
+    unreachable, socket dropped) each room is PARKED with the polling
+    manager at the cursor the socket had reached, and reclaimed at the
+    cursor polling reached when the socket reopens, carrying whatever
+    polling never sent (`pollingManager.releaseRoom`). One lane serves a
+    room at a time, so nothing is replayed across the handoff.
 -   `src/engines/de-rtc/session.ts`: announces after a commit lands
     through the autosave lane, since those rows never pass through the
     polling manager.

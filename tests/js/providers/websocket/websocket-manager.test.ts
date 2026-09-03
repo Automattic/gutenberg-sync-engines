@@ -19,6 +19,24 @@ import type { EngineSessionCodec } from '@wordpress/sync';
 
 jest.mock( '@wordpress/api-fetch' );
 
+jest.mock( '../../../../src/providers/http-polling/polling-manager', () => ( {
+	pollingManager: {
+		registerRoom: jest.fn(),
+		releaseRoom: jest.fn( async () => ( { cursor: 0, unsent: [] } ) ),
+		unregisterRoom: jest.fn(),
+	},
+} ) );
+// The mocked module (jest.mock is hoisted above the imports).
+const mockPolling = (
+	require( '../../../../src/providers/http-polling/polling-manager' ) as {
+		pollingManager: {
+			registerRoom: jest.Mock;
+			releaseRoom: jest.Mock;
+			unregisterRoom: jest.Mock;
+		};
+	}
+ ).pollingManager;
+
 // A minimal fake WebSocket capturing sends and exposing lifecycle triggers.
 class FakeWebSocket {
 	static instances: FakeWebSocket[] = [];
@@ -87,6 +105,13 @@ describe( 'websocket manager', () => {
 			}
 		 )._wpCollaborationTransportConfig;
 		( apiFetch as unknown as jest.Mock ).mockReset();
+		mockPolling.registerRoom.mockClear();
+		mockPolling.releaseRoom.mockClear();
+		mockPolling.releaseRoom.mockImplementation( async () => ( {
+			cursor: 0,
+			unsent: [],
+		} ) );
+		mockPolling.unregisterRoom.mockClear();
 	} );
 
 	const setup = () => {
@@ -204,5 +229,140 @@ describe( 'websocket manager', () => {
 
 		websocketManager.unregisterRoom( 'postType/post:1' );
 		expect( ws.readyState ).toBe( 3 );
+	} );
+
+	describe( 'replacement channel: short polling is the fallback', () => {
+		it( 'parks the room with short polling when the token cannot be minted', async () => {
+			setup();
+			( apiFetch as unknown as jest.Mock ).mockRejectedValue(
+				new Error( 'no token' ) as never
+			);
+			const session = fakeSession();
+			const onStatusChange = jest.fn();
+			websocketManager.registerRoom( {
+				room: 'postType/post:1',
+				session,
+				onStatusChange,
+			} );
+			await Promise.resolve();
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect( mockPolling.registerRoom ).toHaveBeenCalledTimes( 1 );
+			expect(
+				mockPolling.registerRoom.mock.calls[ 0 ][ 0 ]
+			).toMatchObject( {
+				room: 'postType/post:1',
+				session,
+				onStatusChange,
+				initialCursor: 0,
+			} );
+			// Polling reports the status from here; the socket says nothing.
+			expect( onStatusChange ).not.toHaveBeenCalledWith( {
+				status: 'disconnected',
+			} );
+			expect( FakeWebSocket.instances ).toHaveLength( 0 );
+		} );
+
+		it( 'parks at the socket cursor on close, reclaims at the polling cursor on reopen, carrying unsent work', async () => {
+			jest.useFakeTimers();
+			try {
+				setup();
+				const session = fakeSession();
+				const emitLocal = (
+					session as unknown as {
+						emitLocal: ( u: unknown ) => void;
+					}
+				 ).emitLocal;
+				websocketManager.registerRoom( {
+					room: 'postType/post:1',
+					session,
+					onStatusChange: jest.fn(),
+				} );
+				await Promise.resolve();
+				await Promise.resolve();
+				const ws = FakeWebSocket.instances[ 0 ];
+				ws.open();
+				ws.receive( {
+					type: 'sync',
+					rooms: [
+						{
+							room: 'postType/post:1',
+							awareness: {},
+							updates: [],
+							end_cursor: 7,
+						},
+					],
+				} );
+
+				// The daemon drops: polling takes over at cursor 7.
+				ws.close();
+				expect( mockPolling.registerRoom ).toHaveBeenCalledTimes( 1 );
+				expect(
+					mockPolling.registerRoom.mock.calls[ 0 ][ 0 ]
+				).toMatchObject( { initialCursor: 7 } );
+				// The polling manager binds the session's local updates to
+				// itself (the fake keeps the last listener): the socket no
+				// longer sees them.
+				const pollingBinding = jest.fn();
+				session.onLocalUpdate( pollingBinding );
+				emitLocal( { type: 'update', data: 'AA==' } );
+				expect( pollingBinding ).toHaveBeenCalledTimes( 1 );
+
+				// Reconnect succeeds: polling reached cursor 12 and never
+				// sent one update, which rides the initial sync.
+				mockPolling.releaseRoom.mockResolvedValueOnce( {
+					cursor: 12,
+					unsent: [ { type: 'update', data: 'QQ==' } ],
+				} as never );
+				await jest.advanceTimersByTimeAsync( 1000 );
+				await Promise.resolve();
+				await Promise.resolve();
+				const ws2 = FakeWebSocket.instances[ 1 ];
+				expect( ws2 ).toBeDefined();
+				ws2.open();
+				// The reclaim awaits the polling manager's release.
+				await jest.advanceTimersByTimeAsync( 0 );
+				expect( mockPolling.releaseRoom ).toHaveBeenCalledWith(
+					'postType/post:1'
+				);
+				const frame = JSON.parse( ws2.sent[ 0 ] );
+				expect( frame.rooms[ 0 ] ).toMatchObject( {
+					room: 'postType/post:1',
+					after: 12,
+					updates: [ { type: 'update', data: 'QQ==' } ],
+				} );
+
+				// Local updates go to the socket again.
+				emitLocal( { type: 'update', data: 'Yg==' } );
+				expect( pollingBinding ).toHaveBeenCalledTimes( 1 );
+				expect(
+					JSON.parse( ws2.sent[ 1 ] ).rooms[ 0 ].updates
+				).toEqual( [ { type: 'update', data: 'Yg==' } ] );
+			} finally {
+				jest.useRealTimers();
+			}
+		} );
+
+		it( "hands a parked room's teardown to the polling manager", async () => {
+			setup();
+			( apiFetch as unknown as jest.Mock ).mockRejectedValue(
+				new Error( 'no token' ) as never
+			);
+			const session = fakeSession();
+			websocketManager.registerRoom( {
+				room: 'postType/post:1',
+				session,
+				onStatusChange: jest.fn(),
+			} );
+			await Promise.resolve();
+			await Promise.resolve();
+			await Promise.resolve();
+			websocketManager.unregisterRoom( 'postType/post:1' );
+			expect( mockPolling.unregisterRoom ).toHaveBeenCalledWith(
+				'postType/post:1'
+			);
+			expect( session.destroy ).not.toHaveBeenCalled();
+		} );
 	} );
 } );

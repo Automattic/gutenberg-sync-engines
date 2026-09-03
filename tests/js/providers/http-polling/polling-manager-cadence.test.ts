@@ -519,4 +519,58 @@ describe( 'polling-manager cadence', () => {
 			2: { user: 2, name: 'renamed' },
 		} );
 	} );
+
+	describe( 'handing a room to and from a replacement transport', () => {
+		it( 'resumes at the given cursor and releases the room with its cursor and unsent work, keeping the session', async () => {
+			mockSignalingAvailable = false;
+			mockPostSyncUpdate.mockResolvedValue( response( [ 1 ], 9 ) );
+			const session = createMockSession();
+			pollingManager.registerRoom( {
+				room: 'test-room',
+				session: session as unknown as EngineSessionCodec,
+				log: jest.fn(),
+				onStatusChange: jest.fn(),
+				initialCursor: 5,
+			} );
+			await jest.advanceTimersByTimeAsync( 0 );
+			expect(
+				mockPostSyncUpdate.mock.calls[ 0 ][ 0 ].rooms[ 0 ].after
+			).toBe( 5 );
+			const onLocalUpdate = session.onLocalUpdate.mock
+				.calls[ 0 ][ 0 ] as ( update: unknown, size: number ) => void;
+			onLocalUpdate( { type: 'update', data: 'AA==' }, 1 );
+
+			const released = await pollingManager.releaseRoom( 'test-room' );
+			expect( released ).toEqual( {
+				cursor: 9,
+				unsent: [ { type: 'update', data: 'AA==' } ],
+			} );
+			expect( session.destroy ).not.toHaveBeenCalled();
+			// The loop is empty: nothing polls any more.
+			await jest.advanceTimersByTimeAsync( 10000 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
+		} );
+
+		it( 'waits for a request in flight before releasing, so the cursor is final', async () => {
+			mockSignalingAvailable = false;
+			let release!: ( value: ReturnType< typeof response > ) => void;
+			mockPostSyncUpdate.mockImplementationOnce(
+				() =>
+					new Promise( ( resolve ) => {
+						release = resolve;
+					} )
+			);
+			register();
+			await jest.advanceTimersByTimeAsync( 0 );
+			let released: unknown = null;
+			void pollingManager.releaseRoom( 'test-room' ).then( ( value ) => {
+				released = value;
+			} );
+			await jest.advanceTimersByTimeAsync( 0 );
+			expect( released ).toBeNull();
+			release( response( [ 1 ], 3 ) );
+			await jest.advanceTimersByTimeAsync( 0 );
+			expect( released ).toEqual( { cursor: 3, unsent: [] } );
+		} );
+	} );
 } );
