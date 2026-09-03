@@ -191,6 +191,78 @@ describe( 'awareness store', () => {
 		);
 	} );
 
+	it( 'keeps peers in arrival order and lets a leaving one hold its slot', () => {
+		const { dispatch, select } = registry;
+		const sam = { userId: 3, name: 'Sam' };
+		dispatch( store ).receiveBeacon(
+			'7',
+			riley,
+			'#fbbf24',
+			beacon( 1, ref( 's1' ) ),
+			10_000
+		);
+		dispatch( store ).receiveBeacon(
+			'9',
+			sam,
+			'#0f766e',
+			beacon( 1, ref( 's1' ) ),
+			11_000
+		);
+		const keys = () =>
+			select( store )
+				.getBlockPresence( 's1', 'x' )
+				.map( ( e ) => [ e.peerKey, e.leaving ?? false ] );
+		expect( keys() ).toEqual( [
+			[ '7', false ],
+			[ '9', false ],
+		] );
+
+		// Riley moves on: the entry stays first, leaving, until pruned.
+		dispatch( store ).receiveBeacon(
+			'7',
+			riley,
+			'#fbbf24',
+			beacon( 2, ref( 's2' ) ),
+			15_000
+		);
+		expect( keys() ).toEqual( [
+			[ '7', true ],
+			[ '9', false ],
+		] );
+		expect(
+			select( store ).getBlockPresence( 's1', 'x' )[ 0 ]
+		).toMatchObject( {
+			opacity: 0,
+			lastOpacity: 1,
+		} );
+		dispatch( store ).pruneLeaving();
+		expect( keys() ).toEqual( [ [ '9', false ] ] );
+
+		// Coming back puts Riley below Sam.
+		dispatch( store ).receiveBeacon(
+			'7',
+			riley,
+			'#fbbf24',
+			beacon( 3, ref( 's1' ) ),
+			20_000
+		);
+		expect( keys() ).toEqual( [
+			[ '9', false ],
+			[ '7', false ],
+		] );
+	} );
+
+	it( 'tracks the hovered block', () => {
+		expect( registry.select( store ).getHoveredBlock() ).toBeNull();
+		registry
+			.dispatch( store )
+			.setHoveredBlock( { clientId: 'p1', syncId: 's1' } );
+		expect( registry.select( store ).getHoveredBlock() ).toEqual( {
+			clientId: 'p1',
+			syncId: 's1',
+		} );
+	} );
+
 	it( 'separates the focused block from other blocks touched in the window', () => {
 		registry.dispatch( store ).receiveBeacon(
 			'7',

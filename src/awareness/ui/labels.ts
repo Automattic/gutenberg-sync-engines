@@ -124,6 +124,44 @@ export function describePresence( entry: BlockPresence, now: number ): string {
 }
 
 /**
+ * A short status for the hover list, where the name is shown separately.
+ *
+ * @param entry A presence entry.
+ * @param now   Now.
+ * @return A few words.
+ */
+export function describePresenceShort(
+	entry: BlockPresence,
+	now: number
+): string {
+	const ago = () => agoText( interactionAge( entry, now ) );
+	switch ( entry.role ) {
+		case 'focus':
+			return entry.typing ? __( 'typing here' ) : __( 'in this block' );
+		case 'insert':
+			return sprintf(
+				/* translators: %s: age */
+				__( 'added this block %s' ),
+				ago()
+			);
+		case 'remove':
+			return __( 'removed this block (not synced to you yet)' );
+		case 'edit':
+			return sprintf(
+				/* translators: %s: age */
+				__( 'edited %s' ),
+				ago()
+			);
+		default:
+			return sprintf(
+				/* translators: %s: age */
+				__( 'was here %s' ),
+				ago()
+			);
+	}
+}
+
+/**
  * Describes every peer on a block, one sentence each.
  *
  * @param entries Presence entries.

@@ -22,6 +22,7 @@ import type { SlowAwarenessSettings } from './types';
 import { ActivityPanel } from './ui/activity-panel';
 import { registerBlockIndicator } from './ui/block-indicator';
 import { PhantomLayer } from './ui/phantom-layer';
+import { PresenceTooltip } from './ui/presence-tooltip';
 
 /**
  * Reads the settings the server injected.
@@ -51,7 +52,8 @@ function AwarenessRoot() {
 		'div',
 		null,
 		createElement( ActivityPanel ),
-		createElement( PhantomLayer )
+		createElement( PhantomLayer ),
+		createElement( PresenceTooltip )
 	);
 }
 

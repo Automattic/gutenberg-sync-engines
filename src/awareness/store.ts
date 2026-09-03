@@ -56,6 +56,14 @@ export interface BlockPresence {
 	intervalMs: number;
 	/** Dropped by the latest beacon; kept only for the exit animation. */
 	leaving?: boolean;
+	/** The strength the entry had before it started leaving. */
+	lastOpacity?: number;
+}
+
+/** The block whose bar the pointer is over. */
+export interface HoveredBlock {
+	clientId: string;
+	syncId?: string;
 }
 
 /**
@@ -88,6 +96,7 @@ interface State {
 	presence: Record< string, BlockPresence[] >;
 	presenceSignature: string;
 	phantoms: PhantomInput[];
+	hovered: HoveredBlock | null;
 }
 
 type Action =
@@ -104,6 +113,7 @@ type Action =
 	| { type: 'PRUNE_LEAVING' }
 	| { type: 'SET_SETTINGS'; settings: SlowAwarenessSettings }
 	| { type: 'SET_PHANTOMS'; phantoms: PhantomInput[] }
+	| { type: 'SET_HOVERED'; hovered: HoveredBlock | null }
 	| { type: 'RESET' };
 
 const EMPTY_PRESENCE: BlockPresence[] = [];
@@ -116,6 +126,7 @@ const DEFAULT_STATE: State = {
 	presence: {},
 	presenceSignature: '',
 	phantoms: [],
+	hovered: null,
 };
 
 /**
@@ -261,40 +272,46 @@ function derivePresence(
 }
 
 /**
- * Adds zero-strength "leaving" copies of entries the previous map had and
- * the new one lacks, so their stripes can animate out before the prune.
+ * Merges a freshly derived map into the previous one, keeping each
+ * block's entries in arrival order (the bar stacks them top to bottom in
+ * that order) and turning entries the new map lacks into zero-strength
+ * "leaving" copies so their segment can animate out before the prune.
  *
  * @param previous The previous map.
- * @param next     The new map.
- * @return The new map with leaving entries added.
+ * @param next     The freshly derived map.
+ * @return The merged map.
  */
-function withLeaving(
+function mergeOrdered(
 	previous: Record< string, BlockPresence[] >,
 	next: Record< string, BlockPresence[] >
 ): Record< string, BlockPresence[] > {
-	let changed = false;
-	const out = { ...next };
-	for ( const [ identity, entries ] of Object.entries( previous ) ) {
-		const current = next[ identity ] ?? [];
-		const gone = entries.filter(
-			( entry ) =>
-				! entry.leaving &&
-				! current.some( ( c ) => c.peerKey === entry.peerKey )
-		);
-		if ( ! gone.length ) {
-			continue;
+	const out: Record< string, BlockPresence[] > = { ...next };
+	for ( const [ identity, oldEntries ] of Object.entries( previous ) ) {
+		const fresh = next[ identity ] ?? [];
+		const merged: BlockPresence[] = [];
+		for ( const old of oldEntries ) {
+			const current = fresh.find( ( e ) => e.peerKey === old.peerKey );
+			if ( current ) {
+				merged.push( current );
+			} else if ( old.leaving ) {
+				merged.push( old );
+			} else {
+				merged.push( {
+					...old,
+					opacity: 0,
+					lastOpacity: old.opacity,
+					leaving: true,
+				} );
+			}
 		}
-		changed = true;
-		out[ identity ] = [
-			...current,
-			...gone.map( ( entry ) => ( {
-				...entry,
-				opacity: 0,
-				leaving: true,
-			} ) ),
-		];
+		for ( const entry of fresh ) {
+			if ( ! merged.some( ( e ) => e.peerKey === entry.peerKey ) ) {
+				merged.push( entry );
+			}
+		}
+		out[ identity ] = merged;
 	}
-	return changed ? out : next;
+	return out;
 }
 
 /**
@@ -338,7 +355,7 @@ function withDerived( state: State ): State {
 	return {
 		...state,
 		peers,
-		presence: withLeaving( state.presence, derivePresence( peers ) ),
+		presence: mergeOrdered( state.presence, derivePresence( peers ) ),
 		presenceSignature: signature,
 	};
 }
@@ -376,8 +393,19 @@ function reducer( state: State = DEFAULT_STATE, action: Action ): State {
 			if ( ! hasLeaving ) {
 				return state;
 			}
-			return { ...state, presence: derivePresence( state.peers ) };
+			const presence: Record< string, BlockPresence[] > = {};
+			for ( const [ identity, entries ] of Object.entries(
+				state.presence
+			) ) {
+				const kept = entries.filter( ( entry ) => ! entry.leaving );
+				if ( kept.length ) {
+					presence[ identity ] = kept;
+				}
+			}
+			return { ...state, presence };
 		}
+		case 'SET_HOVERED':
+			return { ...state, hovered: action.hovered };
 		case 'SET_SETTINGS':
 			return { ...state, settings: action.settings };
 		case 'SET_PHANTOMS':
@@ -420,6 +448,9 @@ const actions = {
 	setPhantoms( phantoms: PhantomInput[] ): Action {
 		return { type: 'SET_PHANTOMS', phantoms };
 	},
+	setHoveredBlock( hovered: HoveredBlock | null ): Action {
+		return { type: 'SET_HOVERED', hovered };
+	},
 	reset(): Action {
 		return { type: 'RESET' };
 	},
@@ -434,6 +465,9 @@ const selectors = {
 	},
 	getNow( state: State ): number {
 		return state.now;
+	},
+	getHoveredBlock( state: State ): HoveredBlock | null {
+		return state.hovered;
 	},
 	/**
 	 * The peers' presence on one block, looked up by its durable identity

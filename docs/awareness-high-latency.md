@@ -86,14 +86,24 @@ is on the post, the header avatars) keeps coming from the framework.
 
 ## What a peer sees
 
-- **A stripe.** A 3 px bar in the peer's color just left of every block
-  the peer is in or touched this interval, applied through the public
-  `editor.BlockListBlock` filter (a class and CSS variables on the block
-  wrapper). Several peers on one block get side-by-side stripes. Hovering
-  the stripe shows a label: "Riley is typing in this block", "Riley is
-  in this block", "Riley edited this block 8 seconds ago", "Riley added
-  this block just now", or "Riley removed this block. That change has
-  not reached you yet."
+- **A bar.** A 3 px bar in the peer's color just left of every block in
+  the peer's trail, applied through the public `editor.BlockListBlock`
+  filter (a class and CSS variables on the block wrapper).
+- **A shared bar.** When several peers are on one block the bar splits
+  vertically, one segment each, in arrival order (first on top). A new
+  peer's segment grows in from the bottom while the ones above slide up;
+  a departing peer's segment goes to half strength at 15 seconds and
+  then slides out upward, leaving the others. Up to four peers get a
+  segment; any more appear only in the hover list. The bar is one
+  vertical gradient whose boundaries and colors are registered CSS
+  custom properties (`@property`), which is what makes the changes
+  animate (250 ms); browsers without `@property` show the same bar
+  without animation.
+- **A hover list.** Hovering the bar shows every peer on the block at
+  once: a color dot (hollow for peers beyond the four segments), the
+  name, and what they are doing: "typing here", "in this block", "was
+  here 22 seconds ago", "edited 8 seconds ago", "added this block just
+  now", or "removed this block (not synced to you yet)".
 - **Strength from the trail, not from the clock.** When a beacon
   arrives, each trail entry's age sets its stripe: full strength under
   15 seconds, half strength from 15 to 30, and no stripe after 30 (the
@@ -104,7 +114,10 @@ is on the post, the header avatars) keeps coming from the framework.
   the same way. Ages are the sender's own measurements, so clock skew
   between machines never matters. The only receiver-clock rule is a
   safety net: a peer silent for four of its intervals (never less than
-  a minute) is dropped entirely.
+  a minute) is dropped entirely. One timing note: a block leaves a
+  peer's trail at the first beacon built after the 30-second mark, so
+  its segment disappears 30 to 30-plus-one-interval seconds after the
+  last interaction.
 - **Phantoms.** A reference that matches no local block is not dropped.
   It resolves to the nearest block we do have (previous sibling, else
   parent, else the top of the document) and renders there as a dashed
@@ -176,9 +189,9 @@ Not built here; these follow naturally from the beacon shape.
 - Local-edit attribution is heuristic (see above).
 - Phantom placement is by previous sibling or parent only; a phantom
   whose neighbors are also missing lands at the top of the document.
-- The hover label is a CSS pseudo-element, so it cannot be focused or
-  read by assistive technology; the sidebar panel carries the same
-  information in real text.
+- The hover list is pointer-only and cannot be focused or read by
+  assistive technology; the sidebar panel carries the same information
+  in real text.
 
 ## Trying it
 

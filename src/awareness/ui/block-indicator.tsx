@@ -1,30 +1,26 @@
 /**
- * The per-block indicator: a thin colored stripe to the left of every block
- * a peer is working in, and a label on hovering the stripe. Applied through
- * the public `editor.BlockListBlock` filter by adding a class, CSS custom
- * properties, and hover handlers to the block wrapper.
+ * The per-block indicator: a thin bar to the left of every block a peer
+ * is working in, split vertically between peers, plus a hover list.
+ * Applied through the public `editor.BlockListBlock` filter by adding a
+ * class, CSS custom properties, and hover handlers to the block wrapper.
  */
 
 /**
  * WordPress dependencies
  */
 import { createHigherOrderComponent } from '@wordpress/compose';
-import { useSelect } from '@wordpress/data';
-import { useEffect, useState } from '@wordpress/element';
+import { useDispatch, useSelect } from '@wordpress/data';
+import { useEffect, useRef, useState } from '@wordpress/element';
 import { addFilter } from '@wordpress/hooks';
 
 /**
  * Internal dependencies
  */
 import { getSyncId } from '../block-refs';
+import { layoutBar } from '../slots';
 import { store } from '../store';
 import type { BlockPresence } from '../store';
-import {
-	STRIPE_WIDTH,
-	ensureCanvasStyles,
-	getBlockElement,
-} from './canvas-styles';
-import { describeBlock } from './labels';
+import { ensureCanvasStyles, getBlockElement } from './canvas-styles';
 
 interface BlockListBlockProps {
 	clientId: string;
@@ -39,75 +35,45 @@ interface BlockListBlockProps {
 type BlockListBlockComponent = ( props: BlockListBlockProps ) => JSX.Element;
 
 /**
- * A hex color with an alpha channel.
- *
- * @param hex   `#rrggbb`.
- * @param alpha 0-1.
- * @return An `rgba(...)` string (the input when it is not a hex color).
- */
-export function withAlpha( hex: string, alpha: number ): string {
-	const match = /^#([0-9a-f]{6})$/i.exec( hex );
-	if ( ! match || alpha >= 1 ) {
-		return hex;
-	}
-	const [ r, g, b ] = [ 1, 3, 5 ].map( ( start ) =>
-		parseInt( hex.slice( start, start + 2 ), 16 )
-	);
-	return `rgba(${ r }, ${ g }, ${ b }, ${ alpha })`;
-}
-
-/**
- * The stripe element's strength: the strongest entry's. Entries weaker
- * than that get their difference baked into the gradient instead, so a
- * single element opacity can animate the common one-peer case.
- *
- * @param entries Presence entries.
- * @return 0-1.
- */
-export function stripeOpacity( entries: BlockPresence[] ): number {
-	return entries.reduce(
-		( max, entry ) => Math.max( max, entry.opacity ),
-		0
-	);
-}
-
-/**
- * One stripe per peer, side by side, as a CSS gradient.
- *
- * @param entries Presence entries.
- * @return A `linear-gradient(...)` string.
- */
-export function stripeGradient( entries: BlockPresence[] ): string {
-	const max = stripeOpacity( entries ) || 1;
-	const stops = entries.map( ( entry, index ) => {
-		const from = index * STRIPE_WIDTH;
-		const to = from + STRIPE_WIDTH;
-		const color = withAlpha( entry.color, entry.opacity / max );
-		return `${ color } ${ from }px ${ to }px`;
-	} );
-	return `linear-gradient(to right, ${ stops.join( ', ' ) })`;
-}
-
-/**
- * A label safe to put in a CSS custom property that `content` reads.
- *
- * @param text The label.
- * @return A quoted CSS string.
- */
-export function cssString( text: string ): string {
-	return JSON.stringify( text.replace( /[\r\n]+/g, ' ' ) );
-}
-
-/**
- * Whether the pointer is over the stripe zone, left of the block's own box.
+ * Whether the pointer is over the bar zone, left of the block's own box.
  *
  * @param event  The mouse event.
  * @param target The block wrapper.
- * @return True when hovering the stripe.
+ * @return True when hovering the bar.
  */
-function isOverStripe( event: MouseEvent, target: HTMLElement ): boolean {
+function isOverBar( event: MouseEvent, target: HTMLElement ): boolean {
 	const rect = target.getBoundingClientRect();
 	return event.clientX < rect.left;
+}
+
+/**
+ * The peers drawn on the bar, in slot order, as a comparable string.
+ *
+ * @param entries Presence entries.
+ * @return A signature.
+ */
+function slotSignature( entries: BlockPresence[] ): string {
+	return entries.map( ( entry ) => entry.peerKey ).join( '|' );
+}
+
+/**
+ * Whether the change from one entry list to the next is only the prune of
+ * leaving entries. That shifts the peers below them up a slot, which must
+ * happen without animation (their segments have not moved on screen).
+ *
+ * @param previous The previous entries.
+ * @param next     The next entries.
+ * @return True on a prune.
+ */
+function isPrune( previous: BlockPresence[], next: BlockPresence[] ): boolean {
+	if ( ! previous.some( ( entry ) => entry.leaving ) ) {
+		return false;
+	}
+	if ( next.some( ( entry ) => entry.leaving ) ) {
+		return false;
+	}
+	const kept = previous.filter( ( entry ) => ! entry.leaving );
+	return slotSignature( kept ) === slotSignature( next );
 }
 
 const withPeerPresence = createHigherOrderComponent(
@@ -120,12 +86,26 @@ const withPeerPresence = createHigherOrderComponent(
 					select( store ).getBlockPresence( syncId, clientId ),
 				[ syncId, clientId ]
 			);
+			const { setHoveredBlock } = useDispatch( store );
 			const hasPresence = presence.length > 0;
-			const now = useSelect(
-				( select ) => ( hasPresence ? select( store ).getNow() : 0 ),
-				[ hasPresence ]
-			);
-			const [ labelVisible, setLabelVisible ] = useState( false );
+			const [ hovering, setHovering ] = useState( false );
+
+			// The prune of leaving entries re-indexes the slots below them
+			// without moving anything on screen; suppress the transition
+			// for that one render, then let it run again next frame.
+			const previousRef = useRef< BlockPresence[] >( presence );
+			const [ , rerender ] = useState( 0 );
+			const suppress = isPrune( previousRef.current, presence );
+			useEffect( () => {
+				previousRef.current = presence;
+				if ( ! suppress ) {
+					return;
+				}
+				const frame = requestAnimationFrame( () =>
+					rerender( ( n ) => n + 1 )
+				);
+				return () => cancelAnimationFrame( frame );
+			}, [ presence, suppress ] );
 
 			useEffect( () => {
 				if ( ! hasPresence ) {
@@ -137,16 +117,25 @@ const withPeerPresence = createHigherOrderComponent(
 				}
 			}, [ hasPresence, clientId ] );
 
+			useEffect( () => {
+				if ( ! hovering || ! hasPresence ) {
+					return undefined;
+				}
+				setHoveredBlock( { clientId, syncId } );
+				return () => {
+					setHoveredBlock( null );
+				};
+			}, [ hovering, hasPresence, clientId, syncId, setHoveredBlock ] );
+
 			if ( ! hasPresence ) {
 				return <BlockListBlock { ...props } />;
 			}
 
-			const leaving = presence.every( ( entry ) => entry.leaving );
+			const { boundaries, colors } = layoutBar( presence );
 			const classes = [
 				props.wrapperProps?.className,
 				'gse-peer-presence',
-				leaving ? 'is-leaving' : 'is-active',
-				labelVisible && ! leaving ? 'is-gse-label-visible' : null,
+				suppress ? 'gse-no-transition' : null,
 			]
 				.filter( Boolean )
 				.join( ' ' );
@@ -155,24 +144,21 @@ const withPeerPresence = createHigherOrderComponent(
 				className: classes,
 				style: {
 					...props.wrapperProps?.style,
-					'--gse-peer-color': presence[ 0 ].color,
-					'--gse-peer-opacity': String( stripeOpacity( presence ) ),
-					'--gse-peer-stripe': stripeGradient( presence ),
-					'--gse-peer-stripe-width': `${
-						presence.length * STRIPE_WIDTH
-					}px`,
-					'--gse-peer-label': cssString(
-						describeBlock( presence, now )
-					),
+					'--gse-b1': `${ boundaries[ 0 ] }%`,
+					'--gse-b2': `${ boundaries[ 1 ] }%`,
+					'--gse-b3': `${ boundaries[ 2 ] }%`,
+					'--gse-c1': colors[ 0 ],
+					'--gse-c2': colors[ 1 ],
+					'--gse-c3': colors[ 2 ],
+					'--gse-c4': colors[ 3 ],
 				},
 				onMouseMove: ( event: MouseEvent ) => {
 					const target = event.currentTarget as HTMLElement | null;
-					if ( ! target ) {
-						return;
+					if ( target ) {
+						setHovering( isOverBar( event, target ) );
 					}
-					setLabelVisible( isOverStripe( event, target ) );
 				},
-				onMouseLeave: () => setLabelVisible( false ),
+				onMouseLeave: () => setHovering( false ),
 			};
 			return (
 				<BlockListBlock { ...props } wrapperProps={ wrapperProps } />

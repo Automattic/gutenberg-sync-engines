@@ -7,14 +7,16 @@
  * users in separate browser contexts on one post, has the second user
  * type, and screenshots the first user's canvas once the stripe and its
  * hover label appear, then the sidebar panel, then the 30-second trail
- * (one block at full strength, an older one at half). It then switches
+ * (one block at full strength, an older one at half), then a third user
+ * sharing one block's bar with the second (and leaving it). It then switches
  * the site to the Heartbeat channel, stalls the first user's document requests, has
  * the second user insert a block, and screenshots the phantom marker.
  * The channel setting is restored at the end.
  *
  * Requires: WP_BASE_URL (default: the wp-env dev site on :8888),
  * WP_USERNAME/WP_PASSWORD (default admin/password), and a second editor
- * account in WP_SECOND_USER/WP_SECOND_PASSWORD (default riley/password).
+ * account in WP_SECOND_USER/WP_SECOND_PASSWORD (default riley/password),
+ * and a third in WP_THIRD_USER/WP_THIRD_PASSWORD (default sam/password).
  * Run from the repo root so `@playwright/test` and `npm run env` resolve.
  */
 import { chromium } from '@playwright/test';
@@ -27,6 +29,8 @@ const USER = process.env.WP_USERNAME ?? 'admin';
 const PASS = process.env.WP_PASSWORD ?? 'password';
 const USER2 = process.env.WP_SECOND_USER ?? 'riley';
 const PASS2 = process.env.WP_SECOND_PASSWORD ?? 'password';
+const USER3 = process.env.WP_THIRD_USER ?? 'sam';
+const PASS3 = process.env.WP_THIRD_PASSWORD ?? 'password';
 const OUT = process.argv[ 2 ] ?? 'slow-awareness-shots';
 const CHANNEL_OPTION = 'gutenberg_sync_engines_awareness_channel';
 
@@ -210,6 +214,71 @@ async function main() {
 	console.log( 'trail strengths:', strengths );
 	await pageA.screenshot( { path: path.join( OUT, '3-trail.png' ) } );
 
+	// Shared bar: a third user joins B in one block, so A's bar for that
+	// block splits (B on top, C below). C then moves away; C's segment
+	// goes to half strength after 15 s and slides out after 30 s.
+	const contextC = await browser.newContext( {
+		viewport: { width: 1280, height: 800 },
+	} );
+	const pageC = await contextC.newPage();
+	await login( pageC, USER3, PASS3 );
+	await openEditor( pageC, postId );
+	const barVars = () =>
+		pageA.evaluate( () =>
+			Array.from(
+				document
+					.querySelector( 'iframe[name="editor-canvas"]' )
+					.contentDocument.querySelectorAll( '.gse-peer-presence' )
+			).map( ( element ) => [
+				element.innerText.slice( 0, 16 ),
+				element.style.getPropertyValue( '--gse-b1' ),
+				element.style.getPropertyValue( '--gse-c1' ),
+				element.style.getPropertyValue( '--gse-c2' ),
+			] )
+		);
+	const bClick = canvas( pageB ).locator( '[data-type="core/paragraph"]' );
+	await bClick.nth( 0 ).click();
+	await pageB.keyboard.press( 'End' );
+	await pageB.keyboard.type( ' B here.', { delay: 60 } );
+	await pageA.waitForTimeout( 6500 );
+	const cClick = canvas( pageC ).locator( '[data-type="core/paragraph"]' );
+	await cClick.nth( 0 ).click();
+	await pageC.keyboard.press( 'End' );
+	await pageC.keyboard.type( ' C here.', { delay: 60 } );
+	await pageA.waitForTimeout( 6500 );
+	console.log( 'shared bar (B then C in block 1):', await barVars() );
+	const shared = canvas( pageA ).locator( '.gse-peer-presence' ).first();
+	const sharedBox = await shared.boundingBox();
+	await pageA.mouse.move(
+		sharedBox.x - 8,
+		sharedBox.y + sharedBox.height / 2
+	);
+	await pageA.waitForTimeout( 400 );
+	await pageA.screenshot( { path: path.join( OUT, '4-shared-bar.png' ) } );
+	console.log(
+		'hover list:',
+		await pageA.evaluate( () =>
+			Array.from(
+				document
+					.querySelector( 'iframe[name="editor-canvas"]' )
+					.contentDocument.querySelectorAll(
+						'.gse-presence-tooltip__row'
+					)
+			).map( ( row ) => row.textContent )
+		)
+	);
+	await pageA.mouse.move( 640, 700 );
+	// C moves to the last paragraph and stays there.
+	await cClick.nth( 2 ).click();
+	await pageA.waitForTimeout( 16_000 + 6000 );
+	console.log( 'after 15 s (C at half):', await barVars() );
+	// The drop lands at the first beacon past 30 s (up to one interval
+	// later), then one poll and the exit animation.
+	await pageA.waitForTimeout( 22_000 );
+	console.log( 'after 30 s plus a beacon (C gone):', await barVars() );
+	await pageA.screenshot( { path: path.join( OUT, '5-after-c-left.png' ) } );
+	await contextC.close();
+
 	// Phantom: Heartbeat channel, A's document requests stalled, B inserts.
 	setChannel( 'heartbeat' );
 	try {
@@ -238,7 +307,7 @@ async function main() {
 			)
 			.catch( () => console.log( 'no phantom appeared' ) );
 		await pageA.waitForTimeout( 500 );
-		await pageA.screenshot( { path: path.join( OUT, '4-phantom.png' ) } );
+		await pageA.screenshot( { path: path.join( OUT, '6-phantom.png' ) } );
 		console.log(
 			'phantoms:',
 			await pageA.evaluate( () =>
