@@ -167,6 +167,23 @@ describe( 'advisory signaling', () => {
 		expect( signaling.getDiscoveredPeers() ).toEqual( [] );
 	} );
 
+	it( 'reports the room head cursor from each fresh answer', () => {
+		const onCursor = jest.fn();
+		signaling.onRoomCursor( onCursor );
+		hooks[ 'heartbeat.tick' ]( {
+			[ signaling.HEARTBEAT_DATA_KEY ]: {
+				others: true,
+				peers: [],
+				cursor: 42,
+			},
+		} );
+		expect( onCursor ).toHaveBeenCalledWith( 42 );
+		hooks[ 'heartbeat.tick' ]( {
+			[ signaling.HEARTBEAT_DATA_KEY ]: { others: true, peers: [] },
+		} );
+		expect( onCursor ).toHaveBeenCalledTimes( 1 );
+	} );
+
 	it( 'ignores ticks without our key and malformed answers', () => {
 		const onOthers = jest.fn();
 		signaling.onOthersChanged( onOthers );

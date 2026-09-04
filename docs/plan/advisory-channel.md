@@ -108,12 +108,12 @@ Two independent settings:
    union of the server's answer and the channel's; a peer whose WebRTC
    failed is still a person in the room.
 3. **Alone means quiet.** While the server says nobody else is in this
-   post's room, the tab polls only on the 25 s safety cadence (the same
-   timer full coverage uses; it catches a script or WP-CLI saving the
-   post meanwhile), except for 30 s after the page loads and after the
-   tab regains focus, when it keeps the 4 s solo cadence: those are the
-   moments a second person most often turns up, and the heartbeat alone
-   would take up to 10 s to notice them. Updates are queued until another peer arrives, and
+   post's room, the tab schedules no polls (the heartbeat's head-cursor
+   check catches a script or WP-CLI saving the post meanwhile), except
+   for 30 s after the page loads and after the tab regains focus, when
+   it keeps the 4 s solo cadence: those are the moments a second person
+   most often turns up, and the heartbeat alone would take up to 10 s
+   to notice them. Updates are queued until another peer arrives, and
    flushed before a save and when the tab goes hidden (see "Solo
    editing" below). De-rtc is exempt: its commits ride the autosave
    lane and its undo stack is its own accepted rows, so it keeps
@@ -124,14 +124,19 @@ Two independent settings:
    heartbeat reports AND every client id the last poll's awareness map
    reported. Both lists must be covered by an open channel. Otherwise a
    peer whose WebRTC failed would write rows nobody polls for.
-5. **Full coverage means poll on demand, plus a safety poll.** With
-   every known peer reachable, the tab polls when it has updates to
-   send (debounced), when a peer announces (coalesced, with a floor),
-   and on a slow safety timer (25 s). The safety poll catches writers
-   who are not on the channel at all: scripts, WP-CLI, a peer whose
-   channel dropped mid-write, a taxonomy term created from another
-   screen. It also keeps the server's awareness record alive, which the
-   long-poll wake and the presence answer read.
+5. **Full coverage means poll on demand, with no timer.** With every
+   known peer reachable, the tab polls when it has updates to send
+   (debounced), when a peer announces (coalesced, with a floor), and
+   when a heartbeat answer reports the room's head cursor ahead of its
+   own. That last check catches writers who are not on the channel at
+   all: scripts, WP-CLI, a peer whose channel dropped mid-write, a
+   taxonomy term created from another screen. It rides the heartbeat
+   WordPress already sends (10 s focused, 120 s blurred), so a
+   backgrounded tab notices such a write up to two minutes late; that
+   lag is accepted, nobody is looking at it. There is no safety poll.
+   The answer also names the engine the site resolves for the room, so
+   a mid-session engine change makes the tab poll into the server's
+   fence instead of never noticing.
 6. **Discovery and signaling ride polling and the heartbeat.** Each editor tab has a
    per-tab token, stamped when the page renders and refreshed every
    heartbeat. The polling and heartbeat answer lists the other tokens in the room,
@@ -249,7 +254,8 @@ uses it to poll sooner and to show presence faster.**
 -   A handshake message lost with a failed request: it is re-queued
     for the next carrier; a lost answer times out the offer after 15 s
     and the initiator offers again.
--   Nudge dropped: the safety poll catches up within 25 s.
+-   Nudge dropped: the next heartbeat answer reports the room ahead and
+    the tab polls (10 s focused, up to 120 s blurred).
 -   Nudge storm: the coalescing delay and the floor bound polls per
     second; the server's existing size and room caps do the rest.
 -   Heartbeat suspended (10 minutes idle) or the tab hidden (120 s
@@ -273,7 +279,8 @@ uses it to poll sooner and to show presence faster.**
 ## What the client must never assume
 
 -   That a nudge means new rows exist. Poll and find out.
--   That no nudge means nothing happened. Keep the safety timer.
+-   That no nudge means nothing happened. Compare the head cursor the
+    heartbeat reports with your own.
 -   That the channel knows who is in the room. The server does.
 -   That the channel is authenticated the way the REST endpoint is.
 -   That a peer on the channel is the only peer. Check the awareness map.

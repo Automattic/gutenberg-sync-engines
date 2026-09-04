@@ -101,6 +101,8 @@ let signalCarrier: ( () => boolean ) | null = null;
 const signalListeners: Array< ( signal: Signal ) => void > = [];
 const peersListeners: Array< ( peers: DiscoveredPeer[] ) => void > = [];
 const othersListeners: Array< ( others: boolean ) => void > = [];
+const cursorListeners: Array< ( cursor: number ) => void > = [];
+const engineListeners: Array< ( engine: string ) => void > = [];
 
 /**
  * The advisory settings the server injected for this editor page, or null
@@ -324,6 +326,30 @@ export function onPeersChanged(
 }
 
 /**
+ * Registers a listener for the room's head cursor, as each fresh answer
+ * reports it (the transport compares it with its own cursor and polls
+ * when behind).
+ *
+ * @param callback Called with the head cursor.
+ */
+export function onRoomCursor( callback: ( cursor: number ) => void ): void {
+	cursorListeners.push( callback );
+	install();
+}
+
+/**
+ * Registers a listener for the engine the site resolves for the room, as
+ * each fresh answer reports it (a change mid-session makes the transport
+ * poll into the server's fence instead of never noticing).
+ *
+ * @param callback Called with the engine slug.
+ */
+export function onRoomEngine( callback: ( engine: string ) => void ): void {
+	engineListeners.push( callback );
+	install();
+}
+
+/**
  * Registers a listener for the company belief flipping either way.
  *
  * @param callback Called with the new belief.
@@ -466,6 +492,8 @@ export function applyAnswer( raw: unknown, seq?: number ): void {
 				others?: unknown;
 				peers?: unknown;
 				signals?: unknown;
+				cursor?: unknown;
+				engine?: unknown;
 		  }
 		| undefined;
 	if (
@@ -519,6 +547,19 @@ export function applyAnswer( raw: unknown, seq?: number ): void {
 	if ( peersChanged ) {
 		for ( const callback of peersListeners ) {
 			callback( peers );
+		}
+	}
+	if (
+		'number' === typeof answer.cursor &&
+		Number.isFinite( answer.cursor )
+	) {
+		for ( const callback of cursorListeners ) {
+			callback( answer.cursor );
+		}
+	}
+	if ( 'string' === typeof answer.engine && '' !== answer.engine ) {
+		for ( const callback of engineListeners ) {
+			callback( answer.engine );
 		}
 	}
 
@@ -600,6 +641,8 @@ export function resetSignalingForTesting(): void {
 	signalListeners.length = 0;
 	peersListeners.length = 0;
 	othersListeners.length = 0;
+	cursorListeners.length = 0;
+	engineListeners.length = 0;
 	leaveSent = false;
 	if ( lifecycleInstalled ) {
 		window.removeEventListener( 'pagehide', onPageHide );

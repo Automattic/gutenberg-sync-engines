@@ -33,6 +33,14 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 		parent::set_up();
 		wp_set_current_user( self::$editor_id );
 		$this->presence = new Gutenberg_Sync_Engines_Advisory_Presence();
+
+		// The storage caches room => storage post id across requests; the
+		// per-test transaction rollback removes the post but not the cache.
+		$reflection = new ReflectionProperty( 'WP_Sync_Post_Meta_Storage', 'storage_post_ids' );
+		if ( PHP_VERSION_ID < 80100 ) {
+			$reflection->setAccessible( true );
+		}
+		$reflection->setValue( null, array() );
 	}
 
 	/**
@@ -295,8 +303,21 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 				'client_id' => 11,
 			)
 		);
-		$this->assertSame( array( 'others', 'peers', 'signals' ), array_keys( $answer ) );
+		$this->assertSame( array( 'others', 'peers', 'signals', 'cursor', 'engine' ), array_keys( $answer ) );
 		$this->assertFalse( $answer['others'] );
+		$this->assertSame( 0, $answer['cursor'] );
+		$this->assertSame( 'intent-log', $answer['engine'] );
+		update_option( 'wp_sync_engine', 'yjs-server' );
+		$this->assertSame(
+			'yjs-server',
+			$this->presence->answer_probe(
+				array(
+					'room'  => $this->room(),
+					'token' => 'tok-a',
+				)
+			)['engine']
+		);
+		delete_option( 'wp_sync_engine' );
 
 		// Off on the settings screen: no answer, no token recorded.
 		update_option( Gutenberg_Sync_Engines_Settings::ADVISORY_OPTION, '' );
@@ -436,6 +457,27 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 		$this->assertNull( WP_Sync_Atomic_Option::read( $key_b ) );
 		// The newcomer's own row (none yet) and record are untouched.
 		$this->assertSame( array(), $this->beat( 'tok-d' )['peers'] );
+	}
+
+	public function test_answer_reports_the_room_head_cursor_once_rows_exist() {
+		global $wpdb;
+		$storage = gutenberg_sync_engines_storage();
+		$storage->add_update( $this->room(), 'a' );
+		$storage->add_update( $this->room(), 'b' );
+		// The newest row's id, read the way the transports' cursor is
+		// derived (the storage API caches the cursor per read).
+		$storage_post_id = (int) $wpdb->get_var( $wpdb->prepare( "SELECT ID FROM $wpdb->posts WHERE post_name = %s AND post_type = %s", md5( $this->room() ), WP_Sync_Post_Meta_Storage::POST_TYPE ) );
+		$expected        = (int) $wpdb->get_var( $wpdb->prepare( "SELECT MAX(meta_id) FROM $wpdb->postmeta WHERE post_id = %d AND meta_key = %s", $storage_post_id, WP_Sync_Post_Meta_Storage::SYNC_UPDATE_META_KEY ) );
+		$this->assertGreaterThan( 0, $expected );
+		$rows = $storage->get_updates_after_cursor( $this->room(), 0 );
+		$this->assertCount( 2, $rows );
+		$answer = ( new Gutenberg_Sync_Engines_Advisory_Presence( $storage ) )->answer_probe(
+			array(
+				'room'  => $this->room(),
+				'token' => 'tok-a',
+			)
+		);
+		$this->assertSame( $expected, $answer['cursor'] );
 	}
 
 	public function test_presence_reads_never_create_a_storage_post() {

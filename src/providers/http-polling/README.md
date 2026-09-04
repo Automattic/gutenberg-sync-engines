@@ -55,9 +55,9 @@ The loop is driven by the cadence rules in `docs/plan/advisory-channel.md`
 (constants in `config.ts`):
 
 - **Alone** (the presence lane says nobody else is in this post's room):
-  only the 25 000 ms safety poll once the first poll has bootstrapped the
-  session, except for a 30 s discovery window after page load and after
-  the tab regains focus, when the 4000 ms solo cadence applies. The room
+  no timer once the first poll has bootstrapped the session, except for a
+  30 s discovery window after page load and after the tab regains focus,
+  when the 4000 ms solo cadence applies. The room
   queues are HELD: local updates wait in the browser
   until company arrives, a save (an `apiFetch` middleware flushes them
   first, `save-flush.ts`), or the tab going hidden. Codecs that declare
@@ -66,10 +66,11 @@ The loop is driven by the cadence rules in `docs/plan/advisory-channel.md`
 - **Company, some peer not on the advisory channel**: 1000 ms (the
   "Polling interval" setting on Settings → Collaboration, 1-25 s, replaces
   this).
-- **Company, every known peer on the advisory channel**: a 25 000 ms safety
-  poll, plus polls on demand — 300 ms after a queued local update, and
-  150 ms after a peer announces new rows (never two announce-driven polls
-  closer than 250 ms).
+- **Company, every known peer on the advisory channel**: no timer. Polls
+  on demand — 300 ms after a queued local update, 150 ms after a peer
+  announces new rows (never two announce-driven polls closer than 250 ms),
+  and when a heartbeat answer reports the room's head cursor ahead of this
+  tab's (a writer not on the channel).
 - **Background tab**: 25 000 ms (kept below the server's 30 s awareness
   timeout so backgrounded tabs are not marked disconnected).
 - **No presence lane on the page** (a screen without a per-post room, or

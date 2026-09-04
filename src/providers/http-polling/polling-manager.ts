@@ -19,7 +19,6 @@ import {
 	POLLING_INTERVAL_BACKGROUND_TAB_IN_MS,
 	DISCONNECT_DIALOG_RETRY_MS,
 	MANUAL_RETRY_INTERVAL_MS,
-	ADVISORY_SAFETY_POLL_INTERVAL_IN_MS,
 	LOCAL_UPDATE_POLL_DELAY_MS,
 	ANNOUNCE_POLL_COALESCE_MS,
 	ANNOUNCE_POLL_MIN_GAP_MS,
@@ -46,6 +45,8 @@ import {
 	installSignalingLifecycle,
 	isSignalingAvailable,
 	onOthersChanged,
+	onRoomCursor,
+	onRoomEngine,
 	othersPresent,
 	setSignalCarrier,
 	setSyncClientId,
@@ -391,18 +392,22 @@ let syncRequestBodySizeLimit = MAX_SYNC_REQUEST_BODY_SIZE_IN_BYTES;
  * the loop polls:
  *
  * - Alone (the signaling lane says nobody else is in this post's room):
- *   only the slow safety poll once the first poll has bootstrapped the
- *   session, and the room queues are HELD — local edits wait in the
+ *   no timer once the first poll has bootstrapped the session (except a
+ *   30 s discovery window after load and after regaining focus), and the
+ *   room queues are HELD — local edits wait in the
  *   browser until company arrives, a save (flush-before-save), or the
  *   tab going hidden. Codecs that declare `sendsWhileAlone` (de-rtc) are
  *   exempt. Company (a heartbeat or poll answer, or an awareness map
  *   with more than one client) releases the queues and the cadence.
  * - Company, but some known peer is NOT reachable over the advisory
  *   channel: today's timer cadence (the configured interval).
- * - Company, every known peer reachable over the channel: a slow SAFETY
- *   poll (25 s, which also keeps the server's awareness record alive)
- *   plus polls on demand — after a queued local update, and after a
- *   peer announces new rows.
+ * - Company, every known peer reachable over the channel: no timer at
+ *   all. Polls happen on demand — after a queued local update, after a
+ *   peer announces new rows, and when a heartbeat answer reports the
+ *   room's head cursor ahead of this tab's (rows from writers not on
+ *   the channel: scripts, WP-CLI, a dropped peer). The heartbeat slows
+ *   to 120 s on blur, so a backgrounded tab notices such a write late;
+ *   accepted, nobody is looking.
  * - No signaling lane on this page (a screen with no per-post room, or
  *   the channel disabled site-wide): the always-on cadence, unchanged.
  *
@@ -414,8 +419,8 @@ let hasBootstrapped = false;
 let pollAgainRequested = false;
 let hiddenFlushTimer: ReturnType< typeof setTimeout > | null = null;
 /*
- * A lone tab polls only the safety timer, so it would notice a joiner on
- * its next heartbeat (10 s) at best. For a while after the page loads and
+ * A lone tab has no timer, so it would notice a joiner on its next
+ * heartbeat (10 s) at best. For a while after the page loads and
  * after the tab regains focus — the moments a second person most often
  * turns up — it polls at the solo cadence instead (4 s by default).
  */
@@ -451,7 +456,7 @@ function hasQueuedUpdates(): boolean {
 function boundedByQueuedWork( delay: number | null ): number | null {
 	if (
 		hasQueuedUpdates() &&
-		( null === delay || delay >= ADVISORY_SAFETY_POLL_INTERVAL_IN_MS )
+		( null === delay || delay >= POLLING_INTERVAL_BACKGROUND_TAB_IN_MS )
 	) {
 		return LOCAL_UPDATE_POLL_DELAY_MS;
 	}
@@ -550,20 +555,18 @@ function advisoryCoversEveryone(): boolean {
  */
 function nextScheduledDelay(): number | null {
 	if ( hasBootstrapped && isAlone() ) {
-		return Date.now() < fastDiscoveryUntil
-			? POLLING_INTERVAL_IN_MS
-			: ADVISORY_SAFETY_POLL_INTERVAL_IN_MS;
+		return Date.now() < fastDiscoveryUntil ? POLLING_INTERVAL_IN_MS : null;
 	}
 	if ( longPollMode ) {
 		return isActiveBrowser
 			? LONG_POLL_REISSUE_MS
 			: POLLING_INTERVAL_BACKGROUND_TAB_IN_MS;
 	}
+	if ( advisoryCoversEveryone() ) {
+		return null;
+	}
 	if ( ! isActiveBrowser ) {
 		return POLLING_INTERVAL_BACKGROUND_TAB_IN_MS;
-	}
-	if ( advisoryCoversEveryone() ) {
-		return ADVISORY_SAFETY_POLL_INTERVAL_IN_MS;
 	}
 	if ( hasCompany() ) {
 		return POLLING_INTERVAL_WITH_COLLABORATORS_IN_MS;
@@ -757,6 +760,28 @@ function installAdvisoryHooks(): void {
 	registerSaveFlush( flushHeldUpdates );
 	onAdvisoryCoverageChanged( reschedule );
 	onAdvisoryAnnounce( pollSoonForAnnounce );
+	onRoomCursor( ( cursor ) => {
+		// Rows landed that no nudge announced (a writer off the channel):
+		// the primary room's cursor is behind the head the beat reported.
+		roomStates.forEach( ( state ) => {
+			if ( state.isPrimaryRoom && cursor > state.endCursor ) {
+				pollSoonForAnnounce();
+			}
+		} );
+	} );
+	onRoomEngine( ( engine ) => {
+		// The site's engine changed under this session: poll so the
+		// server's 409 fence drops the room into the lock posture.
+		roomStates.forEach( ( state ) => {
+			if (
+				state.isPrimaryRoom &&
+				state.session.engineSlug &&
+				engine !== state.session.engineSlug
+			) {
+				pollNow();
+			}
+		} );
+	} );
 	onAdvisoryPresence( ( room ) => {
 		const state = roomStates.get( room );
 		if ( state ) {
@@ -906,8 +931,9 @@ function handleVisibilityChange() {
 			clearTimeout( pollingTimeoutId );
 			pollingTimeoutId = null;
 			poll();
-		} else if ( ! isPolling && hasCompany() ) {
-			// A quiet loop whose company arrived while hidden.
+		} else if ( ! isPolling && 0 < roomStates.size ) {
+			// A stopped loop: poll once now (company may have arrived while
+			// hidden, and the discovery window just reopened).
 			poll();
 		}
 	}

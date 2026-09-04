@@ -16,11 +16,13 @@ release, which the release script generates from the commit history.
     direct WebRTC link, discovered and negotiated through the heartbeat
     WordPress already sends and through the sync polls themselves,
     carrying who is present and "new changes, go and poll" notices,
-    never content. With every peer reachable over it, tabs poll on
-    demand plus a 25-second safety poll instead of on a timer; a tab
-    that cannot reach a peer keeps the timer cadence. A lone tab keeps
-    its 4-second cadence for 30 seconds after loading and after
-    regaining focus, so a second person is found within seconds.
+    never content. With every peer reachable over it, tabs poll only on
+    demand: when they have something to send, when a peer announces,
+    or when the heartbeat reports changes from a writer not on the
+    channel (a script, WP-CLI). A tab that cannot reach a peer keeps
+    the timer cadence. A lone tab keeps its 4-second cadence for 30
+    seconds after loading and after regaining focus, so a second person
+    is found within seconds, then schedules nothing.
     Filters:
     `gutenberg_sync_engines_advisory_enabled`,
     `gutenberg_sync_engines_advisory_ice_servers`,
@@ -42,8 +44,7 @@ release, which the release script generates from the commit history.
 -   A lone editor's updates are held in the browser until company
     arrives, a save (they are flushed through the room first, so a
     reload never bootstraps from a room that missed them), or the tab
-    going hidden; meanwhile the tab polls only the 25-second safety
-    timer. De-rtc is exempt (its codec declares `sendsWhileAlone`); the
+    going hidden; meanwhile the tab schedules no polls. De-rtc is exempt (its codec declares `sendsWhileAlone`); the
     engines' `syncWhileSolo` capability is gone.
 
 ### Added

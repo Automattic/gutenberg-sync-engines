@@ -25,7 +25,16 @@ const mockCallbacks: {
 	coverage: Array< () => void >;
 	announce: Array< ( room: string ) => void >;
 	presence: Array< ( room: string ) => void >;
-} = { others: [], coverage: [], announce: [], presence: [] };
+	cursor: Array< ( cursor: number ) => void >;
+	engine: Array< ( engine: string ) => void >;
+} = {
+	others: [],
+	coverage: [],
+	announce: [],
+	presence: [],
+	cursor: [],
+	engine: [],
+};
 const mockSetDisabled = jest.fn();
 const mockAnnounceLocalWrite = jest.fn();
 
@@ -46,6 +55,10 @@ jest.mock( '../../../../src/providers/advisory/signaling', () => ( {
 	othersPresent: () => mockOthers,
 	onOthersChanged: ( cb: ( others: boolean ) => void ) =>
 		mockCallbacks.others.push( cb ),
+	onRoomCursor: ( cb: ( cursor: number ) => void ) =>
+		mockCallbacks.cursor.push( cb ),
+	onRoomEngine: ( cb: ( engine: string ) => void ) =>
+		mockCallbacks.engine.push( cb ),
 	setSignalCarrier: jest.fn(),
 	setSyncClientId: jest.fn(),
 } ) );
@@ -100,6 +113,7 @@ function createMockSession( clientId = 1, sendsWhileAlone = false ) {
 	return {
 		applyRemoteAwareness: jest.fn(),
 		clientId,
+		engineSlug: 'intent-log',
 		...( sendsWhileAlone ? { sendsWhileAlone: true } : {} ),
 		destroy: jest.fn(),
 		getInitialUpdates: jest.fn( () => [] ),
@@ -127,6 +141,8 @@ describe( 'polling-manager cadence', () => {
 		mockCallbacks.coverage.length = 0;
 		mockCallbacks.announce.length = 0;
 		mockCallbacks.presence.length = 0;
+		mockCallbacks.cursor.length = 0;
+		mockCallbacks.engine.length = 0;
 		mockSetDisabled.mockClear();
 		mockAnnounceLocalWrite.mockClear();
 		jest.isolateModules( () => {
@@ -154,7 +170,7 @@ describe( 'polling-manager cadence', () => {
 		return session;
 	}
 
-	it( 'a lone tab keeps the solo cadence for a discovery window after load, then drops to the safety poll', async () => {
+	it( 'a lone tab keeps the solo cadence for a discovery window after load, then stops scheduling', async () => {
 		mockPostSyncUpdate.mockResolvedValue( response( [ 1 ] ) );
 		register();
 		await jest.advanceTimersByTimeAsync( 0 );
@@ -164,14 +180,12 @@ describe( 'polling-manager cadence', () => {
 		await jest.advanceTimersByTimeAsync( 4000 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
 		// Past the window (plus the last 4 s poll scheduled inside it):
-		// only the 25 s safety poll.
+		// no timer at all.
 		await jest.advanceTimersByTimeAsync( 30000 );
 		const afterWindow = mockPostSyncUpdate.mock.calls.length;
 		expect( afterWindow ).toBeGreaterThanOrEqual( 8 );
-		await jest.advanceTimersByTimeAsync( 20000 );
+		await jest.advanceTimersByTimeAsync( 120000 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( afterWindow );
-		await jest.advanceTimersByTimeAsync( 5000 );
-		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( afterWindow + 1 );
 
 		// Regaining focus reopens the window.
 		Object.defineProperty( document, 'visibilityState', {
@@ -386,17 +400,20 @@ describe( 'polling-manager cadence', () => {
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
 	} );
 
-	it( 'full channel coverage slows the timer to the safety cadence and polls on announcements', async () => {
+	it( 'full channel coverage stops the timer and polls on announcements', async () => {
 		mockPostSyncUpdate.mockResolvedValue( response( [ 1, 2 ] ) );
 		mockOthers = true;
 		mockCoverage = true;
 		register();
 		await jest.advanceTimersByTimeAsync( 0 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
-		await jest.advanceTimersByTimeAsync( 24999 );
+		await jest.advanceTimersByTimeAsync( 120000 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
-		await jest.advanceTimersByTimeAsync( 1 );
+		// (Two rounds follow: count from here.)
+		mockCallbacks.announce.forEach( ( cb ) => cb( 'test-room' ) );
+		await jest.advanceTimersByTimeAsync( 150 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+		await jest.advanceTimersByTimeAsync( 300 );
 
 		// A burst of announcements collapses into one poll after the
 		// coalescing delay.
@@ -412,7 +429,7 @@ describe( 'polling-manager cadence', () => {
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 4 );
 	} );
 
-	it( 'a local update under coverage polls on demand instead of waiting for the safety timer', async () => {
+	it( 'a local update under coverage polls on demand', async () => {
 		mockPostSyncUpdate.mockResolvedValue( response( [ 1, 2 ] ) );
 		mockOthers = true;
 		mockCoverage = true;
@@ -427,7 +444,7 @@ describe( 'polling-manager cadence', () => {
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
 	} );
 
-	it( 'a coverage flip never parks queued updates behind the safety timer', async () => {
+	it( 'a coverage flip never parks queued updates behind a stopped timer', async () => {
 		mockPostSyncUpdate.mockResolvedValue( response( [ 1, 2 ] ) );
 		mockOthers = true;
 		const session = register();
@@ -473,7 +490,7 @@ describe( 'polling-manager cadence', () => {
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
 	} );
 
-	it( 'a room registered mid-session polls soon instead of waiting for the safety timer', async () => {
+	it( 'a room registered mid-session polls soon even with the timer stopped', async () => {
 		mockPostSyncUpdate.mockResolvedValue( response( [ 1, 2 ] ) );
 		mockOthers = true;
 		mockCoverage = true;
@@ -493,16 +510,58 @@ describe( 'polling-manager cadence', () => {
 		).toEqual( [ 'test-room', 'taxonomy/category' ] );
 	} );
 
-	it( 'losing coverage returns the pending timer to the with-collaborators cadence', async () => {
+	it( 'a heartbeat answer reporting the room ahead of this tab polls, one that does not stays quiet', async () => {
+		mockPostSyncUpdate.mockResolvedValue( response( [ 1, 2 ], 7 ) );
+		mockOthers = true;
+		mockCoverage = true;
+		register();
+		await jest.advanceTimersByTimeAsync( 0 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
+
+		// Same head as our cursor: nothing to fetch.
+		mockCallbacks.cursor.forEach( ( cb ) => cb( 7 ) );
+		await jest.advanceTimersByTimeAsync( 1000 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
+
+		// A script wrote rows nobody announced: the beat says the room
+		// is ahead, so the tab polls.
+		mockPostSyncUpdate.mockResolvedValue( response( [ 1, 2 ], 9 ) );
+		mockCallbacks.cursor.forEach( ( cb ) => cb( 9 ) );
+		await jest.advanceTimersByTimeAsync( 150 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+		expect( mockPostSyncUpdate.mock.calls[ 1 ][ 0 ].rooms[ 0 ].after ).toBe(
+			7
+		);
+	} );
+
+	it( 'a heartbeat answer naming a different engine polls into the fence; the same engine stays quiet', async () => {
 		mockPostSyncUpdate.mockResolvedValue( response( [ 1, 2 ] ) );
 		mockOthers = true;
 		mockCoverage = true;
 		register();
 		await jest.advanceTimersByTimeAsync( 0 );
+		mockCallbacks.engine.forEach( ( cb ) => cb( 'intent-log' ) );
+		await jest.advanceTimersByTimeAsync( 1000 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
+		mockCallbacks.engine.forEach( ( cb ) => cb( 'yjs-server' ) );
+		await jest.advanceTimersByTimeAsync( 0 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+	} );
+
+	it( 'losing coverage restarts the stopped loop at the with-collaborators cadence', async () => {
+		mockPostSyncUpdate.mockResolvedValue( response( [ 1, 2 ] ) );
+		mockOthers = true;
+		mockCoverage = true;
+		register();
+		await jest.advanceTimersByTimeAsync( 0 );
+		await jest.advanceTimersByTimeAsync( 5000 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
 		mockCoverage = false;
 		mockCallbacks.coverage.forEach( ( cb ) => cb() );
-		await jest.advanceTimersByTimeAsync( 1000 );
+		await jest.advanceTimersByTimeAsync( 0 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+		await jest.advanceTimersByTimeAsync( 1000 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 3 );
 	} );
 
 	it( 'without the signaling lane the always-on cadence is unchanged', async () => {

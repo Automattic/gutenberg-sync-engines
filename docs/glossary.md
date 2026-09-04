@@ -18,9 +18,10 @@ use these terms freely; none of them is standard outside this project
 - **Signaling** — how tabs find each other and exchange the WebRTC
   handshake: a per-tab presence token and a mailbox, both riding the
   heartbeat WordPress already sends from every editor screen.
-- **Safety poll** — the slow (25 s) timer poll a tab keeps even when
-  every peer is reachable over the advisory channel, for rows written by
-  anyone not on the channel (scripts, WP-CLI, a dropped peer).
+- **Head-cursor check** — the heartbeat answer carries the room's newest
+  row id; a tab whose own cursor is behind it polls. This is how rows
+  written by anyone not on the advisory channel (scripts, WP-CLI, a
+  dropped peer) reach a tab that has no poll timer.
 - **Coverage** — the advisory channel's answer to "is every peer I know
   about reachable?": every discovered token and every client id in the
   last awareness map has an open channel. Only full coverage lets a tab

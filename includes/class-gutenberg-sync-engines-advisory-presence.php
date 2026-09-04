@@ -341,7 +341,93 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 				'others'  => count( $peers ) > 0 || $this->has_live_awareness_besides( $room, $client_id ),
 				'peers'   => $peers,
 				'signals' => $this->take_mailbox( $room, $token ),
+				// The room's head cursor: a tab connected to every peer
+				// polls only when it is behind this (rows from writers not
+				// on the channel — scripts, WP-CLI, a dropped peer — reach it
+				// on its next beat instead of a safety timer).
+				'cursor'  => $this->head_cursor( $room ),
+				// The engine the site resolves for this room: a tab with no
+				// poll timer learns of a mid-session engine change from its
+				// next beat and polls into the server's fence.
+				'engine'  => $this->resolved_engine( $room ),
 			);
+		}
+
+		/**
+		 * The engine slug the site currently resolves for a room.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $room The room name.
+		 * @return string Engine slug, or the empty string when unknown.
+		 */
+		private function resolved_engine( string $room ): string {
+			if ( ! class_exists( 'WP_Sync_Engine_Registry' ) ) {
+				return '';
+			}
+			$storage = $this->storage;
+			if ( null === $storage && function_exists( 'gutenberg_sync_engines_storage' ) ) {
+				$storage = gutenberg_sync_engines_storage();
+			}
+			if ( null === $storage ) {
+				return '';
+			}
+			return (string) ( new WP_Sync_Engine_Registry( $storage ) )->get_engine_slug_for_room( $room );
+		}
+
+		/**
+		 * The room's head cursor (its newest update row id), or 0 for a room
+		 * that has no storage yet. One indexed lookup; never creates the
+		 * storage post.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @global wpdb $wpdb WordPress database abstraction object.
+		 *
+		 * @param string $room The room name.
+		 * @return int Head cursor.
+		 */
+		private function head_cursor( string $room ): int {
+			global $wpdb;
+
+			$storage_post_id = $this->storage_post_id( $room );
+			if ( null === $storage_post_id ) {
+				return 0;
+			}
+			$meta_key = class_exists( 'WP_Sync_Post_Meta_Storage' ) ? WP_Sync_Post_Meta_Storage::SYNC_UPDATE_META_KEY : 'wp_sync_update_data';
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery -- One indexed MAX(); the storage API's cursor is a per-request cache filled only by a read.
+			return (int) $wpdb->get_var(
+				$wpdb->prepare(
+					"SELECT MAX(meta_id) FROM $wpdb->postmeta WHERE post_id = %d AND meta_key = %s",
+					$storage_post_id,
+					$meta_key
+				)
+			);
+		}
+
+		/**
+		 * Non-creating lookup of a room's storage post id.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @global wpdb $wpdb WordPress database abstraction object.
+		 *
+		 * @param string $room The room name.
+		 * @return int|null The storage post id, or null when nobody has synced.
+		 */
+		private function storage_post_id( string $room ): ?int {
+			global $wpdb;
+
+			$post_type = class_exists( 'WP_Sync_Post_Meta_Storage' ) ? WP_Sync_Post_Meta_Storage::POST_TYPE : 'wp_sync_storage';
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery -- Non-creating existence check; see docblock.
+			$storage_post_id = $wpdb->get_var(
+				$wpdb->prepare(
+					"SELECT ID FROM $wpdb->posts WHERE post_name = %s AND post_type = %s ORDER BY ID ASC LIMIT 1",
+					md5( $room ),
+					$post_type
+				)
+			);
+			return empty( $storage_post_id ) ? null : (int) $storage_post_id;
 		}
 
 		/**
@@ -796,18 +882,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * @return array<int, array<string, mixed>> Awareness entries.
 		 */
 		private function read_awareness( string $room ): array {
-			global $wpdb;
-
-			$post_type = class_exists( 'WP_Sync_Post_Meta_Storage' ) ? WP_Sync_Post_Meta_Storage::POST_TYPE : 'wp_sync_storage';
-			// phpcs:ignore WordPress.DB.DirectDatabaseQuery -- Non-creating existence check; see docblock.
-			$storage_post_id = $wpdb->get_var(
-				$wpdb->prepare(
-					"SELECT ID FROM $wpdb->posts WHERE post_name = %s AND post_type = %s ORDER BY ID ASC LIMIT 1",
-					md5( $room ),
-					$post_type
-				)
-			);
-			if ( empty( $storage_post_id ) ) {
+			if ( null === $this->storage_post_id( $room ) ) {
 				return array();
 			}
 
