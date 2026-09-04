@@ -146,7 +146,9 @@ Two independent settings:
    carries an id so a retried duplicate is ignored. The description goes
    out at once and candidates trickle behind it. The server files
    messages in a compare-and-swap options row, so concurrent senders
-   and a take cannot lose one.
+   and a take cannot lose one; rows are named by room, so the ones no
+   live token owns are swept once a minute, even after the token record
+   itself has expired.
 7. **A preferred transport switches the channel off, but only while
    connected.** Long polling does this explicitly; websocket does it by
    construction (the polling manager has no rooms while the socket

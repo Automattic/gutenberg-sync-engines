@@ -58,6 +58,15 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 */
 		const TOKENS_TRANSIENT_PREFIX = 'gse_adv_tokens_';
 		const MAILBOX_OPTION_PREFIX   = 'gse_adv_mail_';
+		const SWEEP_TRANSIENT_PREFIX  = 'gse_adv_swept_';
+
+		/**
+		 * How often a room's abandoned mailbox rows are swept, in seconds.
+		 *
+		 * @since n.e.x.t
+		 * @var int
+		 */
+		const SWEEP_INTERVAL = 60;
 
 		/**
 		 * How long a token counts as a live tab, in seconds. A hidden tab's
@@ -575,7 +584,20 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * @return string Option name.
 		 */
 		private function mailbox_key( string $room, string $token ): string {
-			return self::MAILBOX_OPTION_PREFIX . md5( $room . '|' . $token );
+			return self::mailbox_prefix( $room ) . md5( $token );
+		}
+
+		/**
+		 * The option-name prefix shared by every mailbox of one room, so
+		 * the room's rows can be listed without the token record.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $room The room name.
+		 * @return string Option-name prefix.
+		 */
+		private static function mailbox_prefix( string $room ): string {
+			return self::MAILBOX_OPTION_PREFIX . md5( $room ) . '_';
 		}
 
 		/**
@@ -656,25 +678,45 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		}
 
 		/**
-		 * Deletes the mailboxes of tokens that expired without a leave
-		 * beacon (a crashed tab, a lost connection), so their rows do not
-		 * outlive them. Runs on every token refresh; cheap when nothing
-		 * expired.
+		 * Deletes the mailbox rows of a room that belong to no live token
+		 * (a crashed tab, a lost connection, a room everyone left long
+		 * enough ago that even the token record expired). The rows are
+		 * found by their room prefix, so nothing else has to remember
+		 * them. Runs at most once a minute per room, on a token refresh.
 		 *
 		 * @since n.e.x.t
+		 *
+		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
 		 * @param string $room The room name.
 		 * @return void
 		 */
 		private function sweep_expired( string $room ): void {
-			$stored = get_transient( $this->tokens_key( $room ) );
-			if ( ! is_array( $stored ) ) {
+			global $wpdb;
+
+			$flag = self::SWEEP_TRANSIENT_PREFIX . md5( $room );
+			if ( false !== get_transient( $flag ) ) {
 				return;
 			}
-			$now = time();
-			foreach ( $stored as $token => $entry ) {
-				if ( ! is_array( $entry ) || ! isset( $entry['t'] ) || $now - (int) $entry['t'] >= self::PRESENCE_TTL ) {
-					$this->delete_mailbox( $room, (string) $token );
+			set_transient( $flag, 1, self::SWEEP_INTERVAL );
+
+			$live = array();
+			foreach ( array_keys( $this->read_tokens( $room ) ) as $token ) {
+				$live[ $this->mailbox_key( $room, (string) $token ) ] = true;
+			}
+
+			// The rows live in the options table (the atomic-option class's
+			// default backend); a substitute backend sweeps its own store.
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Listing by prefix; bypasses the options cache like the atomic-option class.
+			$names = $wpdb->get_col(
+				$wpdb->prepare(
+					"SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s",
+					$wpdb->esc_like( self::mailbox_prefix( $room ) ) . '%'
+				)
+			);
+			foreach ( (array) $names as $name ) {
+				if ( ! isset( $live[ $name ] ) ) {
+					WP_Sync_Atomic_Option::delete( (string) $name );
 				}
 			}
 		}

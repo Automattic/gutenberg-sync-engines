@@ -386,7 +386,7 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 				),
 			)
 		);
-		$key = 'gse_adv_mail_' . md5( $this->room() . '|tok-a' );
+		$key = 'gse_adv_mail_' . md5( $this->room() ) . '_' . md5( 'tok-a' );
 		$this->assertNotNull( WP_Sync_Atomic_Option::read( $key ) );
 
 		// tok-a crashes: its token ages past the TTL without a leave beacon.
@@ -396,8 +396,46 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 		set_transient( $transient, $tokens, 600 );
 
 		// The next refresh by anyone sweeps the dead tab's mailbox row.
+		delete_transient( 'gse_adv_swept_' . md5( $this->room() ) );
 		$this->beat( 'tok-b' );
 		$this->assertNull( WP_Sync_Atomic_Option::read( $key ) );
+
+		// Everyone leaves without a beacon and the room idles long enough
+		// for the token record itself to expire: the next visitor's
+		// refresh still finds the abandoned rows by their room prefix.
+		$this->beat(
+			'tok-b',
+			array(
+				'signals' => array(
+					array(
+						'to'   => 'tok-b',
+						'kind' => 'ice',
+						'data' => 'self',
+					),
+				),
+			)
+		);
+		wp_set_current_user( self::$editor_id );
+		$this->beat(
+			'tok-c',
+			array(
+				'signals' => array(
+					array(
+						'to'   => 'tok-b',
+						'kind' => 'offer',
+						'data' => 'o2',
+					),
+				),
+			)
+		);
+		$key_b = 'gse_adv_mail_' . md5( $this->room() ) . '_' . md5( 'tok-b' );
+		$this->assertNotNull( WP_Sync_Atomic_Option::read( $key_b ) );
+		delete_transient( $transient );
+		delete_transient( 'gse_adv_swept_' . md5( $this->room() ) );
+		$this->beat( 'tok-d' );
+		$this->assertNull( WP_Sync_Atomic_Option::read( $key_b ) );
+		// The newcomer's own row (none yet) and record are untouched.
+		$this->assertSame( array(), $this->beat( 'tok-d' )['peers'] );
 	}
 
 	public function test_presence_reads_never_create_a_storage_post() {
