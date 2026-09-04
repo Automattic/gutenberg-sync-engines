@@ -47,6 +47,15 @@ This plugin provides:
   only matters when a CONFIGURED slug isn't registered (misconfiguration
   degrades to the first registered engine: yjs-server).
 - **Transports:** `http-polling` (default), `http-long-polling`, `websocket`.
+  Short polling is the BASE transport; beside it every editor tab opens an
+  **advisory channel** (WebRTC, `src/providers/advisory/`, signaled over
+  the WordPress heartbeat by
+  `includes/class-gutenberg-sync-engines-advisory-presence.php`) that
+  carries presence and "go and poll" notices, never content. It decides
+  the polling cadence: quiet when alone, timer cadence when a peer is
+  unreachable, on-demand plus a 25 s safety poll when every peer is
+  reachable. Long polling turns it off while connected. Rules and failure
+  cases: `docs/plan/advisory-channel.md`.
 
 It registers through the framework's extension points: PHP `wp_sync_engines` /
 `wp_sync_transports` filters; JS `registerSyncEngine` / `registerSyncTransport`

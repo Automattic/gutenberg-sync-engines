@@ -19,8 +19,39 @@ import {
 	POLLING_INTERVAL_BACKGROUND_TAB_IN_MS,
 	DISCONNECT_DIALOG_RETRY_MS,
 	MANUAL_RETRY_INTERVAL_MS,
+	LOCAL_UPDATE_POLL_DELAY_MS,
+	ANNOUNCE_POLL_COALESCE_MS,
+	ANNOUNCE_POLL_MIN_GAP_MS,
+	FAST_DISCOVERY_WINDOW_MS,
 } from './config';
 import { ConnectionError, ConnectionErrorCode } from '../../framework';
+import {
+	advisoryCoversClients,
+	getChannelPresence,
+	onAdvisoryAnnounce,
+	onAdvisoryCoverageChanged,
+	onAdvisoryPresence,
+	setAdvisoryDisabledByTransport,
+	setPresenceSource,
+	startAdvisoryChannel,
+	stopAdvisoryChannel,
+} from '../advisory/channel';
+import { announceLocalWrite } from '../advisory/announce';
+import {
+	applyAnswer,
+	buildProbe,
+	probeFailed,
+	installSignaling,
+	installSignalingLifecycle,
+	isSignalingAvailable,
+	onOthersChanged,
+	onRoomCursor,
+	onRoomEngine,
+	othersPresent,
+	setSignalCarrier,
+	setSyncClientId,
+} from '../advisory/signaling';
+import { registerSaveFlush } from './save-flush';
 import type { ConnectionStatus, EngineSessionCodec } from '@wordpress/sync';
 import {
 	installSyncDebug,
@@ -52,6 +83,7 @@ type LogFunction = (
 
 interface PollingManager {
 	registerRoom: ( options: RegisterRoomOptions ) => void;
+	releaseRoom: ( room: string ) => Promise< ReleasedRoom >;
 	retryNow: () => void;
 	unregisterRoom: (
 		room: string,
@@ -64,11 +96,32 @@ interface RegisterRoomOptions {
 	session: EngineSessionCodec;
 	log: LogFunction;
 	onStatusChange: ( status: ConnectionStatus ) => void;
+	/**
+	 * Where to resume in the room's history: a preferred transport
+	 * (websocket) hands a room to short polling at the cursor its socket
+	 * had reached, so nothing is replayed or skipped.
+	 */
+	initialCursor?: number;
+	/** Updates to queue behind the session's own initial ones. */
+	initialUpdates?: SyncUpdate[];
+}
+
+/**
+ * What a preferred transport takes back when it reclaims a room from
+ * short polling (see releaseRoom).
+ */
+export interface ReleasedRoom {
+	cursor: number;
+	unsent: SyncUpdate[];
 }
 
 interface RoomState {
 	endCursor: number;
 	isPrimaryRoom: boolean;
+	/** The awareness map the last poll response carried for this room. */
+	lastServerAwareness: AwarenessState;
+	/** Whether this room's queue is held while the tab is alone. */
+	holdWhileAlone: boolean;
 	log: LogFunction;
 	onStatusChange: ( status: ConnectionStatus ) => void;
 	room: string;
@@ -333,6 +386,422 @@ let pollingTimeoutId: ReturnType< typeof setTimeout > | null = null;
 let syncRequestBodySizeLimit = MAX_SYNC_REQUEST_BODY_SIZE_IN_BYTES;
 
 /*
+ * THE CADENCE RULES (docs/plan/advisory-channel.md).
+ *
+ * Short polling is the base transport everyone has. What changes is WHEN
+ * the loop polls:
+ *
+ * - Alone (the signaling lane says nobody else is in this post's room):
+ *   no timer once the first poll has bootstrapped the session (except a
+ *   30 s discovery window after load and after regaining focus), and the
+ *   room queues are HELD — local edits wait in the
+ *   browser until company arrives, a save (flush-before-save), or the
+ *   tab going hidden. Codecs that declare `sendsWhileAlone` (de-rtc) are
+ *   exempt. Company (a heartbeat or poll answer, or an awareness map
+ *   with more than one client) releases the queues and the cadence.
+ * - Company, but some known peer is NOT reachable over the advisory
+ *   channel: today's timer cadence (the configured interval).
+ * - Company, every known peer reachable over the channel: no timer at
+ *   all. Polls happen on demand — after a queued local update, after a
+ *   peer announces new rows, and when a heartbeat answer reports the
+ *   room's head cursor ahead of this tab's (rows from writers not on
+ *   the channel: scripts, WP-CLI, a dropped peer). The heartbeat slows
+ *   to 120 s on blur, so a backgrounded tab notices such a write late;
+ *   accepted, nobody is looking.
+ * - No signaling lane on this page (a screen with no per-post room, or
+ *   the channel disabled site-wide): the always-on cadence, unchanged.
+ *
+ * Long polling keeps its own re-issue cadence and turns the channel off
+ * while its held request is connected; the alone rule still applies to
+ * it (a held request for a lone editor pins a PHP worker for nothing).
+ */
+let hasBootstrapped = false;
+let pollAgainRequested = false;
+let hiddenFlushTimer: ReturnType< typeof setTimeout > | null = null;
+/*
+ * A lone tab has no timer, so it would notice a joiner on its next
+ * heartbeat (10 s) at best. For a while after the page loads and
+ * after the tab regains focus — the moments a second person most often
+ * turns up — it polls at the solo cadence instead (4 s by default).
+ */
+let fastDiscoveryUntil = 0;
+let pollsStarted = 0;
+let pollsFinished = 0;
+/** Flush waiters: resolve once poll number `target` has finished. */
+const pollDoneResolvers: Array< { target: number; resolve: () => void } > = [];
+let localUpdatePollTimer: ReturnType< typeof setTimeout > | null = null;
+let announcePollTimer: ReturnType< typeof setTimeout > | null = null;
+let lastAnnouncePollAt = 0;
+let advisoryHooksInstalled = false;
+
+function hasQueuedUpdates(): boolean {
+	for ( const state of roomStates.values() ) {
+		if ( state.updateQueue.peek().length > 0 ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * Never let a slow (or absent) timer sit on queued local work: a safety
+ * or background delay, or no timer at all, is cut down to the on-demand
+ * send delay (the normal timer cadences send soon enough). The cadence
+ * rules decide how often to LOOK for rows; queued rows go out promptly
+ * regardless (found by a coverage flip that replaced a pending 1 s timer
+ * with the 25 s safety timer while an undo's inverse intents were queued).
+ *
+ * @param delay The delay the cadence rules chose.
+ */
+function boundedByQueuedWork( delay: number | null ): number | null {
+	if (
+		hasQueuedUpdates() &&
+		( null === delay || delay >= POLLING_INTERVAL_BACKGROUND_TAB_IN_MS )
+	) {
+		return LOCAL_UPDATE_POLL_DELAY_MS;
+	}
+	return delay;
+}
+
+function isAlone(): boolean {
+	return isSignalingAvailable() && ! hasCollaborators && ! othersPresent();
+}
+
+/**
+ * Pauses the holdable queues while alone, resumes them with company.
+ */
+function applyHolds(): void {
+	// A pending flush has released the queues for the poll that will carry
+	// them; a poll finishing meanwhile must not pause them again.
+	const alone = isAlone() && 0 === pollDoneResolvers.length;
+	roomStates.forEach( ( state ) => {
+		if ( alone && state.holdWhileAlone ) {
+			state.updateQueue.pause();
+		} else {
+			state.updateQueue.resume();
+		}
+	} );
+}
+
+function hasHeldUpdates(): boolean {
+	for ( const state of roomStates.values() ) {
+		if ( state.updateQueue.size() > 0 ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * Releases the held queues, polls, and resolves once that poll has
+ * returned (or failed); the holds are then re-applied for a tab still
+ * alone. Used before a save and when the tab goes hidden.
+ */
+export function flushHeldUpdates(): Promise< void > {
+	if ( 0 === roomStates.size || ! hasHeldUpdates() ) {
+		return Promise.resolve();
+	}
+	roomStates.forEach( ( state ) => state.updateQueue.resume() );
+	return new Promise< void >( ( resolve ) => {
+		/*
+		 * Wait for a poll that STARTS after this call: a request already
+		 * in flight was built before the queues were released, so its
+		 * successor is the one that carries the held work. Re-applying
+		 * the holds any earlier would pause the queues before that
+		 * successor takes from them.
+		 */
+		pollDoneResolvers.push( {
+			target: pollsStarted + 1,
+			resolve: () => {
+				applyHolds();
+				resolve();
+			},
+		} );
+		pollNow();
+	} );
+}
+
+function cancelHiddenFlush(): void {
+	if ( hiddenFlushTimer ) {
+		clearTimeout( hiddenFlushTimer );
+		hiddenFlushTimer = null;
+	}
+}
+
+function hasCompany(): boolean {
+	return hasCollaborators || othersPresent();
+}
+
+/**
+ * Whether every peer this tab knows about is reachable over the advisory
+ * channel: the discovered tokens, and the client ids the primary room's
+ * last awareness map carried.
+ */
+function advisoryCoversEveryone(): boolean {
+	const clientIds: number[] = [];
+	roomStates.forEach( ( state ) => {
+		if ( state.isPrimaryRoom ) {
+			for ( const id of Object.keys( state.lastServerAwareness ) ) {
+				clientIds.push( Number( id ) );
+			}
+		}
+	} );
+	return advisoryCoversClients( clientIds );
+}
+
+/**
+ * The delay before the next scheduled poll after a successful one, or null
+ * for "do not schedule" (quiet while alone).
+ */
+function nextScheduledDelay(): number | null {
+	if ( hasBootstrapped && isAlone() ) {
+		return Date.now() < fastDiscoveryUntil ? POLLING_INTERVAL_IN_MS : null;
+	}
+	if ( longPollMode ) {
+		return isActiveBrowser
+			? LONG_POLL_REISSUE_MS
+			: POLLING_INTERVAL_BACKGROUND_TAB_IN_MS;
+	}
+	if ( advisoryCoversEveryone() ) {
+		return null;
+	}
+	if ( ! isActiveBrowser ) {
+		return POLLING_INTERVAL_BACKGROUND_TAB_IN_MS;
+	}
+	if ( hasCompany() ) {
+		return POLLING_INTERVAL_WITH_COLLABORATORS_IN_MS;
+	}
+	return POLLING_INTERVAL_IN_MS;
+}
+
+/**
+ * Schedules the next poll, or leaves the loop stopped when the cadence
+ * rules say so. `isPolling` stays true only while a poll is scheduled or
+ * in flight, so a stopped loop can be restarted by any wake path.
+ *
+ * @param delay Milliseconds until the next poll, or null to stop.
+ */
+function scheduleNext( delay: number | null ): void {
+	pollsFinished++;
+	for ( const waiter of pollDoneResolvers.splice( 0 ) ) {
+		if ( waiter.target <= pollsFinished ) {
+			waiter.resolve();
+		} else {
+			pollDoneResolvers.push( waiter );
+		}
+	}
+	if ( pollAgainRequested ) {
+		// A wake arrived while the last request was in flight.
+		pollAgainRequested = false;
+		pollingTimeoutId = setTimeout( poll, 0 );
+		return;
+	}
+	if ( null === delay ) {
+		isPolling = false;
+		pollingTimeoutId = null;
+		return;
+	}
+	pollingTimeoutId = setTimeout( poll, delay );
+}
+
+/**
+ * Polls now: a stopped loop restarts, a scheduled poll is brought forward,
+ * an in-flight poll is followed by another as soon as it returns.
+ */
+function pollNow(): void {
+	if ( 0 === roomStates.size ) {
+		return;
+	}
+	if ( pollingTimeoutId ) {
+		clearTimeout( pollingTimeoutId );
+		pollingTimeoutId = null;
+		poll();
+		return;
+	}
+	if ( ! isPolling ) {
+		poll();
+		return;
+	}
+	pollAgainRequested = true;
+}
+
+/**
+ * Re-evaluates a pending timer against the cadence rules (a peer joined
+ * or left the channel, company arrived). A stopped loop restarts only
+ * when there is company; an in-flight poll reschedules itself when it
+ * returns.
+ */
+function reschedule(): void {
+	if ( 0 === roomStates.size ) {
+		return;
+	}
+	if ( pollingTimeoutId ) {
+		clearTimeout( pollingTimeoutId );
+		pollingTimeoutId = null;
+		const delay = boundedByQueuedWork( nextScheduledDelay() );
+		if ( null === delay ) {
+			isPolling = false;
+			return;
+		}
+		pollingTimeoutId = setTimeout( poll, delay );
+		return;
+	}
+	if ( ! isPolling && hasCompany() ) {
+		poll();
+	}
+}
+
+/**
+ * A local update was queued while the loop is quiet or on the slow safety
+ * cadence: poll shortly. The delay lets the rest of a burst pile in; it is
+ * NOT reset by later updates, so a long burst cannot starve the send.
+ */
+function pollSoonForLocalUpdate(): void {
+	if ( localUpdatePollTimer ) {
+		return;
+	}
+	localUpdatePollTimer = setTimeout( () => {
+		localUpdatePollTimer = null;
+		pollNow();
+	}, LOCAL_UPDATE_POLL_DELAY_MS );
+}
+
+/**
+ * A peer announced new rows over the advisory channel: poll, coalescing a
+ * burst of announcements into one request and never faster than the floor.
+ */
+function pollSoonForAnnounce(): void {
+	if ( announcePollTimer ) {
+		return;
+	}
+	const sinceLast = Date.now() - lastAnnouncePollAt;
+	const delay = Math.max(
+		ANNOUNCE_POLL_COALESCE_MS,
+		ANNOUNCE_POLL_MIN_GAP_MS - sinceLast
+	);
+	announcePollTimer = setTimeout( () => {
+		announcePollTimer = null;
+		lastAnnouncePollAt = Date.now();
+		pollNow();
+	}, delay );
+}
+
+/**
+ * The awareness map to hand a session: the poll response's copy with the
+ * fresher channel copy overlaid for peers on the channel (a 25-second-old
+ * server cursor must not jump a live cursor back).
+ *
+ * @param state The room.
+ */
+function mergedAwareness( state: RoomState ): AwarenessState {
+	const merged: AwarenessState = { ...state.lastServerAwareness };
+	const channel = getChannelPresence( state.room ) as AwarenessState;
+	for ( const clientId of Object.keys( channel ) ) {
+		const base = channel[ clientId ];
+		const server = merged[ clientId ];
+		merged[ clientId ] =
+			base && 'object' === typeof base
+				? {
+						...( server && 'object' === typeof server
+							? server
+							: {} ),
+						...base,
+				  }
+				: server ?? base;
+	}
+	return merged;
+}
+
+const BASE_PRESENCE_FIELDS = [ 'collaboratorInfo', 'name', 'isActive' ];
+
+/**
+ * The part of an awareness state that says WHO this is (not where their
+ * cursor is): the fields the channel carries.
+ *
+ * @param state The local awareness state.
+ */
+function basePresence( state: unknown ): unknown {
+	if ( ! state || 'object' !== typeof state ) {
+		return state;
+	}
+	const picked: Record< string, unknown > = {};
+	for ( const field of BASE_PRESENCE_FIELDS ) {
+		if ( field in ( state as Record< string, unknown > ) ) {
+			picked[ field ] = ( state as Record< string, unknown > )[ field ];
+		}
+	}
+	return picked;
+}
+
+function installAdvisoryHooks(): void {
+	if ( advisoryHooksInstalled ) {
+		return;
+	}
+	advisoryHooksInstalled = true;
+	installSignaling();
+	installSignalingLifecycle();
+	onOthersChanged( ( others ) => {
+		applyHolds();
+		if ( others ) {
+			pollNow();
+		} else {
+			reschedule();
+		}
+	} );
+	// An active loop carries queued handshake messages on its next poll;
+	// a quiet one leaves them to the heartbeat.
+	setSignalCarrier( () => {
+		if ( isPolling ) {
+			pollNow();
+			return true;
+		}
+		return false;
+	} );
+	registerSaveFlush( flushHeldUpdates );
+	onAdvisoryCoverageChanged( reschedule );
+	onAdvisoryAnnounce( pollSoonForAnnounce );
+	onRoomCursor( ( cursor ) => {
+		// Rows landed that no nudge announced (a writer off the channel):
+		// the primary room's cursor is behind the head the beat reported.
+		roomStates.forEach( ( state ) => {
+			if ( state.isPrimaryRoom && cursor > state.endCursor ) {
+				pollSoonForAnnounce();
+			}
+		} );
+	} );
+	onRoomEngine( ( engine ) => {
+		// The site's engine changed under this session: poll so the
+		// server's 409 fence drops the room into the lock posture.
+		roomStates.forEach( ( state ) => {
+			if (
+				state.isPrimaryRoom &&
+				state.session.engineSlug &&
+				engine !== state.session.engineSlug
+			) {
+				pollNow();
+			}
+		} );
+	} );
+	onAdvisoryPresence( ( room ) => {
+		const state = roomStates.get( room );
+		if ( state ) {
+			state.session.applyRemoteAwareness( mergedAwareness( state ) );
+		}
+	} );
+	// Only BASE presence rides the channel (who is here: user info, name,
+	// activity). Cursors and selections stay on the polls by decision:
+	// over the channel they would point at content positions the
+	// receiver has not polled for yet.
+	setPresenceSource( () =>
+		Array.from( roomStates.values() ).map( ( state ) => ( {
+			room: state.room,
+			clientId: state.session.clientId,
+			state: basePresence( state.session.getLocalAwareness() ),
+		} ) )
+	);
+}
+
+/*
  * Long-poll mode: the server holds each request open until it has something
  * to deliver, so on a successful response the client re-issues almost
  * immediately rather than waiting out a fixed interval. Failure backoff is
@@ -364,6 +833,10 @@ export function setLongPollMode( enabled: boolean ): void {
 // yield to the event loop without idling.
 const LONG_POLL_REISSUE_MS = 50;
 
+// How long a tab going hidden waits before flushing held work (pagehide,
+// which follows a hide on reload/close, cancels it).
+const HIDDEN_FLUSH_DELAY_MS = 1500;
+
 // When more rooms are registered than the server allows per request
 // (MAX_ROOMS_PER_REQUEST), the primary room is sent every poll and the
 // remaining "overflow" rooms are rotated across polls. This offset
@@ -389,6 +862,7 @@ function handleBeforeUnload(): void {
  * being unloaded. Uses `sendBeacon` so the request survives navigation.
  */
 function handlePageHide(): void {
+	cancelHiddenFlush();
 	const rooms = Array.from( roomStates.entries() ).map(
 		( [ room, state ] ) => ( {
 			after: 0,
@@ -419,7 +893,27 @@ function handleVisibilityChange() {
 	const wasActive = isActiveBrowser;
 	isActiveBrowser = document.visibilityState === 'visible';
 
+	if ( ! isActiveBrowser ) {
+		/*
+		 * Going hidden while alone with held work: a hidden tab's heartbeat
+		 * slows to two minutes, too slow to answer a joiner, so put the
+		 * held work in the room once. Hiding is also the first thing a
+		 * reload or close does (visibilitychange precedes pagehide), so
+		 * the flush waits a beat and pagehide cancels it.
+		 */
+		cancelHiddenFlush();
+		if ( isAlone() && hasHeldUpdates() ) {
+			hiddenFlushTimer = setTimeout( () => {
+				hiddenFlushTimer = null;
+				void flushHeldUpdates();
+			}, HIDDEN_FLUSH_DELAY_MS );
+		}
+		return;
+	}
+	cancelHiddenFlush();
+
 	if ( isActiveBrowser && ! wasActive ) {
+		fastDiscoveryUntil = Date.now() + FAST_DISCOVERY_WINDOW_MS;
 		/*
 		 * Remove scheduled polling and repoll immediately when reactivated.
 		 *
@@ -436,6 +930,10 @@ function handleVisibilityChange() {
 		if ( pollingTimeoutId ) {
 			clearTimeout( pollingTimeoutId );
 			pollingTimeoutId = null;
+			poll();
+		} else if ( ! isPolling && 0 < roomStates.size ) {
+			// A stopped loop: poll once now (company may have arrived while
+			// hidden, and the discovery window just reopened).
 			poll();
 		}
 	}
@@ -525,6 +1023,10 @@ function buildPayloadForRequest( selectedRoomStates: RoomState[] ): {
 } {
 	const payload: SyncPayload = { rooms: [] };
 	const roomsInRequest: RoomState[] = [];
+	const probe = isSignalingAvailable() ? buildProbe() : null;
+	if ( probe ) {
+		payload.advisory = probe;
+	}
 
 	for ( const state of selectedRoomStates ) {
 		const room = createPayloadRoom( state );
@@ -594,6 +1096,7 @@ function restoreExactUpdates( payload: SyncPayload ): void {
 function poll(): void {
 	isPolling = true;
 	pollingTimeoutId = null;
+	pollsStarted++;
 
 	async function start(): Promise< void > {
 		if ( 0 === roomStates.size ) {
@@ -620,6 +1123,8 @@ function poll(): void {
 		} );
 
 		const pollStarted = Date.now();
+		let succeeded = false;
+		let nextDelay: number | null = null;
 		const isPureReceive = payload.rooms.every(
 			( room ) => 0 === room.updates.length
 		);
@@ -629,9 +1134,14 @@ function poll(): void {
 			parkSignal = inFlightParkController.signal;
 		}
 		try {
-			const { rooms } = await postSyncUpdate( payload, parkSignal );
+			const { rooms, advisory } = await postSyncUpdate(
+				payload,
+				parkSignal
+			);
 			inFlightParkController = null;
 			parkAbortedForLocalUpdate = false;
+			// The signaling answer rode this poll: company, peers, mailbox.
+			applyAnswer( advisory, payload.advisory?.seq );
 
 			// Emit 'connected' status.
 			consecutiveFailures = 0;
@@ -696,23 +1206,32 @@ function poll(): void {
 					return;
 				}
 
-				// Process awareness update.
-				roomState.session.applyRemoteAwareness( room.awareness );
+				// Process awareness update: the server's copy, with the
+				// fresher channel copy overlaid for peers on the channel.
+				roomState.lastServerAwareness = room.awareness ?? {};
+				roomState.session.applyRemoteAwareness(
+					mergedAwareness( roomState )
+				);
 
-				// If there is another collaborator on the primary entity,
-				// resume all room queues for the next poll and increase
-				// polling frequency. We only check the primary room to
-				// avoid false positives from shared collection rooms
-				// (e.g. taxonomy/category), but resume all queues so
-				// collection rooms (e.g. root/comment) can also sync.
+				// Another collaborator on the primary entity means company:
+				// the loop keeps its timer cadence (or the safety cadence
+				// under full channel coverage). Only the primary room is
+				// checked to avoid false positives from shared collection
+				// rooms (e.g. taxonomy/category).
 				if (
 					roomState.isPrimaryRoom &&
 					Object.keys( room.awareness ).length > 1
 				) {
 					hasCollaborators = true;
-					roomStates.forEach( ( state ) => {
-						state.updateQueue.resume();
-					} );
+				}
+
+				// Rows this tab just landed: tell the peers on the channel
+				// to poll. A rumor only — the poll is what delivers them.
+				const sentUpdates = payload.rooms.find(
+					( sent ) => sent.room === room.room
+				)?.updates.length;
+				if ( sentUpdates ) {
+					announceLocalWrite( room.room );
 				}
 
 				// Process each incoming update and collect any responses.
@@ -789,20 +1308,30 @@ function poll(): void {
 				}
 			} );
 
-			// Recalculate polling interval. In long-poll mode the server
-			// already held the request until it had something (or the wait
-			// budget elapsed), so re-issue promptly; an active-tab
-			// background poll still needs its keepalive cadence.
-			if ( longPollMode && isActiveBrowser ) {
-				pollInterval = LONG_POLL_REISSUE_MS;
-			} else if ( isActiveBrowser && hasCollaborators ) {
-				pollInterval = POLLING_INTERVAL_WITH_COLLABORATORS_IN_MS;
-			} else if ( isActiveBrowser ) {
-				pollInterval = POLLING_INTERVAL_IN_MS;
-			} else {
-				pollInterval = POLLING_INTERVAL_BACKGROUND_TAB_IN_MS;
+			/*
+			 * Long polling delivers its own wake (the held request returns
+			 * the instant a row lands), so while it is connected the
+			 * advisory channel would only duplicate it: switch the channel
+			 * off. A failed poll below switches it back on.
+			 */
+			if ( longPollMode ) {
+				setAdvisoryDisabledByTransport( true );
+			}
+
+			// The first successful poll is the genesis handshake; from
+			// here on the cadence rules decide the timer, and the holds
+			// follow the company this response revealed.
+			hasBootstrapped = true;
+			applyHolds();
+			succeeded = true;
+			nextDelay = boundedByQueuedWork( nextScheduledDelay() );
+			if ( null !== nextDelay ) {
+				pollInterval = nextDelay;
 			}
 		} catch ( error ) {
+			// Whatever the cause, the probe's signals never arrived: back to
+			// the outbox for the next carrier.
+			probeFailed( payload.advisory?.seq );
 			if ( parkAbortedForLocalUpdate ) {
 				/*
 				 * Deliberate wake: the parked request carried no updates, so
@@ -901,6 +1430,11 @@ function poll(): void {
 				isPolling = false;
 				return;
 			} else {
+				// A disconnected transport has no wake of its own: let the
+				// advisory channel back in (a no-op unless long polling
+				// had switched it off).
+				setAdvisoryDisabledByTransport( false );
+
 				// Use the explicit retry delay schedule for backoff.
 				consecutiveFailures++;
 				const retrySchedule = hasCollaborators
@@ -995,7 +1529,7 @@ function poll(): void {
 			}
 		}
 
-		pollingTimeoutId = setTimeout( poll, pollInterval );
+		scheduleNext( succeeded ? nextDelay : pollInterval );
 	}
 
 	// Start polling.
@@ -1007,6 +1541,8 @@ function registerRoom( {
 	session,
 	log,
 	onStatusChange,
+	initialCursor = 0,
+	initialUpdates = [],
 }: RegisterRoomOptions ): void {
 	if ( roomStates.has( room ) ) {
 		return;
@@ -1016,19 +1552,19 @@ function registerRoom( {
 	// the inspector is enabled).
 	registerDebugSession( room, session );
 
-	// Note: Queue is initially paused (no update traffic while solo).
-	// Engines whose ingest is idempotent and cheap opt out via the codec's
-	// `syncWhileSolo` capability (intent-log does): their updates flush on
-	// every poll, so unsent local work at risk from a terminal transport
-	// error is bounded by one poll interval instead of the whole solo
-	// session.
-	const updateQueue = createUpdateQueue( session.getInitialUpdates() );
-	if (
-		( session as EngineSessionCodec & { syncWhileSolo?: boolean } )
-			.syncWhileSolo
-	) {
-		updateQueue.resume();
-	}
+	/*
+	 * A lone tab holds its queue until company arrives (released by a
+	 * heartbeat or poll answer, a save, or the tab going hidden). Codecs
+	 * that declare `sendsWhileAlone` (de-rtc: commits ride the autosave
+	 * lane, and its queued rows are advisories that must flow) are exempt.
+	 */
+	const holdWhileAlone = ! (
+		session as EngineSessionCodec & { sendsWhileAlone?: boolean }
+	 ).sendsWhileAlone;
+	const updateQueue = createUpdateQueue(
+		[ ...session.getInitialUpdates(), ...initialUpdates ],
+		holdWhileAlone && isAlone()
+	);
 
 	/**
 	 * Connection limits are enforced on the first entity to be loaded for sync.
@@ -1090,6 +1626,27 @@ function registerRoom( {
 
 		updateQueue.add( update );
 
+		/*
+		 * Send on demand when no timer will pick this up soon: the loop is
+		 * quiet (alone), a request is in flight with nothing scheduled
+		 * behind it (alone, mid-poll), or the pending timer is the slow
+		 * safety cadence (every peer on the channel). A scheduled timer
+		 * at the normal cadence, or a long-poll re-issue, needs no help.
+		 */
+		// A held queue (alone, holdable codec) waits for company or a
+		// flush. Otherwise wake when no timer will send this soon: none
+		// pending, or the pending one is the slow safety cadence (alone
+		// with an exempt codec, or every peer on the channel).
+		const held = holdWhileAlone && isAlone();
+		const needsWake =
+			! held &&
+			( longPollMode
+				? ! isPolling
+				: ! pollingTimeoutId || isAlone() || advisoryCoversEveryone() );
+		if ( needsWake ) {
+			pollSoonForLocalUpdate();
+		}
+
 		if ( longPollMode && inFlightParkController ) {
 			// Wake the parked poll: local work must not wait out the hold.
 			parkAbortedForLocalUpdate = true;
@@ -1121,8 +1678,10 @@ function registerRoom( {
 	}
 
 	const roomState: RoomState = {
-		endCursor: 0,
+		endCursor: initialCursor,
 		isPrimaryRoom,
+		lastServerAwareness: {},
+		holdWhileAlone,
 		log,
 		onStatusChange,
 		room,
@@ -1141,8 +1700,22 @@ function registerRoom( {
 		areListenersRegistered = true;
 	}
 
+	if ( isPrimaryRoom ) {
+		fastDiscoveryUntil = Date.now() + FAST_DISCOVERY_WINDOW_MS;
+		// The signaling lane and the advisory channel are per page, keyed
+		// by the primary room's session (the post being edited).
+		setSyncClientId( session.clientId );
+		installAdvisoryHooks();
+		startAdvisoryChannel();
+	}
+
 	if ( ! isPolling ) {
 		poll();
+	} else {
+		// A room that arrives mid-session (an entity loaded later) needs
+		// its bootstrap promptly, whatever the cadence rules have the timer
+		// at (the 25 s safety poll under coverage or alone).
+		pollSoonForLocalUpdate();
 	}
 }
 
@@ -1169,8 +1742,57 @@ function unregisterRoom(
 		}
 
 		state.unregister();
-		roomStates.delete( room );
+		dropRoom( room );
+		return;
 	}
+	unregisterDebugSession( room );
+}
+
+/**
+ * Hands a room back to a preferred transport: waits for any request in
+ * flight (so the cursor is final and nothing is delivered twice), then
+ * drops the room WITHOUT destroying its session or telling the server it
+ * left, returning the cursor to resume from and the updates that never
+ * went out.
+ *
+ * @param room The room.
+ */
+function releaseRoom( room: string ): Promise< ReleasedRoom > {
+	const state = roomStates.get( room );
+	if ( ! state ) {
+		return Promise.resolve( { cursor: 0, unsent: [] } );
+	}
+	const finish = (): ReleasedRoom => {
+		if ( roomStates.get( room ) !== state ) {
+			return { cursor: 0, unsent: [] };
+		}
+		const released = {
+			cursor: state.endCursor,
+			unsent: state.updateQueue.drain(),
+		};
+		dropRoom( room );
+		return released;
+	};
+	const inFlight = isPolling && null === pollingTimeoutId;
+	if ( ! inFlight ) {
+		return Promise.resolve( finish() );
+	}
+	return new Promise< ReleasedRoom >( ( resolve ) => {
+		pollDoneResolvers.push( {
+			target: pollsStarted,
+			resolve: () => resolve( finish() ),
+		} );
+	} );
+}
+
+/**
+ * Removes a room from the loop and, when it was the last one, resets the
+ * shared state. The session is left to the caller.
+ *
+ * @param room The room.
+ */
+function dropRoom( room: string ): void {
+	roomStates.delete( room );
 	unregisterDebugSession( room );
 
 	if ( 0 === roomStates.size && areListenersRegistered ) {
@@ -1185,6 +1807,22 @@ function unregisterRoom(
 		consecutiveFailures = 0;
 		roomOverflowOffset = 0;
 		syncRequestBodySizeLimit = MAX_SYNC_REQUEST_BODY_SIZE_IN_BYTES;
+		hasBootstrapped = false;
+		hasCollaborators = false;
+		pollAgainRequested = false;
+		cancelHiddenFlush();
+		for ( const waiter of pollDoneResolvers.splice( 0 ) ) {
+			waiter.resolve();
+		}
+		if ( localUpdatePollTimer ) {
+			clearTimeout( localUpdatePollTimer );
+			localUpdatePollTimer = null;
+		}
+		if ( announcePollTimer ) {
+			clearTimeout( announcePollTimer );
+			announcePollTimer = null;
+		}
+		stopAdvisoryChannel();
 	}
 }
 
@@ -1196,16 +1834,12 @@ function unregisterRoom(
  */
 function retryNow(): void {
 	isManualRetry = true;
-
-	if ( pollingTimeoutId ) {
-		clearTimeout( pollingTimeoutId );
-		pollingTimeoutId = null;
-		poll();
-	}
+	pollNow();
 }
 
 export const pollingManager: PollingManager = {
 	registerRoom,
+	releaseRoom,
 	retryNow,
 	unregisterRoom,
 };

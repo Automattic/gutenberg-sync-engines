@@ -12,6 +12,26 @@ idle traffic on your hardware; the stable shape:
 | http-long-polling | sub-second (held requests wake on new rows and awareness heartbeats) | more requests than plain polling, each holding a PHP worker up to its wait budget |
 | websocket | tens of milliseconds | a few frames per heartbeat — plus a persistent daemon, TLS termination, and an exposed port |
 
+**Short polling is the base transport, and an advisory channel sits
+beside it.** Every tab editing a post also opens a browser-to-browser
+channel to the other tabs on that post (WebRTC, negotiated through the
+heartbeat WordPress already sends from every editor screen). The channel
+carries presence and the sentence "I landed rows, go and poll", never
+content; every read and write stays on the REST sync endpoint. While
+every known peer is reachable over it, a tab polls only when it has
+something to send, when a peer announces, or when the heartbeat reports
+changes from a writer not on the channel. A tab that is alone schedules
+no polls and holds its edits until
+company arrives, a save (flushed through the room first), or the tab
+going hidden. Any tab that cannot reach a peer keeps the cadence in the
+table. The transport an admin selects is a preference: long polling
+and websocket carry everything while connected and turn the channel off
+meanwhile, and short polling is always the fallback. The websocket
+transport hands its rooms to short polling whenever its socket is down
+and takes them back, at the cursor polling reached, when it reopens. The
+reasoning, the rules, and the failure cases are in
+[plan/advisory-channel.md](plan/advisory-channel.md).
+
 Transport latency is engine-independent (the HTTP rows replicate within
 noise under intent-log). One caveat on the axis itself: "engines run
 over any transport" is an inherited framework property, not a

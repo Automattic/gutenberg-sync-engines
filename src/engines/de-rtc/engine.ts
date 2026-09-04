@@ -96,6 +96,13 @@ function createInertDeRtcCollectionCodec(
 				);
 			}
 		},
+		/*
+		 * Exempt from the transport's solo hold: commits ride the autosave
+		 * lane and the undo stack is the session's own accepted rows, so
+		 * the advisory rows this codec queues (fetches, review decisions)
+		 * must flow while alone too.
+		 */
+		sendsWhileAlone: true,
 		clientId: ydoc.clientID,
 		engineSlug: DE_RTC_ENGINE_SLUG,
 		engineProtocol: DE_RTC_ENGINE_PROTOCOL,

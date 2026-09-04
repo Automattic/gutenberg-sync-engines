@@ -14,6 +14,7 @@ import type {
 	EngineUpdate,
 } from '@wordpress/sync';
 import { applyServerAwarenessStates } from '../awareness-sync';
+import { announceLocalWrite } from '../../providers/advisory/announce';
 import type { DeRtcCommitAdapter } from './commit';
 import { buildDeRtcClientUpdate, hashDeRtcContent } from './descriptor';
 import { DE_RTC_REMOTE_ORIGIN, type DeRtcDocBridge } from './doc-bridge';
@@ -156,7 +157,10 @@ export function setDeRtcBurstQuietMsForTesting( ms: number ): void {
  */
 export function createDeRtcSessionCodec(
 	options: DeRtcSessionOptions
-): EngineSessionCodec & { prepareForSave: () => Promise< () => void > } {
+): EngineSessionCodec & {
+	prepareForSave: () => Promise< () => void >;
+	sendsWhileAlone: true;
+} {
 	const { bridge, review } = options;
 	const doc = bridge.doc;
 	const awareness = options.awareness ?? new Awareness( doc );
@@ -370,6 +374,9 @@ export function createDeRtcSessionCodec(
 	async function commitThroughSave( update: EngineUpdate ): Promise< void > {
 		try {
 			const response = await options.commit!( update );
+			// Rows landed through the autosave lane, which the polling manager
+			// never sees: tell the peers on the advisory channel to poll.
+			announceLocalWrite();
 			for ( const row of response.updates ?? [] ) {
 				processRow( row );
 			}
@@ -726,6 +733,13 @@ export function createDeRtcSessionCodec(
 				awareness,
 				DE_RTC_REMOTE_ORIGIN
 			),
+		/*
+		 * Exempt from the transport's solo hold: commits ride the autosave
+		 * lane and the undo stack is the session's own accepted rows, so
+		 * the advisory rows this codec queues (fetches, review decisions)
+		 * must flow while alone too.
+		 */
+		sendsWhileAlone: true,
 		clientId: doc.clientID,
 		engineSlug: DE_RTC_ENGINE_SLUG,
 		engineProtocol: DE_RTC_ENGINE_PROTOCOL,

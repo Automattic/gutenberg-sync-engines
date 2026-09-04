@@ -227,7 +227,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 			);
 
 			return array(
-				'rooms' => array(
+				'rooms'    => array(
 					'items'    => array(
 						'properties' => $room_args,
 						'type'       => 'object',
@@ -235,6 +235,14 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 					'maxItems' => self::MAX_ROOMS_PER_REQUEST,
 					'required' => true,
 					'type'     => 'array',
+				),
+				// The advisory channel's signaling probe (per-tab token and
+				// handshake messages), answered alongside the rooms so an
+				// active poll loop is a faster carrier than the heartbeat.
+				// See Gutenberg_Sync_Engines_Advisory_Presence.
+				'advisory' => array(
+					'type'     => 'object',
+					'required' => false,
 				),
 			);
 		}
@@ -346,6 +354,14 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 					return $room_response;
 				}
 				$response['rooms'][] = $room_response;
+			}
+
+			$probe = $request->get_param( 'advisory' );
+			if ( is_array( $probe ) && class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
+				$answer = ( new Gutenberg_Sync_Engines_Advisory_Presence( $this->storage ) )->answer_probe( $probe );
+				if ( null !== $answer ) {
+					$response['advisory'] = $answer;
+				}
 			}
 
 			return new WP_REST_Response( $response, 200 );
