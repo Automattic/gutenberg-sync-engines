@@ -18,7 +18,10 @@ release, which the release script generates from the commit history.
     carrying who is present and "new changes, go and poll" notices,
     never content. With every peer reachable over it, tabs poll on
     demand plus a 25-second safety poll instead of on a timer; a tab
-    that cannot reach a peer keeps the timer cadence. Filters:
+    that cannot reach a peer keeps the timer cadence. A lone tab keeps
+    its 4-second cadence for 30 seconds after loading and after
+    regaining focus, so a second person is found within seconds.
+    Filters:
     `gutenberg_sync_engines_advisory_enabled`,
     `gutenberg_sync_engines_advisory_ice_servers`,
     `gutenberg_sync_engines_advisory_max_peers`; console:

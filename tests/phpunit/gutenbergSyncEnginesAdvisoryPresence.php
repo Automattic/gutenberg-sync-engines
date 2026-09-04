@@ -185,6 +185,7 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 		$this->assertSame(
 			array(
 				array(
+					'id'   => '',
 					'from' => 'tok-a',
 					'kind' => 'offer',
 					'data' => 'sdp-offer',
@@ -318,6 +319,56 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 
 		// tok-b never made it in.
 		$this->assertSame( array(), $this->beat( 'tok-a' )['peers'] );
+	}
+
+	public function test_mailbox_keeps_every_message_filed_between_a_read_and_a_take() {
+		$this->beat( 'tok-a' );
+		wp_set_current_user( self::$other_editor_id );
+		$this->beat( 'tok-b' );
+
+		// Two senders' messages, with ids, both survive; the take drains
+		// them once; a message filed after the take is seen next time.
+		wp_set_current_user( self::$editor_id );
+		$this->beat(
+			'tok-a',
+			array(
+				'signals' => array(
+					array(
+						'id'   => 'tok-a-1',
+						'to'   => 'tok-b',
+						'kind' => 'offer',
+						'data' => 'o',
+					),
+					array(
+						'id'   => 'tok-a-2',
+						'to'   => 'tok-b',
+						'kind' => 'ice',
+						'data' => 'c1',
+					),
+				),
+			)
+		);
+		wp_set_current_user( self::$other_editor_id );
+		$first = $this->beat( 'tok-b' )['signals'];
+		$this->assertSame( array( 'tok-a-1', 'tok-a-2' ), array_column( $first, 'id' ) );
+		$this->assertSame( array(), $this->beat( 'tok-b' )['signals'] );
+
+		wp_set_current_user( self::$editor_id );
+		$this->beat(
+			'tok-a',
+			array(
+				'signals' => array(
+					array(
+						'id'   => 'tok-a-3',
+						'to'   => 'tok-b',
+						'kind' => 'ice',
+						'data' => 'c2',
+					),
+				),
+			)
+		);
+		wp_set_current_user( self::$other_editor_id );
+		$this->assertSame( array( 'tok-a-3' ), array_column( $this->beat( 'tok-b' )['signals'], 'id' ) );
 	}
 
 	public function test_presence_reads_never_create_a_storage_post() {

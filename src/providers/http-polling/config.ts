@@ -134,3 +134,6 @@ export const ADVISORY_SAFETY_POLL_INTERVAL_IN_MS =
 export const LOCAL_UPDATE_POLL_DELAY_MS = 300;
 export const ANNOUNCE_POLL_COALESCE_MS = 150;
 export const ANNOUNCE_POLL_MIN_GAP_MS = 250;
+// How long after the page loads, or the tab regains focus, a lone tab
+// keeps the solo cadence before dropping to the safety poll.
+export const FAST_DISCOVERY_WINDOW_MS = 30000;

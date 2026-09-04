@@ -88,16 +88,25 @@ describe( 'advisory signaling', () => {
 		const data: Record< string, unknown > = {};
 		hooks[ 'heartbeat.send' ]( data );
 		expect( data[ signaling.HEARTBEAT_DATA_KEY ] ).toEqual( {
+			seq: 1,
 			room: 'postType/post:7',
 			token: 'tok-b',
 			client_id: 42,
-			signals: [ { to: 'tok-a', kind: 'offer', data: 'sdp-offer' } ],
+			signals: [
+				{
+					id: 'tok-b-1',
+					to: 'tok-a',
+					kind: 'offer',
+					data: 'sdp-offer',
+				},
+			],
 		} );
 
 		// The outbox drains: the next beat carries no signals.
 		const next: Record< string, unknown > = {};
 		hooks[ 'heartbeat.send' ]( next );
 		expect( next[ signaling.HEARTBEAT_DATA_KEY ] ).toEqual( {
+			seq: 2,
 			room: 'postType/post:7',
 			token: 'tok-b',
 			client_id: 42,
@@ -191,13 +200,17 @@ describe( 'advisory signaling', () => {
 
 		const probe = signaling.buildProbe();
 		expect( probe ).toEqual( {
+			seq: 1,
 			room: 'postType/post:7',
 			token: 'tok-b',
 			client_id: 7,
-			signals: [ { to: 'tok-a', kind: 'offer', data: 'o' } ],
+			signals: [
+				{ id: 'tok-b-1', to: 'tok-a', kind: 'offer', data: 'o' },
+			],
 		} );
 		// Drained: the next probe carries none.
 		expect( signaling.buildProbe() ).toEqual( {
+			seq: 2,
 			room: 'postType/post:7',
 			token: 'tok-b',
 			client_id: 7,
@@ -231,6 +244,68 @@ describe( 'advisory signaling', () => {
 		signaling.applyAnswer( undefined );
 		signaling.applyAnswer( 'nope' );
 		expect( signaling.othersPresent() ).toBe( true );
+	} );
+
+	it( "keeps a probe's signals until its request is answered, and re-queues them when it fails", () => {
+		signaling.installSignaling();
+		signaling.sendSignal( 'tok-a', 'offer', 'o' );
+		const probe = signaling.buildProbe()!;
+		expect( probe.signals ).toHaveLength( 1 );
+
+		// The request failed: the offer goes back to the front of the
+		// outbox and the next carrier is asked for.
+		signaling.probeFailed( probe.seq );
+		jest.advanceTimersByTime( 50 );
+		expect( connectNow ).toHaveBeenCalledTimes( 1 );
+		const retry = signaling.buildProbe()!;
+		expect( retry.signals ).toEqual( probe.signals );
+
+		// Answered: gone for good.
+		signaling.applyAnswer( { others: false, peers: [] }, retry.seq );
+		signaling.probeFailed( retry.seq );
+		expect( signaling.buildProbe()!.signals ).toBeUndefined();
+
+		// A failed heartbeat re-queues too.
+		signaling.sendSignal( 'tok-a', 'ice', 'c' );
+		hooks[ 'heartbeat.send' ]( {} );
+		hooks[ 'heartbeat.error' ]( {} );
+		expect( signaling.buildProbe()!.signals ).toEqual( [
+			{ id: 'tok-b-2', to: 'tok-a', kind: 'ice', data: 'c' },
+		] );
+	} );
+
+	it( 'an answer older than the last applied one delivers its signals but leaves the peer list alone', () => {
+		const onPeers = jest.fn();
+		const onSignal = jest.fn();
+		signaling.onPeersChanged( onPeers );
+		signaling.onSignal( onSignal );
+		const older = signaling.buildProbe()!;
+		const newer = signaling.buildProbe()!;
+		signaling.applyAnswer(
+			{
+				others: true,
+				peers: [ { token: 'tok-c', client_id: 9, user_id: 2 } ],
+			},
+			newer.seq
+		);
+		expect( onPeers ).toHaveBeenCalledTimes( 1 );
+		// The slow one arrives late with an empty peer list and a signal.
+		signaling.applyAnswer(
+			{
+				others: false,
+				peers: [],
+				signals: [ { from: 'tok-c', kind: 'answer', data: 'sdp' } ],
+			},
+			older.seq
+		);
+		expect( onPeers ).toHaveBeenCalledTimes( 1 );
+		expect( signaling.getDiscoveredPeers() ).toHaveLength( 1 );
+		expect( signaling.othersPresent() ).toBe( true );
+		expect( onSignal ).toHaveBeenCalledWith( {
+			from: 'tok-c',
+			kind: 'answer',
+			data: 'sdp',
+		} );
 	} );
 
 	it( 'sends the leave beacon once with the room and token', () => {

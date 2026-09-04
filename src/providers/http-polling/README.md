@@ -56,7 +56,9 @@ The loop is driven by the cadence rules in `docs/plan/advisory-channel.md`
 
 - **Alone** (the presence lane says nobody else is in this post's room):
   only the 25 000 ms safety poll once the first poll has bootstrapped the
-  session, and the room queues are HELD: local updates wait in the browser
+  session, except for a 30 s discovery window after page load and after
+  the tab regains focus, when the 4000 ms solo cadence applies. The room
+  queues are HELD: local updates wait in the browser
   until company arrives, a save (an `apiFetch` middleware flushes them
   first, `save-flush.ts`), or the tab going hidden. Codecs that declare
   `sendsWhileAlone` (de-rtc) are exempt and send 300 ms after the first

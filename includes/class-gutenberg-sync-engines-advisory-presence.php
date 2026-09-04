@@ -23,9 +23,10 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 	 * use the answer to decide when to go quiet, when to poll on a timer,
 	 * and when to poll only on demand (see docs/plan/advisory-channel.md).
 	 *
-	 * Tokens and mailboxes live in transients keyed by the room, outside the
-	 * sync storage on purpose: a presence read must never create a room's
-	 * storage post (the storage API's own room lookup does).
+	 * Tokens live in a transient keyed by the room and mailboxes in options
+	 * rows updated by compare-and-swap, both outside the sync storage on
+	 * purpose: a presence read must never create a room's storage post
+	 * (the storage API's own room lookup does).
 	 *
 	 * @since n.e.x.t
 	 */
@@ -49,14 +50,14 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		const REST_LEAVE_ROUTE = '/advisory/leave';
 
 		/**
-		 * Transient name prefixes; the room hash (and, for mailboxes, the
+		 * Storage name prefixes; the room hash (and, for mailboxes, the
 		 * recipient token) is appended.
 		 *
 		 * @since n.e.x.t
 		 * @var string
 		 */
-		const TOKENS_TRANSIENT_PREFIX  = 'gse_adv_tokens_';
-		const MAILBOX_TRANSIENT_PREFIX = 'gse_adv_mail_';
+		const TOKENS_TRANSIENT_PREFIX = 'gse_adv_tokens_';
+		const MAILBOX_OPTION_PREFIX   = 'gse_adv_mail_';
 
 		/**
 		 * How long a token counts as a live tab, in seconds. A hidden tab's
@@ -95,7 +96,9 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 */
 		const MAX_TOKENS_PER_ROOM   = 50;
 		const MAX_MAILBOX_ENTRIES   = 50;
-		const MAX_SIGNALS_PER_BEAT  = 20;
+		const MAX_SIGNALS_PER_BEAT  = 40;
+		const MAX_SIGNAL_ID_LENGTH  = 96;
+		const CAS_ATTEMPTS          = 8;
 		const MAX_SIGNAL_DATA_BYTES = 16384;
 		const MAX_TOKEN_LENGTH      = 64;
 
@@ -443,10 +446,12 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 				if ( ! is_string( $data ) || strlen( $data ) > self::MAX_SIGNAL_DATA_BYTES ) {
 					continue;
 				}
+				$id = isset( $signal['id'] ) && is_string( $signal['id'] ) && strlen( $signal['id'] ) <= self::MAX_SIGNAL_ID_LENGTH ? $signal['id'] : '';
 				$this->append_mail(
 					$room,
 					$to,
 					array(
+						'id'   => $id,
 						'from' => $from,
 						'kind' => $kind,
 						'data' => $data,
@@ -457,8 +462,12 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		}
 
 		/**
-		 * Appends one message to a recipient's mailbox, dropping the oldest
-		 * past the cap.
+		 * Appends one message to a recipient's mailbox, atomically: the
+		 * mailbox is an options row updated by compare-and-swap
+		 * (WP_Sync_Atomic_Option), so two senders filing at once cannot
+		 * overwrite each other and a take cannot delete a message filed
+		 * between its read and its write. Expired entries are dropped and
+		 * the oldest past the cap.
 		 *
 		 * @since n.e.x.t
 		 *
@@ -468,27 +477,24 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * @return void
 		 */
 		private function append_mail( string $room, string $to, array $message ): void {
-			$key    = $this->mailbox_key( $room, $to );
-			$mail   = get_transient( $key );
-			$mail   = is_array( $mail ) ? $mail : array();
-			$now    = time();
-			$mail   = array_values(
-				array_filter(
-					$mail,
-					static function ( $entry ) use ( $now ) {
-						return is_array( $entry ) && isset( $entry['t'] ) && $now - (int) $entry['t'] < self::MAILBOX_EXPIRY;
-					}
-				)
-			);
-			$mail[] = $message;
-			if ( count( $mail ) > self::MAX_MAILBOX_ENTRIES ) {
-				$mail = array_slice( $mail, -self::MAX_MAILBOX_ENTRIES );
+			$name = $this->mailbox_key( $room, $to );
+			for ( $attempt = 0; $attempt < self::CAS_ATTEMPTS; $attempt++ ) {
+				$current = WP_Sync_Atomic_Option::read( $name );
+				$mail    = $this->decode_mail( $current );
+				$mail[]  = $message;
+				if ( count( $mail ) > self::MAX_MAILBOX_ENTRIES ) {
+					$mail = array_slice( $mail, -self::MAX_MAILBOX_ENTRIES );
+				}
+				if ( WP_Sync_Atomic_Option::swap( $name, (string) $current, (string) wp_json_encode( $mail ) ) ) {
+					return;
+				}
 			}
-			set_transient( $key, $mail, self::MAILBOX_EXPIRY );
 		}
 
 		/**
-		 * Empties a tab's mailbox and returns the fresh messages in it.
+		 * Empties a tab's mailbox and returns the fresh messages in it. The
+		 * swap to an empty box is atomic, so a message filed meanwhile is
+		 * seen by the retry, never dropped.
 		 *
 		 * @since n.e.x.t
 		 *
@@ -497,38 +503,78 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * @return array<int, array<string, mixed>> Messages, oldest first.
 		 */
 		private function take_mailbox( string $room, string $token ): array {
-			$key  = $this->mailbox_key( $room, $token );
-			$mail = get_transient( $key );
-			if ( ! is_array( $mail ) || 0 === count( $mail ) ) {
-				return array();
-			}
-			delete_transient( $key );
-			$now = time();
-			$out = array();
-			foreach ( $mail as $entry ) {
-				if ( ! is_array( $entry ) || ! isset( $entry['t'] ) || $now - (int) $entry['t'] >= self::MAILBOX_EXPIRY ) {
+			$name = $this->mailbox_key( $room, $token );
+			for ( $attempt = 0; $attempt < self::CAS_ATTEMPTS; $attempt++ ) {
+				$current = WP_Sync_Atomic_Option::read( $name );
+				$mail    = $this->decode_mail( $current );
+				if ( 0 === count( $mail ) ) {
+					return array();
+				}
+				if ( ! WP_Sync_Atomic_Option::swap( $name, (string) $current, '[]' ) ) {
 					continue;
 				}
-				$out[] = array(
-					'from' => (string) $entry['from'],
-					'kind' => (string) $entry['kind'],
-					'data' => (string) $entry['data'],
-				);
+				$out = array();
+				foreach ( $mail as $entry ) {
+					$out[] = array(
+						'id'   => (string) ( $entry['id'] ?? '' ),
+						'from' => (string) $entry['from'],
+						'kind' => (string) $entry['kind'],
+						'data' => (string) $entry['data'],
+					);
+				}
+				return $out;
 			}
-			return $out;
+			return array();
 		}
 
 		/**
-		 * The mailbox transient name for one recipient.
+		 * Decodes a stored mailbox, dropping malformed and expired entries.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string|null $stored The stored JSON, or null for none.
+		 * @return array<int, array<string, mixed>> Live entries.
+		 */
+		private function decode_mail( ?string $stored ): array {
+			$mail = '' !== (string) $stored ? json_decode( (string) $stored, true ) : array();
+			if ( ! is_array( $mail ) ) {
+				return array();
+			}
+			$now = time();
+			return array_values(
+				array_filter(
+					$mail,
+					static function ( $entry ) use ( $now ) {
+						return is_array( $entry ) && isset( $entry['t'], $entry['from'], $entry['kind'], $entry['data'] ) && $now - (int) $entry['t'] < self::MAILBOX_EXPIRY;
+					}
+				)
+			);
+		}
+
+		/**
+		 * Deletes a tab's mailbox row (on leave).
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $room  The room name.
+		 * @param string $token The tab's token.
+		 * @return void
+		 */
+		private function delete_mailbox( string $room, string $token ): void {
+			delete_option( $this->mailbox_key( $room, $token ) );
+		}
+
+		/**
+		 * The mailbox option name for one recipient.
 		 *
 		 * @since n.e.x.t
 		 *
 		 * @param string $room  The room name.
 		 * @param string $token The recipient's token.
-		 * @return string Transient name.
+		 * @return string Option name.
 		 */
 		private function mailbox_key( string $room, string $token ): string {
-			return self::MAILBOX_TRANSIENT_PREFIX . md5( $room . '|' . $token );
+			return self::MAILBOX_OPTION_PREFIX . md5( $room . '|' . $token );
 		}
 
 		/**
@@ -624,7 +670,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 			} else {
 				set_transient( $this->tokens_key( $room ), $tokens, self::TOKENS_TRANSIENT_EXPIRY );
 			}
-			delete_transient( $this->mailbox_key( $room, $token ) );
+			$this->delete_mailbox( $room, $token );
 		}
 
 		/**

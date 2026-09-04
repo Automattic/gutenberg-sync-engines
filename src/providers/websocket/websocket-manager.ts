@@ -388,8 +388,9 @@ function hasParkedRooms(): boolean {
  * The socket is open again: take every parked room back from short
  * polling at the cursor polling reached, carrying what it never sent.
  * Resolves once the rooms are the socket's again.
+ * @param opened
  */
-async function reclaimRooms(): Promise< void > {
+async function reclaimRooms( opened: WebSocket ): Promise< void > {
 	const parked = Array.from( rooms.values() ).filter(
 		( state ) => state.parked
 	);
@@ -399,8 +400,22 @@ async function reclaimRooms(): Promise< void > {
 			if ( rooms.get( state.room ) !== state ) {
 				return; // Unregistered meanwhile.
 			}
-			state.parked = false;
 			state.cursor = Math.max( state.cursor, released.cursor );
+			if ( socket !== opened || WebSocket.OPEN !== opened.readyState ) {
+				// The socket died while polling finished its request: the
+				// room stays parked, back with polling at the cursor it
+				// reached, carrying what it never sent.
+				pollingManager.registerRoom( {
+					room: state.room,
+					session: state.session,
+					log,
+					onStatusChange: state.onStatusChange,
+					initialCursor: state.cursor,
+					initialUpdates: released.unsent,
+				} );
+				return;
+			}
+			state.parked = false;
 			state.reclaimed.push( ...released.unsent );
 			bindLocalUpdates( state );
 			registerDebugSession( state.room, state.session );
@@ -479,7 +494,7 @@ function connect(): void {
 				// Reclaim parked rooms from short polling first, so the
 				// initial sync resumes at the cursor polling reached.
 				if ( hasParkedRooms() ) {
-					void reclaimRooms().then( proceed );
+					void reclaimRooms( opened! ).then( proceed );
 				} else {
 					proceed();
 				}

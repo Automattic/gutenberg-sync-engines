@@ -110,7 +110,10 @@ Two independent settings:
 3. **Alone means quiet.** While the server says nobody else is in this
    post's room, the tab polls only on the 25 s safety cadence (the same
    timer full coverage uses; it catches a script or WP-CLI saving the
-   post meanwhile). Updates are queued until another peer arrives, and
+   post meanwhile), except for 30 s after the page loads and after the
+   tab regains focus, when it keeps the 4 s solo cadence: those are the
+   moments a second person most often turns up, and the heartbeat alone
+   would take up to 10 s to notice them. Updates are queued until another peer arrives, and
    flushed before a save and when the tab goes hidden (see "Solo
    editing" below). De-rtc is exempt: its commits ride the autosave
    lane and its undo stack is its own accepted rows, so it keeps
@@ -136,7 +139,14 @@ Two independent settings:
    messages addressed to this tab. A handshake message rides the next
    poll when the loop is active (about a second at the company
    cadence), else the sender calls `wp.heartbeat.connectNow()`; the
-   receiver still sees it on its own next request.
+   receiver still sees it on its own next request. Messages are kept
+   until the request that carried them is answered and re-queued when
+   it fails; every probe carries a sequence number so a slow answer
+   overtaken by a newer one cannot regress the peer list; every message
+   carries an id so a retried duplicate is ignored. The description goes
+   out at once and candidates trickle behind it. The server files
+   messages in a compare-and-swap options row, so concurrent senders
+   and a take cannot lose one.
 7. **A preferred transport switches the channel off, but only while
    connected.** Long polling does this explicitly; websocket does it by
    construction (the polling manager has no rooms while the socket
@@ -216,7 +226,9 @@ Client:
     room at a time, so nothing is replayed across the handoff. A
     connection attempt that has not opened after 5 s parks the rooms
     too, while it keeps trying: a black-holed port can take the browser
-    tens of seconds to give up on.
+    tens of seconds to give up on. If the socket drops while a reclaim
+    is waiting on polling, the room goes back to polling at the cursor
+    polling reached instead of binding to the dead socket.
 -   `src/engines/de-rtc/session.ts`: announces after a commit lands
     through the autosave lane, since those rows never pass through the
     polling manager.
@@ -231,6 +243,9 @@ uses it to poll sooner and to show presence faster.**
     today's cadence; nothing lost. TURN is deliberately not required.
 -   A peer drops off the channel: coverage flips false on the
     `connectionstatechange`; the timer cadence resumes at once.
+-   A handshake message lost with a failed request: it is re-queued
+    for the next carrier; a lost answer times out the offer after 15 s
+    and the initiator offers again.
 -   Nudge dropped: the safety poll catches up within 25 s.
 -   Nudge storm: the coalescing delay and the floor bound polls per
     second; the server's existing size and room caps do the rest.

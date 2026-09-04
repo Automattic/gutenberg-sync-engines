@@ -344,6 +344,58 @@ describe( 'websocket manager', () => {
 			}
 		} );
 
+		it( 'hands a room back to polling when the socket dies while the reclaim is waiting', async () => {
+			jest.useFakeTimers();
+			try {
+				setup();
+				const session = fakeSession();
+				websocketManager.registerRoom( {
+					room: 'postType/post:1',
+					session,
+					onStatusChange: jest.fn(),
+				} );
+				await Promise.resolve();
+				await Promise.resolve();
+				const ws = FakeWebSocket.instances[ 0 ];
+				ws.open();
+				ws.close(); // Parked at cursor 0.
+				expect( mockPolling.registerRoom ).toHaveBeenCalledTimes( 1 );
+
+				// Reconnect opens, but the release is slow and the socket
+				// drops again before it resolves.
+				let release!: ( v: unknown ) => void;
+				mockPolling.releaseRoom.mockImplementationOnce(
+					() =>
+						new Promise( ( resolve ) => {
+							release = resolve;
+						} )
+				);
+				await jest.advanceTimersByTimeAsync( 1000 );
+				const ws2 = FakeWebSocket.instances[ 1 ];
+				ws2.open();
+				await jest.advanceTimersByTimeAsync( 0 );
+				ws2.close();
+				release( {
+					cursor: 6,
+					unsent: [ { type: 'update', data: 'QQ==' } ],
+				} );
+				await jest.advanceTimersByTimeAsync( 0 );
+
+				// Not bound to the dead socket: back with polling, at the
+				// cursor polling reached, with the unsent work.
+				expect( mockPolling.registerRoom ).toHaveBeenCalledTimes( 2 );
+				expect(
+					mockPolling.registerRoom.mock.calls[ 1 ][ 0 ]
+				).toMatchObject( {
+					initialCursor: 6,
+					initialUpdates: [ { type: 'update', data: 'QQ==' } ],
+				} );
+				expect( ws2.sent ).toHaveLength( 0 );
+			} finally {
+				jest.useRealTimers();
+			}
+		} );
+
 		it( 'parks the rooms after 5 s when a connection attempt hangs, and reclaims them if it opens later', async () => {
 			jest.useFakeTimers();
 			try {

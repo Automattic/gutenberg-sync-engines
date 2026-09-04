@@ -38,7 +38,8 @@ jest.mock( '@wordpress/hooks', () => ( {
 
 jest.mock( '../../../../src/providers/advisory/signaling', () => ( {
 	applyAnswer: jest.fn(),
-	buildProbe: () => ( { room: 'postType/post:1', token: 'tok' } ),
+	buildProbe: () => ( { seq: 1, room: 'postType/post:1', token: 'tok' } ),
+	probeFailed: jest.fn(),
 	installSignaling: jest.fn(),
 	installSignalingLifecycle: jest.fn(),
 	isSignalingAvailable: () => mockSignalingAvailable,
@@ -153,15 +154,40 @@ describe( 'polling-manager cadence', () => {
 		return session;
 	}
 
-	it( 'a lone tab drops to the safety poll after the first successful poll', async () => {
+	it( 'a lone tab keeps the solo cadence for a discovery window after load, then drops to the safety poll', async () => {
 		mockPostSyncUpdate.mockResolvedValue( response( [ 1 ] ) );
 		register();
 		await jest.advanceTimersByTimeAsync( 0 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
-		await jest.advanceTimersByTimeAsync( 24999 );
-		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
-		await jest.advanceTimersByTimeAsync( 1 );
+		// 30 s of 4 s polls: the moments a second person most often turns
+		// up, found within seconds instead of a heartbeat.
+		await jest.advanceTimersByTimeAsync( 4000 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+		// Past the window (plus the last 4 s poll scheduled inside it):
+		// only the 25 s safety poll.
+		await jest.advanceTimersByTimeAsync( 30000 );
+		const afterWindow = mockPostSyncUpdate.mock.calls.length;
+		expect( afterWindow ).toBeGreaterThanOrEqual( 8 );
+		await jest.advanceTimersByTimeAsync( 20000 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( afterWindow );
+		await jest.advanceTimersByTimeAsync( 5000 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( afterWindow + 1 );
+
+		// Regaining focus reopens the window.
+		Object.defineProperty( document, 'visibilityState', {
+			configurable: true,
+			get: () => 'hidden',
+		} );
+		document.dispatchEvent( new Event( 'visibilitychange' ) );
+		Object.defineProperty( document, 'visibilityState', {
+			configurable: true,
+			get: () => 'visible',
+		} );
+		document.dispatchEvent( new Event( 'visibilitychange' ) );
+		await jest.advanceTimersByTimeAsync( 0 );
+		const afterFocus = mockPostSyncUpdate.mock.calls.length;
+		await jest.advanceTimersByTimeAsync( 4000 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( afterFocus + 1 );
 	} );
 
 	it( 'a lone tab holds its updates; a flush (before a save) sends them and holds again', async () => {
@@ -174,8 +200,9 @@ describe( 'polling-manager cadence', () => {
 		) => void;
 		onLocalUpdate( { type: 'update', data: 'AA==' }, 1 );
 		onLocalUpdate( { type: 'update', data: 'AA==' }, 1 );
-		// Held: no on-demand poll, and the safety poll carries nothing.
-		await jest.advanceTimersByTimeAsync( 25000 );
+		// Held: no on-demand poll, and the discovery-window polls carry
+		// nothing.
+		await jest.advanceTimersByTimeAsync( 4000 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
 		expect(
 			mockPostSyncUpdate.mock.calls[ 1 ][ 0 ].rooms[ 0 ].updates
@@ -192,9 +219,10 @@ describe( 'polling-manager cadence', () => {
 		).toHaveLength( 2 );
 		expect( mockAnnounceLocalWrite ).toHaveBeenCalledWith( 'test-room' );
 
-		// Still alone: the next update is held again.
+		// Still alone: the next update is held again (no on-demand poll
+		// within the send delay).
 		onLocalUpdate( { type: 'update', data: 'AA==' }, 1 );
-		await jest.advanceTimersByTimeAsync( 1000 );
+		await jest.advanceTimersByTimeAsync( 500 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 3 );
 	} );
 
@@ -326,7 +354,7 @@ describe( 'polling-manager cadence', () => {
 			size: number
 		) => void;
 		onLocalUpdate( { type: 'update', data: 'AA==' }, 1 );
-		await jest.advanceTimersByTimeAsync( 10000 );
+		await jest.advanceTimersByTimeAsync( 3000 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
 
 		mockOthers = true;
@@ -340,10 +368,11 @@ describe( 'polling-manager cadence', () => {
 		await jest.advanceTimersByTimeAsync( 1000 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 3 );
 
-		// The heartbeat says they left: back to the safety cadence.
+		// The heartbeat says they left: back to the solo cadence (the
+		// discovery window is still open this soon after load).
 		mockOthers = false;
 		mockCallbacks.others.forEach( ( cb ) => cb( false ) );
-		await jest.advanceTimersByTimeAsync( 24000 );
+		await jest.advanceTimersByTimeAsync( 3000 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 3 );
 		await jest.advanceTimersByTimeAsync( 1000 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 4 );

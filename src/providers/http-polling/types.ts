@@ -69,7 +69,7 @@ export interface SyncPayload {
 	 * alongside the rooms: an active poll loop is a faster carrier than
 	 * the heartbeat.
 	 */
-	advisory?: Record< string, unknown >;
+	advisory?: Record< string, unknown > & { seq?: number };
 }
 
 export interface SyncResponse {

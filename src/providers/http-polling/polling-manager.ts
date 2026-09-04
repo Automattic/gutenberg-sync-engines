@@ -23,6 +23,7 @@ import {
 	LOCAL_UPDATE_POLL_DELAY_MS,
 	ANNOUNCE_POLL_COALESCE_MS,
 	ANNOUNCE_POLL_MIN_GAP_MS,
+	FAST_DISCOVERY_WINDOW_MS,
 } from './config';
 import { ConnectionError, ConnectionErrorCode } from '../../framework';
 import {
@@ -40,6 +41,7 @@ import { announceLocalWrite } from '../advisory/announce';
 import {
 	applyAnswer,
 	buildProbe,
+	probeFailed,
 	installSignaling,
 	installSignalingLifecycle,
 	isSignalingAvailable,
@@ -99,6 +101,8 @@ interface RegisterRoomOptions {
 	 * had reached, so nothing is replayed or skipped.
 	 */
 	initialCursor?: number;
+	/** Updates to queue behind the session's own initial ones. */
+	initialUpdates?: SyncUpdate[];
 }
 
 /**
@@ -409,6 +413,13 @@ let syncRequestBodySizeLimit = MAX_SYNC_REQUEST_BODY_SIZE_IN_BYTES;
 let hasBootstrapped = false;
 let pollAgainRequested = false;
 let hiddenFlushTimer: ReturnType< typeof setTimeout > | null = null;
+/*
+ * A lone tab polls only the safety timer, so it would notice a joiner on
+ * its next heartbeat (10 s) at best. For a while after the page loads and
+ * after the tab regains focus — the moments a second person most often
+ * turns up — it polls at the solo cadence instead (4 s by default).
+ */
+let fastDiscoveryUntil = 0;
 let pollsStarted = 0;
 let pollsFinished = 0;
 /** Flush waiters: resolve once poll number `target` has finished. */
@@ -539,7 +550,9 @@ function advisoryCoversEveryone(): boolean {
  */
 function nextScheduledDelay(): number | null {
 	if ( hasBootstrapped && isAlone() ) {
-		return ADVISORY_SAFETY_POLL_INTERVAL_IN_MS;
+		return Date.now() < fastDiscoveryUntil
+			? POLLING_INTERVAL_IN_MS
+			: ADVISORY_SAFETY_POLL_INTERVAL_IN_MS;
 	}
 	if ( longPollMode ) {
 		return isActiveBrowser
@@ -875,6 +888,7 @@ function handleVisibilityChange() {
 	cancelHiddenFlush();
 
 	if ( isActiveBrowser && ! wasActive ) {
+		fastDiscoveryUntil = Date.now() + FAST_DISCOVERY_WINDOW_MS;
 		/*
 		 * Remove scheduled polling and repoll immediately when reactivated.
 		 *
@@ -1101,7 +1115,7 @@ function poll(): void {
 			inFlightParkController = null;
 			parkAbortedForLocalUpdate = false;
 			// The signaling answer rode this poll: company, peers, mailbox.
-			applyAnswer( advisory );
+			applyAnswer( advisory, payload.advisory?.seq );
 
 			// Emit 'connected' status.
 			consecutiveFailures = 0;
@@ -1289,6 +1303,9 @@ function poll(): void {
 				pollInterval = nextDelay;
 			}
 		} catch ( error ) {
+			// Whatever the cause, the probe's signals never arrived: back to
+			// the outbox for the next carrier.
+			probeFailed( payload.advisory?.seq );
 			if ( parkAbortedForLocalUpdate ) {
 				/*
 				 * Deliberate wake: the parked request carried no updates, so
@@ -1499,6 +1516,7 @@ function registerRoom( {
 	log,
 	onStatusChange,
 	initialCursor = 0,
+	initialUpdates = [],
 }: RegisterRoomOptions ): void {
 	if ( roomStates.has( room ) ) {
 		return;
@@ -1518,7 +1536,7 @@ function registerRoom( {
 		session as EngineSessionCodec & { sendsWhileAlone?: boolean }
 	 ).sendsWhileAlone;
 	const updateQueue = createUpdateQueue(
-		session.getInitialUpdates(),
+		[ ...session.getInitialUpdates(), ...initialUpdates ],
 		holdWhileAlone && isAlone()
 	);
 
@@ -1657,6 +1675,7 @@ function registerRoom( {
 	}
 
 	if ( isPrimaryRoom ) {
+		fastDiscoveryUntil = Date.now() + FAST_DISCOVERY_WINDOW_MS;
 		// The signaling lane and the advisory channel are per page, keyed
 		// by the primary room's session (the post being edited).
 		setSyncClientId( session.clientId );

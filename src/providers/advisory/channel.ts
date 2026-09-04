@@ -39,8 +39,8 @@ import {
  */
 
 const DATA_CHANNEL_LABEL = 'wp-sync-advisory';
-const ICE_GATHERING_TIMEOUT_MS = 2000;
-const ANSWER_TIMEOUT_MS = 45000;
+const ANSWER_TIMEOUT_MS = 15000;
+const SEEN_SIGNAL_IDS_MAX = 500;
 const DISCONNECT_GRACE_MS = 5000;
 const MAX_CONNECT_ATTEMPTS = 3;
 const RETRY_BASE_MS = 2000;
@@ -64,6 +64,8 @@ interface PeerLink {
 	localSent: boolean;
 	remoteSet: boolean;
 	pendingCandidates: RTCIceCandidateInit[];
+	/** Local candidates found before the description went out. */
+	earlyCandidates: RTCIceCandidateInit[];
 	retryTimer: ReturnType< typeof setTimeout > | null;
 	answerTimer: ReturnType< typeof setTimeout > | null;
 	disconnectTimer: ReturnType< typeof setTimeout > | null;
@@ -85,6 +87,8 @@ const lastSentPresence: Map< string, { json: string; entry: PresenceEntry } > =
 	new Map();
 let presenceTimer: ReturnType< typeof setInterval > | null = null;
 let presenceSource: ( () => PresenceEntry[] ) | null = null;
+
+const seenSignalIds: Set< string > = new Set();
 
 const announceListeners: Array< ( room: string ) => void > = [];
 const presenceListeners: Array< ( room: string ) => void > = [];
@@ -160,6 +164,7 @@ function closePeerConnection( link: PeerLink ): void {
 	link.localSent = false;
 	link.remoteSet = false;
 	link.pendingCandidates = [];
+	link.earlyCandidates = [];
 	try {
 		dc?.close();
 	} catch {
@@ -327,14 +332,18 @@ function createPeerConnection( link: PeerLink ): RTCPeerConnection {
 		iceServers: getAdvisorySettings()?.iceServers ?? [],
 	} );
 	pc.onicecandidate = ( event ) => {
-		// Candidates found after the full description went out (rare with
-		// gathering awaited, but possible on a slow network).
-		if ( event.candidate && link.localSent && link.pc === pc ) {
-			sendSignal(
-				link.token,
-				'ice',
-				JSON.stringify( event.candidate.toJSON() )
-			);
+		// Trickle: the description goes out at once and candidates follow
+		// as they are found, each on the next carrier (a poll at the
+		// company cadence, else a heartbeat beat). Candidates found before
+		// the description is sent wait for it, so order holds.
+		if ( ! event.candidate || link.pc !== pc ) {
+			return;
+		}
+		const candidate = event.candidate.toJSON();
+		if ( link.localSent ) {
+			sendSignal( link.token, 'ice', JSON.stringify( candidate ) );
+		} else {
+			link.earlyCandidates.push( candidate );
 		}
 	};
 	pc.onconnectionstatechange = () => {
@@ -374,24 +383,17 @@ function createPeerConnection( link: PeerLink ): RTCPeerConnection {
 	return pc;
 }
 
-function waitForIceGathering( pc: RTCPeerConnection ): Promise< void > {
-	if ( 'complete' === pc.iceGatheringState ) {
-		return Promise.resolve();
+/**
+ * Marks the local description as sent and flushes the candidates found
+ * before it went out.
+ *
+ * @param link The link.
+ */
+function localDescriptionSent( link: PeerLink ): void {
+	link.localSent = true;
+	for ( const candidate of link.earlyCandidates.splice( 0 ) ) {
+		sendSignal( link.token, 'ice', JSON.stringify( candidate ) );
 	}
-	return new Promise( ( resolve ) => {
-		const done = () => {
-			clearTimeout( timer );
-			pc.removeEventListener( 'icegatheringstatechange', check );
-			resolve();
-		};
-		const check = () => {
-			if ( 'complete' === pc.iceGatheringState ) {
-				done();
-			}
-		};
-		const timer = setTimeout( done, ICE_GATHERING_TIMEOUT_MS );
-		pc.addEventListener( 'icegatheringstatechange', check );
-	} );
 }
 
 async function flushPendingCandidates( link: PeerLink ): Promise< void > {
@@ -423,7 +425,6 @@ async function connect( link: PeerLink ): Promise< void > {
 		wireDataChannel( link, pc.createDataChannel( DATA_CHANNEL_LABEL ) );
 		const offer = await pc.createOffer();
 		await pc.setLocalDescription( offer );
-		await waitForIceGathering( pc );
 		if ( link.pc !== pc || ! pc.localDescription ) {
 			return;
 		}
@@ -432,7 +433,7 @@ async function connect( link: PeerLink ): Promise< void > {
 			'offer',
 			JSON.stringify( pc.localDescription )
 		);
-		link.localSent = true;
+		localDescriptionSent( link );
 		clearTimer( link, 'answerTimer' );
 		link.answerTimer = setTimeout( () => {
 			link.answerTimer = null;
@@ -468,7 +469,6 @@ async function respond( link: PeerLink, offer: string ): Promise< void > {
 		await flushPendingCandidates( link );
 		const answer = await pc.createAnswer();
 		await pc.setLocalDescription( answer );
-		await waitForIceGathering( pc );
 		if ( link.pc !== pc || ! pc.localDescription ) {
 			return;
 		}
@@ -477,7 +477,7 @@ async function respond( link: PeerLink, offer: string ): Promise< void > {
 			'answer',
 			JSON.stringify( pc.localDescription )
 		);
-		link.localSent = true;
+		localDescriptionSent( link );
 	} catch {
 		if ( link.pc === pc ) {
 			linkDown( link );
@@ -498,6 +498,7 @@ function createLink( token: string, clientId: number ): PeerLink {
 		localSent: false,
 		remoteSet: false,
 		pendingCandidates: [],
+		earlyCandidates: [],
 		retryTimer: null,
 		answerTimer: null,
 		disconnectTimer: null,
@@ -554,6 +555,17 @@ function reconcile( discovered: DiscoveredPeer[] ): void {
 function handleSignal( signal: Signal ): void {
 	if ( ! isAdvisoryActive() ) {
 		return;
+	}
+	// A retried request may deliver a signal twice; the second copy of an
+	// offer would tear down the connection its first copy is building.
+	if ( signal.id ) {
+		if ( seenSignalIds.has( signal.id ) ) {
+			return;
+		}
+		seenSignalIds.add( signal.id );
+		if ( seenSignalIds.size > SEEN_SIGNAL_IDS_MAX ) {
+			seenSignalIds.delete( seenSignalIds.values().next().value! );
+		}
 	}
 	let link = links.get( signal.from );
 	switch ( signal.kind ) {
@@ -833,6 +845,7 @@ export function resetAdvisoryChannelForTesting(): void {
 	links.clear();
 	presence.clear();
 	lastSentPresence.clear();
+	seenSignalIds.clear();
 	if ( presenceTimer ) {
 		clearInterval( presenceTimer );
 		presenceTimer = null;

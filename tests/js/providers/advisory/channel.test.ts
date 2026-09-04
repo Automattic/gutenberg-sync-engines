@@ -74,7 +74,9 @@ class FakePeerConnection extends EventTarget {
 	public connectionState = 'new';
 	public localDescription: RTCSessionDescriptionInit | null = null;
 	public remoteDescription: RTCSessionDescriptionInit | null = null;
-	public onicecandidate: ( ( event: unknown ) => void ) | null = null;
+	public onicecandidate:
+		| ( ( event: { candidate: { toJSON: () => unknown } | null } ) => void )
+		| null = null;
 	public onconnectionstatechange: ( () => void ) | null = null;
 	public ondatachannel:
 		| ( ( event: { channel: FakeDataChannel } ) => void )
@@ -104,6 +106,15 @@ class FakePeerConnection extends EventTarget {
 
 	async setLocalDescription( d: RTCSessionDescriptionInit ): Promise< void > {
 		this.localDescription = d;
+		// Trickle: a host candidate turns up right after the description.
+		queueMicrotask(
+			() =>
+				this.onicecandidate?.( {
+					candidate: {
+						toJSON: () => ( { candidate: 'host:' + this.id } ),
+					},
+				} )
+		);
 	}
 
 	async setRemoteDescription(
@@ -218,6 +229,7 @@ function beat( tab: Tab, peers: Tab[] ): void {
 			mailboxes.set( signal.to, [] );
 		}
 		mailboxes.get( signal.to )!.push( {
+			id: signal.id,
 			from: tab.token,
 			kind: signal.kind,
 			data: signal.data,
@@ -352,6 +364,54 @@ describe( 'advisory channel', () => {
 		await connectTabs( a, b );
 		expect( a.channel.advisoryCoversClients( [ 1, 2 ] ) ).toBe( true );
 		expect( b.channel.advisoryCoversClients( [ 1, 2 ] ) ).toBe( true );
+	} );
+
+	it( 'sends the description at once and trickles candidates behind it, ignoring a duplicate offer', async () => {
+		const a = createTab( 'tok-a', 1 );
+		const b = createTab( 'tok-b', 2 );
+		tabs = [ a, b ];
+		const outgoingFromA: Array< Record< string, string > > = [];
+		beat( a, [ b ] );
+		await flush();
+		// Peek at A's outbox: the offer, then the candidate found after it.
+		const data: Record< string, unknown > = {};
+		a.send( data );
+		const probe = data[ KEY ] as {
+			signals: Array< Record< string, string > >;
+		};
+		outgoingFromA.push( ...probe.signals );
+		expect( outgoingFromA.map( ( s ) => s.kind ) ).toEqual( [
+			'offer',
+			'ice',
+		] );
+		// Deliver the offer twice (a retried request): B answers once.
+		const offer = outgoingFromA[ 0 ];
+		for ( const signal of [ offer, offer, outgoingFromA[ 1 ] ] ) {
+			if ( ! mailboxes.has( 'tok-b' ) ) {
+				mailboxes.set( 'tok-b', [] );
+			}
+			mailboxes.get( 'tok-b' )!.push( {
+				id: signal.id,
+				from: 'tok-a',
+				kind: signal.kind,
+				data: signal.data,
+			} );
+		}
+		beat( b, [ a ] );
+		await flush();
+		const bOut: Record< string, unknown > = {};
+		b.send( bOut );
+		const bSignals = (
+			bOut[ KEY ] as { signals: Array< Record< string, string > > }
+		 ).signals;
+		expect( bSignals.filter( ( s ) => 'answer' === s.kind ) ).toHaveLength(
+			1
+		);
+		expect(
+			FakePeerConnection.all.filter(
+				( pc ) => 'closed' === pc.connectionState
+			)
+		).toHaveLength( 0 );
 	} );
 
 	it( 'drops a peer whose token disappears from discovery', async () => {

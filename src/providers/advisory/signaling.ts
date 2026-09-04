@@ -38,6 +38,8 @@ export interface Signal {
 	from: string;
 	kind: SignalKind;
 	data: string;
+	/** Sender-assigned id; a retry may deliver the same signal twice. */
+	id?: string;
 }
 
 export interface DiscoveredPeer {
@@ -64,6 +66,7 @@ interface HeartbeatApi {
 }
 
 interface OutgoingSignal {
+	id: string;
 	to: string;
 	kind: SignalKind;
 	data: string;
@@ -79,6 +82,19 @@ let peers: DiscoveredPeer[] = [];
 let syncClientId: number | null = null;
 const outbox: OutgoingSignal[] = [];
 let connectNowScheduled = false;
+/*
+ * Reliability: a probe's signals stay in `inFlight` until the request that
+ * carried them is answered; a failed request puts them back at the front
+ * of the outbox. Every probe carries a sequence number so an answer that
+ * arrives after a newer one (a slow heartbeat overtaken by a poll) cannot
+ * regress the peer list; its signals are still delivered. Each signal has
+ * an id so a receiver can ignore the duplicate a retry may produce.
+ */
+let probeSeq = 0;
+let signalSeq = 0;
+let lastAppliedSeq = 0;
+let lastHeartbeatSeq = 0;
+const inFlight: Map< number, OutgoingSignal[] > = new Map();
 
 let signalCarrier: ( () => boolean ) | null = null;
 
@@ -197,7 +213,13 @@ export function sendSignal( to: string, kind: SignalKind, data: string ): void {
 	if ( ! isSignalingAvailable() ) {
 		return;
 	}
-	outbox.push( { to, kind, data } );
+	signalSeq++;
+	outbox.push( {
+		id: `${ getPresenceToken() ?? '' }-${ signalSeq }`,
+		to,
+		kind,
+		data,
+	} );
 	install();
 	if ( connectNowScheduled ) {
 		return;
@@ -232,18 +254,51 @@ export function setSignalCarrier( carrier: ( () => boolean ) | null ): void {
  * poll): this tab's room and token, its sync client id, and the queued
  * handshake messages, which it drains. Null off a per-post editor screen.
  */
-export function buildProbe(): Record< string, unknown > | null {
+export function buildProbe():
+	| ( Record< string, unknown > & { seq: number } )
+	| null {
 	const settings = getAdvisorySettings();
 	if ( ! settings ) {
 		return null;
 	}
+	const seq = ++probeSeq;
 	const signals = outbox.splice( 0, outbox.length );
+	if ( signals.length > 0 ) {
+		inFlight.set( seq, signals );
+	}
 	return {
+		seq,
 		room: settings.room,
 		token: settings.token,
 		...( null !== syncClientId ? { client_id: syncClientId } : {} ),
 		...( signals.length > 0 ? { signals } : {} ),
 	};
+}
+
+/**
+ * The request that carried a probe failed (or was aborted): its signals
+ * go back to the front of the outbox for the next carrier.
+ *
+ * @param seq The probe's sequence number.
+ */
+export function probeFailed( seq: number | undefined ): void {
+	if ( undefined === seq ) {
+		return;
+	}
+	const signals = inFlight.get( seq );
+	inFlight.delete( seq );
+	if ( signals && signals.length > 0 ) {
+		outbox.unshift( ...signals );
+		if ( ! connectNowScheduled ) {
+			connectNowScheduled = true;
+			setTimeout( () => {
+				connectNowScheduled = false;
+				if ( ! signalCarrier?.() ) {
+					getHeartbeat()?.connectNow?.();
+				}
+			}, 50 );
+		}
+	}
 }
 
 /**
@@ -365,8 +420,13 @@ export function installSignalingLifecycle(): void {
 function onHeartbeatSend( data: Record< string, unknown > ): void {
 	const probe = buildProbe();
 	if ( probe ) {
+		lastHeartbeatSeq = probe.seq;
 		data[ HEARTBEAT_DATA_KEY ] = probe;
 	}
+}
+
+function onHeartbeatError(): void {
+	probeFailed( lastHeartbeatSeq );
 }
 
 function samePeers( a: DiscoveredPeer[], b: DiscoveredPeer[] ): boolean {
@@ -382,17 +442,25 @@ function samePeers( a: DiscoveredPeer[], b: DiscoveredPeer[] ): boolean {
 }
 
 function onHeartbeatTick( data: Record< string, unknown > ): void {
-	applyAnswer( data?.[ HEARTBEAT_DATA_KEY ] );
+	// The beat went through, whether or not the server answered our key
+	// (a disabled channel answers nothing): its signals are delivered.
+	applyAnswer( data?.[ HEARTBEAT_DATA_KEY ], lastHeartbeatSeq );
 }
 
 /**
  * Reads the server's answer to a probe, whichever request carried it:
  * company, the discovered peers, and this tab's mailbox. Listeners fire on
- * changes and on each delivered message.
+ * changes and on each delivered message. An answer older than the last
+ * applied one (a slow heartbeat overtaken by a poll) delivers its signals
+ * but does not touch the peer list or the company belief.
  *
  * @param raw The answer, or anything else (ignored).
+ * @param seq The sequence number of the probe this answers, when known.
  */
-export function applyAnswer( raw: unknown ): void {
+export function applyAnswer( raw: unknown, seq?: number ): void {
+	if ( undefined !== seq ) {
+		inFlight.delete( seq );
+	}
 	const answer = raw as
 		| {
 				others?: unknown;
@@ -405,6 +473,14 @@ export function applyAnswer( raw: unknown ): void {
 		'object' !== typeof answer ||
 		'boolean' !== typeof answer.others
 	) {
+		return;
+	}
+	const stale = undefined !== seq && seq < lastAppliedSeq;
+	if ( ! stale && undefined !== seq ) {
+		lastAppliedSeq = seq;
+	}
+	if ( stale ) {
+		deliverSignals( answer.signals );
 		return;
 	}
 
@@ -446,20 +522,25 @@ export function applyAnswer( raw: unknown ): void {
 		}
 	}
 
-	if ( Array.isArray( answer.signals ) ) {
-		for ( const signal of answer.signals ) {
-			if (
-				! signal ||
-				'object' !== typeof signal ||
-				'string' !== typeof ( signal as Signal ).from ||
-				'string' !== typeof ( signal as Signal ).kind ||
-				'string' !== typeof ( signal as Signal ).data
-			) {
-				continue;
-			}
-			for ( const callback of signalListeners ) {
-				callback( signal as Signal );
-			}
+	deliverSignals( answer.signals );
+}
+
+function deliverSignals( signals: unknown ): void {
+	if ( ! Array.isArray( signals ) ) {
+		return;
+	}
+	for ( const signal of signals ) {
+		if (
+			! signal ||
+			'object' !== typeof signal ||
+			'string' !== typeof ( signal as Signal ).from ||
+			'string' !== typeof ( signal as Signal ).kind ||
+			'string' !== typeof ( signal as Signal ).data
+		) {
+			continue;
+		}
+		for ( const callback of signalListeners ) {
+			callback( signal as Signal );
 		}
 	}
 }
@@ -472,6 +553,7 @@ function install(): void {
 
 	addAction( 'heartbeat.send', HOOK_NAMESPACE, onHeartbeatSend );
 	addAction( 'heartbeat.tick', HOOK_NAMESPACE, onHeartbeatTick );
+	addAction( 'heartbeat.error', HOOK_NAMESPACE, onHeartbeatError );
 }
 
 /**
@@ -509,6 +591,11 @@ export function resetSignalingForTesting(): void {
 	peers = [];
 	syncClientId = null;
 	outbox.length = 0;
+	inFlight.clear();
+	probeSeq = 0;
+	signalSeq = 0;
+	lastAppliedSeq = 0;
+	lastHeartbeatSeq = 0;
 	connectNowScheduled = false;
 	signalListeners.length = 0;
 	peersListeners.length = 0;
