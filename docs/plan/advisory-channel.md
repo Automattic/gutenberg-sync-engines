@@ -203,8 +203,9 @@ Client:
     messages, the leave beacon.
 -   `src/providers/advisory/channel.ts`: the WebRTC mesh. One peer
     connection and one data channel per discovered tab. The tab with the
-    lower token initiates; ICE gathering completes before the offer or
-    answer is sent, so a handshake is two heartbeat hops. Messages:
+    lower token initiates; the offer or answer goes out at once and
+    candidates trickle behind it on the next carrier, buffered by the
+    receiver if they overtake the description. Messages:
     `hello` (client id), `presence`, `announce`, `bye`. Coverage is
     computed from discovered tokens and the last awareness map.
 -   `src/providers/http-polling/polling-manager.ts`: the cadence rules

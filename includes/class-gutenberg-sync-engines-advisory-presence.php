@@ -429,7 +429,8 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * @return void
 		 */
 		private function file_signals( string $room, string $from, array $tokens, array $signals ): void {
-			$count = 0;
+			$count   = 0;
+			$grouped = array();
 			foreach ( $signals as $signal ) {
 				if ( ++$count > self::MAX_SIGNALS_PER_BEAT ) {
 					break;
@@ -446,18 +447,19 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 				if ( ! is_string( $data ) || strlen( $data ) > self::MAX_SIGNAL_DATA_BYTES ) {
 					continue;
 				}
-				$id = isset( $signal['id'] ) && is_string( $signal['id'] ) && strlen( $signal['id'] ) <= self::MAX_SIGNAL_ID_LENGTH ? $signal['id'] : '';
-				$this->append_mail(
-					$room,
-					$to,
-					array(
-						'id'   => $id,
-						'from' => $from,
-						'kind' => $kind,
-						'data' => $data,
-						't'    => time(),
-					)
+				$id               = isset( $signal['id'] ) && is_string( $signal['id'] ) && strlen( $signal['id'] ) <= self::MAX_SIGNAL_ID_LENGTH ? $signal['id'] : '';
+				$grouped[ $to ][] = array(
+					'id'   => $id,
+					'from' => $from,
+					'kind' => $kind,
+					'data' => $data,
+					't'    => time(),
 				);
+			}
+			// One atomic append per recipient: trickled candidates arrive
+			// several to a request.
+			foreach ( $grouped as $to => $messages ) {
+				$this->append_mail( $room, (string) $to, $messages );
 			}
 		}
 
@@ -471,17 +473,16 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 *
 		 * @since n.e.x.t
 		 *
-		 * @param string               $room    The room name.
-		 * @param string               $to      The recipient's token.
-		 * @param array<string, mixed> $message The message.
+		 * @param string                           $room     The room name.
+		 * @param string                           $to       The recipient's token.
+		 * @param array<int, array<string, mixed>> $messages The messages, oldest first.
 		 * @return void
 		 */
-		private function append_mail( string $room, string $to, array $message ): void {
+		private function append_mail( string $room, string $to, array $messages ): void {
 			$name = $this->mailbox_key( $room, $to );
 			for ( $attempt = 0; $attempt < self::CAS_ATTEMPTS; $attempt++ ) {
 				$current = WP_Sync_Atomic_Option::read( $name );
-				$mail    = $this->decode_mail( $current );
-				$mail[]  = $message;
+				$mail    = array_merge( $this->decode_mail( $current ), $messages );
 				if ( count( $mail ) > self::MAX_MAILBOX_ENTRIES ) {
 					$mail = array_slice( $mail, -self::MAX_MAILBOX_ENTRIES );
 				}
@@ -561,7 +562,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * @return void
 		 */
 		private function delete_mailbox( string $room, string $token ): void {
-			delete_option( $this->mailbox_key( $room, $token ) );
+			WP_Sync_Atomic_Option::delete( $this->mailbox_key( $room, $token ) );
 		}
 
 		/**
@@ -629,6 +630,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * @return void
 		 */
 		private function record_token( string $room, string $token, int $client_id ): void {
+			$this->sweep_expired( $room );
 			$tokens = $this->read_tokens( $room );
 			$known  = $tokens[ $token ] ?? null;
 
@@ -651,6 +653,30 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 			}
 
 			set_transient( $this->tokens_key( $room ), $tokens, self::TOKENS_TRANSIENT_EXPIRY );
+		}
+
+		/**
+		 * Deletes the mailboxes of tokens that expired without a leave
+		 * beacon (a crashed tab, a lost connection), so their rows do not
+		 * outlive them. Runs on every token refresh; cheap when nothing
+		 * expired.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $room The room name.
+		 * @return void
+		 */
+		private function sweep_expired( string $room ): void {
+			$stored = get_transient( $this->tokens_key( $room ) );
+			if ( ! is_array( $stored ) ) {
+				return;
+			}
+			$now = time();
+			foreach ( $stored as $token => $entry ) {
+				if ( ! is_array( $entry ) || ! isset( $entry['t'] ) || $now - (int) $entry['t'] >= self::PRESENCE_TTL ) {
+					$this->delete_mailbox( $room, (string) $token );
+				}
+			}
 		}
 
 		/**

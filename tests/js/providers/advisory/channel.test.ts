@@ -129,7 +129,11 @@ class FakePeerConnection extends EventTarget {
 		}
 	}
 
-	async addIceCandidate(): Promise< void > {}
+	public candidates: unknown[] = [];
+
+	async addIceCandidate( candidate: unknown ): Promise< void > {
+		this.candidates.push( candidate );
+	}
 
 	close(): void {
 		this.connectionState = 'closed';
@@ -412,6 +416,36 @@ describe( 'advisory channel', () => {
 				( pc ) => 'closed' === pc.connectionState
 			)
 		).toHaveLength( 0 );
+	} );
+
+	it( 'buffers a candidate that arrives before its offer and applies it once the offer lands', async () => {
+		const a = createTab( 'tok-a', 1 );
+		const b = createTab( 'tok-b', 2 );
+		tabs = [ a, b ];
+		beat( a, [ b ] );
+		await flush();
+		const data: Record< string, unknown > = {};
+		a.send( data );
+		const [ offer, ice ] = (
+			data[ KEY ] as { signals: Array< Record< string, string > > }
+		 ).signals;
+		expect( ice.kind ).toBe( 'ice' );
+		// The candidate overtakes the offer (two carriers in flight).
+		mailboxes.set( 'tok-b', [
+			{ id: ice.id, from: 'tok-a', kind: 'ice', data: ice.data },
+		] );
+		beat( b, [ a ] );
+		await flush();
+		expect( b.channel.getAdvisoryDebugState().peers ).toHaveLength( 1 );
+		mailboxes.set( 'tok-b', [
+			{ id: offer.id, from: 'tok-a', kind: 'offer', data: offer.data },
+		] );
+		beat( b, [ a ] );
+		await flush();
+		const bPc = FakePeerConnection.all.find(
+			( pc ) => null !== pc.remoteDescription
+		)!;
+		expect( bPc.candidates ).toEqual( [ JSON.parse( ice.data ) ] );
 	} );
 
 	it( 'drops a peer whose token disappears from discovery', async () => {

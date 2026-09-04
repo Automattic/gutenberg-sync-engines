@@ -26,9 +26,11 @@ import {
  * the notice triggers (see docs/plan/advisory-channel.md).
  *
  * Handshake: for each pair of discovered tabs, the one with the LOWER
- * presence token initiates. ICE gathering completes before the offer or
- * the answer is sent, so a handshake costs two heartbeat hops (offer out,
- * answer back) instead of a trickle of candidates at heartbeat cadence.
+ * presence token initiates. The offer or answer goes out at once and the
+ * connection candidates trickle behind it on the next carrier (a poll at
+ * the company cadence, else a heartbeat beat); a receiver buffers any
+ * candidate that overtakes its description, since two carriers can be in
+ * flight at once.
  *
  * Coverage: the polling manager asks whether every peer it knows about —
  * every discovered token AND every client id in the last awareness map —
@@ -455,7 +457,10 @@ async function connect( link: PeerLink ): Promise< void > {
  * @param offer The serialized offer description.
  */
 async function respond( link: PeerLink, offer: string ): Promise< void > {
+	// Candidates that arrived ahead of this offer belong to it.
+	const early = link.pendingCandidates;
 	closePeerConnection( link );
+	link.pendingCandidates = early;
 	const pc = createPeerConnection( link );
 	link.pc = pc;
 	try {
@@ -596,23 +601,27 @@ function handleSignal( signal: Signal ): void {
 					} );
 			}
 			break;
-		case 'ice':
-			if ( link?.pc ) {
-				let candidate: RTCIceCandidateInit;
-				try {
-					candidate = JSON.parse(
-						signal.data
-					) as RTCIceCandidateInit;
-				} catch {
-					return;
-				}
-				if ( link.remoteSet ) {
-					void link.pc.addIceCandidate( candidate ).catch( () => {} );
-				} else {
-					link.pendingCandidates.push( candidate );
-				}
+		case 'ice': {
+			// Two carriers (a heartbeat and a poll) can be in flight at
+			// once, so a candidate can land before the offer it belongs
+			// to. Buffer it on the link (created on the spot if need be)
+			// until the remote description is set.
+			let candidate: RTCIceCandidateInit;
+			try {
+				candidate = JSON.parse( signal.data ) as RTCIceCandidateInit;
+			} catch {
+				return;
+			}
+			if ( ! link ) {
+				link = createLink( signal.from, 0 );
+			}
+			if ( link.pc && link.remoteSet ) {
+				void link.pc.addIceCandidate( candidate ).catch( () => {} );
+			} else {
+				link.pendingCandidates.push( candidate );
 			}
 			break;
+		}
 		case 'bye':
 			if ( link ) {
 				linkDown( link, true );

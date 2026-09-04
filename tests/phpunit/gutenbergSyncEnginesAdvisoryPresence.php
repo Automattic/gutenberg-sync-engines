@@ -371,6 +371,35 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 		$this->assertSame( array( 'tok-a-3' ), array_column( $this->beat( 'tok-b' )['signals'], 'id' ) );
 	}
 
+	public function test_expired_tokens_take_their_mailbox_rows_with_them() {
+		$this->beat( 'tok-a' );
+		wp_set_current_user( self::$other_editor_id );
+		$this->beat(
+			'tok-b',
+			array(
+				'signals' => array(
+					array(
+						'to'   => 'tok-a',
+						'kind' => 'offer',
+						'data' => 'o',
+					),
+				),
+			)
+		);
+		$key = 'gse_adv_mail_' . md5( $this->room() . '|tok-a' );
+		$this->assertNotNull( WP_Sync_Atomic_Option::read( $key ) );
+
+		// tok-a crashes: its token ages past the TTL without a leave beacon.
+		$transient            = 'gse_adv_tokens_' . md5( $this->room() );
+		$tokens               = get_transient( $transient );
+		$tokens['tok-a']['t'] = time() - Gutenberg_Sync_Engines_Advisory_Presence::PRESENCE_TTL - 1;
+		set_transient( $transient, $tokens, 600 );
+
+		// The next refresh by anyone sweeps the dead tab's mailbox row.
+		$this->beat( 'tok-b' );
+		$this->assertNull( WP_Sync_Atomic_Option::read( $key ) );
+	}
+
 	public function test_presence_reads_never_create_a_storage_post() {
 		$this->beat( 'tok-a' );
 		$posts = get_posts(
