@@ -523,7 +523,7 @@ Multi-process concurrency measurement is OPT-IN behind one flag:
 
 ```bash
 npm run bench -- --concurrency=4     # 4 worker processes, same room, REAL
-                                     # postmeta storage: latency including
+                                     # table storage: latency including
                                      # genuine lock waits and 503s, vs a
                                      # 1-worker uncontended baseline
 ```
@@ -786,7 +786,7 @@ The comparison the decision turns on:
 - **In-memory storage** understates absolute per-request time (no real DB
   round-trip for reads/writes) but keeps the *engine* comparison clean;
   storage growth is exact. For end-to-end latency including MySQL, point
-  the runner at `WP_Sync_Post_Meta_Storage` instead.
+  the runner at `WP_Sync_Table_Storage` instead.
 - **The intent-log lock and de-rtc version claim ARE real DB I/O inside
   `service_us`** (a claim/release options-row pair per intent-log
   request; one CAS write per accepted de-rtc proposal), so their

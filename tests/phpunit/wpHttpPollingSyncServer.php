@@ -68,13 +68,6 @@ class Tests_Collaboration_WpHttpPollingSyncServer extends WP_Test_REST_Controlle
 		add_filter( 'wp_sync_engines', array( self::class, 'register_fixture_engine' ), 10, 2 );
 
 		parent::set_up();
-
-		// Reset storage post ID cache to ensure clean state after transaction rollback.
-		$reflection = new ReflectionProperty( 'WP_Sync_Post_Meta_Storage', 'storage_post_ids' );
-		if ( PHP_VERSION_ID < 80100 ) {
-			$reflection->setAccessible( true );
-		}
-		$reflection->setValue( null, array() );
 	}
 
 	/**

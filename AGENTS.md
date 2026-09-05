@@ -47,6 +47,18 @@ This plugin provides:
   only matters when a CONFIGURED slug isn't registered (misconfiguration
   degrades to the first registered engine: yjs-server).
 - **Transports:** `http-polling` (default), `http-long-polling`, `websocket`.
+- **Storage:** `WP_Sync_Table_Storage`, substituted for the framework's
+  post-meta default through the `__unstable_wp_sync_storage` filter. Rooms
+  live in two plugin-owned tables, `{$prefix}sync_updates` (the update log;
+  the row id is the cursor) and `{$prefix}sync_room_meta` (lineage,
+  awareness, engine bookkeeping — one row per room and key), so no
+  collaboration write touches post caches. `WP_Sync_Table_Schema` owns
+  the lifecycle: activation creates the tables (dbDelta), a bumped
+  `DB_VERSION` upgrades them on the next load, deactivation leaves them
+  and every room alone, and `uninstall.php` / `wp collaboration storage
+  drop` / `WP_Sync_Table_Schema::drop()` remove them. If the tables cannot
+  be created the filter leaves the post-meta default in place and an
+  admin notice says so.
 
 It registers through the framework's extension points: PHP `wp_sync_engines` /
 `wp_sync_transports` filters; JS `registerSyncEngine` / `registerSyncTransport`
@@ -62,7 +74,12 @@ The framework/plugin split is complete: the framework ships **neither** engines
 - `gutenberg-sync-engines.php` — plugin entry.
 - `includes/` — server PHP: `engines/{intent-log,yjs-server,de-rtc}/`,
   `transports/{...,websocket/}`, `admin/` (the Collaboration settings screen),
-  and `lib/`:
+  `storage/` (the room storage tables: `class-wp-sync-table-schema.php`
+  — names, definition, create/upgrade/drop, loaded by the plugin entry
+  ahead of the activation hook; `class-wp-sync-table-storage.php` — the
+  `WP_Sync_Storage` implementation and the ONLY reader/writer of the
+  tables, diagnostics helpers included; the `wp collaboration storage`
+  CLI), and `lib/`:
   - `engines/de-rtc/merge-core.php` — the DE-RTC merge core, ported
     VERBATIM from the Gutenberg `chriszarate/refreshed-de-rtc` branch's
     `de-rtc.php` (itself a verbatim port of wordpress-develop
@@ -435,8 +452,11 @@ they exist so a failure is observable without re-instrumenting:
   awareness, last-N decoded rows). Loaded ONLY under WP-CLI on
   local/development environments (wp-env reports `local`) or with the
   `GUTENBERG_SYNC_ENGINES_DIAGNOSTICS` constant — deliberately absent
-  from the production path. It never creates storage posts (the storage
-  API's own room lookup does — don't "just query storage" for diagnosis).
+  from the production path. Reads go through the table storage's
+  read-only helpers (`list_rooms`, `get_room_size`, `get_last_updates`,
+  `get_all_room_meta`), which cannot create a room. `wp collaboration
+  storage status|install|reset|drop` (always registered under WP-CLI)
+  manages the tables themselves.
 - **Session capture + request log** (`includes/diagnostics/`, same
   local/development-or-constant gate, but hooked on web requests too —
   no-ops until used): `wp collaboration capture start|stop|list|export|drop`
@@ -522,9 +542,10 @@ they exist so a failure is observable without re-instrumenting:
   speaking the newly-selected engine arrives — they're rebuildable
   change-feeds. Per-post entity rooms keep the strict fence (they can hold
   unsaved collaborative content; sessions degrade to the post lock).
-  Related trap: the postmeta storage's `get_cursor()`/`get_update_count()`
-  are per-request caches refreshed ONLY by `get_updates_after_cursor()` —
-  never gate genesis (or anything) on them before a read has run.
+  Related trap: the storage's `get_cursor()`/`get_update_count()` are
+  per-request caches refreshed ONLY by `get_updates_after_cursor()` (the
+  table storage keeps the post-meta default's semantics here on purpose)
+  — never gate genesis (or anything) on them before a read has run.
 - **A push dispatched from inside `SyncManager.update()` never reaches the
   editor.** core-data's `editEntityRecord` hands the sync manager the edits
   BEFORE it commits them, and every editor edit carries the editor's own

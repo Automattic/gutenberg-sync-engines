@@ -35,7 +35,7 @@ class Tests_Collaboration_WpDeRtcSyncMetaColocation extends WP_UnitTestCase {
 	}
 
 	private function engine(): WP_De_RTC_Engine {
-		return new WP_De_RTC_Engine( new WP_Sync_Post_Meta_Storage() );
+		return new WP_De_RTC_Engine( new WP_Sync_Table_Storage() );
 	}
 
 	private function make_post(): int {
@@ -164,18 +164,11 @@ class Tests_Collaboration_WpDeRtcSyncMetaColocation extends WP_UnitTestCase {
 		);
 
 		// Simulate a room reset (engine flip / stale-room cleanup): the
-		// storage post disappears, the saved post is all that remains.
-		$storage_ids = get_posts(
-			array(
-				'post_type'      => 'wp_sync_storage',
-				'post_status'    => 'publish',
-				'name'           => md5( $room ),
-				'posts_per_page' => 1,
-				'fields'         => 'ids',
-			)
-		);
-		$this->assertNotEmpty( $storage_ids );
-		wp_delete_post( (int) $storage_ids[0], true );
+		// room's rows disappear, the saved post is all that remains.
+		$storage = new WP_Sync_Table_Storage();
+		$this->assertTrue( $storage->get_room_size( $room )['found'] );
+		$this->assertTrue( $storage->reset_room( $room ) );
+		$this->assertFalse( $storage->get_room_size( $room )['found'] );
 
 		// A fresh engine re-runs genesis from the saved post: lineage must
 		// RESUME at v2 (adopted), not restart at v1.

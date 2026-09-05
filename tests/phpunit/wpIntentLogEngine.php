@@ -836,7 +836,7 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 		// this room (the lineage check passes on null).
 		$this->poll();
 
-		$storage = new WP_Sync_Post_Meta_Storage();
+		$storage = new WP_Sync_Table_Storage();
 		$this->assertSame(
 			WP_Intent_Log_Engine::SLUG,
 			$storage->get_room_engine( $this->room() )
@@ -884,7 +884,7 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 		 * wrapper element; the block validator rejected the markup on the
 		 * next parse.
 		 */
-		$engine = new WP_Intent_Log_Engine( new WP_Sync_Post_Meta_Storage() );
+		$engine = new WP_Intent_Log_Engine( new WP_Sync_Table_Storage() );
 		$this->poll(
 			array(
 				self::intent_update(
@@ -937,7 +937,7 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 	}
 
 	public function test_materialize_round_trips_content_with_sync_ids() {
-		$engine = new WP_Intent_Log_Engine( new WP_Sync_Post_Meta_Storage() );
+		$engine = new WP_Intent_Log_Engine( new WP_Sync_Table_Storage() );
 		$this->poll(
 			array(
 				self::intent_update(
@@ -1127,7 +1127,7 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 		$this->assertArrayHasKey( 'time', $proposals[0] );
 
 		// Nothing reached the document.
-		$engine = new WP_Intent_Log_Engine( new WP_Sync_Post_Meta_Storage() );
+		$engine = new WP_Intent_Log_Engine( new WP_Sync_Table_Storage() );
 		$this->assertStringNotContainsString( '<script>', (string) $engine->materialize( $this->room() ) );
 
 		// Redelivery acks identically without a second parked row.
@@ -1150,7 +1150,7 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 		);
 		$this->assertSame( 'applied', $response['dispositions'][0]['status'] );
 
-		$engine  = new WP_Intent_Log_Engine( new WP_Sync_Post_Meta_Storage() );
+		$engine  = new WP_Intent_Log_Engine( new WP_Sync_Table_Storage() );
 		$content = $engine->materialize( $this->room() );
 		$this->assertStringContainsString( '<a href="https://example.com/">Hello</a>', $content );
 	}
@@ -1265,7 +1265,7 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 		);
 		$this->assertSame( 'applied', $response['dispositions'][0]['status'] );
 
-		$engine  = new WP_Intent_Log_Engine( new WP_Sync_Post_Meta_Storage() );
+		$engine  = new WP_Intent_Log_Engine( new WP_Sync_Table_Storage() );
 		$content = $engine->materialize( $this->room() );
 		$this->assertStringNotContainsString( '<script>', $content );
 		$this->assertStringContainsString( '&lt;script&gt;', $content );
@@ -1300,7 +1300,7 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 		$this->assertSame( array( 'requires-approval', 'requires-approval' ), $reasons );
 		$this->assertCount( 2, $this->proposal_rows() );
 
-		$engine = new WP_Intent_Log_Engine( new WP_Sync_Post_Meta_Storage() );
+		$engine = new WP_Intent_Log_Engine( new WP_Sync_Table_Storage() );
 		$this->assertStringNotContainsString( 'kses-nb', (string) $engine->materialize( $this->room() ) );
 	}
 
@@ -1363,7 +1363,7 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 		);
 		$this->assertSame( 'applied', $response['dispositions'][0]['status'] );
 
-		$engine = new WP_Intent_Log_Engine( new WP_Sync_Post_Meta_Storage() );
+		$engine = new WP_Intent_Log_Engine( new WP_Sync_Table_Storage() );
 		$this->assertStringContainsString( '<script>x</script>', (string) $engine->materialize( $this->room() ) );
 	}
 
@@ -1502,7 +1502,7 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 		$this->assertSame( 'requires-approval', $swapped['dispositions'][0]['reason'] );
 
 		// The document still holds the benign value.
-		$engine  = new WP_Intent_Log_Engine( new WP_Sync_Post_Meta_Storage() );
+		$engine  = new WP_Intent_Log_Engine( new WP_Sync_Table_Storage() );
 		$content = (string) $engine->materialize( $this->room() );
 		$this->assertStringContainsString( '[script]alert(1);[/script]', $content );
 		$this->assertStringNotContainsString( '<script>alert(1);</script>', $content );
@@ -1552,7 +1552,7 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 
 		// Materialize emits the classic run BARE: no comment delimiters,
 		// content byte-preserved.
-		$engine  = new WP_Intent_Log_Engine( new WP_Sync_Post_Meta_Storage() );
+		$engine  = new WP_Intent_Log_Engine( new WP_Sync_Table_Storage() );
 		$content = (string) $engine->materialize( $room );
 		$this->assertStringContainsString( '<div>classic <strong>legacy</strong> run</div>', $content );
 		$this->assertStringNotContainsString( 'wp:freeform', $content );

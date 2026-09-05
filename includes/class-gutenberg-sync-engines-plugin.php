@@ -70,10 +70,27 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 		 * @return void
 		 */
 		public function boot(): void {
-			// The framework's engine contract is the canonical presence check.
+			/*
+			 * The storage tables come first and do not depend on the
+			 * framework: a plugin update that ships a newer schema upgrades
+			 * here (activation hooks do not fire on updates), and the
+			 * lifecycle CLI (`wp collaboration storage …`) must work on a
+			 * site whose framework is missing. A site that cannot create
+			 * the tables keeps working on the framework's post-meta storage
+			 * (see filter_sync_storage()) and is told so.
+			 */
+			if ( ! WP_Sync_Table_Schema::maybe_upgrade() ) {
+				add_action( 'admin_notices', array( $this, 'render_storage_unavailable_notice' ) );
+			}
+			if ( defined( 'WP_CLI' ) && WP_CLI ) {
+				require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/storage/class-wp-sync-table-storage-cli-command.php';
+			}
+
+			// The framework's engine and storage contracts are the canonical
+			// presence check.
 			$this->framework_available = interface_exists( 'WP_Sync_Engine' )
 				&& interface_exists( 'WP_Sync_Transport' )
-				&& class_exists( 'WP_Sync_Post_Meta_Storage' );
+				&& interface_exists( 'WP_Sync_Storage' );
 
 			if ( ! $this->framework_available ) {
 				add_action( 'admin_notices', array( $this, 'render_missing_framework_notice' ) );
@@ -94,6 +111,10 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 		private function load(): void {
 			// The automerge-php support gate (tiny; the library itself stays lazy).
 			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/lib/automerge-php-loader.php';
+
+			// Room storage over the plugin's own tables (the schema class is
+			// loaded by the plugin entry, ahead of activation).
+			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/storage/class-wp-sync-table-storage.php';
 
 			// Shared concurrency primitives (Core-style lock + optimistic
 			// CAS), each with a filterable drop-in backend seam.
@@ -171,6 +192,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 		 * @return void
 		 */
 		private function register(): void {
+			add_filter( '__unstable_wp_sync_storage', array( $this, 'filter_sync_storage' ) );
 			add_filter( 'wp_sync_engines', array( $this, 'register_engines' ), 10, 2 );
 			WP_De_RTC_Sync_Meta_Colocation::register();
 			WP_De_RTC_Base_Version_Preflight::register();
@@ -182,6 +204,30 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			add_action( 'enqueue_block_editor_assets', array( $this, 'enqueue_editor_assets' ) );
 
 			( new Gutenberg_Sync_Engines_Settings() )->register();
+		}
+
+		/**
+		 * Substitutes the plugin's table storage for the framework's
+		 * post-meta default (`__unstable_wp_sync_storage`).
+		 *
+		 * Only the DEFAULT is replaced: a storage another plugin has
+		 * already substituted, at any priority, is respected. And only
+		 * when the tables are usable (the recorded schema version is
+		 * current — an autoloaded option, since this runs on every
+		 * `wp_get_sync_storage()` call): a site that could not create them
+		 * keeps collaborating on post meta rather than failing every
+		 * request, with an admin notice saying so.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param WP_Sync_Storage $storage The storage the framework built.
+		 * @return WP_Sync_Storage Storage to use.
+		 */
+		public function filter_sync_storage( $storage ) {
+			if ( $storage instanceof WP_Sync_Post_Meta_Storage && WP_Sync_Table_Schema::is_ready() ) {
+				return new WP_Sync_Table_Storage();
+			}
+			return $storage;
 		}
 
 		/**
@@ -338,6 +384,24 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			}
 			echo '<div class="notice notice-warning"><p>';
 			echo esc_html__( 'Gutenberg Sync Engines needs the collaborative-editing framework from Gutenberg (or a supporting WordPress version). Real-time collaboration is inactive until it is available.', 'gutenberg-sync-engines' );
+			echo '</p></div>';
+		}
+
+		/**
+		 * Admin notice shown when the storage tables could not be created:
+		 * collaboration keeps working on the framework's post-meta storage
+		 * until they can be.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return void
+		 */
+		public function render_storage_unavailable_notice(): void {
+			if ( ! current_user_can( 'activate_plugins' ) ) {
+				return;
+			}
+			echo '<div class="notice notice-error"><p>';
+			echo esc_html__( 'Gutenberg Sync Engines could not create its collaboration storage tables (the database user may lack the CREATE TABLE privilege). Real-time collaboration is running on the slower post-meta storage until they exist; run "wp collaboration storage install" once the privilege is granted.', 'gutenberg-sync-engines' );
 			echo '</p></div>';
 		}
 	}

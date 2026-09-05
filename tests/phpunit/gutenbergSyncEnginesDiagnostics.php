@@ -272,26 +272,21 @@ class Tests_Collaboration_GutenbergSyncEnginesDiagnostics extends WP_UnitTestCas
 		$this->assertFalse( $data['found'] );
 		$this->assertSame( 0, $data['rows'] );
 
-		// A room-shaped storage post with two update rows.
-		$storage_id = self::factory()->post->create(
-			array(
-				'post_type'   => 'wp_sync_storage',
-				'post_status' => 'publish',
-				'post_name'   => md5( 'postType/post:' . self::$post_id ),
-			)
-		);
-		add_post_meta( $storage_id, 'wp_sync_update', 'payload-one' );
-		add_post_meta( $storage_id, 'wp_sync_update', 'payload-two-longer' );
+		// The probe must not have created the room by looking.
+		$this->assertFalse( ( new WP_Sync_Table_Storage() )->get_room_size( 'postType/post:999999' )['found'] );
+
+		// A room with two update rows.
+		$room    = 'postType/post:' . self::$post_id;
+		$storage = new WP_Sync_Table_Storage();
+		$storage->add_update( $room, 'payload-one' );
+		$storage->add_update( $room, 'payload-two-longer' );
 
 		$request = new WP_REST_Request( 'GET', '/rtc-test/v1/room-size' );
-		$request->set_param( 'room', 'postType/post:' . self::$post_id );
+		$request->set_param( 'room', $room );
 		$data = $log->rest_room_size( $request )->get_data();
 		$this->assertTrue( $data['found'] );
-		$this->assertSame( $storage_id, $data['post_id'] );
-		$this->assertGreaterThanOrEqual( 2, $data['rows'] );
+		$this->assertSame( 2, $data['rows'] );
 		$this->assertGreaterThan( 0, $data['bytes'] );
-
-		wp_delete_post( $storage_id, true );
 	}
 
 	public function test_whole_request_capture_logs_any_tagged_request() {

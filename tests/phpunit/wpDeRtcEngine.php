@@ -1,7 +1,7 @@
 <?php
 /**
  * Engine-level tests for the DE-RTC sync engine (WP_De_RTC_Engine),
- * driving the production WP_Sync_Engine seam against the postmeta storage
+ * driving the production WP_Sync_Engine seam against the table storage
  * with real merge-core three-way merges.
  *
  * @package Gutenberg
@@ -69,7 +69,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 	 * @return WP_De_RTC_Engine Engine.
 	 */
 	private function engine(): WP_De_RTC_Engine {
-		return new WP_De_RTC_Engine( new WP_Sync_Post_Meta_Storage() );
+		return new WP_De_RTC_Engine( new WP_Sync_Table_Storage() );
 	}
 
 	/**
@@ -168,7 +168,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 
 	public function test_genesis_snapshot_and_lineage() {
 		$engine   = $this->engine();
-		$storage  = new WP_Sync_Post_Meta_Storage();
+		$storage  = new WP_Sync_Table_Storage();
 		$response = $engine->get_updates_since( $this->room(), 1, 0, array() );
 
 		$this->assertGreaterThan( 0, $response['end_cursor'] );
@@ -438,7 +438,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 				$content = $proposed;
 			}
 
-			$storage = new WP_Sync_Post_Meta_Storage();
+			$storage = new WP_Sync_Table_Storage();
 			$floor   = $storage->get_room_meta( $this->room(), WP_De_RTC_Engine::META_FLOOR );
 			$this->assertIsNumeric( $floor, 'compaction should have recorded a floor' );
 
@@ -1082,7 +1082,7 @@ class Tests_Collaboration_WpDeRtcEngine extends WP_UnitTestCase {
 				$content = $proposed;
 			}
 
-			$storage = new WP_Sync_Post_Meta_Storage();
+			$storage = new WP_Sync_Table_Storage();
 			$this->assertIsNumeric(
 				$storage->get_room_meta( $this->room(), WP_De_RTC_Engine::META_FLOOR ),
 				'compaction should have trimmed at least once'
