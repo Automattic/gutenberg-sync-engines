@@ -584,6 +584,10 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				'<p class="description">%s</p>',
 				esc_html__( 'An advisory channel reduces polling by signaling to peers when updates are available. WebRTC connects the tabs to each other directly; WebSocket relays through the same sync daemon the WebSocket transport uses (it must be running), which also reaches tabs that cannot connect directly.', 'gutenberg-sync-engines' )
 			);
+			printf(
+				'<p class="description">%s</p>',
+				esc_html__( 'It only applies while short polling is the transport in use: with long polling or WebSocket selected, the channel runs only while that transport is down and short polling is the fallback.', 'gutenberg-sync-engines' )
+			);
 		}
 
 		/**
