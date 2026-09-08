@@ -397,6 +397,20 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 					continue;
 				}
 
+				/*
+				 * The proposal content is the document alone. A client whose
+				 * editor parsed a saved post carries the co-located sync-meta
+				 * pseudo-block (see class-wp-de-rtc-sync-meta-colocation.php)
+				 * as a stray block; it is bookkeeping, never content, and is
+				 * stripped here exactly as the save preflight strips it.
+				 */
+				if ( function_exists( 'wp_de_rtc_count_post_content_sync_meta_scripts' ) && wp_de_rtc_count_post_content_sync_meta_scripts( $proposal['proposedContent'] ) > 0 ) {
+					$parsed = wp_de_rtc_parse_post_content_sync_meta( $proposal['proposedContent'], array( 'allow_script_stripped_sync_meta' => true ) );
+					if ( is_array( $parsed ) && is_string( $parsed['content'] ?? null ) ) {
+						$proposal['proposedContent'] = $parsed['content'];
+					}
+				}
+
 				$disposition = $this->ingest_proposal( $room, $client_id, $state, $proposal, $review );
 				if ( is_wp_error( $disposition ) ) {
 					// Claim attempts exhausted under heavy contention: the
@@ -2539,6 +2553,40 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * The canonical-state option row for a room.
 		 *
 		 * @since 0.6.0
+		 *
+		 * @global wpdb $wpdb WordPress database abstraction object.
+		 *
+		 * @param string $room Room identifier.
+		 * @return string Option name.
+		 */
+		/**
+		 * Forgets a room's out-of-row state — the canonical chain and the
+		 * version-claim options rows — after the room's rows were reset.
+		 *
+		 * The storage's `reset_room()` wipes rows, lineage and room meta, but
+		 * this engine keeps its canonical document in an options row and
+		 * `load_room()` treats that row as "the room exists": without this,
+		 * a reset room resumed from its stale canonical and never ran genesis
+		 * again (a reloading tab was served nothing). Hooked to the presence
+		 * lane's `gutenberg_sync_engines_room_reset` action.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @global wpdb $wpdb WordPress database abstraction object.
+		 *
+		 * @param string $room Room identifier.
+		 * @return void
+		 */
+		public static function forget_room_state( string $room ): void {
+			global $wpdb;
+			delete_option( $wpdb->prefix . 'sync_de_rtc_canonical_' . md5( $room ) );
+			delete_option( $wpdb->prefix . 'sync_de_rtc_claim_' . md5( $room ) );
+		}
+
+		/**
+		 * The options row holding a room's canonical chain.
+		 *
+		 * @since n.e.x.t
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *

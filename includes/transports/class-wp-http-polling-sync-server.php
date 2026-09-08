@@ -61,6 +61,13 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		const AWARENESS_TIMEOUT = 30;
 
 		/**
+		 * Room meta key of the room's generation token (see room_generation()).
+		 *
+		 * @since n.e.x.t
+		 */
+		const GENERATION_META_KEY = 'generation';
+
+		/**
 		 * Maximum total size (in bytes) of the request body.
 		 *
 		 * @since 7.0.0
@@ -105,13 +112,40 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 *
 		 * @since 7.0.0
 		 *
-		 * @param WP_Sync_Storage              $storage Storage backend for sync updates.
-		 * @param WP_Sync_Engine_Registry|null $engines Engine registry. Defaults to a
-		 *                                              registry over the given storage.
+		 * @param WP_Sync_Storage                               $storage  Storage backend for sync updates.
+		 * @param WP_Sync_Engine_Registry|null                  $engines  Engine registry. Defaults to a
+		 *                                                                registry over the given storage.
+		 * @param Gutenberg_Sync_Engines_Advisory_Presence|null $presence Presence lane deciding room
+		 *                                                                lifetime. Defaults to the
+		 *                                                                plugin's when available.
 		 */
-		public function __construct( WP_Sync_Storage $storage, ?WP_Sync_Engine_Registry $engines = null ) {
-			$this->storage = $storage;
-			$this->engines = $engines ?? new WP_Sync_Engine_Registry( $storage );
+		public function __construct( WP_Sync_Storage $storage, ?WP_Sync_Engine_Registry $engines = null, ?Gutenberg_Sync_Engines_Advisory_Presence $presence = null ) {
+			if ( null === $presence && class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
+				$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
+			}
+			$this->presence = $presence;
+			$this->storage  = $storage;
+			$this->engines  = $engines ?? new WP_Sync_Engine_Registry( $storage );
+		}
+
+		/**
+		 * The presence lane deciding room lifetime (join/leave resets), or
+		 * null when the plugin's presence class is unavailable.
+		 *
+		 * @since n.e.x.t
+		 * @var Gutenberg_Sync_Engines_Advisory_Presence|null
+		 */
+		protected $presence;
+
+		/**
+		 * The presence lane this transport consults for room lifetime.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return Gutenberg_Sync_Engines_Advisory_Presence|null
+		 */
+		public function get_presence(): ?Gutenberg_Sync_Engines_Advisory_Presence {
+			return $this->presence;
 		}
 
 		/**
@@ -212,6 +246,14 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 					'minimum'  => 1,
 					'required' => false,
 					'type'     => 'integer',
+				),
+				// The tab's presence token (Gutenberg_Sync_Engines_Advisory_Presence):
+				// a tab's first request with it is its join, which under the
+				// default policy resets a per-post room nobody else is in.
+				'presence_token'  => array(
+					'required'  => false,
+					'type'      => 'string',
+					'maxLength' => 64,
 				),
 				'room'            => array(
 					'required' => true,
@@ -390,6 +432,19 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 			$room      = (string) $room_request['room'];
 			$updates   = $room_request['updates'] ?? array();
 
+			/*
+			 * Room lifetime: a tab's FIRST request carrying its presence token
+			 * is its join. If nobody else is in this per-post room, the
+			 * room's unsaved content belongs to no one still here and is
+			 * reset to the saved post before anything else happens (lineage
+			 * included, so the mismatch check below sees a fresh room). See
+			 * docs/plan/room-lifetime.md.
+			 */
+			$presence_token = $room_request['presence_token'] ?? '';
+			if ( null !== $this->presence && is_string( $presence_token ) && '' !== $presence_token ) {
+				$this->presence->note_sync_request( $room, $presence_token, $client_id );
+			}
+
 			$engine = $this->engines->get_engine_for_room( $room );
 
 			$mismatch = $this->check_engine_mismatch( $engine, $room, $room_request, $updates );
@@ -424,6 +479,11 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 			$room_response              = $engine->get_updates_since( $room, $client_id, $cursor, $context );
 			$room_response['awareness'] = $merged_awareness;
 
+			$generation = $this->room_generation( $room, (int) ( $room_response['end_cursor'] ?? 0 ) );
+			if ( null !== $generation ) {
+				$room_response['generation'] = $generation;
+			}
+
 			// Engines that produce per-update dispositions (an intent log's
 			// applied/escalated/voided outcomes) surface them; relay-style
 			// engines omit the key entirely.
@@ -432,6 +492,91 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 			}
 
 			return $room_response;
+		}
+
+		/**
+		 * The room's generation token, minted on the first read after the
+		 * room's first row is written and stable until the room is reset.
+		 *
+		 * A reset (`WP_Sync_Storage::reset_room()`) deletes every row and
+		 * every room-meta key, so the next read finds no token and mints a
+		 * fresh one — and a client that bootstrapped under the old token
+		 * knows its rows and cursor are gone. The token is derived from the
+		 * id of the room's FIRST stored row where the storage exposes it
+		 * (racing first readers derive the same value), else a random id.
+		 * Rooms without rows have no generation yet (nothing to restart).
+		 *
+		 * Shared with the WebSocket daemon, which stamps its pushed frames
+		 * the same way.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $room       Room identifier.
+		 * @param int    $end_cursor The room's current cursor (0 = no rows).
+		 * @return string|null The generation token, or null when the room has
+		 *                     no rows or the storage keeps no room meta.
+		 */
+		public function room_generation( string $room, int $end_cursor ): ?string {
+			if (
+				$end_cursor <= 0 ||
+				! method_exists( $this->storage, 'get_room_meta' ) ||
+				! method_exists( $this->storage, 'set_room_meta' )
+			) {
+				return null;
+			}
+
+			$stored = $this->storage->get_room_meta( $room, self::GENERATION_META_KEY );
+			if ( is_string( $stored ) && '' !== $stored ) {
+				return $stored;
+			}
+
+			$generation = $this->derive_room_generation( $room );
+			$this->storage->set_room_meta( $room, self::GENERATION_META_KEY, $generation );
+			return $generation;
+		}
+
+		/**
+		 * Derives a fresh generation token for a room that has rows but no
+		 * token yet. With the postmeta storage the id of the room's first row
+		 * is used: it is unique per genesis (ids are site-wide monotonic) and
+		 * identical for two first readers racing to mint it. Other storages
+		 * get a random id.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @global wpdb $wpdb WordPress database abstraction object.
+		 *
+		 * @param string $room Room identifier.
+		 * @return string Generation token.
+		 */
+		private function derive_room_generation( string $room ): string {
+			if ( $this->storage instanceof WP_Sync_Post_Meta_Storage ) {
+				global $wpdb;
+
+				// phpcs:disable WordPress.DB.DirectDatabaseQuery -- Read-only lookups against the storage post; the storage class exposes no first-row accessor and its own accessors bypass the meta cache the same way.
+				$post_id = (int) $wpdb->get_var(
+					$wpdb->prepare(
+						"SELECT ID FROM {$wpdb->posts} WHERE post_name = %s AND post_type = %s ORDER BY ID ASC LIMIT 1",
+						md5( $room ),
+						WP_Sync_Post_Meta_Storage::POST_TYPE
+					)
+				);
+				if ( $post_id > 0 ) {
+					$first_row = (int) $wpdb->get_var(
+						$wpdb->prepare(
+							"SELECT MIN(meta_id) FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s",
+							$post_id,
+							WP_Sync_Post_Meta_Storage::SYNC_UPDATE_META_KEY
+						)
+					);
+					// phpcs:enable WordPress.DB.DirectDatabaseQuery
+					if ( $first_row > 0 ) {
+						return 'g' . $first_row;
+					}
+				}
+			}
+
+			return wp_generate_uuid4();
 		}
 
 		/**

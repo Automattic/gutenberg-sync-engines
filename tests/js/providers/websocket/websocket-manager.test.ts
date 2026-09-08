@@ -215,6 +215,31 @@ describe( 'websocket manager', () => {
 		] );
 	} );
 
+	it( "stamps this tab's presence token on its post's room frames", async () => {
+		setup();
+		(
+			window as { _gutenbergSyncEnginesSettings?: unknown }
+		 )._gutenbergSyncEnginesSettings = {
+			advisory: { room: 'postType/post:1', token: 'tab-token' },
+		};
+		try {
+			websocketManager.registerRoom( {
+				room: 'postType/post:1',
+				session: fakeSession(),
+				onStatusChange: jest.fn(),
+			} );
+			await Promise.resolve();
+			await Promise.resolve();
+			const ws = FakeWebSocket.instances[ 0 ];
+			ws.open();
+			const frame = JSON.parse( ws.sent[ 0 ] );
+			expect( frame.rooms[ 0 ].presence_token ).toBe( 'tab-token' );
+		} finally {
+			delete ( window as { _gutenbergSyncEnginesSettings?: unknown } )
+				._gutenbergSyncEnginesSettings;
+		}
+	} );
+
 	it( 'closes the socket when the last room unregisters', async () => {
 		setup();
 		websocketManager.registerRoom( {
@@ -460,5 +485,100 @@ describe( 'websocket manager', () => {
 			);
 			expect( session.destroy ).not.toHaveBeenCalled();
 		} );
+	} );
+
+	it( 'a changed room generation re-sends the initial sync from cursor 0 and skips the frame rows', async () => {
+		setup();
+		const initial = { type: 'sync_step1', data: 'AA==' };
+		const session = fakeSession( {
+			getInitialUpdates: () => [ initial ],
+		} as Partial< EngineSessionCodec > ) as EngineSessionCodec & {
+			onRoomRestart: jest.Mock;
+		};
+		session.onRoomRestart = jest.fn( () => 'rebootstrap' );
+		websocketManager.registerRoom( {
+			room: 'postType/post:1',
+			session,
+			onStatusChange: jest.fn(),
+		} );
+		await Promise.resolve();
+		await Promise.resolve();
+		const ws = FakeWebSocket.instances[ 0 ];
+		ws.open();
+
+		const row = { type: 'update', data: 'AQ==' };
+		ws.receive( {
+			type: 'sync',
+			rooms: [
+				{
+					room: 'postType/post:1',
+					awareness: {},
+					updates: [ row ],
+					end_cursor: 7,
+					generation: 'g1',
+				},
+			],
+		} );
+		expect( session.receiveUpdate ).toHaveBeenCalledWith( row );
+
+		const sentBefore = ws.sent.length;
+		const genesis = { type: 'snapshot', data: 'Ag==' };
+		ws.receive( {
+			type: 'sync',
+			rooms: [
+				{
+					room: 'postType/post:1',
+					awareness: {},
+					updates: [ genesis ],
+					end_cursor: 12,
+					generation: 'g2',
+				},
+			],
+		} );
+		expect( session.onRoomRestart ).toHaveBeenCalledWith( [ genesis ] );
+		expect( session.receiveUpdate ).not.toHaveBeenCalledWith( genesis );
+		expect( ws.sent.length ).toBe( sentBefore + 1 );
+		const frame = JSON.parse( ws.sent[ ws.sent.length - 1 ] );
+		expect( frame.rooms[ 0 ].after ).toBe( 0 );
+		expect( frame.rooms[ 0 ].updates ).toEqual( [ initial ] );
+	} );
+
+	it( 'a session that declines to rejoin after a room restart is disconnected', async () => {
+		setup();
+		const session = fakeSession() as EngineSessionCodec & {
+			onRoomRestart: jest.Mock;
+		};
+		session.onRoomRestart = jest.fn( () => 'disconnect' );
+		const onStatusChange = jest.fn();
+		websocketManager.registerRoom( {
+			room: 'postType/post:1',
+			session,
+			onStatusChange,
+		} );
+		await Promise.resolve();
+		await Promise.resolve();
+		const ws = FakeWebSocket.instances[ 0 ];
+		ws.open();
+		const frame = ( generation: string ) => ( {
+			type: 'sync',
+			rooms: [
+				{
+					room: 'postType/post:1',
+					awareness: {},
+					updates: [],
+					end_cursor: 1,
+					generation,
+				},
+			],
+		} );
+		ws.receive( frame( 'g1' ) );
+		ws.receive( frame( 'g2' ) );
+		expect( onStatusChange ).toHaveBeenLastCalledWith( {
+			status: 'disconnected',
+			error: expect.objectContaining( {
+				message: expect.stringContaining( 'restarted' ),
+			} ),
+		} );
+		expect( session.destroy ).toHaveBeenCalled();
 	} );
 } );

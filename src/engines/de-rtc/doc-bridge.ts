@@ -211,6 +211,22 @@ export interface DeRtcDocBridge {
 	 * @param listener Bootstrap callback.
 	 */
 	onBootstrap: ( listener: () => void ) => void;
+
+	/**
+	 * Adopts a version label WITHOUT touching the document: used when the
+	 * room restarted and the local content is about to be re-proposed
+	 * against the new genesis, so the doc keeps the person's edits while
+	 * the version gate accepts the new lineage. Clears per-block bases and
+	 * contests (they referenced the old lineage).
+	 */
+	adoptVersion: ( version: string ) => void;
+
+	/**
+	 * Forgets the room lineage (version and bootstrap state) so the next
+	 * canonical row is applied as a fresh bootstrap regardless of its
+	 * version number. The document itself is untouched.
+	 */
+	resetLineage: () => void;
 }
 
 /**
@@ -784,6 +800,19 @@ export function createDeRtcDocBridge(
 		isBootstrapped: () => bootstrapped,
 
 		lastVersion: () => version,
+
+		adoptVersion( nextVersion ) {
+			blockBases.clear();
+			resolveAllContests();
+			markVersion( nextVersion );
+		},
+
+		resetLineage() {
+			bootstrapped = false;
+			version = null;
+			blockBases.clear();
+			resolveAllContests();
+		},
 
 		applyCanonical( nextVersion, content, properties ) {
 			if ( bootstrapped && seqOf( nextVersion ) <= seqOf( version ) ) {

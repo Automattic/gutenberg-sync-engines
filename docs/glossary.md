@@ -26,6 +26,13 @@ use these terms freely; none of them is standard outside this project
   about reachable?": every discovered token and every client id in the
   last awareness map has an open channel. Only full coverage lets a tab
   leave the timer cadence.
+- **Generation** — the token a room carries that changes whenever the
+  room is reset (its first row's id). A client that sees a different
+  generation than it started with knows its rows and cursor are gone
+  and bootstraps again from the fresh genesis.
+- **Unsaved-changes policy** — the setting that decides a per-post room's
+  lifetime: "discard" resets an empty room to the saved post (the
+  default), "keep" lets it live on as a shared working copy.
 - **Cursor** — a client's position in the room's update history. Opaque
   to clients; they echo it back to say "give me everything after this."
 - **Disposition** — the server's verdict on one update: applied, parked

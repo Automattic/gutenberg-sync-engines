@@ -148,6 +148,16 @@ One request carries every open room (`types.ts`):
   permission for each room, and each `client_id` is bound to the user that
   first used it.
 
+## Room lifetime
+
+Each room response carries a `generation` token (the room's first row id).
+When it changes, the manager tears the session down and registers the room
+again so the engine client bootstraps from the fresh genesis (the room was
+reset under it). The post's room requests also carry this tab's
+`presence_token`: the server treats a tab's first request as its join and,
+under the default unsaved-changes policy, resets a per-post room nobody
+else is in before serving it. See `docs/plan/room-lifetime.md`.
+
 ## Awareness
 
 Presence/cursor state travels with every poll. The server stores it per room

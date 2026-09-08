@@ -39,6 +39,20 @@ release, which the release script generates from the commit history.
     takes over again when it reconnects, resuming where polling left
     off. Before, a tab with no socket simply never synced.
 
+### Added
+
+-   An "Unsaved changes" setting on Settings → Collaboration decides
+    what happens when the last editor leaves a post: discarded (the
+    default; the saved post and its autosaves are the only durable copy,
+    and the post's shared working copy is reset to the saved post when
+    the last editor leaves or when a new editor finds nobody there) or
+    kept as a shared working copy the next editor continues from. Every
+    room response now carries a generation token so an editor whose
+    shared copy was reset under it starts over from the saved post
+    instead of failing silently. Filter:
+    `gutenberg_sync_engines_room_reset_when_empty`; action:
+    `gutenberg_sync_engines_room_reset`. See `docs/plan/room-lifetime.md`.
+
 ### Changed
 
 -   A lone editor's updates are held in the browser until company

@@ -2325,6 +2325,65 @@ describe( 'polling-manager', () => {
 			expect( beaconsSent.reduce( ( a, b ) => a + b, 0 ) ).toBe( 21 );
 		} );
 	} );
+	describe( 'presence token', () => {
+		afterEach( () => {
+			delete ( window as { _gutenbergSyncEnginesSettings?: unknown } )
+				._gutenbergSyncEnginesSettings;
+		} );
+
+		it( "stamps this tab's token on its post's room only", async () => {
+			(
+				window as { _gutenbergSyncEnginesSettings?: unknown }
+			 )._gutenbergSyncEnginesSettings = {
+				advisory: { room: 'postType/post:7', token: 'tab-token' },
+			};
+			mockPostSyncUpdate.mockResolvedValue( {
+				rooms: [
+					{
+						room: 'postType/post:7',
+						end_cursor: 1,
+						awareness: {},
+						updates: [],
+					},
+					{
+						room: 'taxonomy/category',
+						end_cursor: 1,
+						awareness: {},
+						updates: [],
+					},
+				],
+			} );
+			pollingManager.registerRoom( {
+				room: 'postType/post:7',
+				session: createMockSession( 1 ),
+				log: jest.fn(),
+				onStatusChange: jest.fn(),
+			} );
+			pollingManager.registerRoom( {
+				room: 'taxonomy/category',
+				session: createMockSession( 1 ),
+				log: jest.fn(),
+				onStatusChange: jest.fn(),
+			} );
+			await jest.advanceTimersByTimeAsync( 0 );
+			await jest.advanceTimersByTimeAsync( 4000 );
+
+			const payload = mockPostSyncUpdate.mock.calls[
+				mockPostSyncUpdate.mock.calls.length - 1
+			][ 0 ] as SyncPayload;
+			expect( payload.rooms ).toHaveLength( 2 );
+			const byRoom = Object.fromEntries(
+				payload.rooms.map( ( room ) => [ room.room, room ] )
+			);
+			expect( byRoom[ 'postType/post:7' ].presence_token ).toBe(
+				'tab-token'
+			);
+			expect( byRoom[ 'taxonomy/category' ] ).not.toHaveProperty(
+				'presence_token'
+			);
+		} );
+	} );
+
 	describe( 'sync inspector tap', () => {
 		it( 'records decoded polls and requests the server envelope when enabled', async () => {
 			window.localStorage.setItem( 'wp_sync_debug', '1' );
@@ -2486,6 +2545,158 @@ describe( 'polling-manager', () => {
 			expect(
 				resent.rooms[ 0 ].updates.map( ( entry ) => entry.data )
 			).toContain( update.data );
+		} );
+	} );
+
+	describe( 'room generation', () => {
+		const roomResponse = (
+			generation: string,
+			updates: SyncUpdate[] = [],
+			endCursor = 1
+		) => ( {
+			rooms: [
+				{
+					room: 'test-room',
+					end_cursor: endCursor,
+					awareness: {},
+					updates,
+					generation,
+				},
+			],
+		} );
+
+		it( 'adopts the first generation it sees and keeps processing rows under it', async () => {
+			const row = createMockUpdate( 2 );
+			mockPostSyncUpdate
+				.mockResolvedValueOnce( roomResponse( 'g10' ) )
+				.mockResolvedValueOnce( roomResponse( 'g10', [ row ], 2 ) );
+			const session = createMockSession( 1 );
+			pollingManager.registerRoom( {
+				room: 'test-room',
+				session,
+				log: jest.fn(),
+				onStatusChange: jest.fn(),
+			} );
+
+			await jest.advanceTimersByTimeAsync( 0 );
+			await jest.advanceTimersByTimeAsync( 4000 );
+
+			expect( session.receiveUpdate ).toHaveBeenCalledWith( row );
+			const second = mockPostSyncUpdate.mock
+				.calls[ 1 ][ 0 ] as SyncPayload;
+			expect( second.rooms[ 0 ].after ).toBe( 1 );
+		} );
+
+		it( 'on a changed generation: asks the session, drops the response rows, and re-fetches from cursor 0 at once', async () => {
+			const newGenesis = createMockUpdate( 4 );
+			mockPostSyncUpdate
+				.mockResolvedValueOnce( roomResponse( 'g10', [], 5 ) )
+				.mockResolvedValueOnce(
+					roomResponse( 'g20', [ newGenesis ], 9 )
+				)
+				.mockResolvedValue( roomResponse( 'g20', [ newGenesis ], 9 ) );
+			const initial = { data: encodeMockData( 1 ), type: 'sync_step1' };
+			const session = {
+				...createMockSession( 1 ),
+				getInitialUpdates: jest.fn( () => [ initial ] ),
+				onRoomRestart: jest.fn( () => 'rebootstrap' as const ),
+				syncWhileSolo: true as const,
+			};
+			const log = jest.fn();
+			pollingManager.registerRoom( {
+				room: 'test-room',
+				session,
+				log,
+				onStatusChange: jest.fn(),
+			} );
+
+			await jest.advanceTimersByTimeAsync( 0 );
+			// Queue some local work written against the old room.
+			getOnLocalUpdate( session )( createMockUpdate( 3 ), 3 );
+			await jest.advanceTimersByTimeAsync( 4000 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+
+			// The session was told, with the new room's rows, and the
+			// restart response's rows were NOT applied as ordinary updates.
+			expect( session.onRoomRestart ).toHaveBeenCalledWith( [
+				newGenesis,
+			] );
+			expect( session.receiveUpdate ).not.toHaveBeenCalledWith(
+				newGenesis
+			);
+			expect( session.destroy ).not.toHaveBeenCalled();
+
+			// The re-poll follows immediately (no interval wait), from
+			// cursor 0, carrying only the session's initial updates: the
+			// stale local work was dropped for the session to re-derive.
+			await jest.advanceTimersByTimeAsync( 1 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 3 );
+			const repoll = mockPostSyncUpdate.mock
+				.calls[ 2 ][ 0 ] as SyncPayload;
+			expect( repoll.rooms[ 0 ].after ).toBe( 0 );
+			expect( repoll.rooms[ 0 ].updates ).toEqual( [ initial ] );
+
+			// The new generation is adopted: its rows now apply normally.
+			await jest.advanceTimersByTimeAsync( 4000 );
+			expect( session.receiveUpdate ).toHaveBeenCalledWith( newGenesis );
+			expect( session.onRoomRestart ).toHaveBeenCalledTimes( 1 );
+		} );
+
+		it( 'a session that cannot rejoin is disconnected and unregistered', async () => {
+			mockPostSyncUpdate
+				.mockResolvedValueOnce( roomResponse( 'g10' ) )
+				.mockResolvedValue(
+					roomResponse( 'g20', [ createMockUpdate( 4 ) ] )
+				);
+			const session = {
+				...createMockSession( 1 ),
+				onRoomRestart: jest.fn( () => 'disconnect' as const ),
+			};
+			const onStatusChange = jest.fn();
+			pollingManager.registerRoom( {
+				room: 'test-room',
+				session,
+				log: jest.fn(),
+				onStatusChange,
+			} );
+
+			await jest.advanceTimersByTimeAsync( 0 );
+			await jest.advanceTimersByTimeAsync( 4000 );
+
+			expect( onStatusChange ).toHaveBeenLastCalledWith( {
+				status: 'disconnected',
+				error: expect.objectContaining( {
+					message: expect.stringContaining( 'restarted' ),
+				} ),
+			} );
+			expect( session.destroy ).toHaveBeenCalled();
+			// Nothing polls for the dropped room anymore.
+			const calls = mockPostSyncUpdate.mock.calls.length;
+			await jest.advanceTimersByTimeAsync( 10000 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( calls );
+		} );
+
+		it( 'a session without an opinion is re-bootstrapped', async () => {
+			mockPostSyncUpdate
+				.mockResolvedValueOnce( roomResponse( 'g10' ) )
+				.mockResolvedValue( roomResponse( 'g20' ) );
+			const session = createMockSession( 1 );
+			pollingManager.registerRoom( {
+				room: 'test-room',
+				session,
+				log: jest.fn(),
+				onStatusChange: jest.fn(),
+			} );
+
+			await jest.advanceTimersByTimeAsync( 0 );
+			await jest.advanceTimersByTimeAsync( 4000 );
+			await jest.advanceTimersByTimeAsync( 1 );
+
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 3 );
+			const repoll = mockPostSyncUpdate.mock
+				.calls[ 2 ][ 0 ] as SyncPayload;
+			expect( repoll.rooms[ 0 ].after ).toBe( 0 );
+			expect( session.destroy ).not.toHaveBeenCalled();
 		} );
 	} );
 } );

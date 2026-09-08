@@ -23,6 +23,16 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 	 * use the answer to decide when to go quiet, when to poll on a timer,
 	 * and when to poll only on demand (see docs/plan/advisory-channel.md).
 	 *
+	 * The tokens also decide a per-post room's LIFETIME (the "unsaved
+	 * changes" policy, docs/plan/room-lifetime.md). Under the default
+	 * policy the saved post is the only durable copy: a room is reset to a
+	 * fresh genesis from the saved post — its unsaved edits discarded,
+	 * exactly as the editor's unsaved-changes warning promised — when the
+	 * last tab leaves (eager, via the beacon or a closed socket) or when a
+	 * new tab arrives and finds nobody else there (lazy, covering crashes
+	 * and expired tokens). Under the "keep" policy rooms live on as a
+	 * shared working copy and nothing here resets them.
+	 *
 	 * Tokens live in a transient keyed by the room and mailboxes in options
 	 * rows updated by compare-and-swap, both outside the sync storage on
 	 * purpose: a presence read must never create a room's storage post
@@ -365,10 +375,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 			if ( ! class_exists( 'WP_Sync_Engine_Registry' ) ) {
 				return '';
 			}
-			$storage = $this->storage;
-			if ( null === $storage && function_exists( 'gutenberg_sync_engines_storage' ) ) {
-				$storage = gutenberg_sync_engines_storage();
-			}
+			$storage = $this->storage();
 			if ( null === $storage ) {
 				return '';
 			}
@@ -446,13 +453,18 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 					'callback'            => array( $this, 'handle_leave' ),
 					'permission_callback' => 'is_user_logged_in',
 					'args'                => array(
-						'room'  => array(
+						'room'      => array(
 							'type'     => 'string',
 							'required' => true,
 						),
-						'token' => array(
+						'token'     => array(
 							'type'     => 'string',
 							'required' => true,
+						),
+						'client_id' => array(
+							'type'     => 'integer',
+							'required' => false,
+							'minimum'  => 0,
 						),
 					),
 				)
@@ -471,10 +483,207 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		public function handle_leave( WP_REST_Request $request ): WP_REST_Response {
 			$room  = (string) $request->get_param( 'room' );
 			$token = (string) $request->get_param( 'token' );
+			$reset = false;
 			if ( $this->valid_token( $token ) && $this->can_probe_room( $room ) ) {
-				$this->forget_token( $room, $token );
+				$reset = $this->leave( $room, $token, absint( $request->get_param( 'client_id' ) ) );
 			}
-			return new WP_REST_Response( null, 204 );
+			return new WP_REST_Response( array( 'reset' => $reset ), 200 );
+		}
+
+		/**
+		 * A tab's sync request arrived carrying its presence token. The
+		 * FIRST such request is the tab's join: if nobody else is in the
+		 * room, whatever the room holds belongs to no one still here and,
+		 * under the default policy, is reset to the saved post before the
+		 * tab is served. Later requests from the same tab (including a
+		 * re-bootstrap after a restart) never reset anything — that tab IS
+		 * the room's participant.
+		 *
+		 * Called by the transports before the engine sees the request.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $room      The room name.
+		 * @param string $token     The tab's presence token.
+		 * @param int    $client_id The tab's sync client id.
+		 * @return bool Whether the room was reset.
+		 */
+		public function note_sync_request( string $room, string $token, int $client_id ): bool {
+			if ( ! $this->valid_token( $token ) || ! $this->is_entity_room( $room ) ) {
+				return false;
+			}
+
+			$tokens = $this->read_tokens( $room );
+			$joined = ! empty( $tokens[ $token ]['j'] );
+			$this->record_token( $room, $token, $client_id, true );
+			if ( $joined ) {
+				return false;
+			}
+
+			if ( $this->others_present( $room, $token, $client_id ) ) {
+				return false;
+			}
+
+			return $this->reset_abandoned_room( $room, 'join' );
+		}
+
+		/**
+		 * A tab left the room (the leave beacon, or a closed socket): forget
+		 * its token, its pending mail, and its sync awareness. When it was
+		 * the last one there, the room is reset to the saved post right away
+		 * under the default policy, so a reload or a later opener lands on
+		 * what was saved.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $room      The room name.
+		 * @param string $token     The tab's presence token.
+		 * @param int    $client_id The tab's sync client id (0 when unknown).
+		 * @return bool Whether the room was reset.
+		 */
+		public function leave( string $room, string $token, int $client_id ): bool {
+			$this->forget_token( $room, $token );
+			if ( ! $this->is_entity_room( $room ) ) {
+				return false;
+			}
+			if ( $client_id > 0 ) {
+				$this->forget_awareness( $room, $client_id );
+			}
+			if ( count( $this->read_tokens( $room ) ) > 0 || $this->has_live_awareness_besides( $room, $client_id ) ) {
+				return false;
+			}
+			return $this->reset_abandoned_room( $room, 'leave' );
+		}
+
+		/**
+		 * Whether empty per-post rooms are reset to the saved post (the
+		 * default "discard" policy) or kept as a shared working copy.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $room The room name.
+		 * @return bool Whether an empty room is reset.
+		 */
+		public static function resets_empty_rooms( string $room ): bool {
+			$enabled = true;
+			if ( class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
+				$enabled = Gutenberg_Sync_Engines_Settings::UNSAVED_KEEP !== (string) get_option( Gutenberg_Sync_Engines_Settings::UNSAVED_OPTION, Gutenberg_Sync_Engines_Settings::UNSAVED_DEFAULT );
+			}
+
+			/**
+			 * Filters whether a per-post room is reset to the saved post when
+			 * nobody is in it. Return false to keep rooms (and their unsaved
+			 * edits) alive across sessions as a shared working copy.
+			 *
+			 * @since n.e.x.t
+			 *
+			 * @param bool   $enabled Defaults to the settings screen's choice.
+			 * @param string $room    The room name.
+			 */
+			return (bool) apply_filters( 'gutenberg_sync_engines_room_reset_when_empty', $enabled, $room );
+		}
+
+		/**
+		 * Resets a per-post room nobody is in: rows, lineage, awareness and
+		 * room meta go, and the next reader gets a fresh genesis built from
+		 * the saved post (with a new generation token, so any client that
+		 * still holds the old room learns of the restart).
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $room   The room name.
+		 * @param string $reason 'join' or 'leave', for narration.
+		 * @return bool Whether the room was reset.
+		 */
+		private function reset_abandoned_room( string $room, string $reason ): bool {
+			if ( ! self::resets_empty_rooms( $room ) ) {
+				return false;
+			}
+			$storage = $this->storage();
+			if ( null === $storage || ! method_exists( $storage, 'reset_room' ) ) {
+				return false;
+			}
+			// Nothing to reset: the room was never written. Avoid creating a
+			// storage post just to wipe it.
+			if ( null === $this->storage_post_id( $room ) ) {
+				return false;
+			}
+
+			$reset = (bool) $storage->reset_room( $room );
+			if ( $reset ) {
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+				do_action( 'qm/debug', "wp-sync: room {$room} reset to the saved post (empty room, on {$reason})" );
+
+				/**
+				 * Fires after a per-post room was reset because nobody was in
+				 * it. Engines that keep state outside the room's rows (de-rtc's
+				 * canonical options row) forget it here.
+				 *
+				 * @since n.e.x.t
+				 *
+				 * @param string $room   The room name.
+				 * @param string $reason 'join' (a new tab found the room empty)
+				 *                       or 'leave' (the last tab left).
+				 */
+				do_action( 'gutenberg_sync_engines_room_reset', $room, $reason );
+			}
+			return $reset;
+		}
+
+		/**
+		 * Whether the room is a per-post entity room (the only kind whose
+		 * lifetime these rules govern).
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $room The room name.
+		 * @return bool
+		 */
+		private function is_entity_room( string $room ): bool {
+			return (bool) preg_match( '#^postType/[^/:]+:\d+$#', $room );
+		}
+
+		/**
+		 * The sync storage: the injected one, else the plugin's.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return WP_Sync_Storage|null
+		 */
+		private function storage(): ?WP_Sync_Storage {
+			if ( null === $this->storage && function_exists( 'gutenberg_sync_engines_storage' ) ) {
+				$this->storage = gutenberg_sync_engines_storage();
+			}
+			return $this->storage;
+		}
+
+		/**
+		 * Removes one client's awareness entry (the leaving tab's), so peers
+		 * see it go at once and the empty-room check does not count it.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $room      The room name.
+		 * @param int    $client_id The leaving client's id.
+		 * @return void
+		 */
+		private function forget_awareness( string $room, int $client_id ): void {
+			$storage = $this->storage();
+			if ( null === $storage || null === $this->storage_post_id( $room ) ) {
+				return;
+			}
+			$entries = $this->read_awareness( $room );
+			$kept    = array_values(
+				array_filter(
+					$entries,
+					static function ( $entry ) use ( $client_id ) {
+						return ( isset( $entry['client_id'] ) ? (int) $entry['client_id'] : 0 ) !== $client_id;
+					}
+				)
+			);
+			if ( count( $kept ) !== count( $entries ) ) {
+				$storage->set_awareness_state( $room, $kept );
+			}
 		}
 
 		/**
@@ -721,6 +930,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 					't' => (int) $entry['t'],
 					'u' => isset( $entry['u'] ) ? (int) $entry['u'] : 0,
 					'c' => isset( $entry['c'] ) ? (int) $entry['c'] : 0,
+					'j' => ! empty( $entry['j'] ),
 				);
 			}
 			return $live;
@@ -735,9 +945,11 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * @param string $room      The room name.
 		 * @param string $token     The tab's token.
 		 * @param int    $client_id The tab's sync client id (0 when unknown).
+		 * @param bool   $joined    Whether this is a sync request (the tab's
+		 *                          join); kept once set.
 		 * @return void
 		 */
-		private function record_token( string $room, string $token, int $client_id ): void {
+		private function record_token( string $room, string $token, int $client_id, bool $joined = false ): void {
 			$this->sweep_expired( $room );
 			$tokens = $this->read_tokens( $room );
 			$known  = $tokens[ $token ] ?? null;
@@ -745,6 +957,9 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 			$tokens[ $token ] = array(
 				't' => time(),
 				'u' => get_current_user_id(),
+				// Whether the tab has made a sync request (its join); kept
+				// once set so a re-bootstrap never counts as a new join.
+				'j' => $joined || ! empty( $known['j'] ),
 				// A page-render stamp has no client id yet; keep the last
 				// known one rather than regressing to 0.
 				'c' => $client_id > 0 ? $client_id : ( $known['c'] ?? 0 ),
@@ -886,10 +1101,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 				return array();
 			}
 
-			$storage = $this->storage;
-			if ( null === $storage && function_exists( 'gutenberg_sync_engines_storage' ) ) {
-				$storage = gutenberg_sync_engines_storage();
-			}
+			$storage = $this->storage();
 			if ( null === $storage ) {
 				return array();
 			}
