@@ -12,6 +12,43 @@ release, which the release script generates from the commit history.
 
 ### Added
 
+-   An advisory channel between the browser tabs editing one post: a
+    direct WebRTC link, discovered and negotiated through the heartbeat
+    WordPress already sends and through the sync polls themselves,
+    carrying who is present and "new changes, go and poll" notices,
+    never content. With every peer reachable over it, tabs poll only on
+    demand: when they have something to send, when a peer announces,
+    or when the heartbeat reports changes from a writer not on the
+    channel (a script, WP-CLI). A tab that cannot reach a peer keeps
+    the timer cadence. A lone tab keeps its 4-second cadence for 30
+    seconds after loading and after regaining focus, so a second person
+    is found within seconds, then schedules nothing.
+    Filters:
+    `gutenberg_sync_engines_advisory_enabled`,
+    `gutenberg_sync_engines_advisory_ice_servers`,
+    `gutenberg_sync_engines_advisory_max_peers`; console:
+    `wpSync.advisory()`. See `docs/plan/advisory-channel.md`.
+
+-   Settings → Collaboration: the "Transport" select (short-polling,
+    long-polling, WebSocket; short-polling is always the fallback) gains
+    an "Advisory channel" select beside it (WebRTC or off).
+
+-   The websocket transport falls back to short polling whenever its
+    socket is not open (the daemon unreachable, the token refused, the
+    socket dropped, or an attempt still not open after 5 seconds) and
+    takes over again when it reconnects, resuming where polling left
+    off. Before, a tab with no socket simply never synced.
+
+### Changed
+
+-   A lone editor's updates are held in the browser until company
+    arrives, a save (they are flushed through the room first, so a
+    reload never bootstraps from a room that missed them), or the tab
+    going hidden; meanwhile the tab schedules no polls. De-rtc is exempt (its codec declares `sendsWhileAlone`); the
+    engines' `syncWhileSolo` capability is gone.
+
+### Added
+
 -   Activating the plugin now turns on Gutenberg's real-time collaboration
     experiment, so collaboration works right after activation instead of
     needing a second trip to the Gutenberg → Experiments screen. Other

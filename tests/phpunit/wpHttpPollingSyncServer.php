@@ -1184,4 +1184,54 @@ class Tests_Collaboration_WpHttpPollingSyncServer extends WP_Test_REST_Controlle
 		// Room 2 should have no updates.
 		$this->assertEmpty( $data['rooms'][1]['updates'] );
 	}
+
+	/**
+	 * The advisory channel's signaling probe rides the poll and is answered
+	 * alongside the rooms (see Gutenberg_Sync_Engines_Advisory_Presence).
+	 */
+	public function test_poll_answers_the_advisory_probe_alongside_the_rooms() {
+		wp_set_current_user( self::$editor_id );
+		$room    = 'postType/post:' . self::$post_id;
+		$request = new WP_REST_Request( 'POST', '/wp-sync/v1/updates' );
+		$request->set_body_params(
+			array(
+				'rooms'    => array(
+					array(
+						'room'      => $room,
+						'client_id' => 1,
+						'after'     => 0,
+						'awareness' => array( 'user' => 'a' ),
+						'updates'   => array(),
+					),
+				),
+				'advisory' => array(
+					'room'      => $room,
+					'token'     => 'tok-poll',
+					'client_id' => 1,
+				),
+			)
+		);
+		$response = rest_get_server()->dispatch( $request );
+		$this->assertSame( 200, $response->get_status() );
+		$data = $response->get_data();
+		$this->assertArrayHasKey( 'advisory', $data );
+		$this->assertFalse( $data['advisory']['others'] );
+		$this->assertSame( array(), $data['advisory']['peers'] );
+
+		// A request without a probe carries no answer.
+		$request->set_body_params(
+			array(
+				'rooms' => array(
+					array(
+						'room'      => $room,
+						'client_id' => 1,
+						'after'     => 0,
+						'awareness' => array( 'user' => 'a' ),
+						'updates'   => array(),
+					),
+				),
+			)
+		);
+		$this->assertArrayNotHasKey( 'advisory', rest_get_server()->dispatch( $request )->get_data() );
+	}
 }

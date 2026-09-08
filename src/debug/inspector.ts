@@ -25,6 +25,11 @@
  * (Yjs binary) fall back to type + size.
  */
 
+/**
+ * Internal dependencies
+ */
+import { getAdvisoryDebugState } from '../providers/advisory/channel';
+
 const STORAGE_KEY = 'wp_sync_debug';
 const BUFFER_LIMIT = 500;
 
@@ -454,6 +459,9 @@ export const syncDebugApi = {
 	cursor( room?: string ): number | undefined {
 		return pickSession( room )?.getSeq?.();
 	},
+	advisory(): Record< string, unknown > {
+		return getAdvisoryDebugState();
+	},
 	export(): string {
 		return JSON.stringify(
 			{ exportedAt: new Date().toISOString(), polls: buffer },
@@ -471,6 +479,7 @@ export const syncDebugApi = {
 			'wpSync.table()              flat console.table of rows',
 			"wpSync.intents('p1')        history touching one syncId",
 			'wpSync.doc() / proposals() / cursor()   session state',
+			'wpSync.advisory()                        advisory channel peers',
 			'wpSync.export() / clear()   dump or reset the buffer',
 			'wpSync.disable()            turn the inspector off',
 		].join( '\n' );

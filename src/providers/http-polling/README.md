@@ -51,24 +51,34 @@ responses open server-side.
 
 ## Polling cadence
 
-From `config.ts`:
+The loop is driven by the cadence rules in `docs/plan/advisory-channel.md`
+(constants in `config.ts`):
 
-- **Solo editing**: 4000 ms; the update queue starts paused and updates are
-  not sent until a collaborator appears.
-- **With collaborators**: 1000 ms.
+- **Alone** (the presence lane says nobody else is in this post's room):
+  no timer once the first poll has bootstrapped the session, except for a
+  30 s discovery window after page load and after the tab regains focus,
+  when the 4000 ms solo cadence applies. The room
+  queues are HELD: local updates wait in the browser
+  until company arrives, a save (an `apiFetch` middleware flushes them
+  first, `save-flush.ts`), or the tab going hidden. Codecs that declare
+  `sendsWhileAlone` (de-rtc) are exempt and send 300 ms after the first
+  queued update. Company restarts the timer cadence and releases the queues.
+- **Company, some peer not on the advisory channel**: 1000 ms (the
+  "Polling interval" setting on Settings → Collaboration, 1-25 s, replaces
+  this).
+- **Company, every known peer on the advisory channel**: no timer. Polls
+  on demand — 300 ms after a queued local update, 150 ms after a peer
+  announces new rows (never two announce-driven polls closer than 250 ms),
+  and when a heartbeat answer reports the room's head cursor ahead of this
+  tab's (a writer not on the channel).
 - **Background tab**: 25 000 ms (kept below the server's 30 s awareness
   timeout so backgrounded tabs are not marked disconnected).
+- **No presence lane on the page** (a screen without a per-post room, or
+  the channel disabled): 4000 ms alone, 1000 ms with collaborators, as
+  before.
 
-Site administrators can *slow down* active-tab polling with the "Polling
-interval" field on Settings → Collaboration (1-25 seconds; 0 keeps the
-defaults). The chosen interval becomes the with-collaborators cadence; solo
-polling keeps its 4-second default unless the chosen interval is longer. The
-cap of 25 seconds keeps polling ahead of the server's 30-second awareness
-timeout. The setting does not affect the long-polling transport or the
-background-tab cadence.
-
-Developers can *lower* (never raise) the resulting active-tab intervals with
-the `sync.pollingManager.pollingInterval` and
+Developers can *lower* (never raise) the active-tab intervals with the
+`sync.pollingManager.pollingInterval` and
 `sync.pollingManager.pollingIntervalWithCollaborators` filters; values above
 the setting (or the defaults) are ignored. Faster polling increases request
 volume.
@@ -142,8 +152,14 @@ One request carries every open room (`types.ts`):
 
 Presence/cursor state travels with every poll. The server stores it per room
 and expires clients that have not polled within 30 seconds. When awareness
-shows more than one client, the manager speeds up polling and resumes the
-update queue.
+shows more than one client, the manager treats the room as having company.
+Peers on the advisory channel also send BASE presence (who they are: user
+info, name, activity) directly to each other; the manager overlays it per
+client on the poll response's map before handing it to the session. Cursors
+and selections stay on the polls by decision: over the channel they would
+point at content the receiver has not polled for yet. The poll request also
+carries the channel's signaling probe (`advisory`), answered alongside the
+rooms, so an active loop is a faster handshake carrier than the heartbeat.
 
 ## Limitations
 

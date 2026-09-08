@@ -464,11 +464,8 @@ describe( 'intent-log session codec', () => {
 		expect( session.getPeers() ).toEqual( { 22: { user: 'bob' } } );
 	} );
 
-	it( 'declares syncWhileSolo and relays transport discards to onDiscard listeners', () => {
+	it( 'relays transport discards to onDiscard listeners', () => {
 		const session = makeSession( 1, 11 );
-		// Ingest is idempotent by intentId, so solo flushing is safe — and
-		// it keeps unsent local work off the terminal-unregister cliff.
-		expect( session.syncWhileSolo ).toBe( true );
 
 		const listener = jest.fn();
 		session.onDiscard( listener );

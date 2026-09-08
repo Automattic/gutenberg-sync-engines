@@ -142,7 +142,6 @@ export interface IntentLogSession extends EngineSessionCodec {
 	 * terminal transport error can destroy unsent local work from the whole
 	 * solo session down to one poll interval.
 	 */
-	syncWhileSolo: true;
 
 	/**
 	 * Authors one intent against the optimistic document, applies it
@@ -515,7 +514,6 @@ export function createIntentLogSession(
 		clientId,
 		engineSlug: INTENT_LOG_ENGINE_SLUG,
 		engineProtocol: INTENT_LOG_ENGINE_PROTOCOL,
-		syncWhileSolo: true,
 
 		// ---- EngineSessionCodec (transport-facing) ----
 

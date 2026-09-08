@@ -58,6 +58,16 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		const POLLING_INTERVAL_OPTION = 'gutenberg_sync_engines_polling_interval';
 
 		/**
+		 * Option holding the advisory channel choice: `web-rtc` (the default
+		 * browser-to-browser channel) or the empty string for off.
+		 *
+		 * @since n.e.x.t
+		 * @var string
+		 */
+		const ADVISORY_OPTION  = 'gutenberg_sync_engines_advisory_channel';
+		const ADVISORY_DEFAULT = 'web-rtc';
+
+		/**
 		 * Registers the admin page, settings, and the transport filter.
 		 *
 		 * @since 0.1.0
@@ -114,9 +124,9 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 */
 		public static function transport_choices(): array {
 			$labels  = array(
-				'http-polling'      => __( 'HTTP short-polling (default)', 'gutenberg-sync-engines' ),
-				'http-long-polling' => __( 'HTTP long-polling (held open)', 'gutenberg-sync-engines' ),
-				'websocket'         => __( 'WebSocket (push; requires the sync-server daemon)', 'gutenberg-sync-engines' ),
+				'http-polling'      => __( 'Short-polling (default)', 'gutenberg-sync-engines' ),
+				'http-long-polling' => __( 'Long-polling', 'gutenberg-sync-engines' ),
+				'websocket'         => __( 'WebSocket', 'gutenberg-sync-engines' ),
 			);
 			$choices = array();
 
@@ -187,6 +197,17 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				array(
 					'type'              => 'string',
 					'sanitize_callback' => array( $this, 'sanitize_transport' ),
+				)
+			);
+			register_setting(
+				self::PAGE,
+				self::ADVISORY_OPTION,
+				array(
+					'type'              => 'string',
+					'description'       => __( 'Advisory channel between editor tabs (web-rtc, or empty for off)', 'gutenberg-sync-engines' ),
+					'sanitize_callback' => array( $this, 'sanitize_advisory' ),
+					'show_in_rest'      => true,
+					'default'           => self::ADVISORY_DEFAULT,
 				)
 			);
 			register_setting(
@@ -263,6 +284,13 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				self::TRANSPORT_OPTION,
 				__( 'Transport', 'gutenberg-sync-engines' ),
 				array( $this, 'render_transport_field' ),
+				self::PAGE,
+				'gutenberg_sync_engines_main'
+			);
+			add_settings_field(
+				self::ADVISORY_OPTION,
+				__( 'Advisory channel', 'gutenberg-sync-engines' ),
+				array( $this, 'render_advisory_field' ),
 				self::PAGE,
 				'gutenberg_sync_engines_main'
 			);
@@ -414,6 +442,44 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 */
 		public function render_transport_field(): void {
 			$this->render_select( self::TRANSPORT_OPTION, self::transport_choices(), (string) get_option( self::TRANSPORT_OPTION, 'http-polling' ) );
+			printf(
+				'<p class="description">%s</p>',
+				esc_html__( 'The default short-polling transport is always available as a fallback.', 'gutenberg-sync-engines' )
+			);
+		}
+
+		/**
+		 * Sanitizes the advisory channel choice.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param mixed $value Submitted value.
+		 * @return string `web-rtc` or the empty string (off).
+		 */
+		public function sanitize_advisory( $value ): string {
+			return self::ADVISORY_DEFAULT === (string) $value ? self::ADVISORY_DEFAULT : '';
+		}
+
+		/**
+		 * Renders the advisory channel field.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return void
+		 */
+		public function render_advisory_field(): void {
+			$this->render_select(
+				self::ADVISORY_OPTION,
+				array(
+					self::ADVISORY_DEFAULT => __( 'WebRTC between editor tabs (default)', 'gutenberg-sync-engines' ),
+					''                     => __( 'Off', 'gutenberg-sync-engines' ),
+				),
+				(string) get_option( self::ADVISORY_OPTION, self::ADVISORY_DEFAULT )
+			);
+			printf(
+				'<p class="description">%s</p>',
+				esc_html__( 'An advisory channel reduces polling by signaling to peers when updates are available.', 'gutenberg-sync-engines' )
+			);
 		}
 
 		/**
