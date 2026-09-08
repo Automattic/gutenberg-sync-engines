@@ -154,6 +154,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			if ( defined( 'WP_CLI' ) && WP_CLI ) {
 				require_once $transports . 'websocket/class-wp-sync-server-cli-command.php';
 			}
+			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/class-gutenberg-sync-engines-advisory-presence.php';
 
 			/*
 			 * Diagnostics are development tools, deliberately kept OUT of the
@@ -199,9 +200,12 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			WP_De_RTC_Autosave_Commits::register();
 			add_action( 'rest_api_init', array( new WP_De_RTC_Review_Controller(), 'register_routes' ) );
 			WP_Intent_Log_Base_Seq_Preflight::register();
+			// A reset room must not resume from de-rtc's out-of-row canonical.
+			add_action( 'gutenberg_sync_engines_room_reset', array( 'WP_De_RTC_Engine', 'forget_room_state' ) );
 			add_filter( 'wp_sync_transports', array( $this, 'register_transports' ), 10, 3 );
 			add_filter( 'wp_sync_transport_client_config', array( $this, 'filter_transport_client_config' ), 10, 2 );
 			add_action( 'enqueue_block_editor_assets', array( $this, 'enqueue_editor_assets' ) );
+			( new Gutenberg_Sync_Engines_Advisory_Presence() )->register();
 
 			( new Gutenberg_Sync_Engines_Settings() )->register();
 		}
@@ -341,14 +345,31 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 					$commit_interval  = (int) get_option( Gutenberg_Sync_Engines_Settings::DE_RTC_COMMIT_INTERVAL_OPTION, 0 );
 					$polling_interval = (int) get_option( Gutenberg_Sync_Engines_Settings::POLLING_INTERVAL_OPTION, 0 );
 				}
+				$settings = array(
+					'deRtcCommitIntervalMs' => max( 0, $commit_interval ) * 1000,
+					'httpPollingIntervalMs' => max( 0, min( 25, $polling_interval ) ) * 1000,
+				);
+
+				/*
+				 * The advisory channel's per-tab settings: this tab's
+				 * presence token (stamped now, so a joiner is visible to the
+				 * first tab's next heartbeat), whether anyone else is already
+				 * there, and the WebRTC configuration. Only on a single-post
+				 * editor screen; other block-editor screens (widgets, site
+				 * editor) have no per-post room to discover peers in, and
+				 * keep the always-on polling cadence.
+				 */
+				$post = get_post();
+				if ( $post instanceof WP_Post ) {
+					$advisory = ( new Gutenberg_Sync_Engines_Advisory_Presence() )->editor_settings( $post );
+					if ( null !== $advisory ) {
+						$settings['advisory'] = $advisory;
+					}
+				}
+
 				wp_add_inline_script(
 					'gutenberg-sync-engines',
-					'window._gutenbergSyncEnginesSettings = ' . wp_json_encode(
-						array(
-							'deRtcCommitIntervalMs' => max( 0, $commit_interval ) * 1000,
-							'httpPollingIntervalMs' => max( 0, min( 25, $polling_interval ) ) * 1000,
-						)
-					) . ';',
+					'window._gutenbergSyncEnginesSettings = ' . wp_json_encode( $settings ) . ';',
 					'before'
 				);
 			}

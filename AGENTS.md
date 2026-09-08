@@ -47,6 +47,19 @@ This plugin provides:
   only matters when a CONFIGURED slug isn't registered (misconfiguration
   degrades to the first registered engine: yjs-server).
 - **Transports:** `http-polling` (default), `http-long-polling`, `websocket`.
+  Short polling is the BASE transport; beside it every editor tab opens an
+  **advisory channel** (WebRTC, `src/providers/advisory/`, signaled over
+  the WordPress heartbeat by
+  `includes/class-gutenberg-sync-engines-advisory-presence.php`) that
+  carries presence and "go and poll" notices, never content. It decides
+  the polling cadence: quiet when alone, timer cadence when a peer is
+  unreachable, on demand (with the heartbeat carrying the room's head
+  cursor) when every peer is reachable. Long polling turns it off while
+  connected. Rules and failure cases: `docs/plan/advisory-channel.md`.
+  The same presence lane decides a per-post room's LIFETIME under the
+  "Unsaved changes" setting (default: an empty room is reset to the
+  saved post; the room's generation token tells clients to start over).
+  Reasoning and the switch: `docs/plan/room-lifetime.md`.
 - **Storage:** `WP_Sync_Table_Storage`, substituted for the framework's
   post-meta default through the `__unstable_wp_sync_storage` filter. Rooms
   live in two plugin-owned tables, `{$prefix}sync_updates` (the update log;

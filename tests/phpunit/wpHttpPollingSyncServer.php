@@ -1177,4 +1177,146 @@ class Tests_Collaboration_WpHttpPollingSyncServer extends WP_Test_REST_Controlle
 		// Room 2 should have no updates.
 		$this->assertEmpty( $data['rooms'][1]['updates'] );
 	}
+
+	/**
+	 * The advisory channel's signaling probe rides the poll and is answered
+	 * alongside the rooms (see Gutenberg_Sync_Engines_Advisory_Presence).
+	 */
+	public function test_poll_answers_the_advisory_probe_alongside_the_rooms() {
+		wp_set_current_user( self::$editor_id );
+		$room    = 'postType/post:' . self::$post_id;
+		$request = new WP_REST_Request( 'POST', '/wp-sync/v1/updates' );
+		$request->set_body_params(
+			array(
+				'rooms'    => array(
+					array(
+						'room'      => $room,
+						'client_id' => 1,
+						'after'     => 0,
+						'awareness' => array( 'user' => 'a' ),
+						'updates'   => array(),
+					),
+				),
+				'advisory' => array(
+					'room'      => $room,
+					'token'     => 'tok-poll',
+					'client_id' => 1,
+				),
+			)
+		);
+		$response = rest_get_server()->dispatch( $request );
+		$this->assertSame( 200, $response->get_status() );
+		$data = $response->get_data();
+		$this->assertArrayHasKey( 'advisory', $data );
+		$this->assertFalse( $data['advisory']['others'] );
+		$this->assertSame( array(), $data['advisory']['peers'] );
+
+		// A request without a probe carries no answer.
+		$request->set_body_params(
+			array(
+				'rooms' => array(
+					array(
+						'room'      => $room,
+						'client_id' => 1,
+						'after'     => 0,
+						'awareness' => array( 'user' => 'a' ),
+						'updates'   => array(),
+					),
+				),
+			)
+		);
+		$this->assertArrayNotHasKey( 'advisory', rest_get_server()->dispatch( $request )->get_data() );
+	}
+
+	/**
+	 * The room generation token: absent until the room has rows, stable
+	 * across requests, and different after the room is reset — the signal a
+	 * client uses to notice that its rows and cursor are gone.
+	 */
+	public function test_room_generation_is_stable_until_the_room_is_reset(): void {
+		wp_set_current_user( self::$editor_id );
+		$room   = $this->get_post_room();
+		$update = array(
+			array(
+				'data' => base64_encode( 'first' ),
+				'type' => Test_Opaque_Relay_Engine::UPDATE_TYPE_UPDATE,
+			),
+		);
+
+		$first = $this->dispatch_sync( array( $this->build_room( $room, 1, 0, array(), $update ) ) )->get_data()['rooms'][0];
+		$this->assertArrayHasKey( 'generation', $first );
+		$this->assertIsString( $first['generation'] );
+		$this->assertNotSame( '', $first['generation'] );
+
+		// A second client reading the room sees the same token.
+		$second = $this->dispatch_sync( array( $this->build_room( $room, 2, 0 ) ) )->get_data()['rooms'][0];
+		$this->assertSame( $first['generation'], $second['generation'] );
+
+		// Reset the room (rows, lineage, room meta): the next write mints a
+		// new token, so a client holding the old one learns of the restart.
+		$storage = new WP_Sync_Post_Meta_Storage();
+		$this->assertTrue( $storage->reset_room( $room ) );
+		$after = $this->dispatch_sync( array( $this->build_room( $room, 1, (int) $first['end_cursor'], array(), $update ) ) )->get_data()['rooms'][0];
+		$this->assertArrayHasKey( 'generation', $after );
+		$this->assertNotSame( $first['generation'], $after['generation'] );
+	}
+
+	/**
+	 * A room with no rows has nothing to restart, so it carries no token.
+	 */
+	public function test_room_generation_is_absent_for_an_empty_room(): void {
+		wp_set_current_user( self::$editor_id );
+		$room     = 'taxonomy/category';
+		$response = $this->dispatch_sync( array( $this->build_room( $room ) ) )->get_data()['rooms'][0];
+		$this->assertSame( 0, $response['end_cursor'] );
+		$this->assertArrayNotHasKey( 'generation', $response );
+	}
+
+	/**
+	 * A new tab's first request, carrying its presence token, finds nobody
+	 * else in the room: the room's leftovers are reset before it is served,
+	 * and the generation token changes so any stale client notices.
+	 */
+	public function test_a_new_tabs_join_resets_an_abandoned_room_and_changes_the_generation(): void {
+		wp_set_current_user( self::$editor_id );
+		$room   = $this->get_post_room();
+		$update = array(
+			array(
+				'data' => base64_encode( 'stale' ),
+				'type' => Test_Opaque_Relay_Engine::UPDATE_TYPE_UPDATE,
+			),
+		);
+
+		// An earlier session (no presence token: a tab from before the lane,
+		// or an expired one) left a row behind, and its awareness has since
+		// gone stale.
+		$first = $this->dispatch_sync( array( $this->build_room( $room, 1, 0, array(), $update ) ) )->get_data()['rooms'][0];
+		$this->assertNotEmpty( $first['generation'] );
+		$storage = gutenberg_sync_engines_storage();
+		$storage->set_awareness_state(
+			$room,
+			array_map(
+				static function ( $entry ) {
+					$entry['updated_at'] = time() - 31;
+					return $entry;
+				},
+				$storage->get_awareness_state( $room )
+			)
+		);
+
+		// A new tab joins with its token and writes: the old row is gone.
+		$join_room                   = $this->build_room( $room, 2, 0, array(), $update );
+		$join_room['presence_token'] = 'tab-new';
+		$joined                      = $this->dispatch_sync( array( $join_room ) )->get_data()['rooms'][0];
+		// The relay fixture never echoes a client's own rows, so the stale
+		// row's absence is what shows here; the storage holds the joiner's
+		// row alone.
+		$this->assertCount( 0, $joined['updates'], 'The earlier session\'s stale row is gone after the reset.' );
+		$this->assertSame( array( 2 ), array_column( $storage->get_updates_after_cursor( $room, 0 ), 'client_id' ) );
+		$this->assertNotSame( $first['generation'], $joined['generation'] );
+
+		// The same tab again (re-bootstrap from cursor 0): nothing resets.
+		$again = $this->dispatch_sync( array( $join_room ) )->get_data()['rooms'][0];
+		$this->assertSame( $joined['generation'], $again['generation'] );
+	}
 }

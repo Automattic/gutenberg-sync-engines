@@ -142,7 +142,6 @@ export interface IntentLogSession extends EngineSessionCodec {
 	 * terminal transport error can destroy unsent local work from the whole
 	 * solo session down to one poll interval.
 	 */
-	syncWhileSolo: true;
 
 	/**
 	 * Authors one intent against the optimistic document, applies it
@@ -316,6 +315,17 @@ export interface IntentLogSession extends EngineSessionCodec {
 
 	/** Subscribes to unsent-update discards (see onUpdatesDiscarded). */
 	onDiscard: ( listener: ( updates: EngineUpdate[] ) => void ) => void;
+
+	/**
+	 * Transport hook: the server restarted the room (its generation
+	 * changed), so every row this replica holds is gone. The replica is
+	 * dropped and the reset listeners fire exactly as for a horizon reset;
+	 * the fresh genesis that follows re-bootstraps it and the manager
+	 * recaptures the editor's own tree against it. Always re-bootstraps:
+	 * the editor tree is the durable local state, and capture re-derives
+	 * unsaved work from it against any baseline.
+	 */
+	onRoomRestart: () => 'rebootstrap';
 }
 
 /**
@@ -515,7 +525,6 @@ export function createIntentLogSession(
 		clientId,
 		engineSlug: INTENT_LOG_ENGINE_SLUG,
 		engineProtocol: INTENT_LOG_ENGINE_PROTOCOL,
-		syncWhileSolo: true,
 
 		// ---- EngineSessionCodec (transport-facing) ----
 
@@ -745,6 +754,17 @@ export function createIntentLogSession(
 
 		onUpdatesDiscarded: ( updates ) => {
 			discardListeners.forEach( ( listener ) => listener( updates ) );
+		},
+
+		onRoomRestart: () => {
+			replica = null;
+			bootstrapSeq = null;
+			observedSeq = 0;
+			appliedIntentIds = new Set();
+			deferredResetBuffer = null;
+			resetListeners.forEach( ( listener ) => listener() );
+			notifyChange();
+			return 'rebootstrap';
 		},
 
 		// ---- Bridge/dev surface ----
