@@ -10,6 +10,20 @@ release, which the release script generates from the commit history.
 
 ## Unreleased
 
+### Changed
+
+-   Collaboration rooms are now stored in two plugin-owned database
+    tables, `{prefix}sync_updates` and `{prefix}sync_room_meta`, instead
+    of as post meta on hidden `wp_sync_storage` posts, so collaboration
+    writes no longer invalidate post caches. Activating the plugin
+    creates the tables (a plugin update upgrades them on its next load);
+    deactivating it leaves them and every room in place; deleting the
+    plugin drops them, as does `wp collaboration storage drop` or
+    `WP_Sync_Table_Schema::drop()` from code. `wp collaboration storage
+    status|install|reset` manage them. Rooms already held in post meta
+    are not migrated: those posts stay behind unused, and every room
+    rebuilds from its saved post on the next session.
+
 ### Added
 
 -   An advisory channel between the browser tabs editing one post: a

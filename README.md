@@ -36,6 +36,16 @@ Transports (how updates move):
   daemon (`wp collaboration sync-server`). For local dev, `npm run rtc:ws`
   starts everything in one command (and `npm run rtc:http` switches back).
 
+Storage (where a room's updates live):
+
+- Two plugin-owned tables, `{prefix}sync_updates` (the update log) and
+  `{prefix}sync_room_meta` (lineage, awareness, engine bookkeeping),
+  substituted for Gutenberg's default post-meta storage. No collaboration
+  write touches post caches. Activating the plugin creates the tables;
+  deactivating it leaves them and every room in place; deleting the
+  plugin (`uninstall.php`) or running `wp collaboration storage drop`
+  removes them. `wp collaboration storage status` shows what a site has.
+
 The active engine and transport are chosen on the plugin's **Settings →
 Collaboration** screen (or via `wp_sync_engine` / the
 `WP_COLLABORATION_TRANSPORT` config value).

@@ -118,7 +118,7 @@ few durable invariants instead of many brittle UI details.*
   two transports. Here engines and transports are pluggable, so the runner
   sweeps the cross product: it flips `wp_sync_engine` and
   `gutenberg_sync_engines_transport` on the tests site via wp-cli between
-  combos, and wipes `wp_sync_storage` rooms so no combo inherits another
+  combos, and empties every room (`wp collaboration storage reset`) so no combo inherits another
   engine's room lineage (rooms are engine-stamped; the websocket daemon
   strips the stamps that let HTTP transports heal stale collection rooms).
 - **Engine-neutral oracles.** No `_crdt_document` assertions — that meta is

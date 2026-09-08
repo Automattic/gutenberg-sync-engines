@@ -11,7 +11,7 @@
  *      FOREIGN wp-env on :8889 cannot silently retarget the run.
  *   2. Per combo: selects the engine (`wp_sync_engine`) and transport
  *      (`gutenberg_sync_engines_transport`) on the tests site via wp-cli,
- *      wipes `wp_sync_storage` rooms (room lineage is stamped per engine;
+ *      empties every room (room lineage is stamped per engine;
  *      stale collection rooms 409 over websocket where healing can't run),
  *      and — for websocket combos — runs the `wp collaboration sync-server`
  *      daemon through the compose file with the port PUBLISHED and the
@@ -407,27 +407,20 @@ async function enableCollaborationExperiment() {
 }
 
 /**
- * Delete all wp_sync_storage posts on the tests site: every room's rows,
- * lineage, and meta. Rooms are rebuildable change-feeds; a fresh combo must
- * not inherit another engine's room lineage.
+ * Empty every room on the tests site (all update rows, lineage, and meta in
+ * the plugin's storage tables). Rooms are rebuildable change-feeds; a fresh
+ * combo must not inherit another engine's room lineage.
  */
 async function wipeSyncRooms() {
 	const { stdout } = await runWpCli( [
-		'post',
+		'collaboration',
+		'rooms',
 		'list',
-		'--post_type=wp_sync_storage',
-		'--post_status=any',
-		'--format=ids',
+		'--format=count',
 	] );
-	const ids = stdout
-		.split( /\s+/ )
-		.map( ( token ) => token.trim() )
-		.filter( ( token ) => /^\d+$/.test( token ) );
-	if ( ! ids.length ) {
-		return 0;
-	}
-	await runWpCli( [ 'post', 'delete', ...ids, '--force' ] );
-	return ids.length;
+	const count = Number.parseInt( stdout.trim(), 10 ) || 0;
+	await runWpCli( [ 'collaboration', 'storage', 'reset', '--yes' ] );
+	return count;
 }
 
 function stopWsDaemon() {
@@ -747,7 +740,7 @@ async function main() {
 			await setOption( TRANSPORT_OPTION, combo.transport );
 			const wiped = await wipeSyncRooms();
 			if ( wiped ) {
-				log( `Wiped ${ wiped } sync-storage room post(s).` );
+				log( `Emptied ${ wiped } sync-storage room(s).` );
 			}
 
 			// The daemon caches options at boot: start it AFTER the engine

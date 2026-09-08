@@ -20,7 +20,7 @@ if ( ! $gse_room ) {
 require_once __DIR__ . '/../../includes/lib/y-php-loader.php';
 gutenberg_sync_engines_load_y_php();
 
-$gse_storage = new WP_Sync_Post_Meta_Storage();
+$gse_storage = new WP_Sync_Table_Storage();
 $gse_rows    = $gse_storage->get_updates_after_cursor( $gse_room, 0 );
 WP_CLI::log( count( $gse_rows ) . ' rows' );
 

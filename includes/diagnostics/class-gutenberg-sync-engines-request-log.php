@@ -1072,10 +1072,9 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 		}
 
 		/**
-		 * GET /room-size — rows and bytes a room's storage post holds.
-		 * Resolves the room WITHOUT creating storage (the oldest published
-		 * `wp_sync_storage` post slugged md5(room) — the canonical-post
-		 * rule; the storage API's own lookup would create one).
+		 * GET /room-size — update rows and bytes (update rows plus room
+		 * meta) a room holds in the plugin's storage tables. Read-only:
+		 * looking at a room never creates it.
 		 *
 		 * @since 0.5.0
 		 *
@@ -1083,46 +1082,15 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 		 * @return WP_REST_Response { room, found, rows, bytes }.
 		 */
 		public function rest_room_size( WP_REST_Request $request ) {
-			global $wpdb;
-
 			$room = sanitize_text_field( (string) $request->get_param( 'room' ) );
-			$ids  = get_posts(
-				array(
-					'post_type'      => 'wp_sync_storage',
-					'post_status'    => 'publish',
-					'name'           => md5( $room ),
-					'posts_per_page' => 1,
-					'orderby'        => 'ID',
-					'order'          => 'ASC',
-					'fields'         => 'ids',
-				)
-			);
-			if ( array() === $ids ) {
-				return rest_ensure_response(
-					array(
-						'room'  => $room,
-						'found' => false,
-						'rows'  => 0,
-						'bytes' => 0,
-					)
-				);
-			}
+			$size = ( new WP_Sync_Table_Storage() )->get_room_size( $room );
 
-			$post_id = (int) $ids[0];
-			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Read-only size probe on a diagnostics route.
-			$stats = $wpdb->get_row(
-				$wpdb->prepare(
-					"SELECT COUNT(*) AS row_count, COALESCE( SUM( LENGTH( meta_key ) + LENGTH( meta_value ) ), 0 ) AS byte_count FROM {$wpdb->postmeta} WHERE post_id = %d",
-					$post_id
-				)
-			);
 			return rest_ensure_response(
 				array(
-					'room'    => $room,
-					'found'   => true,
-					'post_id' => $post_id,
-					'rows'    => (int) $stats->row_count,
-					'bytes'   => (int) $stats->byte_count,
+					'room'  => $room,
+					'found' => $size['found'],
+					'rows'  => $size['rows'],
+					'bytes' => $size['bytes'],
 				)
 			);
 		}

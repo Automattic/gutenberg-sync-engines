@@ -68,13 +68,6 @@ class Tests_Collaboration_WpHttpPollingSyncServer extends WP_Test_REST_Controlle
 		add_filter( 'wp_sync_engines', array( self::class, 'register_fixture_engine' ), 10, 2 );
 
 		parent::set_up();
-
-		// Reset storage post ID cache to ensure clean state after transaction rollback.
-		$reflection = new ReflectionProperty( 'WP_Sync_Post_Meta_Storage', 'storage_post_ids' );
-		if ( PHP_VERSION_ID < 80100 ) {
-			$reflection->setAccessible( true );
-		}
-		$reflection->setValue( null, array() );
 	}
 
 	/**
@@ -1261,7 +1254,7 @@ class Tests_Collaboration_WpHttpPollingSyncServer extends WP_Test_REST_Controlle
 
 		// Reset the room (rows, lineage, room meta): the next write mints a
 		// new token, so a client holding the old one learns of the restart.
-		$storage = new WP_Sync_Post_Meta_Storage();
+		$storage = wp_get_sync_storage();
 		$this->assertTrue( $storage->reset_room( $room ) );
 		$after = $this->dispatch_sync( array( $this->build_room( $room, 1, (int) $first['end_cursor'], array(), $update ) ) )->get_data()['rooms'][0];
 		$this->assertArrayHasKey( 'generation', $after );

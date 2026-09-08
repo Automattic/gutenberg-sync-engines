@@ -21,7 +21,7 @@ if ( ! $gse_room ) {
 require_once __DIR__ . '/../../includes/lib/y-php-loader.php';
 gutenberg_sync_engines_load_y_php();
 
-$gse_storage = new WP_Sync_Post_Meta_Storage();
+$gse_storage = new WP_Sync_Table_Storage();
 $gse_storage->get_updates_after_cursor( $gse_room, 0 );
 $gse_meta     = $gse_storage->get_room_meta( $gse_room, 'yjs_server_doc' );
 $gse_wrappers = $gse_storage->get_room_meta( $gse_room, 'yjs_server_wrappers' );
@@ -92,6 +92,6 @@ foreach ( $gse_blocks->toJSON() as $gse_block ) {
 }
 WP_CLI::log( 'wrapper keys: ' . implode( ', ', array_keys( $gse_wrappers ) ) );
 
-$gse_engine = new WP_Yjs_Server_Engine( new WP_Sync_Post_Meta_Storage() );
+$gse_engine = new WP_Yjs_Server_Engine( new WP_Sync_Table_Storage() );
 WP_CLI::log( '--- materialized ---' );
 WP_CLI::log( (string) $gse_engine->materialize( $gse_room ) );

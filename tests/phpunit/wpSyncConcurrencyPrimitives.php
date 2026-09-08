@@ -53,7 +53,7 @@ class Tests_Collaboration_WpSyncConcurrencyPrimitives extends WP_UnitTestCase {
 	}
 
 	private function engine(): WP_De_RTC_Engine {
-		return new WP_De_RTC_Engine( new WP_Sync_Post_Meta_Storage() );
+		return new WP_De_RTC_Engine( new WP_Sync_Table_Storage() );
 	}
 
 	/**

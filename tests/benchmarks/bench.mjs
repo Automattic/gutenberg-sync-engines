@@ -459,7 +459,7 @@ function percentile( sorted, fraction ) {
 }
 
 // Multi-process concurrency measurement (opt-in, concurrency=N): N worker
-// processes hammer the SAME room through the real postmeta storage
+// processes hammer the SAME room through the real table storage
 // simultaneously, so latency includes genuine lock waits, 503 timeouts,
 // and MySQL under concurrent writers — everything the single-process
 // harness structurally cannot see. A 1-worker pass on a fresh room is the
@@ -553,7 +553,7 @@ async function runConcurrencyMode() {
 	const requests = Number( args.requests ?? 40 );
 	const paragraphs = Number( args.paragraphs ?? 4 );
 	console.log(
-		`\nmulti-process concurrency: ${ workers } workers x ${ requests } requests, same room, REAL postmeta storage` +
+		`\nmulti-process concurrency: ${ workers } workers x ${ requests } requests, same room, REAL table storage` +
 			`\n(latency includes genuine lock waits and DB I/O — not comparable with the in-memory single-process numbers)`
 	);
 

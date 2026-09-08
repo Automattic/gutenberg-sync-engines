@@ -53,7 +53,7 @@ class Tests_Collaboration_WpDeRtcBlockConflictSalvage extends WP_UnitTestCase {
 	}
 
 	private function engine(): WP_De_RTC_Engine {
-		return new WP_De_RTC_Engine( new WP_Sync_Post_Meta_Storage() );
+		return new WP_De_RTC_Engine( new WP_Sync_Table_Storage() );
 	}
 
 	private function proposal( string $proposal_id, string $base_version, string $proposed, array $block_bases = array() ): array {

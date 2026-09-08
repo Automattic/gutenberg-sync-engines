@@ -66,7 +66,7 @@ class Tests_Collaboration_WpDeRtcReviewController extends WP_UnitTestCase {
 	 * @return WP_De_RTC_Engine Engine.
 	 */
 	private function engine(): WP_De_RTC_Engine {
-		return new WP_De_RTC_Engine( new WP_Sync_Post_Meta_Storage() );
+		return new WP_De_RTC_Engine( new WP_Sync_Table_Storage() );
 	}
 
 	/**
@@ -246,7 +246,7 @@ class Tests_Collaboration_WpDeRtcReviewController extends WP_UnitTestCase {
 
 	public function test_fences_rooms_with_another_engine_lineage() {
 		$room    = 'postType/post:' . self::$post_id . ':foreign';
-		$storage = new WP_Sync_Post_Meta_Storage();
+		$storage = new WP_Sync_Table_Storage();
 		$this->assertTrue( $storage->set_room_engine( $room, 'intent-log' ) );
 
 		$response = $this->dispatch_resolve(

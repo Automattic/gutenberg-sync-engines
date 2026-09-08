@@ -146,7 +146,7 @@ class Tests_Collaboration_WpHttpLongPollingSyncServer extends WP_Test_REST_TestC
 	 * @return WP_HTTP_Long_Polling_Sync_Server Exposed server.
 	 */
 	private function exposed_server() {
-		$storage = new WP_Sync_Post_Meta_Storage();
+		$storage = new WP_Sync_Table_Storage();
 		return new class( $storage ) extends WP_HTTP_Long_Polling_Sync_Server {
 			// phpcs:ignore Squiz.Commenting.FunctionComment.Missing
 			public function rooms_have_new_data_exposed( array $rooms, array $initial_awareness ): bool {

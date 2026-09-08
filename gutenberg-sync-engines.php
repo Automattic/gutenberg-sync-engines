@@ -18,10 +18,19 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+/*
+ * The storage schema (table names + create/upgrade/drop) loads before
+ * everything else, including the double-mount guard below: the activation
+ * hook creates the tables, `uninstall.php` drops them, and neither needs
+ * the collaboration framework. The file guards its own class declaration.
+ */
+require_once __DIR__ . '/includes/storage/class-wp-sync-table-schema.php';
+
 if ( ! function_exists( 'gutenberg_sync_engines_activate' ) ) {
 	/**
-	 * Turns the Gutenberg real-time collaboration experiment on when this
-	 * plugin is activated.
+	 * Sets a site up for collaboration when this plugin is activated:
+	 * creates the storage tables and turns the Gutenberg real-time
+	 * collaboration experiment on.
 	 *
 	 * The framework gates real-time collaboration on the
 	 * `gutenberg-real-time-collaboration` experiment (the checkbox on the
@@ -31,8 +40,13 @@ if ( ! function_exists( 'gutenberg_sync_engines_activate' ) ) {
 	 * experiment. The checkbox stays live afterward: turning it off later
 	 * is honored until the plugin is activated again.
 	 *
-	 * On a network-wide activation the experiment is turned on for every
-	 * site in the network, because the option is per site.
+	 * The storage tables are per site and are created here (dbDelta, so a
+	 * re-activation is harmless). Deactivation leaves them and every
+	 * room's rows in place; `uninstall.php` and
+	 * `wp collaboration storage drop` are what remove them.
+	 *
+	 * On a network-wide activation both steps run for every site in the
+	 * network, because the option and the tables are per site.
 	 *
 	 * @since n.e.x.t
 	 *
@@ -42,21 +56,50 @@ if ( ! function_exists( 'gutenberg_sync_engines_activate' ) ) {
 	 */
 	function gutenberg_sync_engines_activate( $network_wide = false ) {
 		if ( $network_wide && is_multisite() ) {
-			// 'number' => 0 lifts get_sites()' default cap of 100 sites.
-			$site_ids = get_sites(
-				array(
-					'fields' => 'ids',
-					'number' => 0,
-				)
-			);
-			foreach ( $site_ids as $site_id ) {
-				switch_to_blog( $site_id );
-				gutenberg_sync_engines_enable_collaboration_experiment();
-				restore_current_blog();
-			}
+			WP_Sync_Table_Schema::for_each_site( 'gutenberg_sync_engines_activate_site' );
 			return;
 		}
+		gutenberg_sync_engines_activate_site();
+	}
+}
+
+if ( ! function_exists( 'gutenberg_sync_engines_activate_site' ) ) {
+	/**
+	 * The per-site activation steps: storage tables, then the experiment.
+	 *
+	 * @since n.e.x.t
+	 *
+	 * @return void
+	 */
+	function gutenberg_sync_engines_activate_site() {
+		WP_Sync_Table_Schema::install();
 		gutenberg_sync_engines_enable_collaboration_experiment();
+	}
+}
+
+if ( ! function_exists( 'gutenberg_sync_engines_initialize_site' ) ) {
+	/**
+	 * Sets up a site created on a network where this plugin is
+	 * network-active: the activation hook ran before the site existed, so
+	 * its tables and experiment are created here instead. A site on a
+	 * network where the plugin is active per site gets them when it
+	 * activates the plugin itself.
+	 *
+	 * @since n.e.x.t
+	 *
+	 * @param WP_Site $new_site The site just created.
+	 * @return void
+	 */
+	function gutenberg_sync_engines_initialize_site( $new_site ) {
+		if ( ! function_exists( 'is_plugin_active_for_network' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		}
+		if ( ! is_plugin_active_for_network( plugin_basename( __FILE__ ) ) ) {
+			return;
+		}
+		switch_to_blog( (int) $new_site->id );
+		gutenberg_sync_engines_activate_site();
+		restore_current_blog();
 	}
 }
 
@@ -107,6 +150,13 @@ define( 'GUTENBERG_SYNC_ENGINES_VERSION', '0.0.0' );
 define( 'GUTENBERG_SYNC_ENGINES_PATH', plugin_dir_path( __FILE__ ) );
 define( 'GUTENBERG_SYNC_ENGINES_URL', plugin_dir_url( __FILE__ ) );
 define( 'GUTENBERG_SYNC_ENGINES_FILE', __FILE__ );
+
+// Before anything reads $wpdb->sync_updates / $wpdb->sync_room_meta.
+WP_Sync_Table_Schema::register_tables();
+
+if ( is_multisite() ) {
+	add_action( 'wp_initialize_site', 'gutenberg_sync_engines_initialize_site', 10, 1 );
+}
 
 if ( ! function_exists( 'gutenberg_sync_engines_load_bundled_gutenberg' ) ) {
 	/**
@@ -166,8 +216,9 @@ if ( ! function_exists( 'gutenberg_sync_engines_storage' ) ) {
 	 * The sync storage the plugin's engines, transports, and tools use.
 	 *
 	 * Prefers the framework's filterable factory (`wp_get_sync_storage`,
-	 * `__unstable_wp_sync_storage` filter) so a drop-in storage backend applies
-	 * everywhere at once; falls back to the post-meta default on a
+	 * `__unstable_wp_sync_storage` filter — where this plugin substitutes
+	 * its table storage) so a drop-in storage backend applies everywhere
+	 * at once; falls back to the plugin's table storage directly on a
 	 * framework build that predates the factory. Only called from
 	 * framework-gated code paths.
 	 *
@@ -178,7 +229,7 @@ if ( ! function_exists( 'gutenberg_sync_engines_storage' ) ) {
 	function gutenberg_sync_engines_storage() {
 		return function_exists( 'wp_get_sync_storage' )
 			? wp_get_sync_storage()
-			: new WP_Sync_Post_Meta_Storage();
+			: new WP_Sync_Table_Storage();
 	}
 }
 
