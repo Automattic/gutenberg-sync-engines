@@ -45,7 +45,20 @@ release, which the release script generates from the commit history.
 
 -   Settings → Collaboration: the "Transport" select (short-polling,
     long-polling, WebSocket; short-polling is always the fallback) gains
-    an "Advisory channel" select beside it (WebRTC or off).
+    an "Advisory channel" select beside it: WebRTC between editor tabs
+    (`webrtc-advisory`, the default), WebSocket to the sync daemon
+    (`websocket-advisory`), or off.
+
+-   The advisory channel can run over a WebSocket instead of WebRTC
+    (`websocket-advisory`): each tab opens one socket to the same sync
+    daemon the WebSocket transport uses (`wp collaboration
+sync-server`), and the daemon relays presence and "go and poll"
+    notices between the tabs in a room without ever carrying content.
+    Short polling stays the transport. This reaches tabs that cannot
+    connect to each other directly (a strict NAT without TURN, a
+    blocking extension, different networks). A stored `web-rtc` choice
+    from the first release still reads as WebRTC. Filter:
+    `gutenberg_sync_engines_advisory_channel`.
 
 -   The websocket transport falls back to short polling whenever its
     socket is not open (the daemon unreachable, the token refused, the

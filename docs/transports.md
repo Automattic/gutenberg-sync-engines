@@ -13,9 +13,12 @@ idle traffic on your hardware; the stable shape:
 | websocket | tens of milliseconds | a few frames per heartbeat — plus a persistent daemon, TLS termination, and an exposed port |
 
 **Short polling is the base transport, and an advisory channel sits
-beside it.** Every tab editing a post also opens a browser-to-browser
-channel to the other tabs on that post (WebRTC, negotiated through the
-heartbeat WordPress already sends from every editor screen). The channel
+beside it.** Every tab editing a post also opens a channel to the other
+tabs on that post: by default browser to browser (WebRTC, negotiated
+through the heartbeat WordPress already sends from every editor screen),
+or, when the site chooses `websocket-advisory`, one socket per tab to the
+sync daemon, which relays between the tabs in a room and reaches tabs
+that cannot connect to each other directly. Either way the channel
 carries presence and the sentence "I landed rows, go and poll", never
 content; every read and write stays on the REST sync endpoint. While
 every known peer is reachable over it, a tab polls only when it has

@@ -11,10 +11,16 @@ use these terms freely; none of them is standard outside this project
   server from the post's saved content when the first person opens it.
 - **Materialize** — turn the shared document back into ordinary
   `post_content` so WordPress can save it.
-- **Advisory channel** — the browser-to-browser link (WebRTC) between the
-  tabs editing one post. It carries presence and "I landed rows, go and
-  poll" notices, never content; nothing on it is trusted for anything
-  but display and a decision to poll sooner.
+- **Advisory channel** — the link between the tabs editing one post:
+  browser to browser over WebRTC (`webrtc-advisory`, the default) or
+  relayed by the sync daemon over a WebSocket (`websocket-advisory`). It
+  carries presence and "I landed rows, go and poll" notices, never
+  content; nothing on it is trusted for anything but display and a
+  decision to poll sooner.
+- **Roster** — under `websocket-advisory`, the daemon's in-memory list of
+  the tabs following a room (client id, presence token, latest
+  presence), sent to every follower whenever it changes. It is the
+  channel's coverage answer over that link.
 - **Signaling** — how tabs find each other and exchange the WebRTC
   handshake: a per-tab presence token and a mailbox, both riding the
   heartbeat WordPress already sends from every editor screen.

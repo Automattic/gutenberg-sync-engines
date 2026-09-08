@@ -149,6 +149,15 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		const SIGNAL_KINDS = array( 'offer', 'answer', 'ice', 'bye' );
 
 		/**
+		 * The advisory channel's links (see channel()).
+		 *
+		 * @since n.e.x.t
+		 * @var string
+		 */
+		const CHANNEL_WEBRTC    = 'webrtc-advisory';
+		const CHANNEL_WEBSOCKET = 'websocket-advisory';
+
+		/**
 		 * The sync storage the live-awareness check reads (injected for
 		 * tests; defaults to the plugin's).
 		 *
@@ -196,20 +205,48 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 				// choice: the channel serves whenever short polling does,
 				// which under a preferred transport (long polling, websocket)
 				// is only while that transport is down.
-				$choice  = (string) get_option( Gutenberg_Sync_Engines_Settings::ADVISORY_OPTION, Gutenberg_Sync_Engines_Settings::ADVISORY_DEFAULT );
-				$enabled = '' !== $choice;
+				$enabled = '' !== Gutenberg_Sync_Engines_Settings::advisory_channel();
 			}
 
 			/**
-			 * Filters whether editor tabs open the advisory channel (browser
-			 * to browser presence and "new rows" nudges over WebRTC). When
-			 * false, tabs keep the timer polling cadence.
+			 * Filters whether editor tabs open the advisory channel (presence
+			 * and "new rows" nudges between the tabs editing a post, over
+			 * WebRTC or a socket to the sync daemon). When false, tabs keep
+			 * the timer polling cadence.
 			 *
 			 * @since n.e.x.t
 			 *
 			 * @param bool $enabled Defaults to the settings screen's choice.
 			 */
 			return (bool) apply_filters( 'gutenberg_sync_engines_advisory_enabled', $enabled );
+		}
+
+		/**
+		 * The link the advisory channel uses on this site: `webrtc-advisory`
+		 * (browser to browser, the default) or `websocket-advisory` (relayed
+		 * by the sync daemon).
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return string The link slug.
+		 */
+		public static function channel(): string {
+			$channel = self::CHANNEL_WEBRTC;
+			if ( class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
+				$chosen  = Gutenberg_Sync_Engines_Settings::advisory_channel();
+				$channel = '' === $chosen ? self::CHANNEL_WEBRTC : $chosen;
+			}
+
+			/**
+			 * Filters the link the advisory channel uses: `webrtc-advisory`
+			 * or `websocket-advisory`.
+			 *
+			 * @since n.e.x.t
+			 *
+			 * @param string $channel Defaults to the settings screen's choice.
+			 */
+			$channel = (string) apply_filters( 'gutenberg_sync_engines_advisory_channel', $channel );
+			return self::CHANNEL_WEBSOCKET === $channel ? self::CHANNEL_WEBSOCKET : self::CHANNEL_WEBRTC;
 		}
 
 		/**
@@ -269,15 +306,25 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 			 */
 			$max_peers = (int) apply_filters( 'gutenberg_sync_engines_advisory_max_peers', self::DEFAULT_MAX_PEERS );
 
-			return array(
+			$channel  = self::channel();
+			$settings = array(
 				'room'          => $room,
 				'token'         => $token,
 				'othersPresent' => $this->others_present( $room, $token, 0 ),
-				'iceServers'    => self::ice_servers(),
-				'maxPeers'      => max( 1, $max_peers ),
+				'channel'       => $channel,
 				'leaveUrl'      => rest_url( self::REST_NAMESPACE . self::REST_LEAVE_ROUTE ),
 				'nonce'         => wp_create_nonce( 'wp_rest' ),
 			);
+			if ( self::CHANNEL_WEBSOCKET === $channel ) {
+				// The same daemon and URL the websocket transport announces
+				// (`wp_sync_websocket_url` filters it), whichever transport
+				// the site selected: the daemon serves advisory sockets too.
+				$settings['socketUrl'] = class_exists( 'WP_WebSocket_Sync_Transport' ) ? WP_WebSocket_Sync_Transport::get_socket_url() : '';
+			} else {
+				$settings['iceServers'] = self::ice_servers();
+				$settings['maxPeers']   = max( 1, $max_peers );
+			}
+			return $settings;
 		}
 
 		/**
