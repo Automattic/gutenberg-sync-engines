@@ -345,8 +345,8 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 				return false;
 			}
 
-			$last_update_id = $wpdb->insert_id;
-			$result         = $wpdb->query(
+			$last_update_id  = $wpdb->insert_id;
+			$result          = $wpdb->query(
 				$wpdb->prepare(
 					"INSERT IGNORE INTO {$wpdb->sync_room_meta} ( room, meta_key, meta_value ) VALUES ( %s, %s, %s )",
 					$room,
@@ -477,8 +477,8 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 				return false;
 			}
 
-			$last_update_id = $wpdb->insert_id;
-			$result         = $wpdb->query(
+			$last_update_id  = $wpdb->insert_id;
+			$result          = $wpdb->query(
 				$wpdb->prepare(
 					"INSERT INTO {$wpdb->sync_room_meta} ( room, meta_key, meta_value ) VALUES ( %s, %s, %s ) ON DUPLICATE KEY UPDATE meta_value = %s",
 					$room,
