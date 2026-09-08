@@ -215,6 +215,31 @@ describe( 'websocket manager', () => {
 		] );
 	} );
 
+	it( "stamps this tab's presence token on its post's room frames", async () => {
+		setup();
+		(
+			window as { _gutenbergSyncEnginesSettings?: unknown }
+		 )._gutenbergSyncEnginesSettings = {
+			advisory: { room: 'postType/post:1', token: 'tab-token' },
+		};
+		try {
+			websocketManager.registerRoom( {
+				room: 'postType/post:1',
+				session: fakeSession(),
+				onStatusChange: jest.fn(),
+			} );
+			await Promise.resolve();
+			await Promise.resolve();
+			const ws = FakeWebSocket.instances[ 0 ];
+			ws.open();
+			const frame = JSON.parse( ws.sent[ 0 ] );
+			expect( frame.rooms[ 0 ].presence_token ).toBe( 'tab-token' );
+		} finally {
+			delete ( window as { _gutenbergSyncEnginesSettings?: unknown } )
+				._gutenbergSyncEnginesSettings;
+		}
+	} );
+
 	it( 'closes the socket when the last room unregisters', async () => {
 		setup();
 		websocketManager.registerRoom( {
@@ -460,6 +485,7 @@ describe( 'websocket manager', () => {
 			);
 			expect( session.destroy ).not.toHaveBeenCalled();
 		} );
+	} );
 
 	it( 'a changed room generation re-sends the initial sync from cursor 0 and skips the frame rows', async () => {
 		setup();

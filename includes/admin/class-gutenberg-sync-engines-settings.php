@@ -68,6 +68,20 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		const ADVISORY_DEFAULT = 'web-rtc';
 
 		/**
+		 * Option holding the unsaved-changes policy: `discard` (the saved post
+		 * is the only durable copy; a room nobody is in is reset to it) or
+		 * `keep` (rooms live on as a shared working copy). See
+		 * docs/plan/room-lifetime.md.
+		 *
+		 * @since n.e.x.t
+		 * @var string
+		 */
+		const UNSAVED_OPTION  = 'gutenberg_sync_engines_unsaved_changes';
+		const UNSAVED_DISCARD = 'discard';
+		const UNSAVED_KEEP    = 'keep';
+		const UNSAVED_DEFAULT = self::UNSAVED_DISCARD;
+
+		/**
 		 * Registers the admin page, settings, and the transport filter.
 		 *
 		 * @since 0.1.0
@@ -212,6 +226,17 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			);
 			register_setting(
 				self::PAGE,
+				self::UNSAVED_OPTION,
+				array(
+					'type'              => 'string',
+					'description'       => __( 'What happens to unsaved changes when the last editor leaves a post (discard or keep)', 'gutenberg-sync-engines' ),
+					'sanitize_callback' => array( $this, 'sanitize_unsaved' ),
+					'show_in_rest'      => true,
+					'default'           => self::UNSAVED_DEFAULT,
+				)
+			);
+			register_setting(
+				self::PAGE,
 				self::POLLING_INTERVAL_OPTION,
 				array(
 					'type'              => 'integer',
@@ -291,6 +316,13 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				self::ADVISORY_OPTION,
 				__( 'Advisory channel', 'gutenberg-sync-engines' ),
 				array( $this, 'render_advisory_field' ),
+				self::PAGE,
+				'gutenberg_sync_engines_main'
+			);
+			add_settings_field(
+				self::UNSAVED_OPTION,
+				__( 'Unsaved changes', 'gutenberg-sync-engines' ),
+				array( $this, 'render_unsaved_field' ),
 				self::PAGE,
 				'gutenberg_sync_engines_main'
 			);
@@ -458,6 +490,40 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 */
 		public function sanitize_advisory( $value ): string {
 			return self::ADVISORY_DEFAULT === (string) $value ? self::ADVISORY_DEFAULT : '';
+		}
+
+		/**
+		 * Sanitizes the unsaved-changes policy.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param mixed $value Submitted value.
+		 * @return string `discard` or `keep`.
+		 */
+		public function sanitize_unsaved( $value ): string {
+			return self::UNSAVED_KEEP === (string) $value ? self::UNSAVED_KEEP : self::UNSAVED_DISCARD;
+		}
+
+		/**
+		 * Renders the unsaved-changes policy field.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return void
+		 */
+		public function render_unsaved_field(): void {
+			$this->render_select(
+				self::UNSAVED_OPTION,
+				array(
+					self::UNSAVED_DISCARD => __( 'Discarded when the last editor leaves (default)', 'gutenberg-sync-engines' ),
+					self::UNSAVED_KEEP    => __( 'Kept as a shared working copy', 'gutenberg-sync-engines' ),
+				),
+				(string) get_option( self::UNSAVED_OPTION, self::UNSAVED_DEFAULT )
+			);
+			printf(
+				'<p class="description">%s</p>',
+				esc_html__( 'While people are editing together, unsaved changes are shared live. When the last editor leaves the post, either they are discarded (the saved post and its autosaves are the only durable copy, as the unsaved-changes warning says) or they are kept and the next editor continues from them.', 'gutenberg-sync-engines' )
+			);
 		}
 
 		/**

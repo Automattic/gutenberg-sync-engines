@@ -32,6 +32,16 @@ and takes them back, at the cursor polling reached, when it reopens. The
 reasoning, the rules, and the failure cases are in
 [plan/advisory-channel.md](plan/advisory-channel.md).
 
+**What happens to unsaved changes when the last editor leaves** is a
+setting (Settings → Collaboration → Unsaved changes), applied above the
+engine choice. By default they are discarded: every tab tells the server
+when it leaves (a beacon on `pagehide`, or the socket closing), and a
+per-post room nobody is in is reset to the saved post, at once when the
+last tab leaves or when a new tab arrives and finds nobody there. Every
+room response carries a generation token so a tab whose room was reset
+under it starts over. The alternative keeps rooms as a shared working
+copy. See [plan/room-lifetime.md](plan/room-lifetime.md).
+
 Transport latency is engine-independent (the HTTP rows replicate within
 noise under intent-log). One caveat on the axis itself: "engines run
 over any transport" is an inherited framework property, not a

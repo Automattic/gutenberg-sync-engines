@@ -1278,4 +1278,52 @@ class Tests_Collaboration_WpHttpPollingSyncServer extends WP_Test_REST_Controlle
 		$this->assertSame( 0, $response['end_cursor'] );
 		$this->assertArrayNotHasKey( 'generation', $response );
 	}
+
+	/**
+	 * A new tab's first request, carrying its presence token, finds nobody
+	 * else in the room: the room's leftovers are reset before it is served,
+	 * and the generation token changes so any stale client notices.
+	 */
+	public function test_a_new_tabs_join_resets_an_abandoned_room_and_changes_the_generation(): void {
+		wp_set_current_user( self::$editor_id );
+		$room   = $this->get_post_room();
+		$update = array(
+			array(
+				'data' => base64_encode( 'stale' ),
+				'type' => Test_Opaque_Relay_Engine::UPDATE_TYPE_UPDATE,
+			),
+		);
+
+		// An earlier session (no presence token: a tab from before the lane,
+		// or an expired one) left a row behind, and its awareness has since
+		// gone stale.
+		$first = $this->dispatch_sync( array( $this->build_room( $room, 1, 0, array(), $update ) ) )->get_data()['rooms'][0];
+		$this->assertNotEmpty( $first['generation'] );
+		$storage = gutenberg_sync_engines_storage();
+		$storage->set_awareness_state(
+			$room,
+			array_map(
+				static function ( $entry ) {
+					$entry['updated_at'] = time() - 31;
+					return $entry;
+				},
+				$storage->get_awareness_state( $room )
+			)
+		);
+
+		// A new tab joins with its token and writes: the old row is gone.
+		$join_room                   = $this->build_room( $room, 2, 0, array(), $update );
+		$join_room['presence_token'] = 'tab-new';
+		$joined                      = $this->dispatch_sync( array( $join_room ) )->get_data()['rooms'][0];
+		// The relay fixture never echoes a client's own rows, so the stale
+		// row's absence is what shows here; the storage holds the joiner's
+		// row alone.
+		$this->assertCount( 0, $joined['updates'], 'The earlier session\'s stale row is gone after the reset.' );
+		$this->assertSame( array( 2 ), array_column( $storage->get_updates_after_cursor( $room, 0 ), 'client_id' ) );
+		$this->assertNotSame( $first['generation'], $joined['generation'] );
+
+		// The same tab again (re-bootstrap from cursor 0): nothing resets.
+		$again = $this->dispatch_sync( array( $join_room ) )->get_data()['rooms'][0];
+		$this->assertSame( $joined['generation'], $again['generation'] );
+	}
 }

@@ -46,6 +46,12 @@ interface SyncEnvelopeFromClient {
 	engine_protocol?: number;
 	/** Sync-inspector opt-in: ask the engine for a `_debug` envelope. */
 	debug?: boolean;
+	/**
+	 * This tab's presence token on its post's room: the tab's first request
+	 * carrying it is its join, which under the default unsaved-changes
+	 * policy resets a per-post room nobody else is in to the saved post.
+	 */
+	presence_token?: string;
 	room: string;
 	updates: SyncUpdate[];
 }

@@ -227,7 +227,8 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 		$request->set_param( 'room', $this->room() );
 		$request->set_param( 'token', 'tok-a' );
 		$response = $this->presence->handle_leave( $request );
-		$this->assertSame( 204, $response->get_status() );
+		$this->assertSame( 200, $response->get_status() );
+		$this->assertSame( array( 'reset' => false ), $response->get_data() );
 
 		wp_set_current_user( self::$other_editor_id );
 		$answer = $this->beat( 'tok-b' );
@@ -478,6 +479,283 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 			)
 		);
 		$this->assertSame( $expected, $answer['cursor'] );
+	}
+
+	/**
+	 * Seeds the room with one stored row so it has something to lose.
+	 */
+	private function seed_room_row( WP_Sync_Storage $storage ): void {
+		$storage->add_update(
+			$this->room(),
+			array(
+				'type' => 'update',
+				'data' => 'AA==',
+			)
+		);
+		$storage->set_room_engine( $this->room(), 'intent-log' );
+		$this->assertNotEmpty( $storage->get_updates_after_cursor( $this->room(), 0 ) );
+	}
+
+	private function room_is_empty( WP_Sync_Storage $storage ): bool {
+		return array() === $storage->get_updates_after_cursor( $this->room(), 0 )
+			&& null === $storage->peek_room_engine( $this->room() );
+	}
+
+	public function test_leaving_as_the_last_tab_resets_the_room() {
+		$storage  = new WP_Sync_Post_Meta_Storage();
+		$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
+		$this->seed_room_row( $storage );
+		$presence->answer_probe(
+			array(
+				'room'  => $this->room(),
+				'token' => 'tab-a',
+			)
+		);
+
+		$this->assertTrue( $presence->leave( $this->room(), 'tab-a', 0 ) );
+		$this->assertTrue( $this->room_is_empty( $storage ) );
+		// The token is gone too: a following opener is alone.
+		$this->assertFalse(
+			$presence->answer_probe(
+				array(
+					'room'  => $this->room(),
+					'token' => 'tab-b',
+				)
+			)['others']
+		);
+	}
+
+	public function test_leaving_while_another_tab_stays_keeps_the_room() {
+		$storage  = new WP_Sync_Post_Meta_Storage();
+		$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
+		$this->seed_room_row( $storage );
+		$presence->answer_probe(
+			array(
+				'room'  => $this->room(),
+				'token' => 'tab-a',
+			)
+		);
+		$presence->answer_probe(
+			array(
+				'room'  => $this->room(),
+				'token' => 'tab-b',
+			)
+		);
+
+		$this->assertFalse( $presence->leave( $this->room(), 'tab-a', 0 ) );
+		$this->assertFalse( $this->room_is_empty( $storage ) );
+	}
+
+	public function test_leaving_while_a_live_sync_session_remains_keeps_the_room() {
+		$storage  = new WP_Sync_Post_Meta_Storage();
+		$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
+		$this->seed_room_row( $storage );
+		$storage->set_awareness_state(
+			$this->room(),
+			array(
+				array(
+					'client_id'  => 555,
+					'state'      => array(),
+					'updated_at' => time(),
+					'wp_user_id' => self::$editor_id,
+				),
+				array(
+					'client_id'  => 777,
+					'state'      => array(),
+					'updated_at' => time(),
+					'wp_user_id' => self::$editor_id,
+				),
+			)
+		);
+
+		// Tab a (client 555) leaves; client 777 (a tab whose token is not
+		// tracked, e.g. an older page) is still live.
+		$this->assertFalse( $presence->leave( $this->room(), 'tab-a', 555 ) );
+		$this->assertFalse( $this->room_is_empty( $storage ) );
+		// Its own awareness entry was removed at once.
+		$this->assertSame( array( 777 ), array_column( $storage->get_awareness_state( $this->room() ), 'client_id' ) );
+	}
+
+	public function test_a_new_tabs_first_sync_request_resets_an_abandoned_room() {
+		$storage  = new WP_Sync_Post_Meta_Storage();
+		$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
+		$this->seed_room_row( $storage );
+
+		// Nobody present (a crashed tab's token has expired): the newcomer's
+		// join wipes the leftovers.
+		$this->assertTrue( $presence->note_sync_request( $this->room(), 'tab-new', 1 ) );
+		$this->assertTrue( $this->room_is_empty( $storage ) );
+	}
+
+	public function test_the_same_tabs_later_requests_never_reset() {
+		$storage  = new WP_Sync_Post_Meta_Storage();
+		$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
+
+		$presence->note_sync_request( $this->room(), 'tab-a', 1 );
+		// The tab writes to the room, then re-requests from cursor 0 (a
+		// re-bootstrap after a restart): it is the room's participant.
+		$this->seed_room_row( $storage );
+		$this->assertFalse( $presence->note_sync_request( $this->room(), 'tab-a', 1 ) );
+		$this->assertFalse( $this->room_is_empty( $storage ) );
+
+		// A heartbeat refresh keeps the joined mark.
+		$presence->answer_probe(
+			array(
+				'room'  => $this->room(),
+				'token' => 'tab-a',
+			)
+		);
+		$this->assertFalse( $presence->note_sync_request( $this->room(), 'tab-a', 1 ) );
+		$this->assertFalse( $this->room_is_empty( $storage ) );
+	}
+
+	public function test_a_join_with_someone_present_keeps_the_room() {
+		$storage  = new WP_Sync_Post_Meta_Storage();
+		$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
+		$this->seed_room_row( $storage );
+		$presence->answer_probe(
+			array(
+				'room'  => $this->room(),
+				'token' => 'tab-a',
+			)
+		);
+
+		$this->assertFalse( $presence->note_sync_request( $this->room(), 'tab-b', 2 ) );
+		$this->assertFalse( $this->room_is_empty( $storage ) );
+	}
+
+	public function test_collection_rooms_are_never_reset() {
+		$storage  = new WP_Sync_Post_Meta_Storage();
+		$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
+		$room     = 'taxonomy/category';
+		$storage->add_update(
+			$room,
+			array(
+				'type' => 'update',
+				'data' => 'AA==',
+			)
+		);
+
+		$this->assertFalse( $presence->note_sync_request( $room, 'tab-new', 1 ) );
+		$this->assertFalse( $presence->leave( $room, 'tab-new', 1 ) );
+		$this->assertNotEmpty( $storage->get_updates_after_cursor( $room, 0 ) );
+	}
+
+	public function test_the_keep_policy_and_the_filter_both_keep_empty_rooms() {
+		$storage  = new WP_Sync_Post_Meta_Storage();
+		$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
+		$this->seed_room_row( $storage );
+
+		update_option( Gutenberg_Sync_Engines_Settings::UNSAVED_OPTION, Gutenberg_Sync_Engines_Settings::UNSAVED_KEEP );
+		$this->assertFalse( $presence->note_sync_request( $this->room(), 'tab-new', 1 ) );
+		$this->assertFalse( $presence->leave( $this->room(), 'tab-new', 1 ) );
+		$this->assertFalse( $this->room_is_empty( $storage ) );
+		delete_option( Gutenberg_Sync_Engines_Settings::UNSAVED_OPTION );
+
+		add_filter( 'gutenberg_sync_engines_room_reset_when_empty', '__return_false' );
+		try {
+			$this->assertFalse( $presence->note_sync_request( $this->room(), 'tab-other', 2 ) );
+			$this->assertFalse( $this->room_is_empty( $storage ) );
+		} finally {
+			remove_filter( 'gutenberg_sync_engines_room_reset_when_empty', '__return_false' );
+		}
+
+		// Back on the default policy: the two tabs that joined meanwhile
+		// leave, and the last one out resets the room.
+		$this->assertFalse( $presence->leave( $this->room(), 'tab-new', 1 ) );
+		$this->assertFalse( $this->room_is_empty( $storage ) );
+		$this->assertTrue( $presence->leave( $this->room(), 'tab-other', 2 ) );
+		$this->assertTrue( $this->room_is_empty( $storage ) );
+	}
+
+	public function test_a_never_written_room_is_not_created_by_a_reset() {
+		$storage  = new WP_Sync_Post_Meta_Storage();
+		$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
+		$this->assertFalse( $presence->note_sync_request( $this->room(), 'tab-new', 1 ) );
+		$this->assertSame(
+			array(),
+			get_posts(
+				array(
+					'post_type'   => 'wp_sync_storage',
+					'post_status' => 'any',
+					'numberposts' => -1,
+					'fields'      => 'ids',
+				)
+			)
+		);
+	}
+
+	public function test_leave_route_reports_the_reset() {
+		$storage  = new WP_Sync_Post_Meta_Storage();
+		$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
+		$this->seed_room_row( $storage );
+		$presence->answer_probe(
+			array(
+				'room'  => $this->room(),
+				'token' => 'tab-a',
+			)
+		);
+
+		$request = new WP_REST_Request( 'POST', '/gutenberg-sync-engines/v1/advisory/leave' );
+		$request->set_param( 'room', $this->room() );
+		$request->set_param( 'token', 'tab-a' );
+		$request->set_param( 'client_id', 0 );
+		$response = $presence->handle_leave( $request );
+		$this->assertSame( array( 'reset' => true ), $response->get_data() );
+		$this->assertTrue( $this->room_is_empty( $storage ) );
+	}
+
+	public function test_a_reset_de_rtc_room_rebuilds_from_the_saved_post_not_its_old_canonical() {
+		$post_id  = self::factory()->post->create(
+			array(
+				'post_author'  => self::$editor_id,
+				'post_content' => "<!-- wp:paragraph -->\n<p>Hello</p>\n<!-- /wp:paragraph -->",
+			)
+		);
+		$room     = 'postType/post:' . $post_id;
+		$storage  = new WP_Sync_Post_Meta_Storage();
+		$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
+		$engine   = new WP_De_RTC_Engine( $storage );
+		add_action( 'gutenberg_sync_engines_room_reset', array( 'WP_De_RTC_Engine', 'forget_room_state' ) );
+
+		// A session advances the room past its genesis (canonical lives in
+		// an options row the storage reset never sees).
+		$this->assertStringContainsString( 'Hello', (string) $engine->materialize( $room ) );
+		$result = $engine->handle_updates(
+			$room,
+			201,
+			0,
+			array(
+				array(
+					'type' => WP_De_RTC_Engine::UPDATE_TYPE_PROPOSAL,
+					'data' => wp_json_encode(
+						array(
+							'proposalId'      => 'p-1',
+							'baseVersion'     => 'v1',
+							'proposedContent' => "<!-- wp:paragraph -->\n<p>Hello, unsaved</p>\n<!-- /wp:paragraph -->",
+							'clientUpdate'    => null,
+						)
+					),
+				),
+			),
+			array()
+		);
+		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
+		$this->assertStringContainsString( 'unsaved', (string) $engine->materialize( $room ) );
+		$presence->answer_probe(
+			array(
+				'room'  => $room,
+				'token' => 'tab-a',
+			)
+		);
+
+		// The last tab leaves: the room is reset, INCLUDING the canonical
+		// row, so a fresh engine rebuilds genesis from the saved post.
+		$this->assertTrue( $presence->leave( $room, 'tab-a', 201 ) );
+		$fresh = new WP_De_RTC_Engine( $storage );
+		$this->assertStringNotContainsString( 'unsaved', (string) $fresh->materialize( $room ) );
+		$this->assertStringContainsString( 'Hello', (string) $fresh->materialize( $room ) );
+		wp_delete_post( $post_id, true );
 	}
 
 	public function test_presence_reads_never_create_a_storage_post() {

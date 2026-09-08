@@ -2325,6 +2325,65 @@ describe( 'polling-manager', () => {
 			expect( beaconsSent.reduce( ( a, b ) => a + b, 0 ) ).toBe( 21 );
 		} );
 	} );
+	describe( 'presence token', () => {
+		afterEach( () => {
+			delete ( window as { _gutenbergSyncEnginesSettings?: unknown } )
+				._gutenbergSyncEnginesSettings;
+		} );
+
+		it( "stamps this tab's token on its post's room only", async () => {
+			(
+				window as { _gutenbergSyncEnginesSettings?: unknown }
+			 )._gutenbergSyncEnginesSettings = {
+				advisory: { room: 'postType/post:7', token: 'tab-token' },
+			};
+			mockPostSyncUpdate.mockResolvedValue( {
+				rooms: [
+					{
+						room: 'postType/post:7',
+						end_cursor: 1,
+						awareness: {},
+						updates: [],
+					},
+					{
+						room: 'taxonomy/category',
+						end_cursor: 1,
+						awareness: {},
+						updates: [],
+					},
+				],
+			} );
+			pollingManager.registerRoom( {
+				room: 'postType/post:7',
+				session: createMockSession( 1 ),
+				log: jest.fn(),
+				onStatusChange: jest.fn(),
+			} );
+			pollingManager.registerRoom( {
+				room: 'taxonomy/category',
+				session: createMockSession( 1 ),
+				log: jest.fn(),
+				onStatusChange: jest.fn(),
+			} );
+			await jest.advanceTimersByTimeAsync( 0 );
+			await jest.advanceTimersByTimeAsync( 4000 );
+
+			const payload = mockPostSyncUpdate.mock.calls[
+				mockPostSyncUpdate.mock.calls.length - 1
+			][ 0 ] as SyncPayload;
+			expect( payload.rooms ).toHaveLength( 2 );
+			const byRoom = Object.fromEntries(
+				payload.rooms.map( ( room ) => [ room.room, room ] )
+			);
+			expect( byRoom[ 'postType/post:7' ].presence_token ).toBe(
+				'tab-token'
+			);
+			expect( byRoom[ 'taxonomy/category' ] ).not.toHaveProperty(
+				'presence_token'
+			);
+		} );
+	} );
+
 	describe( 'sync inspector tap', () => {
 		it( 'records decoded polls and requests the server envelope when enabled', async () => {
 			window.localStorage.setItem( 'wp_sync_debug', '1' );

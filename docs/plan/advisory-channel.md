@@ -181,6 +181,9 @@ Cursors and selections stay on the base transport by decision: over the
 channel they would point at content positions the receiver has not yet
 polled for. Rethinking awareness for low-latency lanes is out of scope.
 
+What happens to the room when the last editor leaves is a separate
+switch, [room-lifetime.md](room-lifetime.md).
+
 ## What exists now
 
 Server (`includes/class-gutenberg-sync-engines-advisory-presence.php`):

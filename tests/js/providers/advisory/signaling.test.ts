@@ -325,7 +325,8 @@ describe( 'advisory signaling', () => {
 		} );
 	} );
 
-	it( 'sends the leave beacon once with the room and token', () => {
+	it( 'sends the leave beacon once with the room, token, and client id', async () => {
+		signaling.setSyncClientId( 7 );
 		const sendBeacon = jest.fn( () => true );
 		Object.defineProperty( navigator, 'sendBeacon', {
 			configurable: true,
@@ -340,6 +341,24 @@ describe( 'advisory signaling', () => {
 				Blob,
 			];
 			expect( url ).toContain( '/advisory/leave?_wpnonce=nonce-1' );
+			// The session's client id rides along so the server can drop
+			// this tab's own awareness entry at once.
+			const [ , blob ] = sendBeacon.mock.calls[ 0 ] as unknown as [
+				string,
+				Blob,
+			];
+			const text = await new Promise< string >( ( resolve ) => {
+				const reader = new FileReader();
+				reader.onload = () => resolve( String( reader.result ) );
+				reader.readAsText( blob );
+			} );
+			expect( text ).toBe(
+				JSON.stringify( {
+					room: 'postType/post:7',
+					token: 'tok-b',
+					client_id: 7,
+				} )
+			);
 		} finally {
 			delete ( navigator as { sendBeacon?: unknown } ).sendBeacon;
 		}

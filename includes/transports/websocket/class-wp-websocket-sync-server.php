@@ -788,8 +788,11 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 					}
 
 					$this->clients[ $key ]['rooms'][ $room ] = array(
-						'client_id' => $validated['client_id'],
-						'cursor'    => 0,
+						'client_id'      => $validated['client_id'],
+						'cursor'         => 0,
+						// Remembered so a closed socket can leave the room
+						// the way a closing tab's beacon does.
+						'presence_token' => $validated['presence_token'] ?? '',
 					);
 				} elseif ( $this->clients[ $key ]['rooms'][ $room ]['client_id'] !== $validated['client_id'] ) {
 					/*
@@ -910,6 +913,11 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 				return new WP_Error( 'websocket_invalid_room', 'Invalid engine protocol.', array( 'rooms' => array( $room ) ) );
 			}
 
+			$presence_token = $room_request['presence_token'] ?? null;
+			if ( null !== $presence_token && ( ! is_string( $presence_token ) || '' === $presence_token || strlen( $presence_token ) > 64 ) ) {
+				return new WP_Error( 'websocket_invalid_room', 'Invalid presence token.', array( 'rooms' => array( $room ) ) );
+			}
+
 			$updates = $room_request['updates'] ?? null;
 			if ( ! is_array( $updates ) ) {
 				return new WP_Error( 'websocket_invalid_room', 'Invalid updates list.', array( 'rooms' => array( $room ) ) );
@@ -951,6 +959,9 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 			}
 			if ( null !== $engine_protocol ) {
 				$validated['engine_protocol'] = $engine_protocol;
+			}
+			if ( null !== $presence_token ) {
+				$validated['presence_token'] = $presence_token;
 			}
 
 			return $validated;
@@ -1286,6 +1297,13 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 					wp_set_current_user( (int) $client['user_id'] );
 				}
 				$this->sync->update_awareness( $room, $client['rooms'][ $room ]['client_id'], null );
+				// A socket close is the tab leaving: the presence lane may
+				// reset a room nobody else is in.
+				$presence = $this->sync->get_presence();
+				$token    = $client['rooms'][ $room ]['presence_token'] ?? '';
+				if ( null !== $presence && '' !== $token ) {
+					$presence->leave( $room, $token, (int) $client['rooms'][ $room ]['client_id'] );
+				}
 				$this->broadcast_room( $room );
 			}
 		}

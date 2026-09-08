@@ -48,6 +48,8 @@ import {
 	onRoomCursor,
 	onRoomEngine,
 	othersPresent,
+	getPresenceRoom,
+	getPresenceToken,
 	setSignalCarrier,
 	setSyncClientId,
 } from '../advisory/signaling';
@@ -1009,6 +1011,11 @@ function createPayloadRoom(
 					engine: state.session.engineSlug,
 					engine_protocol: state.session.engineProtocol,
 			  }
+			: {} ),
+		// This tab's presence token, on its post's room only: the first
+		// request carrying it is the tab's join (docs/plan/room-lifetime.md).
+		...( getPresenceRoom() === state.room && getPresenceToken()
+			? { presence_token: getPresenceToken()! }
 			: {} ),
 		// The inspector's server-envelope opt-in (see debug/inspector.ts).
 		...( isSyncDebugEnabled() ? { debug: true } : {} ),

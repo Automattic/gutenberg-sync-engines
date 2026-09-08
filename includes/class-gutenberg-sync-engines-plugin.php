@@ -178,6 +178,8 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			WP_De_RTC_Autosave_Commits::register();
 			add_action( 'rest_api_init', array( new WP_De_RTC_Review_Controller(), 'register_routes' ) );
 			WP_Intent_Log_Base_Seq_Preflight::register();
+			// A reset room must not resume from de-rtc's out-of-row canonical.
+			add_action( 'gutenberg_sync_engines_room_reset', array( 'WP_De_RTC_Engine', 'forget_room_state' ) );
 			add_filter( 'wp_sync_transports', array( $this, 'register_transports' ), 10, 3 );
 			add_filter( 'wp_sync_transport_client_config', array( $this, 'filter_transport_client_config' ), 10, 2 );
 			add_action( 'enqueue_block_editor_assets', array( $this, 'enqueue_editor_assets' ) );

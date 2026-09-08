@@ -48,6 +48,8 @@ jest.mock( '@wordpress/hooks', () => ( {
 jest.mock( '../../../../src/providers/advisory/signaling', () => ( {
 	applyAnswer: jest.fn(),
 	buildProbe: () => ( { seq: 1, room: 'postType/post:1', token: 'tok' } ),
+	getPresenceRoom: () => 'postType/post:1',
+	getPresenceToken: () => 'tok',
 	probeFailed: jest.fn(),
 	installSignaling: jest.fn(),
 	installSignalingLifecycle: jest.fn(),

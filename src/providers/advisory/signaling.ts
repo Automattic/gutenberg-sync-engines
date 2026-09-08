@@ -400,6 +400,7 @@ export function sendLeaveBeacon(): boolean {
 	const body = JSON.stringify( {
 		room: settings.room,
 		token: settings.token,
+		...( null !== syncClientId ? { client_id: syncClientId } : {} ),
 	} );
 	if ( 'function' === typeof navigator.sendBeacon ) {
 		return navigator.sendBeacon(

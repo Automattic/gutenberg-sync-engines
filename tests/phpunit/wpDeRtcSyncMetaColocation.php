@@ -200,4 +200,53 @@ class Tests_Collaboration_WpDeRtcSyncMetaColocation extends WP_UnitTestCase {
 	private function genesis( int $post_id ): string {
 		return WP_De_RTC_Block_Identity::stamp_genesis( self::GENESIS_CONTENT, $post_id );
 	}
+
+	/**
+	 * A client that parsed a SAVED post carries the co-located sync-meta
+	 * script as a stray block (the editor renders it as a freeform block
+	 * and proposes it back). The proposal lane strips it exactly as the
+	 * save preflight does: bookkeeping never becomes content.
+	 */
+	public function test_a_proposal_carrying_the_sync_meta_pseudo_block_lands_stripped() {
+		$post_id = $this->make_post();
+		$room    = 'postType/post:' . $post_id;
+		$engine  = $this->engine();
+		$genesis = $engine->materialize( $room );
+		$this->assertSame( $this->genesis( $post_id ), $genesis );
+
+		$stray    = "\n\n<p><script data-sync-meta-format=\"automerge\" data-wp-sync-meta=\"distributed-editing\" type=\"application/json\">{\"version_snapshots\":{}}</script></p>";
+		$proposed = str_replace( 'Alpha block original text.', 'Alpha block edited after a reload.', $genesis ) . $stray;
+		$result   = $engine->handle_updates( $room, 201, 0, array( $this->proposal( 'p-stray', 'v1', $proposed ) ), array() );
+		$this->assertSame( 'applied', $result['dispositions'][0]['status'] );
+
+		$canonical = $engine->materialize( $room );
+		$this->assertStringContainsString( 'edited after a reload', $canonical );
+		$this->assertStringNotContainsString( 'data-wp-sync-meta', $canonical );
+		$this->assertStringNotContainsString( '<script', $canonical );
+	}
+
+	/**
+	 * The editor loads `content.raw` over REST; the co-located script must
+	 * not be in it, or the editor parses it as a block and proposes it back.
+	 */
+	public function test_rest_raw_content_is_served_without_the_sync_meta_script() {
+		$post_id = $this->make_post();
+		$this->bootstrap_room( $post_id );
+		wp_update_post(
+			array(
+				'ID'           => $post_id,
+				'post_content' => self::GENESIS_CONTENT,
+			)
+		);
+		$this->assertStringContainsString( 'data-wp-sync-meta', get_post( $post_id )->post_content );
+
+		WP_De_RTC_Sync_Meta_Colocation::register_rest_filters();
+		$request = new WP_REST_Request( 'GET', '/wp/v2/posts/' . $post_id );
+		$request->set_param( 'context', 'edit' );
+		$response = rest_get_server()->dispatch( $request );
+		$this->assertSame( 200, $response->get_status() );
+		$raw = $response->get_data()['content']['raw'];
+		$this->assertStringNotContainsString( 'data-wp-sync-meta', $raw );
+		$this->assertStringContainsString( 'Alpha block', $raw );
+	}
 }

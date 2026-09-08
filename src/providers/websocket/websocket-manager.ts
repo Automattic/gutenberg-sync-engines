@@ -22,6 +22,12 @@ import {
 	unregisterDebugSession,
 } from '../../debug/inspector';
 import { pollingManager } from '../http-polling/polling-manager';
+import {
+	getPresenceRoom,
+	getPresenceToken,
+	installSignalingLifecycle,
+	setSyncClientId,
+} from '../advisory/signaling';
 
 /**
  * A codec-driven WebSocket transport, symmetric with the HTTP polling
@@ -159,6 +165,11 @@ function buildSyncFrame( pending: Map< string, EngineUpdate[] > ): string {
 						engine: state.session.engineSlug,
 						engine_protocol: state.session.engineProtocol,
 				  }
+				: {} ),
+			// This tab's presence token, on its post's room only (see the
+			// polling manager's twin).
+			...( getPresenceRoom() === state.room && getPresenceToken()
+				? { presence_token: getPresenceToken()! }
 				: {} ),
 			// The inspector's server-envelope opt-in (see debug/inspector.ts).
 			...( isSyncDebugEnabled() ? { debug: true } : {} ),
@@ -641,6 +652,14 @@ function registerRoom( options: WebSocketRoomOptions ): void {
 	};
 	rooms.set( options.room, state );
 	bindLocalUpdates( state );
+
+	// The leave beacon and this post's session client id, so the server
+	// can tell this tab's own awareness entry apart from a peer's when it
+	// leaves (see the polling manager's twin).
+	installSignalingLifecycle();
+	if ( getPresenceRoom() === options.room ) {
+		setSyncClientId( options.session.clientId );
+	}
 
 	// State accessors for the console inspector (duck-typed; inert unless
 	// the inspector is enabled).

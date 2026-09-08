@@ -53,9 +53,13 @@ This plugin provides:
   `includes/class-gutenberg-sync-engines-advisory-presence.php`) that
   carries presence and "go and poll" notices, never content. It decides
   the polling cadence: quiet when alone, timer cadence when a peer is
-  unreachable, on-demand plus a 25 s safety poll when every peer is
-  reachable. Long polling turns it off while connected. Rules and failure
-  cases: `docs/plan/advisory-channel.md`.
+  unreachable, on demand (with the heartbeat carrying the room's head
+  cursor) when every peer is reachable. Long polling turns it off while
+  connected. Rules and failure cases: `docs/plan/advisory-channel.md`.
+  The same presence lane decides a per-post room's LIFETIME under the
+  "Unsaved changes" setting (default: an empty room is reset to the
+  saved post; the room's generation token tells clients to start over).
+  Reasoning and the switch: `docs/plan/room-lifetime.md`.
 
 It registers through the framework's extension points: PHP `wp_sync_engines` /
 `wp_sync_transports` filters; JS `registerSyncEngine` / `registerSyncTransport`

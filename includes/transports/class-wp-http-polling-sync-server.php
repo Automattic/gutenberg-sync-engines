@@ -112,13 +112,40 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 *
 		 * @since 7.0.0
 		 *
-		 * @param WP_Sync_Storage              $storage Storage backend for sync updates.
-		 * @param WP_Sync_Engine_Registry|null $engines Engine registry. Defaults to a
-		 *                                              registry over the given storage.
+		 * @param WP_Sync_Storage                               $storage  Storage backend for sync updates.
+		 * @param WP_Sync_Engine_Registry|null                  $engines  Engine registry. Defaults to a
+		 *                                                                registry over the given storage.
+		 * @param Gutenberg_Sync_Engines_Advisory_Presence|null $presence Presence lane deciding room
+		 *                                                                lifetime. Defaults to the
+		 *                                                                plugin's when available.
 		 */
-		public function __construct( WP_Sync_Storage $storage, ?WP_Sync_Engine_Registry $engines = null ) {
-			$this->storage = $storage;
-			$this->engines = $engines ?? new WP_Sync_Engine_Registry( $storage );
+		public function __construct( WP_Sync_Storage $storage, ?WP_Sync_Engine_Registry $engines = null, ?Gutenberg_Sync_Engines_Advisory_Presence $presence = null ) {
+			if ( null === $presence && class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
+				$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
+			}
+			$this->presence = $presence;
+			$this->storage  = $storage;
+			$this->engines  = $engines ?? new WP_Sync_Engine_Registry( $storage );
+		}
+
+		/**
+		 * The presence lane deciding room lifetime (join/leave resets), or
+		 * null when the plugin's presence class is unavailable.
+		 *
+		 * @since n.e.x.t
+		 * @var Gutenberg_Sync_Engines_Advisory_Presence|null
+		 */
+		protected $presence;
+
+		/**
+		 * The presence lane this transport consults for room lifetime.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return Gutenberg_Sync_Engines_Advisory_Presence|null
+		 */
+		public function get_presence(): ?Gutenberg_Sync_Engines_Advisory_Presence {
+			return $this->presence;
 		}
 
 		/**
@@ -219,6 +246,14 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 					'minimum'  => 1,
 					'required' => false,
 					'type'     => 'integer',
+				),
+				// The tab's presence token (Gutenberg_Sync_Engines_Advisory_Presence):
+				// a tab's first request with it is its join, which under the
+				// default policy resets a per-post room nobody else is in.
+				'presence_token'  => array(
+					'required'  => false,
+					'type'      => 'string',
+					'maxLength' => 64,
 				),
 				'room'            => array(
 					'required' => true,
@@ -396,6 +431,19 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 			$cursor    = (int) $room_request['after'];
 			$room      = (string) $room_request['room'];
 			$updates   = $room_request['updates'] ?? array();
+
+			/*
+			 * Room lifetime: a tab's FIRST request carrying its presence token
+			 * is its join. If nobody else is in this per-post room, the
+			 * room's unsaved content belongs to no one still here and is
+			 * reset to the saved post before anything else happens (lineage
+			 * included, so the mismatch check below sees a fresh room). See
+			 * docs/plan/room-lifetime.md.
+			 */
+			$presence_token = $room_request['presence_token'] ?? '';
+			if ( null !== $this->presence && is_string( $presence_token ) && '' !== $presence_token ) {
+				$this->presence->note_sync_request( $room, $presence_token, $client_id );
+			}
 
 			$engine = $this->engines->get_engine_for_room( $room );
 
