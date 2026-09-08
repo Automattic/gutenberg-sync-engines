@@ -11,6 +11,9 @@ if ( ! class_exists( 'WP_WebSocket_Connection' ) ) {
 if ( ! class_exists( 'WP_WebSocket_Token_Controller' ) ) {
 	require_once __DIR__ . '/class-wp-websocket-token-controller.php';
 }
+if ( ! class_exists( 'WP_WebSocket_Ticket' ) ) {
+	require_once __DIR__ . '/class-wp-websocket-ticket.php';
+}
 
 if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 
@@ -34,8 +37,11 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 	 * Auth: the handshake requires a valid WordPress logged_in cookie, an
 	 * allowed Origin, and a one-time short-lived token minted via the
 	 * `wp-sync/v1/ws-token` REST endpoint whose user must match the cookie
-	 * user. Per-room permission checks identical to the REST server run when
-	 * a socket first references a room.
+	 * user. In ticket mode (WP_WebSocket_Ticket) the offered credential is
+	 * instead a signed ticket, verified here with the shared secret and no
+	 * database read, and the cookie is optional: the same credential a
+	 * host's own relay accepts. Per-room permission checks identical to
+	 * the REST server run when a socket first references a room.
 	 *
 	 * @since 7.4.0
 	 * @access private
@@ -217,6 +223,10 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 		 * - user_id:       int WordPress user authenticated during the handshake.
 		 * - cookie:        string Raw logged_in cookie value captured at the
 		 *                  handshake, re-validated during the periodic sweep.
+		 * - ticket:        bool Whether a signed ticket authenticated the
+		 *                  handshake (the cookie may then be absent: the
+		 *                  sweep still re-checks the user's capability but
+		 *                  cannot see a logout before the socket closes).
 		 * - ip:            string Peer IP address, used for per-IP caps.
 		 * - rooms:         array<string, array{client_id: int, cursor: int}>
 		 *                  The rooms this socket syncs (the websocket TRANSPORT).
@@ -632,6 +642,7 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 
 			$this->clients[ $key ]['user_id'] = $auth['user_id'];
 			$this->clients[ $key ]['cookie']  = $auth['cookie'];
+			$this->clients[ $key ]['ticket']  = ! empty( $auth['ticket'] );
 			// Echo the base subprotocol the client offered alongside its
 			// token entry (browsers enforce the echo matches an offer).
 			$offered_protocols = (string) ( $headers['sec-websocket-protocol'] ?? '' );
@@ -650,9 +661,11 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 		 * @since 7.4.0
 		 *
 		 * @param array{headers: array<string, string>, query: array<string, mixed>} $request Parsed handshake request.
-		 * @return array{user_id: int, cookie: string}|WP_Error Authenticated user
-		 *         ID and the raw logged_in cookie value (retained for periodic
-		 *         re-validation), or WP_Error on failure.
+		 * @return array{user_id: int, cookie: string, ticket: bool}|WP_Error
+		 *         Authenticated user ID, the raw logged_in cookie value
+		 *         (retained for periodic re-validation; '' when a ticket
+		 *         stood alone), and whether a ticket authenticated it, or
+		 *         WP_Error on failure.
 		 */
 		private function authenticate_handshake( array $request ) {
 			$headers = $request['headers'];
@@ -684,10 +697,50 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 				return new WP_Error( 'websocket_bad_origin', 'Origin not allowed: ' . $origin );
 			}
 
-			// 2. WordPress logged_in auth cookie.
+			/*
+			 * The credential minted via the ws-token REST endpoint rides the
+			 * Sec-WebSocket-Protocol offer list (the one handshake header
+			 * browsers let a page set), NOT the URL — a query-string token
+			 * leaks into server/proxy access logs and referrer-adjacent
+			 * tooling. The offer is `<SUBPROTOCOL>, <TOKEN_PROTOCOL_PREFIX><token>`;
+			 * the server echoes only the base subprotocol.
+			 */
+			$token = '';
+			foreach ( explode( ',', (string) ( $headers['sec-websocket-protocol'] ?? '' ) ) as $offer ) {
+				$offer = trim( $offer );
+				if ( 0 === strpos( $offer, self::TOKEN_PROTOCOL_PREFIX ) ) {
+					$token = substr( $offer, strlen( self::TOKEN_PROTOCOL_PREFIX ) );
+					break;
+				}
+			}
+
 			$cookie_header = $headers['cookie'] ?? '';
 			$cookie_value  = $this->get_cookie_value( $cookie_header, LOGGED_IN_COOKIE );
 
+			/*
+			 * 2a. Ticket mode: a signed ticket proves the user by itself,
+			 * the way it does to a relay without WordPress. The cookie is
+			 * kept for the periodic re-validation when the browser sent one
+			 * for the same user (a same-site daemon), and simply absent
+			 * otherwise.
+			 */
+			if ( WP_WebSocket_Ticket::is_enabled() && WP_WebSocket_Ticket::looks_like_ticket( $token ) ) {
+				$claims = WP_WebSocket_Ticket::verify( $token );
+				if ( is_wp_error( $claims ) ) {
+					return $claims;
+				}
+				if ( ! get_userdata( $claims['user_id'] ) ) {
+					return new WP_Error( 'websocket_invalid_ticket', 'Ticket for an unknown user.' );
+				}
+				$cookie_user = '' !== $cookie_value ? wp_validate_auth_cookie( $cookie_value, 'logged_in' ) : false;
+				return array(
+					'cookie'  => $cookie_user && (int) $cookie_user === $claims['user_id'] ? $cookie_value : '',
+					'ticket'  => true,
+					'user_id' => $claims['user_id'],
+				);
+			}
+
+			// 2. WordPress logged_in auth cookie.
 			if ( '' === $cookie_value ) {
 				return new WP_Error(
 					'websocket_invalid_cookie',
@@ -703,23 +756,7 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 				return new WP_Error( 'websocket_invalid_cookie', 'Invalid auth cookie.' );
 			}
 
-			/*
-			 * 3. One-time token minted via the ws-token REST endpoint. The
-			 * token rides the Sec-WebSocket-Protocol offer list (the one
-			 * handshake header browsers let a page set), NOT the URL — a
-			 * query-string token leaks into server/proxy access logs and
-			 * referrer-adjacent tooling. The offer is
-			 * `<SUBPROTOCOL>, <TOKEN_PROTOCOL_PREFIX><token>`; the server
-			 * echoes only the base subprotocol.
-			 */
-			$token = '';
-			foreach ( explode( ',', (string) ( $headers['sec-websocket-protocol'] ?? '' ) ) as $offer ) {
-				$offer = trim( $offer );
-				if ( 0 === strpos( $offer, self::TOKEN_PROTOCOL_PREFIX ) ) {
-					$token = substr( $offer, strlen( self::TOKEN_PROTOCOL_PREFIX ) );
-					break;
-				}
-			}
+			// 3. One-time token whose user must match the cookie user.
 			$token_user = WP_WebSocket_Token_Controller::consume_token( $token );
 
 			if ( null === $token_user || $token_user !== (int) $cookie_user ) {
@@ -728,6 +765,7 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 
 			return array(
 				'cookie'  => $cookie_value,
+				'ticket'  => false,
 				'user_id' => (int) $cookie_user,
 			);
 		}
@@ -1503,15 +1541,20 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 					continue;
 				}
 
-				$cookie_user = '' !== $client['cookie']
-					? wp_validate_auth_cookie( $client['cookie'], 'logged_in' )
-					: false;
+				// A ticket-authenticated socket may carry no cookie at all
+				// (a browser on another origin never sends one): its
+				// session is not re-checked, only the capability below.
+				if ( '' !== $client['cookie'] || empty( $client['ticket'] ) ) {
+					$cookie_user = '' !== $client['cookie']
+						? wp_validate_auth_cookie( $client['cookie'], 'logged_in' )
+						: false;
 
-				if ( ! $cookie_user || (int) $cookie_user !== (int) $client['user_id'] ) {
-					$this->log( 'Closing connection: session no longer valid' );
-					$client['conn']->send_close( 1008, 'Session expired' );
-					$this->disconnect( $key );
-					continue;
+					if ( ! $cookie_user || (int) $cookie_user !== (int) $client['user_id'] ) {
+						$this->log( 'Closing connection: session no longer valid' );
+						$client['conn']->send_close( 1008, 'Session expired' );
+						$this->disconnect( $key );
+						continue;
+					}
 				}
 
 				wp_set_current_user( (int) $client['user_id'] );

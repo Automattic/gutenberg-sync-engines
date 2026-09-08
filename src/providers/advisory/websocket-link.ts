@@ -25,12 +25,16 @@ import {
 /**
  * The WebSocket link of the advisory channel (`channel.ts`): one socket
  * per tab to the plugin's sync daemon (the same daemon and the same
- * one-time token handshake the websocket TRANSPORT uses), on which the
- * daemon relays presence and "go and poll" notices between the tabs in a
- * room. The socket carries no rows and the daemon does no engine work for
- * it: it keeps an in-memory roster per room, fans out what a tab sends,
- * and tells the room's tabs when its own once-a-second scan finds rows a
- * writer off the channel landed. Short polling stays the base transport
+ * one-time token handshake the websocket TRANSPORT uses) — or, in
+ * ticket mode, to any relay a host runs that verifies the signed ticket
+ * (`examples/advisory-relay/`; the format is in
+ * docs/plan/advisory-channel.md). The server relays presence and "go
+ * and poll" notices between the tabs in a room. The socket carries no
+ * rows and the server does no engine work for it: it keeps an in-memory
+ * roster per room and fans out what a tab sends (the plugin's daemon
+ * also tells the room's tabs when its own once-a-second scan finds rows
+ * a writer off the channel landed; a relay cannot, and the heartbeat's
+ * head-cursor check covers that). Short polling stays the base transport
  * and every read and write stays on the REST endpoint.
  *
  * Wire (JSON text frames):
@@ -100,10 +104,17 @@ function wantsConnection(): boolean {
 	return null !== host && ! suspended && host.isActive();
 }
 
+/**
+ * Fetches the handshake credential: a one-time token, or in ticket mode
+ * a signed ticket allowing the tab's post room (which is why the room is
+ * named; a relay refuses follows for rooms the ticket does not name).
+ */
 async function fetchToken(): Promise< string > {
+	const room = getPresenceRoom();
 	const response = ( await apiFetch( {
 		method: 'POST',
 		path: WS_TOKEN_API_PATH,
+		data: room ? { room } : {},
 	} ) ) as { token?: string };
 	if ( ! response?.token ) {
 		throw new Error( 'Invalid ws-token response' );

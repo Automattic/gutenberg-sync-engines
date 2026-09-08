@@ -61,6 +61,21 @@ if ( Array.isArray( baseConfig.webServer ) ) {
 // manager's observability global under this flag.
 process.env.GUTENBERG_RTC_REAL_WS = '1';
 
+/*
+ * The example bring-your-own relay (examples/advisory-relay/relay.mjs),
+ * for the advisory-relay spec: it runs on port 8790 beside the daemon
+ * with a fixed test secret, and the spec activates the
+ * tests/e2e/plugins/advisory-relay-ticket.php fixture, which configures
+ * the same secret on the site and points the socket URL at the relay.
+ * The page origin it allows is the tests site's.
+ */
+const RELAY_PORT = 8790;
+const RELAY_TICKET_SECRET =
+	'e2e-advisory-relay-ticket-secret-not-for-production-0123456789';
+const RELAY_ALLOWED_ORIGIN = new URL(
+	process.env.WP_BASE_URL || 'http://localhost:8889'
+).origin;
+
 const config = defineConfig( {
 	...baseConfig,
 	testMatch: '**/specs/websocket-only/**/*.spec.ts',
@@ -85,6 +100,21 @@ const config = defineConfig( {
 			url: 'http://localhost:8787/health',
 			// Compose pull/spin-up plus the option flip can be slow.
 			timeout: 90_000,
+		},
+		{
+			command: `exec node ../../examples/advisory-relay/relay.mjs`,
+			cwd: __dirname,
+			env: {
+				WP_SYNC_WEBSOCKET_TICKET_SECRET: RELAY_TICKET_SECRET,
+				ALLOWED_ORIGINS: RELAY_ALLOWED_ORIGIN,
+				PORT: String( RELAY_PORT ),
+				HOST: '127.0.0.1',
+			},
+			reuseExistingServer: false,
+			stderr: 'pipe',
+			stdout: 'pipe',
+			url: `http://localhost:${ RELAY_PORT }/health`,
+			timeout: 30_000,
 		},
 	],
 } );

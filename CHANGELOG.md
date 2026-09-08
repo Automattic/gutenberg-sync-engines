@@ -49,6 +49,19 @@ release, which the release script generates from the commit history.
     (`webrtc-advisory`, the default), WebSocket to the sync daemon
     (`websocket-advisory`), or off.
 
+-   A host can run its own WebSocket relay (Node, Go, a hosted
+    service) for the advisory channel instead of the plugin's PHP
+    daemon, with no database access: configure a
+    `WP_SYNC_WEBSOCKET_TICKET_SECRET` (constant, environment variable,
+    or the `wp_sync_websocket_ticket_secret` filter) and the token
+    route hands each editor tab a signed, two-minute ticket (a JSON Web
+    Token, HS256) naming the user, the site, and the rooms the tab may
+    follow, which the relay checks with the shared secret alone. The
+    plugin's daemon accepts tickets too. `examples/advisory-relay/` is
+    a reference relay to run or port; `docs/plan/advisory-channel.md`
+    documents the ticket and the message formats
+    ([#92](https://github.com/Automattic/gutenberg-sync-engines/issues/92)).
+
 -   The advisory channel can run over a WebSocket instead of WebRTC
     (`websocket-advisory`): each tab opens one socket to the same sync
     daemon the WebSocket transport uses (`wp collaboration
