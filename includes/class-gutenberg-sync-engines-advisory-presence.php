@@ -384,36 +384,84 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 
 		/**
 		 * The room's head cursor (its newest update row id), or 0 for a room
-		 * that has no storage yet. One indexed lookup; never creates the
-		 * storage post.
+		 * that has no storage yet. Never creates the room.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $room The room name.
+		 * @return int Head cursor.
+		 */
+		private function head_cursor( string $room ): int {
+			return $this->probe_room( $room )['cursor'];
+		}
+
+		/**
+		 * Whether anything is stored for the room (rows or room meta).
+		 * Never creates the room.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $room The room name.
+		 * @return bool
+		 */
+		private function room_exists( string $room ): bool {
+			return $this->probe_room( $room )['found'];
+		}
+
+		/**
+		 * A non-creating look at a room's storage: whether it exists and
+		 * its head cursor. The storage API's own room lookup creates the
+		 * room's storage post on the post-meta default (its callers are
+		 * about to write), which presence must never do, so this reads
+		 * around it: the plugin's table storage answers through its
+		 * read-only probe; the post-meta default (kept when the tables
+		 * could not be created) is read with two indexed lookups against
+		 * its storage post.
 		 *
 		 * @since n.e.x.t
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
 		 * @param string $room The room name.
-		 * @return int Head cursor.
+		 * @return array{found: bool, cursor: int}
 		 */
-		private function head_cursor( string $room ): int {
+		private function probe_room( string $room ): array {
 			global $wpdb;
+
+			$storage = $this->storage();
+			if ( $storage instanceof WP_Sync_Table_Storage ) {
+				$peek = $storage->peek_room( $room );
+				return array(
+					'found'  => (bool) $peek['found'],
+					'cursor' => (int) $peek['cursor'],
+				);
+			}
 
 			$storage_post_id = $this->storage_post_id( $room );
 			if ( null === $storage_post_id ) {
-				return 0;
+				return array(
+					'found'  => false,
+					'cursor' => 0,
+				);
 			}
 			$meta_key = class_exists( 'WP_Sync_Post_Meta_Storage' ) ? WP_Sync_Post_Meta_Storage::SYNC_UPDATE_META_KEY : 'wp_sync_update_data';
 			// phpcs:ignore WordPress.DB.DirectDatabaseQuery -- One indexed MAX(); the storage API's cursor is a per-request cache filled only by a read.
-			return (int) $wpdb->get_var(
+			$cursor = (int) $wpdb->get_var(
 				$wpdb->prepare(
 					"SELECT MAX(meta_id) FROM $wpdb->postmeta WHERE post_id = %d AND meta_key = %s",
 					$storage_post_id,
 					$meta_key
 				)
 			);
+			return array(
+				'found'  => true,
+				'cursor' => $cursor,
+			);
 		}
 
 		/**
-		 * Non-creating lookup of a room's storage post id.
+		 * Non-creating lookup of a room's storage post id under the
+		 * framework's post-meta storage.
 		 *
 		 * @since n.e.x.t
 		 *
@@ -603,9 +651,9 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 			if ( null === $storage || ! method_exists( $storage, 'reset_room' ) ) {
 				return false;
 			}
-			// Nothing to reset: the room was never written. Avoid creating a
-			// storage post just to wipe it.
-			if ( null === $this->storage_post_id( $room ) ) {
+			// Nothing to reset: the room was never written. Avoid creating
+			// the room just to wipe it.
+			if ( ! $this->room_exists( $room ) ) {
 				return false;
 			}
 
@@ -669,7 +717,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 */
 		private function forget_awareness( string $room, int $client_id ): void {
 			$storage = $this->storage();
-			if ( null === $storage || null === $this->storage_post_id( $room ) ) {
+			if ( null === $storage || ! $this->room_exists( $room ) ) {
 				return;
 			}
 			$entries = $this->read_awareness( $room );
@@ -1085,19 +1133,19 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		}
 
 		/**
-		 * Reads a room's awareness entries WITHOUT creating its storage
-		 * post: the storage API's own room lookup creates the post (its
-		 * callers are about to write), which presence must never do.
+		 * Reads a room's awareness entries WITHOUT creating the room: on
+		 * the post-meta default the storage API's own room lookup creates
+		 * the storage post (its callers are about to write), which
+		 * presence must never do, so the read is gated on the
+		 * non-creating probe.
 		 *
 		 * @since n.e.x.t
-		 *
-		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
 		 * @param string $room The room name.
 		 * @return array<int, array<string, mixed>> Awareness entries.
 		 */
 		private function read_awareness( string $room ): array {
-			if ( null === $this->storage_post_id( $room ) ) {
+			if ( ! $this->room_exists( $room ) ) {
 				return array();
 			}
 

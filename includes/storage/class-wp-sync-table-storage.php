@@ -618,6 +618,65 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		}
 
 		/**
+		 * The cheapest non-creating look at a room: whether anything is
+		 * stored for it, and the ids of its first and newest update rows.
+		 *
+		 * This is what the presence lane and the generation token read on
+		 * every heartbeat, so it stays at two indexed lookups (no row
+		 * scan, unlike get_room_size()) and never writes.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @global wpdb $wpdb WordPress database abstraction object.
+		 *
+		 * @param string $room Room identifier.
+		 * @return array{found: bool, first_cursor: int, cursor: int} `found` is false for a room holding nothing (no rows, no meta); the cursors are 0 for a room without rows.
+		 */
+		public function peek_room( string $room ): array {
+			global $wpdb;
+
+			$empty = array(
+				'found'        => false,
+				'first_cursor' => 0,
+				'cursor'       => 0,
+			);
+			if ( ! $this->is_storable_room( $room ) ) {
+				return $empty;
+			}
+
+			$updates = $wpdb->get_row(
+				$wpdb->prepare(
+					"SELECT COALESCE( MIN(id), 0 ) AS first_id, COALESCE( MAX(id), 0 ) AS max_id FROM {$wpdb->sync_updates} WHERE room = %s",
+					$room
+				)
+			);
+			$first   = $updates ? (int) $updates->first_id : 0;
+			$cursor  = $updates ? (int) $updates->max_id : 0;
+			if ( $cursor > 0 ) {
+				return array(
+					'found'        => true,
+					'first_cursor' => $first,
+					'cursor'       => $cursor,
+				);
+			}
+
+			$has_meta = (int) $wpdb->get_var(
+				$wpdb->prepare(
+					"SELECT 1 FROM {$wpdb->sync_room_meta} WHERE room = %s LIMIT 1",
+					$room
+				)
+			);
+			if ( 1 === $has_meta ) {
+				return array(
+					'found'        => true,
+					'first_cursor' => 0,
+					'cursor'       => 0,
+				);
+			}
+			return $empty;
+		}
+
+		/**
 		 * The newest update rows of a room, raw, newest first.
 		 *
 		 * @since n.e.x.t

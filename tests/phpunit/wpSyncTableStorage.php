@@ -305,6 +305,48 @@ class Tests_Collaboration_WpSyncTableStorage extends WP_UnitTestCase {
 		$this->assertSame( 'b', json_decode( $last[0]['data'], true )['type'] );
 	}
 
+	public function test_peek_room_reports_existence_and_row_bounds_without_creating() {
+		$storage = $this->storage();
+		$room    = $this->room();
+
+		$this->assertSame(
+			array(
+				'found'        => false,
+				'first_cursor' => 0,
+				'cursor'       => 0,
+			),
+			$storage->peek_room( $room )
+		);
+		$this->assertFalse( $storage->get_room_size( $room )['found'], 'Peeking creates nothing.' );
+
+		// Meta alone makes the room exist, with no row bounds.
+		$storage->set_awareness_state( $room, array() );
+		$this->assertSame(
+			array(
+				'found'        => true,
+				'first_cursor' => 0,
+				'cursor'       => 0,
+			),
+			$storage->peek_room( $room )
+		);
+
+		$storage->add_update( $room, array( 'type' => 'a' ) );
+		$first = $storage->peek_room( $room );
+		$this->assertTrue( $first['found'] );
+		$this->assertGreaterThan( 0, $first['first_cursor'] );
+		$this->assertSame( $first['first_cursor'], $first['cursor'] );
+
+		$storage->add_update( $room, array( 'type' => 'b' ) );
+		$storage->get_updates_after_cursor( $room, 0 );
+		$second = $storage->peek_room( $room );
+		$this->assertSame( $first['first_cursor'], $second['first_cursor'], 'The first row is stable.' );
+		$this->assertSame( $storage->get_cursor( $room ), $second['cursor'] );
+		$this->assertGreaterThan( $second['first_cursor'], $second['cursor'] );
+
+		$this->assertTrue( $storage->reset_room( $room ) );
+		$this->assertFalse( $storage->peek_room( $room )['found'] );
+	}
+
 	public function test_rooms_that_do_not_fit_the_column_are_refused() {
 		$storage = $this->storage();
 		$room    = str_repeat( 'r', 192 );

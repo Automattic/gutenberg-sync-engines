@@ -537,10 +537,11 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 
 		/**
 		 * Derives a fresh generation token for a room that has rows but no
-		 * token yet. With the postmeta storage the id of the room's first row
-		 * is used: it is unique per genesis (ids are site-wide monotonic) and
-		 * identical for two first readers racing to mint it. Other storages
-		 * get a random id.
+		 * token yet. With the plugin's table storage and the framework's
+		 * postmeta storage the id of the room's first row is used: it is
+		 * unique per genesis (ids are site-wide monotonic) and identical for
+		 * two first readers racing to mint it. Other storages get a random
+		 * id.
 		 *
 		 * @since n.e.x.t
 		 *
@@ -550,6 +551,13 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 * @return string Generation token.
 		 */
 		private function derive_room_generation( string $room ): string {
+			if ( $this->storage instanceof WP_Sync_Table_Storage ) {
+				$first_row = (int) $this->storage->peek_room( $room )['first_cursor'];
+				if ( $first_row > 0 ) {
+					return 'g' . $first_row;
+				}
+			}
+
 			if ( $this->storage instanceof WP_Sync_Post_Meta_Storage ) {
 				global $wpdb;
 

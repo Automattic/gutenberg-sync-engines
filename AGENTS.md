@@ -467,7 +467,9 @@ they exist so a failure is observable without re-instrumenting:
   `GUTENBERG_SYNC_ENGINES_DIAGNOSTICS` constant — deliberately absent
   from the production path. Reads go through the table storage's
   read-only helpers (`list_rooms`, `get_room_size`, `get_last_updates`,
-  `get_all_room_meta`), which cannot create a room. `wp collaboration
+  `get_all_room_meta`), which cannot create a room. The presence lane
+  and the room generation token read `peek_room` (two indexed lookups:
+  found + first/newest row id) on every heartbeat for the same reason. `wp collaboration
   storage status|install|reset|drop` (always registered under WP-CLI)
   manages the tables themselves.
 - **Session capture + request log** (`includes/diagnostics/`, same

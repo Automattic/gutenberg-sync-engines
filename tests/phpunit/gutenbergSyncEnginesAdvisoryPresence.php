@@ -461,17 +461,15 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 	}
 
 	public function test_answer_reports_the_room_head_cursor_once_rows_exist() {
-		global $wpdb;
 		$storage = gutenberg_sync_engines_storage();
 		$storage->add_update( $this->room(), 'a' );
 		$storage->add_update( $this->room(), 'b' );
 		// The newest row's id, read the way the transports' cursor is
 		// derived (the storage API caches the cursor per read).
-		$storage_post_id = (int) $wpdb->get_var( $wpdb->prepare( "SELECT ID FROM $wpdb->posts WHERE post_name = %s AND post_type = %s", md5( $this->room() ), WP_Sync_Post_Meta_Storage::POST_TYPE ) );
-		$expected        = (int) $wpdb->get_var( $wpdb->prepare( "SELECT MAX(meta_id) FROM $wpdb->postmeta WHERE post_id = %d AND meta_key = %s", $storage_post_id, WP_Sync_Post_Meta_Storage::SYNC_UPDATE_META_KEY ) );
-		$this->assertGreaterThan( 0, $expected );
 		$rows = $storage->get_updates_after_cursor( $this->room(), 0 );
 		$this->assertCount( 2, $rows );
+		$expected = $storage->get_cursor( $this->room() );
+		$this->assertGreaterThan( 0, $expected );
 		$answer = ( new Gutenberg_Sync_Engines_Advisory_Presence( $storage ) )->answer_probe(
 			array(
 				'room'  => $this->room(),
@@ -769,5 +767,16 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 			)
 		);
 		$this->assertSame( array(), $posts );
+	}
+
+	public function test_presence_reads_never_create_a_room_in_the_plugins_tables() {
+		$storage = gutenberg_sync_engines_storage();
+		$this->assertInstanceOf( 'WP_Sync_Table_Storage', $storage );
+		// Two tabs meet through the heartbeat alone (tokens and mail live
+		// outside the sync storage); the room itself stays unwritten.
+		$this->beat( 'tok-a' );
+		wp_set_current_user( self::$other_editor_id );
+		$this->assertTrue( $this->beat( 'tok-b' )['others'] );
+		$this->assertFalse( $storage->peek_room( $this->room() )['found'] );
 	}
 }
