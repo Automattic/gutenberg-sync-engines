@@ -61,14 +61,23 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		const DELIVERY_WEBSOCKET         = 'websocket';
 
 		/**
-		 * Option storing the de-rtc commit cadence in SECONDS. 0 keeps the
-		 * settle cycle (pseudo-realtime); the Distributed Editing vision's
-		 * operating point is 10.
+		 * Option storing the de-rtc commit cadence in SECONDS. 0 commits
+		 * whenever edits settle (pseudo-realtime); unset means
+		 * DE_RTC_COMMIT_INTERVAL_DEFAULT, the Distributed Editing vision's
+		 * operating point.
 		 *
 		 * @since 0.3.0
 		 * @var string
 		 */
 		const DE_RTC_COMMIT_INTERVAL_OPTION = 'gutenberg_sync_engines_de_rtc_commit_interval';
+
+		/**
+		 * The de-rtc commit cadence in seconds when none is set.
+		 *
+		 * @since n.e.x.t
+		 * @var int
+		 */
+		const DE_RTC_COMMIT_INTERVAL_DEFAULT = 10;
 
 		/**
 		 * Option storing the HTTP short-polling interval in SECONDS: how
@@ -457,10 +466,10 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				self::DE_RTC_COMMIT_INTERVAL_OPTION,
 				array(
 					'type'              => 'integer',
-					'description'       => __( 'Distributed Editing commit cadence in seconds (0 = every settle)', 'gutenberg-sync-engines' ),
+					'description'       => __( 'DE-RTC commit cadence in seconds (0 = every settle)', 'gutenberg-sync-engines' ),
 					'sanitize_callback' => array( $this, 'sanitize_commit_interval' ),
 					'show_in_rest'      => true,
-					'default'           => 0,
+					'default'           => self::DE_RTC_COMMIT_INTERVAL_DEFAULT,
 				)
 			);
 		}
@@ -514,7 +523,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			add_settings_section( 'gutenberg_sync_engines_main', '', '__return_null', self::PAGE );
 			$fields = array(
 				array( 'wp_sync_engine', __( 'Sync engine', 'gutenberg-sync-engines' ), 'render_engine_field' ),
-				array( self::DE_RTC_COMMIT_INTERVAL_OPTION, __( 'Distributed Editing commit cadence', 'gutenberg-sync-engines' ), 'render_commit_interval_field' ),
+				array( self::DE_RTC_COMMIT_INTERVAL_OPTION, __( 'DE-RTC commit cadence', 'gutenberg-sync-engines' ), 'render_commit_interval_field' ),
 				array( self::DELIVERY_FIELD, __( 'Transport', 'gutenberg-sync-engines' ), 'render_delivery_field' ),
 				array( self::ADVISORY_WEBSOCKET_URL_OPTION, __( 'WebSocket advisory server', 'gutenberg-sync-engines' ), 'render_advisory_websocket_url_field' ),
 				array( self::WEBSOCKET_URL_OPTION, __( 'WebSocket transport server', 'gutenberg-sync-engines' ), 'render_websocket_url_field' ),
@@ -579,13 +588,16 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * @return void
 		 */
 		public function render_commit_interval_field(): void {
-			$value = (int) get_option( self::DE_RTC_COMMIT_INTERVAL_OPTION, 0 );
+			$value = (int) get_option( self::DE_RTC_COMMIT_INTERVAL_OPTION, self::DE_RTC_COMMIT_INTERVAL_DEFAULT );
 			printf(
 				'<input type="number" min="0" max="300" step="1" name="%1$s" id="%1$s" value="%2$d" class="small-text" /> %3$s<p class="description">%4$s</p>',
 				esc_attr( self::DE_RTC_COMMIT_INTERVAL_OPTION ),
 				(int) $value,
 				esc_html__( 'seconds', 'gutenberg-sync-engines' ),
-				esc_html__( 'Distributed Editing (de-rtc) only. 0 commits whenever edits settle (pseudo-realtime). 10 is the Distributed Editing vision\'s save-and-sync cadence: edits coalesce locally and the room advances every ten seconds, cutting request rate and upload bytes on constrained hosts. Peers see each other\'s work at this cadence.', 'gutenberg-sync-engines' )
+				wp_kses(
+					__( 'Peers see each other\'s work at this cadence. When set to <code>0</code>, commits are sent continuously whenever edits settle.', 'gutenberg-sync-engines' ),
+					array( 'code' => array() )
+				)
 			);
 
 			/*
@@ -905,18 +917,29 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * @return void
 		 */
 		public function render_unsaved_field(): void {
-			$this->render_select(
-				self::UNSAVED_OPTION,
-				array(
-					self::UNSAVED_DISCARD => __( 'Discarded when the last editor leaves (default)', 'gutenberg-sync-engines' ),
-					self::UNSAVED_KEEP    => __( 'Kept as a shared working copy', 'gutenberg-sync-engines' ),
+			$current = $this->sanitize_unsaved( get_option( self::UNSAVED_OPTION, self::UNSAVED_DEFAULT ) );
+			$choices = array(
+				self::UNSAVED_DISCARD => array(
+					__( 'Discard when the last editor leaves.', 'gutenberg-sync-engines' ),
+					__( 'Unsaved edits are discarded (after confirmation). The next editor continues from the saved post.', 'gutenberg-sync-engines' ),
 				),
-				(string) get_option( self::UNSAVED_OPTION, self::UNSAVED_DEFAULT )
+				self::UNSAVED_KEEP    => array(
+					__( 'Keep as a shared working copy.', 'gutenberg-sync-engines' ),
+					__( 'Unsaved edits are kept indefinitely. The next editor continues from them.', 'gutenberg-sync-engines' ),
+				),
 			);
-			printf(
-				'<p class="description">%s</p>',
-				esc_html__( 'While people are editing together, unsaved changes are shared live. When the last editor leaves the post, either they are discarded (the saved post and its autosaves are the only durable copy, as the unsaved-changes warning says) or they are kept and the next editor continues from them.', 'gutenberg-sync-engines' )
-			);
+			echo '<fieldset>';
+			foreach ( $choices as $value => list( $label, $description ) ) {
+				printf(
+					'<p><label><input type="radio" name="%1$s" value="%2$s" %3$s /> <strong>%4$s</strong><br /><span class="description">%5$s</span></label></p>',
+					esc_attr( self::UNSAVED_OPTION ),
+					esc_attr( $value ),
+					checked( $current, $value, false ),
+					esc_html( $label ),
+					esc_html( $description )
+				);
+			}
+			echo '</fieldset>';
 		}
 
 		/**

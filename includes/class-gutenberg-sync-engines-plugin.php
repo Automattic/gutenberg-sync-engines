@@ -343,7 +343,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 				$commit_interval  = 0;
 				$polling_interval = 0;
 				if ( class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
-					$commit_interval  = (int) get_option( Gutenberg_Sync_Engines_Settings::DE_RTC_COMMIT_INTERVAL_OPTION, 0 );
+					$commit_interval  = (int) get_option( Gutenberg_Sync_Engines_Settings::DE_RTC_COMMIT_INTERVAL_OPTION, Gutenberg_Sync_Engines_Settings::DE_RTC_COMMIT_INTERVAL_DEFAULT );
 					$polling_interval = Gutenberg_Sync_Engines_Settings::polling_interval();
 				}
 				$settings = array(

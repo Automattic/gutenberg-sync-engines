@@ -12,6 +12,11 @@ release, which the release script generates from the commit history.
 
 ### Changed
 
+-   The DE-RTC commit cadence now defaults to 10 seconds, the
+    Distributed Editing operating point, instead of committing on every
+    settle; set it to 0 on Settings → Collaboration for the old
+    behavior.
+
 -   The polling interval now defaults to 5 seconds instead of 1, and 0
     (the first release's "built-in cadence") means that default. It only
     applies while a peer is out of the advisory channel's reach: with

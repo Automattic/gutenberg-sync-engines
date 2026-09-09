@@ -93,15 +93,18 @@ async function globalSetup( config: FullConfig ) {
 	}
 
 	/*
-	 * The suite's timing assumes the 1-second polling cadence the client
-	 * used before the setting's default became 5 seconds. Pin it: the
-	 * specs certify convergence mechanics and the advisory channel's
-	 * on-demand polling, not the shipped default cadence.
+	 * The suite's timing assumes the cadences the client used before the
+	 * settings' defaults changed: 1-second polling (now 5) and de-rtc
+	 * commits on every settle (now every 10 seconds). Pin both: the
+	 * specs certify convergence mechanics, not the shipped defaults.
 	 */
 	await requestUtils.rest( {
 		method: 'POST',
 		path: '/wp/v2/settings',
-		data: { gutenberg_sync_engines_polling_interval: 1 },
+		data: {
+			gutenberg_sync_engines_polling_interval: 1,
+			gutenberg_sync_engines_de_rtc_commit_interval: 0,
+		},
 	} );
 
 	// Reset the environment to a clean slate before the tests run.
