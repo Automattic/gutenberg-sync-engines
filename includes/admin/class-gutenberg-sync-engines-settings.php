@@ -572,7 +572,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				(int) self::polling_interval(),
 				esc_html__( 'seconds', 'gutenberg-sync-engines' ),
 				wp_kses(
-					__( 'The base polling interval. When an advisory channel is connected, the interval raises to <code>25</code> seconds.', 'gutenberg-sync-engines' ),
+					__( 'The base polling interval. When an advisory channel is connected, the interval raises to <code>25</code> seconds. Under DE-RTC, edits reach peers at the commit cadence above; this interval only adds to that when no advisory channel is connected.', 'gutenberg-sync-engines' ),
 					array( 'code' => array() )
 				)
 			);
@@ -594,7 +594,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				(int) $value,
 				esc_html__( 'seconds', 'gutenberg-sync-engines' ),
 				wp_kses(
-					__( 'Peers see each other\'s work at this cadence. When set to <code>0</code>, commits are sent continuously whenever edits settle.', 'gutenberg-sync-engines' ),
+					__( 'Peers see each other\'s work at this cadence. When set to <code>0</code>, commits are sent continuously whenever edits settle. Under DE-RTC an edit stays private until the next commit, so this cadence, not the polling interval, decides how soon peers see it.', 'gutenberg-sync-engines' ),
 					array( 'code' => array() )
 				)
 			);
