@@ -179,18 +179,20 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		}
 
 		/**
-		 * The engines this plugin provides, as slug => label. Filterable so
-		 * additional engine plugins can appear on the screen.
+		 * The engines this plugin provides, as slug => name. Filterable so
+		 * additional engine plugins can appear on the screen (see
+		 * engine_descriptions() for the text shown under the chosen one).
 		 *
 		 * @since 0.1.0
+		 * @since n.e.x.t Names only; the descriptions moved to engine_descriptions().
 		 *
 		 * @return array<string, string> Engine choices.
 		 */
 		public static function engine_choices(): array {
 			$choices = array(
-				'intent-log' => __( 'Intent log (server-authoritative; conflicts go to review)', 'gutenberg-sync-engines' ),
-				'yjs-server' => __( 'Yjs server (server-authoritative CRDT; concurrent conflicts merge silently, last writer wins — no review lane)', 'gutenberg-sync-engines' ),
-				'de-rtc'     => __( 'DE-RTC (server-governed three-way merges of content proposals; conflicts escalate)', 'gutenberg-sync-engines' ),
+				'intent-log' => __( 'Intent log', 'gutenberg-sync-engines' ),
+				'yjs-server' => __( 'Yjs server', 'gutenberg-sync-engines' ),
+				'de-rtc'     => __( 'DE-RTC', 'gutenberg-sync-engines' ),
 			);
 
 			/**
@@ -198,9 +200,36 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			 *
 			 * @since 0.1.0
 			 *
-			 * @param array<string, string> $choices Engine slug => label.
+			 * @param array<string, string> $choices Engine slug => name.
 			 */
 			return (array) apply_filters( 'gutenberg_sync_engines_engine_choices', $choices );
+		}
+
+		/**
+		 * One sentence per engine, shown under the select for the engine
+		 * chosen. Filterable so additional engine plugins can describe
+		 * themselves.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return array<string, string> Engine slug => description.
+		 */
+		public static function engine_descriptions(): array {
+			$descriptions = array(
+				'intent-log' => __( 'Server-authoritative log of typed edits; concurrent edits merge by transform and genuine conflicts go to review.', 'gutenberg-sync-engines' ),
+				'yjs-server' => __( 'Server-authoritative CRDT; concurrent edits to the same text merge silently, last writer wins, with no review lane.', 'gutenberg-sync-engines' ),
+				'de-rtc'     => __( 'Distributed Editing: editors propose whole content against a base version and the server three-way merges it; genuine conflicts escalate for review.', 'gutenberg-sync-engines' ),
+			);
+
+			/**
+			 * Filters the sync engine descriptions shown on the settings
+			 * screen.
+			 *
+			 * @since n.e.x.t
+			 *
+			 * @param array<string, string> $descriptions Engine slug => description.
+			 */
+			return (array) apply_filters( 'gutenberg_sync_engines_engine_descriptions', $descriptions );
 		}
 
 		/**
@@ -481,75 +510,20 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * @return void
 		 */
 		public function register_settings(): void {
-			add_settings_section(
-				'gutenberg_sync_engines_engine',
-				__( 'Sync engine', 'gutenberg-sync-engines' ),
-				array( $this, 'render_section_intro' ),
-				self::PAGE
+			// One untitled section: the field labels are the headings.
+			add_settings_section( 'gutenberg_sync_engines_main', '', '__return_null', self::PAGE );
+			$fields = array(
+				array( 'wp_sync_engine', __( 'Sync engine', 'gutenberg-sync-engines' ), 'render_engine_field' ),
+				array( self::DE_RTC_COMMIT_INTERVAL_OPTION, __( 'Distributed Editing commit cadence', 'gutenberg-sync-engines' ), 'render_commit_interval_field' ),
+				array( self::DELIVERY_FIELD, __( 'Transport', 'gutenberg-sync-engines' ), 'render_delivery_field' ),
+				array( self::ADVISORY_WEBSOCKET_URL_OPTION, __( 'WebSocket advisory server', 'gutenberg-sync-engines' ), 'render_advisory_websocket_url_field' ),
+				array( self::WEBSOCKET_URL_OPTION, __( 'WebSocket transport server', 'gutenberg-sync-engines' ), 'render_websocket_url_field' ),
+				array( self::POLLING_INTERVAL_OPTION, __( 'Polling interval', 'gutenberg-sync-engines' ), 'render_polling_interval_field' ),
+				array( self::UNSAVED_OPTION, __( 'Unsaved changes', 'gutenberg-sync-engines' ), 'render_unsaved_field' ),
 			);
-			add_settings_field(
-				'wp_sync_engine',
-				__( 'Sync engine', 'gutenberg-sync-engines' ),
-				array( $this, 'render_engine_field' ),
-				self::PAGE,
-				'gutenberg_sync_engines_engine'
-			);
-			add_settings_field(
-				self::DE_RTC_COMMIT_INTERVAL_OPTION,
-				__( 'Distributed Editing commit cadence', 'gutenberg-sync-engines' ),
-				array( $this, 'render_commit_interval_field' ),
-				self::PAGE,
-				'gutenberg_sync_engines_engine'
-			);
-
-			add_settings_section(
-				'gutenberg_sync_engines_transport',
-				__( 'Transport', 'gutenberg-sync-engines' ),
-				'__return_null',
-				self::PAGE
-			);
-			add_settings_field(
-				self::DELIVERY_FIELD,
-				__( 'How editors get each other\'s changes', 'gutenberg-sync-engines' ),
-				array( $this, 'render_delivery_field' ),
-				self::PAGE,
-				'gutenberg_sync_engines_transport'
-			);
-			add_settings_field(
-				self::ADVISORY_WEBSOCKET_URL_OPTION,
-				__( 'WebSocket advisory server', 'gutenberg-sync-engines' ),
-				array( $this, 'render_advisory_websocket_url_field' ),
-				self::PAGE,
-				'gutenberg_sync_engines_transport'
-			);
-			add_settings_field(
-				self::WEBSOCKET_URL_OPTION,
-				__( 'WebSocket transport server', 'gutenberg-sync-engines' ),
-				array( $this, 'render_websocket_url_field' ),
-				self::PAGE,
-				'gutenberg_sync_engines_transport'
-			);
-			add_settings_field(
-				self::POLLING_INTERVAL_OPTION,
-				__( 'Polling interval', 'gutenberg-sync-engines' ),
-				array( $this, 'render_polling_interval_field' ),
-				self::PAGE,
-				'gutenberg_sync_engines_transport'
-			);
-
-			add_settings_section(
-				'gutenberg_sync_engines_unsaved',
-				__( 'Unsaved changes', 'gutenberg-sync-engines' ),
-				'__return_null',
-				self::PAGE
-			);
-			add_settings_field(
-				self::UNSAVED_OPTION,
-				__( 'When the last editor leaves', 'gutenberg-sync-engines' ),
-				array( $this, 'render_unsaved_field' ),
-				self::PAGE,
-				'gutenberg_sync_engines_unsaved'
-			);
+			foreach ( $fields as list( $id, $label, $renderer ) ) {
+				add_settings_field( $id, $label, array( $this, $renderer ), self::PAGE, 'gutenberg_sync_engines_main' );
+			}
 		}
 
 		/**
@@ -675,25 +649,35 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		}
 
 		/**
-		 * Section intro copy.
-		 *
-		 * @since 0.1.0
-		 *
-		 * @return void
-		 */
-		public function render_section_intro(): void {
-			echo '<p>' . esc_html__( 'How concurrent edits are merged. Applies site-wide.', 'gutenberg-sync-engines' ) . '</p>';
-		}
-
-		/**
-		 * Renders the engine <select>.
+		 * Renders the engine <select>, with the chosen engine's description
+		 * under it (swapped live as the choice changes).
 		 *
 		 * @since 0.1.0
 		 *
 		 * @return void
 		 */
 		public function render_engine_field(): void {
-			$this->render_select( 'wp_sync_engine', self::engine_choices(), (string) get_option( 'wp_sync_engine', 'intent-log' ) );
+			$current      = (string) get_option( 'wp_sync_engine', 'intent-log' );
+			$descriptions = self::engine_descriptions();
+			$this->render_select( 'wp_sync_engine', self::engine_choices(), $current );
+			printf(
+				'<p class="description" id="wp_sync_engine-description">%s</p>',
+				esc_html( $descriptions[ $current ] ?? '' )
+			);
+			printf(
+				'<script>( function () {
+					var select       = document.getElementById( "wp_sync_engine" );
+					var description  = document.getElementById( "wp_sync_engine-description" );
+					var descriptions = %s;
+					if ( ! select || ! description ) {
+						return;
+					}
+					select.addEventListener( "change", function () {
+						description.textContent = descriptions[ select.value ] || "";
+					} );
+				} )();</script>',
+				wp_json_encode( $descriptions )
+			);
 		}
 
 		/**
