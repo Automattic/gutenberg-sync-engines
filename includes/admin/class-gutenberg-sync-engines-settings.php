@@ -225,9 +225,9 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 */
 		public static function engine_descriptions(): array {
 			$descriptions = array(
-				'intent-log' => __( 'Server-authoritative log of typed edits; concurrent edits merge by transform and genuine conflicts go to review.', 'gutenberg-sync-engines' ),
-				'yjs-server' => __( 'Server-authoritative CRDT; concurrent edits to the same text merge silently, last writer wins, with no review lane.', 'gutenberg-sync-engines' ),
-				'de-rtc'     => __( 'Distributed Editing: editors propose whole content against a base version and the server three-way merges it; genuine conflicts escalate for review.', 'gutenberg-sync-engines' ),
+				'intent-log' => __( 'Concurrent edits merge by operational transform. Conflicts escalate for review.', 'gutenberg-sync-engines' ),
+				'yjs-server' => __( 'Concurrent edits merge silently via a conflict-free algorithm. No review lane.', 'gutenberg-sync-engines' ),
+				'de-rtc'     => __( 'Editors propose revisions against a base version and the server conducts a three-way merge. Conflicts escalate for review.', 'gutenberg-sync-engines' ),
 			);
 
 			/**
@@ -291,25 +291,25 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 					'transport'   => 'http-polling',
 					'advisory'    => self::ADVISORY_WEBRTC,
 					'label'       => __( 'Polling with a WebRTC advisory channel (default)', 'gutenberg-sync-engines' ),
-					'description' => __( 'The editor polls only when a peer announces changes. Tabs connect to each other directly; nothing to run.', 'gutenberg-sync-engines' ),
+					'description' => __( 'Peers connect to each other to share announcements and poll for updates only when needed. WebRTC connectivity is not guaranteed. Peers fall back to polling on failure.', 'gutenberg-sync-engines' ),
 				),
 				self::DELIVERY_POLLING_WEBSOCKET => array(
 					'transport'   => 'http-polling',
 					'advisory'    => self::ADVISORY_WEBSOCKET,
 					'label'       => __( 'Polling with a WebSocket advisory channel', 'gutenberg-sync-engines' ),
-					'description' => __( 'The editor polls only when a peer announces changes. Announcements travel through a WebSocket server: the sync daemon, or a relay of your own.', 'gutenberg-sync-engines' ),
+					'description' => __( 'Peers connect via a socket to share announcements and poll for updates only when needed. Peers fall back to polling on failure.', 'gutenberg-sync-engines' ),
 				),
 				self::DELIVERY_LONG_POLLING      => array(
 					'transport'   => 'http-long-polling',
 					'advisory'    => self::ADVISORY_WEBRTC,
 					'label'       => __( 'Long polling', 'gutenberg-sync-engines' ),
-					'description' => __( 'The server holds polling requests open until changes are delivered. The client falls back to the default polling transport on failure.', 'gutenberg-sync-engines' ),
+					'description' => __( 'The server holds polling requests open until updates are delivered. Peers fall back to polling on failure.', 'gutenberg-sync-engines' ),
 				),
 				self::DELIVERY_WEBSOCKET         => array(
 					'transport'   => 'websocket',
 					'advisory'    => self::ADVISORY_WEBRTC,
 					'label'       => __( 'WebSocket', 'gutenberg-sync-engines' ),
-					'description' => __( 'Changes are exchanged over a persistent socket connection to WordPress (the sync daemon, wp collaboration sync-server). The client falls back to the default polling transport on failure.', 'gutenberg-sync-engines' ),
+					'description' => __( 'Updates are exchanged over a persistent socket connection to WordPress. Peers fall back to polling on failure.', 'gutenberg-sync-engines' ),
 				),
 			);
 		}
@@ -572,7 +572,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				(int) self::polling_interval(),
 				esc_html__( 'seconds', 'gutenberg-sync-engines' ),
 				wp_kses(
-					__( 'The base polling interval. When an advisory channel is connected, the interval raises to <code>25</code> seconds. Under DE-RTC, edits reach peers at the commit cadence above; this interval only adds to that when no advisory channel is connected.', 'gutenberg-sync-engines' ),
+					__( 'The base polling interval. When an advisory channel is connected, the interval raises to <code>25</code> seconds.', 'gutenberg-sync-engines' ),
 					array( 'code' => array() )
 				)
 			);
@@ -749,15 +749,8 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				self::sanitize_websocket_url( get_option( self::ADVISORY_WEBSOCKET_URL_OPTION, '' ) ),
 				self::advisory_websocket_url()
 			);
-			printf(
-				'<p class="description">%s</p>',
-				esc_html__( 'The WebSocket server that passes announcements between editors. Leave empty to use the sync daemon (the WebSocket transport server below). With an access-token secret configured, this may be a relay of your own: see examples/advisory-relay in the plugin.', 'gutenberg-sync-engines' )
-			);
-			if ( class_exists( 'WP_WebSocket_Access_Token' ) ) {
-				$secret_status = WP_WebSocket_Access_Token::is_enabled()
-					? __( 'Access-token secret: configured. Editors carry a signed, short-lived access token that any server sharing the secret can check without WordPress.', 'gutenberg-sync-engines' )
-					: __( 'Access-token secret: not configured (WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET). Only the sync daemon can authenticate editors.', 'gutenberg-sync-engines' );
-				printf( '<p class="description">%s</p>', esc_html( $secret_status ) );
+			if ( class_exists( 'WP_WebSocket_Access_Token' && true !== WP_WebSocket_Access_Token::is_enabled() ) ) {
+				printf( '<p class="description">The access token is NOT configured. Please provide a <code>WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET</code>.</p>' );
 			}
 			$this->show_row_for( self::ADVISORY_WEBSOCKET_URL_OPTION, array( self::DELIVERY_POLLING_WEBSOCKET ) );
 		}
@@ -772,22 +765,6 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		public function render_websocket_url_field(): void {
 			$effective = class_exists( 'WP_WebSocket_Sync_Transport' ) ? WP_WebSocket_Sync_Transport::get_socket_url() : '';
 			$this->render_url_input( self::WEBSOCKET_URL_OPTION, self::websocket_url(), $effective );
-			printf(
-				'<p class="description">%s</p>',
-				esc_html__( 'The sync daemon (wp collaboration sync-server). Leave empty for ws://host:port from the WP_SYNC_WEBSOCKET_HOST and WP_SYNC_WEBSOCKET_PORT constants. Use wss:// outside development.', 'gutenberg-sync-engines' )
-			);
-			if ( has_filter( 'wp_sync_websocket_url' ) ) {
-				printf(
-					'<p class="description">%s</p>',
-					esc_html(
-						sprintf(
-							/* translators: %s: the WebSocket URL set by code */
-							__( 'Code sets this value through the wp_sync_websocket_url filter; editors connect to %s.', 'gutenberg-sync-engines' ),
-							$effective
-						)
-					)
-				);
-			}
 			$this->show_row_for( self::WEBSOCKET_URL_OPTION, array( self::DELIVERY_WEBSOCKET ) );
 		}
 
