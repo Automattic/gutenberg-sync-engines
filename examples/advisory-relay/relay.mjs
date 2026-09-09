@@ -1,22 +1,16 @@
 #!/usr/bin/env node
 /**
- * A WebSocket relay for the advisory channel, to run instead of the
- * plugin's PHP daemon.
+ * A WebSocket relay for the advisory channel.
  *
- * Each editor tab opens one socket. The relay tells the tabs in a room
- * who is present and passes "I saved a change, go and poll" notices
- * between them. It never sees post content, stores nothing, and never
- * calls WordPress: a tab proves who it is with an access token that
- * WordPress signed (a JSON Web Token, HS256), and the relay checks the
- * signature with the secret it shares with WordPress.
+ * Each editor tab opens one socket and proves authorization with a token that
+ * WordPress signed with a shared secret. The relay keeps a roster of who is
+ * present in each room and passes announcements between them. It never sees
+ * content, never calls WordPress, and never stores anything.
  *
- * Environment:
+ * Environment variables:
+ *   HOST				    default: localhost
+ *   PORT                                   default: 8790
  *   WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET  the secret WordPress signs with
- *   ALLOWED_ORIGINS                        page origins, comma-separated
- *   PORT                                   default 8790
- *
- * Needs Node 20+ and the `ws` package. The formats are documented in
- * docs/plan/advisory-channel.md ("Bring your own relay").
  */
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
@@ -24,20 +18,13 @@ import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
 
 const SECRET = process.env.WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET;
-const ALLOWED_ORIGINS = ( process.env.ALLOWED_ORIGINS || '' ).split( ',' );
 const PORT = Number( process.env.PORT || 8790 );
 
-if ( ! SECRET || ! process.env.ALLOWED_ORIGINS ) {
+if ( ! SECRET ) {
 	// eslint-disable-next-line no-console
-	console.error(
-		'Set WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET and ALLOWED_ORIGINS.'
-	);
+	console.error( 'Set WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET.' );
 	process.exit( 1 );
 }
-
-/* ------------------------------------------------------------------ *
- * Access tokens
- * ------------------------------------------------------------------ */
 
 /**
  * Checks an access token and returns its claims, or null.
@@ -92,17 +79,13 @@ function verifyAccessToken( token ) {
  * @param {string}   room  The room to follow.
  * @return {boolean} Whether it is allowed.
  */
-function allows( rooms, room ) {
+function allowsRoom( rooms, room ) {
 	if ( rooms.includes( room ) ) {
 		return true;
 	}
 	const kind = room.split( '/' )[ 0 ];
 	return ! room.includes( ':' ) && rooms.includes( `${ kind }/*` );
 }
-
-/* ------------------------------------------------------------------ *
- * Rooms
- * ------------------------------------------------------------------ */
 
 /**
  * The followers of each room, keyed by site AND room (room names are
@@ -114,7 +97,6 @@ function allows( rooms, room ) {
 const rooms = new Map();
 
 const key = ( ws, room ) => `${ ws.claims.blog_id }/${ room }`;
-
 const send = ( ws, frame ) => ws.send( JSON.stringify( frame ) );
 
 /**
@@ -136,9 +118,10 @@ function sendRoster( roomKey, room ) {
 
 /**
  * Handles one frame from a tab: `{ type: 'advisory', room, client_id,
- * presence_token?, presence?, announce? }`. The first frame for a room
- * follows it; `presence_token` and `presence` update the roster;
- * `announce` names a room the tab wrote to.
+ * presence_token?, presence?, announce? }`. Every frame names a room;
+ * the first one for that room follows it. Then the frame does one of
+ * three things: a bare follow (join the roster), a presence update, or
+ * an announce (a room the tab wrote to, for the others to poll).
  *
  * @param {import('ws').WebSocket} ws      The tab's socket.
  * @param {Object}                 message The decoded frame.
@@ -157,8 +140,9 @@ function handle( ws, message ) {
 	}
 	const roomKey = key( ws, room );
 
-	if ( ! rooms.get( roomKey )?.has( ws ) ) {
-		if ( ! allows( ws.claims.rooms, room ) ) {
+	const joined = ! rooms.get( roomKey )?.has( ws );
+	if ( joined ) {
+		if ( ! allowsRoom( ws.claims.rooms, room ) ) {
 			send( ws, {
 				type: 'error',
 				code: 'rest_cannot_edit',
@@ -184,24 +168,41 @@ function handle( ws, message ) {
 	if ( typeof message.presence_token === 'string' ) {
 		me.token = message.presence_token;
 	}
-	if ( 'presence' in message ) {
-		me.presence =
-			message.presence && typeof message.presence === 'object'
-				? message.presence
-				: null;
-	}
-	sendRoster( roomKey, room );
 
-	if ( typeof message.announce === 'string' ) {
-		for ( const peer of rooms.get( roomKey ).keys() ) {
-			if ( peer !== ws ) {
-				send( peer, {
-					type: 'advisory',
-					event: 'announce',
-					room: message.announce,
-				} );
+	let action = 'follow';
+	if ( 'announce' in message ) {
+		action = 'announce';
+	} else if ( 'presence' in message ) {
+		action = 'presence';
+	}
+
+	switch ( action ) {
+		case 'presence':
+			me.presence =
+				message.presence && typeof message.presence === 'object'
+					? message.presence
+					: null;
+			sendRoster( roomKey, room );
+			break;
+
+		case 'announce':
+			if ( joined ) {
+				sendRoster( roomKey, room );
 			}
-		}
+			for ( const peer of rooms.get( roomKey ).keys() ) {
+				if ( peer !== ws ) {
+					send( peer, {
+						type: 'advisory',
+						event: 'announce',
+						room: message.announce,
+					} );
+				}
+			}
+			break;
+
+		case 'follow':
+		default:
+			sendRoster( roomKey, room );
 	}
 }
 
@@ -250,10 +251,7 @@ server.on( 'upgrade', ( request, socket, head ) => {
 		.find( ( offer ) => offer.startsWith( 'wp-sync-token.' ) )
 		?.slice( 'wp-sync-token.'.length );
 	const claims =
-		ALLOWED_ORIGINS.includes( request.headers.origin ) &&
-		offers.includes( 'wp-sync' ) &&
-		token &&
-		verifyAccessToken( token );
+		offers.includes( 'wp-sync' ) && token && verifyAccessToken( token );
 	if ( ! claims ) {
 		socket.end( 'HTTP/1.1 403 Forbidden\r\n\r\n' );
 		return;
@@ -276,7 +274,7 @@ server.on( 'upgrade', ( request, socket, head ) => {
 	} );
 } );
 
-// Keepalive: a tab that misses a ping is gone.
+// Keepalive at 15s: a tab that misses a ping is gone.
 setInterval( () => {
 	for ( const ws of wss.clients ) {
 		if ( ! ws.alive ) {
