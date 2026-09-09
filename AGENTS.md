@@ -48,14 +48,18 @@ This plugin provides:
   degrades to the first registered engine: yjs-server).
 - **Transports:** `http-polling` (default), `http-long-polling`, `websocket`.
   Short polling is the BASE transport; beside it every editor tab opens an
-  **advisory channel** (WebRTC, `src/providers/advisory/`, signaled over
-  the WordPress heartbeat by
-  `includes/class-gutenberg-sync-engines-advisory-presence.php`) that
-  carries presence and "go and poll" notices, never content. It decides
-  the polling cadence: quiet when alone, timer cadence when a peer is
-  unreachable, on demand (with the heartbeat carrying the room's head
-  cursor) when every peer is reachable. Long polling turns it off while
-  connected. Rules and failure cases: `docs/plan/advisory-channel.md`.
+  **advisory channel** (`src/providers/advisory/`) that carries presence
+  and "go and poll" notices, never content. It runs over one of two
+  LINKS, chosen on the settings screen: `webrtc-advisory` (default; a
+  WebRTC mesh signaled over the WordPress heartbeat by
+  `includes/class-gutenberg-sync-engines-advisory-presence.php`) or
+  `websocket-advisory` (one socket per tab to the websocket transport's
+  daemon, which relays presence and notices in memory —
+  `handle_advisory_message` in the daemon — and never carries rows). It
+  decides the polling cadence: quiet when alone, timer cadence when a
+  peer is unreachable, on demand (with the heartbeat carrying the room's
+  head cursor) when every peer is reachable. Long polling turns it off
+  while connected. Rules and failure cases: `docs/plan/advisory-channel.md`.
   The same presence lane decides a per-post room's LIFETIME under the
   "Unsaved changes" setting (default: an empty room is reset to the
   saved post; the room's generation token tells clients to start over).

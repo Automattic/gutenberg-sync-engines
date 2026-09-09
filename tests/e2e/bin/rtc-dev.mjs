@@ -56,6 +56,7 @@ const REPO_ROOT = process.cwd();
 const TEST_PROVIDER_PLUGIN_SLUG =
 	'sync-engines-test-plugins/rtc-websocket-provider';
 const TRANSPORT_OPTION = 'gutenberg_sync_engines_transport';
+const ADVISORY_OPTION = 'gutenberg_sync_engines_advisory_channel';
 const DAEMON_CONTAINER_NAME = 'wp-sync-ws-daemon';
 
 const { values: CLI } = parseArgs( {
@@ -700,6 +701,10 @@ async function runDoctorMode() {
 			[ 'option', 'get', TRANSPORT_OPTION ],
 			{ configFile, allowFailure: true }
 		);
+		const advisory = await runWpCli( [ 'option', 'get', ADVISORY_OPTION ], {
+			configFile,
+			allowFailure: true,
+		} );
 		info(
 			`collaboration ${
 				'1' === ( options || '' ).trim() ? 'enabled' : 'disabled'
@@ -707,7 +712,9 @@ async function runDoctorMode() {
 				engine || '(default: intent-log)'
 			).trim() }, transport ${ (
 				transport || '(default: http-polling)'
-			).trim() }`
+			).trim() }, advisory ${
+				( advisory || '(default: webrtc-advisory)' ).trim() || 'off'
+			}`
 		);
 
 		if ( configFile && 8889 !== sitePort ) {

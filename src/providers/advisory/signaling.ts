@@ -52,8 +52,13 @@ export interface AdvisorySettings {
 	room: string;
 	token: string;
 	othersPresent?: boolean;
+	/** The link the site chose: `webrtc-advisory` (default) or `websocket-advisory`. */
+	channel?: string;
+	/** WebRTC: the ICE servers. */
 	iceServers?: RTCIceServer[];
 	maxPeers?: number;
+	/** WebSocket: the sync daemon's URL. */
+	socketUrl?: string;
 	/** The leave beacon's REST URL (the nonce is appended at send time). */
 	leaveUrl?: string;
 	/** The REST nonce minted at page render (fallback for the beacon). */

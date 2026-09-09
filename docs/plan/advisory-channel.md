@@ -27,11 +27,15 @@ The advisory channel moves:
 
 The advisory channel can be established in three ways:
 
-1. Via WebRTC, using signaling on short polling requests / responses. (default)
-2. Via WebRTC, using signaling on the heartbeat. (default)
-3. Via an optional transport such as websockets. Such a transport declares that
-   it is advisory-only, which disables the default WebRTC channel while retaining
-   the base short polling transport.
+1. Via WebRTC, using signaling on short polling requests / responses. (default,
+   `webrtc-advisory`)
+2. Via WebRTC, using signaling on the heartbeat. (default, `webrtc-advisory`)
+3. Via a WebSocket to the plugin's sync daemon (`websocket-advisory`). Each tab
+   opens one socket; the daemon keeps an in-memory roster per room, relays
+   presence and notices between the tabs in it, and never carries a row. This
+   replaces the WebRTC mesh while retaining the base short polling transport,
+   and reaches tabs WebRTC cannot (a symmetric NAT without TURN, a blocking
+   extension, tabs on different networks) at the price of running the daemon.
 
 A client who successfully connects to an advisory channel can poll on demand, rather
 than on a short timer. A "backup" timer is still needed to catch updates from peers
@@ -89,10 +93,13 @@ Two independent settings:
 
 1. Transport: short-polling (default), long-polling, or WebSocket. The
    default short-polling transport is always available as a fallback.
-2. Advisory channel: WebRTC (default) or off. An advisory channel
-   reduces polling by signaling to peers when updates are available.
-   It serves whenever short polling does, so under a preferred transport
-   it is only active while that transport is down.
+2. Advisory channel: `webrtc-advisory` (default), `websocket-advisory`,
+   or off. An advisory channel reduces polling by signaling to peers when
+   updates are available. It serves whenever short polling does, so under
+   a preferred transport it is only active while that transport is down.
+   The WebSocket link needs the same daemon the WebSocket transport uses
+   (`wp collaboration sync-server`); a tab that cannot open its socket
+   keeps the timer cadence, exactly like a tab whose WebRTC failed.
 
 ## The rules, stated plainly
 
@@ -211,13 +218,37 @@ Client:
     active, which makes the handshake about two seconds at the company
     cadence. Discovered peers, "others present", send/receive handshake
     messages, the leave beacon.
--   `src/providers/advisory/channel.ts`: the WebRTC mesh. One peer
+-   `src/providers/advisory/channel.ts`: the channel the polling manager
+    sees, whichever link is underneath: the presence overlay, the notice
+    and coverage listeners, the presence loop, the on/off switch. It picks
+    the link from the page settings (`link.ts` is the seam).
+-   `src/providers/advisory/webrtc-link.ts`: the WebRTC mesh. One peer
     connection and one data channel per discovered tab. The tab with the
     lower token initiates; the offer or answer goes out at once and
     candidates trickle behind it on the next carrier, buffered by the
     receiver if they overtake the description. Messages:
     `hello` (client id), `presence`, `announce`, `bye`. Coverage is
     computed from discovered tokens and the last awareness map.
+-   `src/providers/advisory/websocket-link.ts`: one socket per tab to the
+    sync daemon, opened with the same one-time token handshake as the
+    websocket transport (the socket URL rides the page settings under
+    `websocket-advisory`). Frames: the tab follows its post's room
+    (`{type: 'advisory', room, client_id, presence_token}`), sends its
+    presence on the same frame when it changes, and announces writes
+    (`announce: <room>` or `*`); the daemon answers every roster change
+    with the room's full roster (client id, token, latest presence per
+    follower) and relays notices to the other followers. Coverage is the
+    roster: every discovered token and every client id in the last
+    awareness map must be on it. A dropped socket reconnects with
+    backoff and replays the tab's presence; nothing on the daemon side
+    is written to storage, and a dropped advisory socket is NOT a closed
+    tab (the leave beacon and awareness stay the polling transport's).
+-   `includes/transports/websocket/class-wp-websocket-sync-server.php`:
+    the daemon's advisory mode (`handle_advisory_message`): a follower is
+    permission-checked like a sync subscriber and bound to one client id;
+    the once-a-second room scan now reads one head cursor per room and
+    tells followers when rows landed off the channel (a script, WP-CLI, a
+    websocket-transport peer), once per batch.
 -   `src/providers/http-polling/polling-manager.ts`: the cadence rules
     above, the held queues (released by company, a flush before a save
     via `save-flush.ts`, or the tab going hidden; codecs declaring
@@ -225,8 +256,9 @@ Client:
     presence overlay (per client, on top of the poll response's copy),
     and the long-poll disable hook.
 -   Settings → Collaboration: a "Transport" select (short-polling,
-    long-polling, WebSocket) and an "Advisory channel" select (WebRTC or
-    off), independent of each other.
+    long-polling, WebSocket) and an "Advisory channel" select (WebRTC
+    between tabs, WebSocket to the sync daemon, or off), independent of
+    each other.
 -   `src/providers/websocket/websocket-manager.ts`: the websocket
     transport as a preferred transport. While its socket is open it
     moves everything; whenever it is not (token refused, daemon
@@ -271,6 +303,17 @@ uses it to poll sooner and to show presence faster.**
 -   The presence lane is missing (no `wp.heartbeat`, no per-post editor
     screen such as the site editor): the polling manager keeps its
     always-on cadence. Nothing about today's behavior changes there.
+-   Under `websocket-advisory`: the daemon is down or refuses the token:
+    coverage stays false, the tab keeps the timer cadence and retries
+    with backoff (1 s doubling to 30 s). The socket drops mid-session:
+    the roster is forgotten, coverage flips false at once, and the
+    reconnect replays the tab's presence. The daemon restarts: every
+    tab reconnects and the rosters rebuild from their follow frames;
+    rows landed meanwhile are the head-cursor check's business. A
+    dropped advisory socket never counts as a closed tab: awareness
+    and the leave beacon stay the polling transport's, so a room is
+    never reset because a relay blinked. Long polling switches the
+    link off exactly as it does WebRTC.
 -   Queued work never waits for a slow timer. A coverage flip re-evaluates
     a pending timer; if that would replace a 1 s timer with the 25 s
     safety timer while updates are already queued (the intent-log undo
@@ -292,13 +335,22 @@ uses it to poll sooner and to show presence faster.**
 
 -   Jest: `tests/js/providers/advisory/` (signaling payloads and
     mailbox; a two-tab mesh over a fake `RTCPeerConnection` wired through
-    an in-memory signaling loop; coverage rules), and the polling manager
+    an in-memory signaling loop; the websocket link over a fake socket:
+    token handshake, roster overlay, coverage, notices, reconnect and the
+    transport switch; coverage rules), and the polling manager
     cadence rules (quiet when alone, wake on company, on-demand polls
     under coverage, safety poll, announce coalescing, long-poll disable).
 -   PHPUnit: `tests/phpunit/gutenbergSyncEnginesAdvisoryPresence.php`
     (token record and expiry, others-present from tokens and awareness,
     mailbox relay with caps, permission fence, leave route, page-render
-    settings).
+    settings including the chosen link) and
+    `tests/phpunit/wpWebSocketAdvisory.php` (the daemon's advisory mode:
+    roster, presence relay, notices to the other followers only, the
+    scan's one-announce-per-batch, a dropped follower, permissions and
+    the client-id binding, nothing written to storage).
 -   e2e: `tests/e2e/specs/http-only/collaboration-advisory-channel.spec.ts`
     (two tabs connect over the channel and an edit still propagates;
-    idle polling drops to the safety cadence).
+    idle polling drops to the safety cadence) and, on the daemon lane,
+    `tests/e2e/specs/websocket-only/collaboration-websocket-advisory.spec.ts`
+    (the same over the websocket link, with short polling selected for
+    its duration).

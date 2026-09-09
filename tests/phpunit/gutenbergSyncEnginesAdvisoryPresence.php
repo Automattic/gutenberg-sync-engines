@@ -779,4 +779,30 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 		$this->assertTrue( $this->beat( 'tok-b' )['others'] );
 		$this->assertFalse( $storage->peek_room( $this->room() )['found'] );
 	}
+
+	public function test_editor_settings_carry_the_chosen_link() {
+		// The default: WebRTC, with its ICE servers and peer cap.
+		$settings = $this->presence->editor_settings( get_post( self::$post_id ) );
+		$this->assertSame( 'webrtc-advisory', $settings['channel'] );
+		$this->assertNotEmpty( $settings['iceServers'] );
+		$this->assertArrayNotHasKey( 'socketUrl', $settings );
+
+		// The daemon relay: the socket URL the websocket transport
+		// announces, whichever transport the site selected.
+		update_option( Gutenberg_Sync_Engines_Settings::ADVISORY_OPTION, Gutenberg_Sync_Engines_Settings::ADVISORY_WEBSOCKET );
+		$settings = $this->presence->editor_settings( get_post( self::$post_id ) );
+		$this->assertSame( 'websocket-advisory', $settings['channel'] );
+		$this->assertStringStartsWith( 'ws://', $settings['socketUrl'] );
+		$this->assertArrayNotHasKey( 'iceServers', $settings );
+		$this->assertTrue( Gutenberg_Sync_Engines_Advisory_Presence::is_enabled() );
+
+		// The first release stored `web-rtc`: it still reads as WebRTC.
+		update_option( Gutenberg_Sync_Engines_Settings::ADVISORY_OPTION, 'web-rtc' );
+		$this->assertSame( 'webrtc-advisory', Gutenberg_Sync_Engines_Settings::advisory_channel() );
+		$this->assertSame( 'webrtc-advisory', $this->presence->editor_settings( get_post( self::$post_id ) )['channel'] );
+
+		// Anything else is off.
+		$this->assertSame( '', Gutenberg_Sync_Engines_Settings::normalize_advisory( 'carrier-pigeon' ) );
+		delete_option( Gutenberg_Sync_Engines_Settings::ADVISORY_OPTION );
+	}
 }

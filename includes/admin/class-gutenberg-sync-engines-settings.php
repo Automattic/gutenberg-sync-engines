@@ -58,14 +58,20 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		const POLLING_INTERVAL_OPTION = 'gutenberg_sync_engines_polling_interval';
 
 		/**
-		 * Option holding the advisory channel choice: `web-rtc` (the default
-		 * browser-to-browser channel) or the empty string for off.
+		 * Option holding the advisory channel choice: `webrtc-advisory` (the
+		 * default browser-to-browser link), `websocket-advisory` (one socket
+		 * per tab to the sync daemon, which relays between the tabs in a
+		 * room) or the empty string for off. `web-rtc`, the slug the first
+		 * release stored, still reads as `webrtc-advisory`.
 		 *
 		 * @since n.e.x.t
 		 * @var string
 		 */
-		const ADVISORY_OPTION  = 'gutenberg_sync_engines_advisory_channel';
-		const ADVISORY_DEFAULT = 'web-rtc';
+		const ADVISORY_OPTION        = 'gutenberg_sync_engines_advisory_channel';
+		const ADVISORY_WEBRTC        = 'webrtc-advisory';
+		const ADVISORY_WEBSOCKET     = 'websocket-advisory';
+		const ADVISORY_LEGACY_WEBRTC = 'web-rtc';
+		const ADVISORY_DEFAULT       = self::ADVISORY_WEBRTC;
 
 		/**
 		 * Option holding the unsaved-changes policy: `discard` (the saved post
@@ -218,7 +224,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				self::ADVISORY_OPTION,
 				array(
 					'type'              => 'string',
-					'description'       => __( 'Advisory channel between editor tabs (web-rtc, or empty for off)', 'gutenberg-sync-engines' ),
+					'description'       => __( 'Advisory channel between editor tabs (webrtc-advisory, websocket-advisory, or empty for off)', 'gutenberg-sync-engines' ),
 					'sanitize_callback' => array( $this, 'sanitize_advisory' ),
 					'show_in_rest'      => true,
 					'default'           => self::ADVISORY_DEFAULT,
@@ -486,10 +492,41 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * @since n.e.x.t
 		 *
 		 * @param mixed $value Submitted value.
-		 * @return string `web-rtc` or the empty string (off).
+		 * @return string `webrtc-advisory`, `websocket-advisory`, or the empty
+		 *                string (off).
 		 */
 		public function sanitize_advisory( $value ): string {
-			return self::ADVISORY_DEFAULT === (string) $value ? self::ADVISORY_DEFAULT : '';
+			return self::normalize_advisory( $value );
+		}
+
+		/**
+		 * Normalizes a stored or submitted advisory channel value to one of
+		 * the known slugs.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param mixed $value Raw value.
+		 * @return string `webrtc-advisory`, `websocket-advisory`, or the empty
+		 *                string (off).
+		 */
+		public static function normalize_advisory( $value ): string {
+			$value = (string) $value;
+			if ( self::ADVISORY_LEGACY_WEBRTC === $value ) {
+				return self::ADVISORY_WEBRTC;
+			}
+			return in_array( $value, array( self::ADVISORY_WEBRTC, self::ADVISORY_WEBSOCKET ), true ) ? $value : '';
+		}
+
+		/**
+		 * The advisory channel the site chose: `webrtc-advisory`,
+		 * `websocket-advisory`, or the empty string for off.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return string The advisory channel slug, or the empty string.
+		 */
+		public static function advisory_channel(): string {
+			return self::normalize_advisory( get_option( self::ADVISORY_OPTION, self::ADVISORY_DEFAULT ) );
 		}
 
 		/**
@@ -537,14 +574,19 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			$this->render_select(
 				self::ADVISORY_OPTION,
 				array(
-					self::ADVISORY_DEFAULT => __( 'WebRTC between editor tabs (default)', 'gutenberg-sync-engines' ),
-					''                     => __( 'Off', 'gutenberg-sync-engines' ),
+					self::ADVISORY_WEBRTC    => __( 'WebRTC between editor tabs (default)', 'gutenberg-sync-engines' ),
+					self::ADVISORY_WEBSOCKET => __( 'WebSocket to the sync daemon', 'gutenberg-sync-engines' ),
+					''                       => __( 'Off', 'gutenberg-sync-engines' ),
 				),
-				(string) get_option( self::ADVISORY_OPTION, self::ADVISORY_DEFAULT )
+				self::advisory_channel()
 			);
 			printf(
 				'<p class="description">%s</p>',
-				esc_html__( 'An advisory channel reduces polling by signaling to peers when updates are available.', 'gutenberg-sync-engines' )
+				esc_html__( 'An advisory channel reduces polling by signaling to peers when updates are available. WebRTC connects the tabs to each other directly; WebSocket relays through the same sync daemon the WebSocket transport uses (it must be running), which also reaches tabs that cannot connect directly.', 'gutenberg-sync-engines' )
+			);
+			printf(
+				'<p class="description">%s</p>',
+				esc_html__( 'It only applies while short polling is the transport in use: with long polling or WebSocket selected, the channel runs only while that transport is down and short polling is the fallback.', 'gutenberg-sync-engines' )
 			);
 		}
 
