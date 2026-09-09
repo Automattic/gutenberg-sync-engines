@@ -57,6 +57,27 @@ class Test_WP_WebSocket_Sync_Transport extends WP_UnitTestCase {
 		);
 	}
 
+	public function test_the_websocket_url_setting_wins_over_the_default_and_the_filter_wins_over_both() {
+		$option = Gutenberg_Sync_Engines_Settings::WEBSOCKET_URL_OPTION;
+
+		update_option( $option, 'wss://relay.example.com/collab' );
+		$this->assertSame( 'wss://relay.example.com/collab', WP_WebSocket_Sync_Transport::get_socket_url() );
+
+		// Only ws:// and wss:// survive sanitization; anything else means
+		// the default.
+		$this->assertSame( '', Gutenberg_Sync_Engines_Settings::sanitize_websocket_url( 'https://relay.example.com' ) );
+		$this->assertSame( '', Gutenberg_Sync_Engines_Settings::sanitize_websocket_url( '  ' ) );
+		$this->assertSame( 'ws://localhost:8790', Gutenberg_Sync_Engines_Settings::sanitize_websocket_url( ' ws://localhost:8790 ' ) );
+		update_option( $option, 'javascript:alert(1)' );
+		$this->assertStringStartsWith( 'ws://', WP_WebSocket_Sync_Transport::get_socket_url() );
+
+		// Code still wins: a host that filters the URL keeps it.
+		update_option( $option, 'wss://relay.example.com/collab' );
+		add_filter( 'wp_sync_websocket_url', static fn() => 'wss://code.example.com' );
+		$this->assertSame( 'wss://code.example.com', WP_WebSocket_Sync_Transport::get_socket_url() );
+		delete_option( $option );
+	}
+
 	public function test_selectable_as_the_active_transport_and_announced_first() {
 		add_filter( 'wp_collaboration_transport', static fn() => 'websocket' );
 		$registry = wp_get_collaboration_transport_registry();

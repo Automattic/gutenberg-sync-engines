@@ -28,42 +28,40 @@ one).
 
     ```php
     define( 'WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET', '<the secret>' );
-    add_filter( 'wp_sync_websocket_url', fn() => 'wss://relay.example.com' );
     ```
 
-    Then choose "WebSocket to the sync daemon" as the advisory channel
-    under Settings → Collaboration (the transport stays short polling).
-    With a secret configured, the plugin mints signed, two-minute access tokens
-    instead of one-time tokens, and the plugin's own daemon accepts them
-    too.
+    With a secret configured, the plugin mints signed, two-minute access
+    tokens instead of one-time tokens, and the plugin's own daemon accepts
+    them too.
 
-3. Run the relay with the same secret and the page origin(s):
+    Then, under Settings → Collaboration, enter the relay's address
+    (`wss://relay.example.com`) as the WebSocket URL and choose "WebSocket
+    to the sync daemon" as the advisory channel. The transport stays short
+    polling. (Hosts that keep configuration in code can set the URL with
+    the `wp_sync_websocket_url` filter instead; the screen then shows it
+    read-only.)
+
+3. Run the relay with the same secret:
 
     ```bash
     npm install ws
     WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET='<the secret>' \
-    ALLOWED_ORIGINS='https://example.com' \
     PORT=8790 node relay.mjs
     ```
 
-    Terminate TLS in front of it; plaintext `ws://` must not leave a dev
-    box. `GET /health` answers `200 OK`.
+    Terminate TLS in front of it. `GET /health` answers `200 OK`.
 
 Environment: `WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET` (required),
-`ALLOWED_ORIGINS` (required, comma-separated), `PORT` (8790).
+`HOST` (`'localhost'`), and `PORT` (8790).
 
 One relay can serve several WordPress sites (a multisite network, or
 separate installs sharing the secret): rosters are kept per site and
 room, using the site id in each access token, so tabs from different sites
-never see each other even when their posts share an id. List every
-site's origin in `ALLOWED_ORIGINS`.
+never see each other even when their posts share an id.
 
 ## Trying it locally
 
 The websocket e2e suite runs this relay against the tests site with a
 fixed test secret (`npm run test:e2e:websocket -- advisory-relay`). To
 try it by hand against the dev site, start the relay with
-`ALLOWED_ORIGINS=http://localhost:8888`, activate the same secret on the
-site (a constant in `.wp-env.override.json`'s `config`, or the
-`wp_sync_websocket_access_token_secret` filter), and point
-`wp_sync_websocket_url` at `ws://localhost:8790`.
+`npm run rtc:ws:advisory`.

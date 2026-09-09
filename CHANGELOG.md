@@ -57,7 +57,11 @@ release, which the release script generates from the commit history.
     route hands each editor tab a signed, two-minute access token (a JSON Web
     Token, HS256) naming the user, the site, and the rooms the tab may
     follow, which the relay checks with the shared secret alone. The
-    plugin's daemon accepts access tokens too. `examples/advisory-relay/` is
+    plugin's daemon accepts access tokens too. A new "WebSocket URL"
+    field on Settings → Collaboration says where tabs connect, for the
+    WebSocket transport and the WebSocket advisory channel alike (empty
+    keeps the host and port constants; the `wp_sync_websocket_url`
+    filter still wins). `examples/advisory-relay/` is
     a reference relay to run or port; `docs/plan/advisory-channel.md`
     documents the access token and the message formats
     ([#92](https://github.com/Automattic/gutenberg-sync-engines/issues/92)).

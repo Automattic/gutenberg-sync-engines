@@ -98,8 +98,13 @@ Two independent settings:
    updates are available. It serves whenever short polling does, so under
    a preferred transport it is only active while that transport is down.
    The WebSocket link needs the same daemon the WebSocket transport uses
-   (`wp collaboration sync-server`); a tab that cannot open its socket
-   keeps the timer cadence, exactly like a tab whose WebRTC failed.
+   (`wp collaboration sync-server`), or a host's own relay ("Bring your
+   own relay" below); a tab that cannot open its socket keeps the timer
+   cadence, exactly like a tab whose WebRTC failed.
+3. WebSocket URL: where tabs connect for the WebSocket transport and the
+   WebSocket advisory channel. Empty means the daemon on the
+   `WP_SYNC_WEBSOCKET_HOST`/`PORT` constants; the `wp_sync_websocket_url`
+   filter overrides it for hosts that configure in code.
 
 ## The rules, stated plainly
 
@@ -285,8 +290,9 @@ section is everything a relay author needs, in any language.
 
 The websocket link does not have to end at the plugin's PHP daemon. A
 host that cannot run a long-lived PHP process, or that already runs
-WebSocket servers in Node or Go, can point `wp_sync_websocket_url` at a
-relay of its own. The relay is small because the lane is small: it
+WebSocket servers in Node or Go, can enter a relay of its own as the
+WebSocket URL on the settings screen (or through the
+`wp_sync_websocket_url` filter). The relay is small because the lane is small: it
 tells the tabs in a room who is present and passes "go and poll"
 notices between them. It never sees content, writes nothing, and never
 calls WordPress — the one thing it must do on its own is decide whether
@@ -349,13 +355,16 @@ shared secret — the shape every JWT library parses. Claims:
 The access token rides the handshake the way the one-time token did: the
 browser offers `Sec-WebSocket-Protocol: wp-sync, wp-sync-token.<token>`
 and the server must echo `wp-sync` alone. (Not the URL: query strings
-end up in access logs.) A relay verifies, in this order: the page
-`Origin` is on its allowlist; the offer carries `wp-sync` and a
-`wp-sync-token.` entry; the signature checks against the secret with a
-constant-time comparison; the header's `alg` is exactly `HS256`
-(refuse `none` and everything else); `exp` has not passed (with
-leeway); the claims have the shapes above. Anything else: refuse the
-upgrade with `403` before the socket opens.
+end up in access logs.) A relay verifies, in this order: the
+offer carries `wp-sync` and a `wp-sync-token.` entry; the signature
+checks against the secret with a constant-time comparison; the
+header's `alg` is exactly `HS256` (refuse `none` and everything else);
+`exp` has not passed (with leeway); the claims have the shapes above.
+Anything else: refuse the upgrade with `403` before the socket opens.
+The access token is the whole of the check: a server without the
+secret cannot complete the handshake, and a browser without a token
+from WordPress cannot either, so no `Origin` allowlist is needed (the
+plugin's daemon keeps one because it also serves the transport).
 
 ### The frames
 
@@ -424,8 +433,7 @@ verifies an HS256 JWT with a shared secret and the same claim names
 The differences to bridge: it reads the token from an `?auth=` query
 parameter (read the `Sec-WebSocket-Protocol` offer instead, and echo
 `wp-sync`); it names one room per token in `room_name` (read the
-`rooms` list and the `<kind>/*` rule); it checks no `Origin` (add the
-allowlist); and it speaks Yjs, not these frames (an advisory mode is a
+`rooms` list and the `<kind>/*` rule); and it speaks Yjs, not these frames (an advisory mode is a
 new message handler; `relay.mjs` shows the whole of it). Set
 `WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET` to the same value as its
 `VIP_RTC_WS_AUTH_SECRET`.

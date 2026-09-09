@@ -67,6 +67,18 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * @since n.e.x.t
 		 * @var string
 		 */
+		/**
+		 * Option: the WebSocket URL editor tabs connect to, for the
+		 * WebSocket transport and the WebSocket advisory channel alike —
+		 * the plugin's sync daemon or a host's own relay. Empty (the
+		 * default) means `ws://<WP_SYNC_WEBSOCKET_HOST>:<WP_SYNC_WEBSOCKET_PORT>`;
+		 * the `wp_sync_websocket_url` filter still applies last.
+		 *
+		 * @since n.e.x.t
+		 * @var string
+		 */
+		const WEBSOCKET_URL_OPTION = 'gutenberg_sync_engines_websocket_url';
+
 		const ADVISORY_OPTION        = 'gutenberg_sync_engines_advisory_channel';
 		const ADVISORY_WEBRTC        = 'webrtc-advisory';
 		const ADVISORY_WEBSOCKET     = 'websocket-advisory';
@@ -232,6 +244,17 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			);
 			register_setting(
 				self::PAGE,
+				self::WEBSOCKET_URL_OPTION,
+				array(
+					'type'              => 'string',
+					'description'       => __( 'WebSocket URL editor tabs connect to (ws:// or wss://; empty for the default host and port)', 'gutenberg-sync-engines' ),
+					'sanitize_callback' => array( __CLASS__, 'sanitize_websocket_url' ),
+					'show_in_rest'      => true,
+					'default'           => '',
+				)
+			);
+			register_setting(
+				self::PAGE,
 				self::UNSAVED_OPTION,
 				array(
 					'type'              => 'string',
@@ -322,6 +345,13 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				self::ADVISORY_OPTION,
 				__( 'Advisory channel', 'gutenberg-sync-engines' ),
 				array( $this, 'render_advisory_field' ),
+				self::PAGE,
+				'gutenberg_sync_engines_main'
+			);
+			add_settings_field(
+				self::WEBSOCKET_URL_OPTION,
+				__( 'WebSocket URL', 'gutenberg-sync-engines' ),
+				array( $this, 'render_websocket_url_field' ),
 				self::PAGE,
 				'gutenberg_sync_engines_main'
 			);
@@ -484,6 +514,67 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				'<p class="description">%s</p>',
 				esc_html__( 'The default short-polling transport is always available as a fallback.', 'gutenberg-sync-engines' )
 			);
+		}
+
+		/**
+		 * Sanitizes the WebSocket URL: a `ws://` or `wss://` URL, or the
+		 * empty string for the default.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param mixed $value Submitted value.
+		 * @return string The URL, or ''.
+		 */
+		public static function sanitize_websocket_url( $value ): string {
+			$value = trim( (string) $value );
+			if ( '' === $value ) {
+				return '';
+			}
+			return (string) esc_url_raw( $value, array( 'ws', 'wss' ) );
+		}
+
+		/**
+		 * The configured WebSocket URL, or '' for the default.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return string The URL, or ''.
+		 */
+		public static function websocket_url(): string {
+			return self::sanitize_websocket_url( get_option( self::WEBSOCKET_URL_OPTION, '' ) );
+		}
+
+		/**
+		 * Renders the WebSocket URL field.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return void
+		 */
+		public function render_websocket_url_field(): void {
+			$overridden = has_filter( 'wp_sync_websocket_url' );
+			printf(
+				'<input type="url" class="regular-text code" name="%1$s" id="%1$s" value="%2$s" placeholder="wss://relay.example.com" %3$s />',
+				esc_attr( self::WEBSOCKET_URL_OPTION ),
+				esc_attr( self::websocket_url() ),
+				$overridden ? 'readonly' : ''
+			);
+			printf(
+				'<p class="description">%s</p>',
+				esc_html__( 'Where editor tabs connect for the WebSocket transport and the WebSocket advisory channel: the sync daemon (wp collaboration sync-server), or a relay of your own when an access-token secret is configured. Leave empty for the default, ws://host:port from the WP_SYNC_WEBSOCKET_HOST and WP_SYNC_WEBSOCKET_PORT constants. Use wss:// outside development.', 'gutenberg-sync-engines' )
+			);
+			if ( $overridden && class_exists( 'WP_WebSocket_Sync_Transport' ) ) {
+				printf(
+					'<p class="description">%s</p>',
+					esc_html(
+						sprintf(
+							/* translators: %s: the WebSocket URL set by code */
+							__( 'Code sets this value through the wp_sync_websocket_url filter; tabs connect to %s.', 'gutenberg-sync-engines' ),
+							WP_WebSocket_Sync_Transport::get_socket_url()
+						)
+					)
+				);
+			}
 		}
 
 		/**

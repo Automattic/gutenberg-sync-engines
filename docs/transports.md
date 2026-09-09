@@ -62,7 +62,9 @@ Two websocket specifics. The one-time auth token rides the
 `Sec-WebSocket-Protocol` offer list rather than the URL query string,
 because query strings end up in server and proxy access logs. And
 plaintext `ws://` must never leave a dev box; terminating TLS in front
-of the daemon is the operator's job.
+of the daemon is the operator's job, and the `wss://` address goes in
+the "WebSocket URL" field on Settings → Collaboration (or the
+`wp_sync_websocket_url` filter, which wins).
 
 The advisory channel's websocket link can end at a server that is not
 the plugin's daemon. With a `WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET`

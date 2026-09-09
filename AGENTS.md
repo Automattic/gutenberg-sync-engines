@@ -66,7 +66,15 @@ This plugin provides:
   the token route mints a signed two-minute access token (JWT HS256, claims
   `user_id`/`blog_id`/`rooms`/`iat`/`exp`, `WP_WebSocket_Access_Token`)
   that a relay verifies with the secret alone; the daemon accepts
-  access tokens too. `examples/advisory-relay/relay.mjs` is the reference
+  access tokens too. The relay's address goes in the "WebSocket URL"
+  setting (`gutenberg_sync_engines_websocket_url`; empty = the
+  HOST/PORT constants; the `wp_sync_websocket_url` filter wins). The
+  DEV wp-env config defines a development secret
+  (`wp-env-development-secret-not-for-production`), so the dev daemon
+  and a local relay run in access-token mode out of the box; the TESTS
+  config does not, so the daemon lane keeps certifying the cookie path
+  and only the relay spec (through its fixture plugin) uses access
+  tokens. `examples/advisory-relay/relay.mjs` is the reference
   relay (Node + `ws`); the access token and frame formats are in the
   advisory-channel doc's "Bring your own relay" section.
   The same presence lane decides a per-post room's LIFETIME under the

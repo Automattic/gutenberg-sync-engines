@@ -65,16 +65,13 @@ process.env.GUTENBERG_RTC_REAL_WS = '1';
  * The example bring-your-own relay (examples/advisory-relay/relay.mjs),
  * for the advisory-relay spec: it runs on port 8790 beside the daemon
  * with a fixed test secret, and the spec activates the
- * tests/e2e/plugins/advisory-relay-access-token.php fixture, which configures
- * the same secret on the site and points the socket URL at the relay.
- * The page origin it allows is the tests site's.
+ * tests/e2e/plugins/advisory-relay-access-token.php fixture, which
+ * configures the same secret on the site, and sets the WebSocket URL
+ * option to the relay's address.
  */
 const RELAY_PORT = 8790;
 const RELAY_ACCESS_TOKEN_SECRET =
 	'e2e-advisory-relay-access-token-secret-not-for-production-0123456789';
-const RELAY_ALLOWED_ORIGIN = new URL(
-	process.env.WP_BASE_URL || 'http://localhost:8889'
-).origin;
 
 const config = defineConfig( {
 	...baseConfig,
@@ -107,7 +104,6 @@ const config = defineConfig( {
 			env: {
 				WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET:
 					RELAY_ACCESS_TOKEN_SECRET,
-				ALLOWED_ORIGINS: RELAY_ALLOWED_ORIGIN,
 				PORT: String( RELAY_PORT ),
 			},
 			reuseExistingServer: false,

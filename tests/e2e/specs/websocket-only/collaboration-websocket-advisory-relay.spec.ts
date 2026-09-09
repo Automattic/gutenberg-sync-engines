@@ -16,8 +16,8 @@ import { test, expect } from '../../config/collaboration-fixtures';
  * (examples/advisory-relay/relay.mjs), which checks each tab's signed
  * access token with the shared secret and never touches WordPress or its
  * database. The config runs the relay on port 8790; the fixture plugin
- * activated here configures the same secret on the site and points the
- * socket URL at the relay. Two tabs meet in the relay's roster, an idle
+ * activated here configures the same secret on the site, and the
+ * WebSocket URL setting points the tabs at the relay. Two tabs meet in the relay's roster, an idle
  * tab polls only when told to, and an edit still travels over REST.
  *
  * Runs on the daemon lane but with SHORT POLLING selected for its
@@ -27,6 +27,7 @@ import { test, expect } from '../../config/collaboration-fixtures';
 const REPO_ROOT = path.resolve( __dirname, '../../../..' );
 const TRANSPORT_OPTION = 'gutenberg_sync_engines_transport';
 const ADVISORY_OPTION = 'gutenberg_sync_engines_advisory_channel';
+const WEBSOCKET_URL_OPTION = 'gutenberg_sync_engines_websocket_url';
 const FIXTURE_PLUGIN = 'gutenberg-test-plugin-advisory-relay-access-token';
 const RELAY_URL = 'ws://localhost:8790';
 
@@ -124,10 +125,12 @@ test.describe( 'Collaboration - advisory channel over a bring-your-own relay', (
 
 	test.beforeAll( async ( { requestUtils } ) => {
 		// Short polling for this spec (the lane selected websocket), the
-		// websocket link as the advisory channel, and the fixture that
-		// turns access-token mode on and aims the socket URL at the relay.
+		// websocket link as the advisory channel, the WebSocket URL
+		// setting aimed at the relay, and the fixture that turns
+		// access-token mode on with the relay's secret.
 		wpCli( 'option', 'update', TRANSPORT_OPTION, 'http-polling' );
 		wpCli( 'option', 'update', ADVISORY_OPTION, 'websocket-advisory' );
+		wpCli( 'option', 'update', WEBSOCKET_URL_OPTION, RELAY_URL );
 		await requestUtils.activatePlugin( FIXTURE_PLUGIN );
 		previousRealWs = process.env.GUTENBERG_RTC_REAL_WS;
 		delete process.env.GUTENBERG_RTC_REAL_WS;
@@ -140,6 +143,7 @@ test.describe( 'Collaboration - advisory channel over a bring-your-own relay', (
 		await requestUtils.deactivatePlugin( FIXTURE_PLUGIN );
 		wpCli( 'option', 'update', TRANSPORT_OPTION, 'websocket' );
 		wpCli( 'option', 'delete', ADVISORY_OPTION );
+		wpCli( 'option', 'delete', WEBSOCKET_URL_OPTION );
 	} );
 
 	test.afterEach( async ( { collaborationUtils } ) => {
@@ -160,7 +164,8 @@ test.describe( 'Collaboration - advisory channel over a bring-your-own relay', (
 		await collaborationUtils.openCollaborativeSession( post.id );
 		const page2 = collaborationUtils.getPage( 0 );
 
-		// The page was pointed at the relay, not the daemon.
+		// The WebSocket URL setting pointed the page at the relay, not
+		// the daemon.
 		expect( await socketUrl( page ) ).toBe( RELAY_URL );
 
 		// The relay's roster names both tabs as soon as both sockets are
