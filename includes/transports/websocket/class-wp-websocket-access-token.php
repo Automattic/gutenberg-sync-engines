@@ -1,26 +1,26 @@
 <?php
 /**
- * WP_WebSocket_Ticket class
+ * WP_WebSocket_Access_Token class
  *
  * @package gutenberg-sync-engines
  */
 
-if ( ! class_exists( 'WP_WebSocket_Ticket' ) ) {
+if ( ! class_exists( 'WP_WebSocket_Access_Token' ) ) {
 
 	/**
-	 * Signed, short-lived WebSocket tickets: the handshake credential a
+	 * Signed, short-lived WebSocket access tokens: the handshake credential a
 	 * server can check WITHOUT WordPress.
 	 *
 	 * The plugin's own daemon authenticates a socket with the logged_in
 	 * cookie plus a one-time token it looks up in the database. A relay a
 	 * host runs elsewhere (Node, Go, a hosted service — see
 	 * `examples/advisory-relay/`) has neither the cookie (it does not
-	 * reach another domain) nor the database. Ticket mode replaces the
+	 * reach another domain) nor the database. Access-token mode replaces the
 	 * one-time token with a JSON Web Token signed with a secret the
 	 * relay shares with WordPress (HS256): the token route mints it, the
 	 * browser offers it on the same `Sec-WebSocket-Protocol` entry as
 	 * before, and the server verifies the signature and the expiry on
-	 * its own. The plugin's daemon accepts tickets too, so one switch
+	 * its own. The plugin's daemon accepts access tokens too, so one switch
 	 * serves both.
 	 *
 	 * Claims: `user_id`, `blog_id`, `rooms`, `iat`, `exp`. The claim
@@ -30,19 +30,19 @@ if ( ! class_exists( 'WP_WebSocket_Ticket' ) ) {
 	 * or `<kind>/*`, which allows every COLLECTION room of that kind
 	 * (a room name without an object id, e.g. `taxonomy/category`).
 	 *
-	 * Ticket mode is on when a secret is configured: the
-	 * `WP_SYNC_WEBSOCKET_TICKET_SECRET` constant, else the environment
-	 * variable of the same name, else the `wp_sync_websocket_ticket_secret`
+	 * Access-token mode is on when a secret is configured: the
+	 * `WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET` constant, else the environment
+	 * variable of the same name, else the `wp_sync_websocket_access_token_secret`
 	 * filter. Use at least 32 random bytes and rotate by restarting the
-	 * relay with the new value; tickets outlive a rotation by at most
+	 * relay with the new value; access tokens outlive a rotation by at most
 	 * their two-minute lifetime.
 	 *
 	 * @since n.e.x.t
 	 * @access private
 	 */
-	class WP_WebSocket_Ticket {
+	class WP_WebSocket_Access_Token {
 		/**
-		 * Ticket lifetime in seconds (the same as the one-time token's).
+		 * Access token lifetime in seconds (the same as the one-time token's).
 		 *
 		 * @since n.e.x.t
 		 * @var int
@@ -58,7 +58,7 @@ if ( ! class_exists( 'WP_WebSocket_Ticket' ) ) {
 		const LEEWAY = 30;
 
 		/**
-		 * Longest ticket a verifier reads.
+		 * Longest access token a verifier reads.
 		 *
 		 * @since n.e.x.t
 		 * @var int
@@ -66,7 +66,7 @@ if ( ! class_exists( 'WP_WebSocket_Ticket' ) ) {
 		const MAX_LENGTH = 4096;
 
 		/**
-		 * Most rooms a ticket names.
+		 * Most rooms an access token names.
 		 *
 		 * @since n.e.x.t
 		 * @var int
@@ -82,7 +82,7 @@ if ( ! class_exists( 'WP_WebSocket_Ticket' ) ) {
 		const COLLECTION_WILDCARD = '/*';
 
 		/**
-		 * The entity kinds whose collection rooms every ticket allows.
+		 * The entity kinds whose collection rooms every access token allows.
 		 * Collection rooms carry presence only over this lane; the
 		 * framework lets any user with `edit_posts` sync the `taxonomy`
 		 * and `root` collections, and a post type's collection when they
@@ -95,7 +95,7 @@ if ( ! class_exists( 'WP_WebSocket_Ticket' ) ) {
 		const COLLECTION_KINDS = array( 'postType', 'taxonomy', 'root' );
 
 		/**
-		 * The configured secret, or the empty string when ticket mode is
+		 * The configured secret, or the empty string when access-token mode is
 		 * off.
 		 *
 		 * @since n.e.x.t
@@ -104,19 +104,19 @@ if ( ! class_exists( 'WP_WebSocket_Ticket' ) ) {
 		 */
 		public static function secret(): string {
 			$secret = '';
-			if ( defined( 'WP_SYNC_WEBSOCKET_TICKET_SECRET' ) && is_string( WP_SYNC_WEBSOCKET_TICKET_SECRET ) ) {
-				$secret = WP_SYNC_WEBSOCKET_TICKET_SECRET;
+			if ( defined( 'WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET' ) && is_string( WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET ) ) {
+				$secret = WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET;
 			} else {
-				$from_env = getenv( 'WP_SYNC_WEBSOCKET_TICKET_SECRET' );
+				$from_env = getenv( 'WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET' );
 				if ( is_string( $from_env ) ) {
 					$secret = $from_env;
 				}
 			}
 
 			/**
-			 * Filters the secret WebSocket tickets are signed with. A
-			 * non-empty value switches ticket mode on: the token route
-			 * mints signed tickets instead of one-time tokens, and the
+			 * Filters the secret WebSocket access tokens are signed with. A
+			 * non-empty value switches access-token mode on: the token route
+			 * mints signed access tokens instead of one-time tokens, and the
 			 * daemon (or a host's own relay sharing the secret) verifies
 			 * them without a database read.
 			 *
@@ -124,13 +124,13 @@ if ( ! class_exists( 'WP_WebSocket_Ticket' ) ) {
 			 *
 			 * @param string $secret The secret, or '' for off.
 			 */
-			$secret = apply_filters( 'wp_sync_websocket_ticket_secret', $secret );
+			$secret = apply_filters( 'wp_sync_websocket_access_token_secret', $secret );
 
 			return is_string( $secret ) ? $secret : '';
 		}
 
 		/**
-		 * Whether ticket mode is on.
+		 * Whether access-token mode is on.
 		 *
 		 * @since n.e.x.t
 		 *
@@ -141,21 +141,21 @@ if ( ! class_exists( 'WP_WebSocket_Ticket' ) ) {
 		}
 
 		/**
-		 * Whether a handshake credential has a ticket's shape (three
+		 * Whether a handshake credential has a access token's shape (three
 		 * base64url segments) rather than a one-time token's (hex).
 		 *
 		 * @since n.e.x.t
 		 *
 		 * @param string $token The offered credential.
-		 * @return bool Whether it looks like a ticket.
+		 * @return bool Whether it looks like an access token.
 		 */
-		public static function looks_like_ticket( string $token ): bool {
+		public static function looks_like_access_token( string $token ): bool {
 			return strlen( $token ) <= self::MAX_LENGTH
 				&& 1 === preg_match( '#^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$#', $token );
 		}
 
 		/**
-		 * The rooms a ticket for one editor tab allows: its post's room,
+		 * The rooms an access token for one editor tab allows: its post's room,
 		 * when given, plus the collection rooms of every allowed kind.
 		 *
 		 * @since n.e.x.t
@@ -175,13 +175,13 @@ if ( ! class_exists( 'WP_WebSocket_Ticket' ) ) {
 		}
 
 		/**
-		 * Whether a ticket's grants allow following a room: an exact
+		 * Whether a access token's grants allow following a room: an exact
 		 * entry, or a `<kind>/*` entry when the room is a collection room
 		 * (no object id) of that kind. The rule every relay implements.
 		 *
 		 * @since n.e.x.t
 		 *
-		 * @param string[] $rooms The ticket's `rooms` claim.
+		 * @param string[] $rooms The access token's `rooms` claim.
 		 * @param string   $room  The room to follow.
 		 * @return bool Whether the follow is allowed.
 		 */
@@ -197,14 +197,14 @@ if ( ! class_exists( 'WP_WebSocket_Ticket' ) ) {
 		}
 
 		/**
-		 * Mints a ticket.
+		 * Mints an access token.
 		 *
 		 * @since n.e.x.t
 		 *
 		 * @param int      $user_id The user.
 		 * @param string[] $rooms   Room grants (see grants()).
 		 * @param int|null $now     The current time, for tests.
-		 * @return string The ticket.
+		 * @return string The access token.
 		 */
 		public static function mint( int $user_id, array $rooms, ?int $now = null ): string {
 			$now     = $now ?? time();
@@ -231,32 +231,32 @@ if ( ! class_exists( 'WP_WebSocket_Ticket' ) ) {
 		}
 
 		/**
-		 * Verifies a ticket: the signature (HS256 only), the expiry with
+		 * Verifies an access token: the signature (HS256 only), the expiry with
 		 * leeway, the blog, and the claim shapes.
 		 *
 		 * @since n.e.x.t
 		 *
-		 * @param string   $ticket The ticket.
+		 * @param string   $access_token The access token.
 		 * @param int|null $now    The current time, for tests.
 		 * @return array{user_id: int, blog_id: int, rooms: string[], iat: int, exp: int}|WP_Error
-		 *         The claims, or why the ticket was refused.
+		 *         The claims, or why the access token was refused.
 		 */
-		public static function verify( string $ticket, ?int $now = null ) {
+		public static function verify( string $access_token, ?int $now = null ) {
 			if ( ! self::is_enabled() ) {
-				return new WP_Error( 'websocket_invalid_ticket', 'Ticket mode is off.' );
+				return new WP_Error( 'websocket_invalid_access_token', 'Access-token mode is off.' );
 			}
-			if ( ! self::looks_like_ticket( $ticket ) ) {
-				return new WP_Error( 'websocket_invalid_ticket', 'Malformed ticket.' );
+			if ( ! self::looks_like_access_token( $access_token ) ) {
+				return new WP_Error( 'websocket_invalid_access_token', 'Malformed access token.' );
 			}
-			list( $header, $payload, $signature ) = explode( '.', $ticket );
+			list( $header, $payload, $signature ) = explode( '.', $access_token );
 
 			if ( ! hash_equals( self::sign( $header . '.' . $payload ), $signature ) ) {
-				return new WP_Error( 'websocket_invalid_ticket', 'Bad ticket signature.' );
+				return new WP_Error( 'websocket_invalid_access_token', 'Bad access token signature.' );
 			}
 
 			$decoded_header = json_decode( (string) self::decode( $header ), true );
 			if ( ! is_array( $decoded_header ) || 'HS256' !== ( $decoded_header['alg'] ?? '' ) ) {
-				return new WP_Error( 'websocket_invalid_ticket', 'Unsupported ticket algorithm.' );
+				return new WP_Error( 'websocket_invalid_access_token', 'Unsupported access token algorithm.' );
 			}
 
 			$claims = json_decode( (string) self::decode( $payload ), true );
@@ -269,23 +269,23 @@ if ( ! class_exists( 'WP_WebSocket_Ticket' ) ) {
 				|| ! is_array( $claims['rooms'] ?? null )
 				|| count( $claims['rooms'] ) > self::MAX_ROOMS
 			) {
-				return new WP_Error( 'websocket_invalid_ticket', 'Malformed ticket claims.' );
+				return new WP_Error( 'websocket_invalid_access_token', 'Malformed access token claims.' );
 			}
 			foreach ( $claims['rooms'] as $room ) {
 				if ( ! is_string( $room ) || '' === $room || strlen( $room ) > 200 ) {
-					return new WP_Error( 'websocket_invalid_ticket', 'Malformed ticket rooms.' );
+					return new WP_Error( 'websocket_invalid_access_token', 'Malformed access token rooms.' );
 				}
 			}
 
 			$now = $now ?? time();
 			if ( $now >= $claims['exp'] + self::LEEWAY ) {
-				return new WP_Error( 'websocket_invalid_ticket', 'Expired ticket.' );
+				return new WP_Error( 'websocket_invalid_access_token', 'Expired access token.' );
 			}
 			if ( $claims['iat'] > $now + self::LEEWAY ) {
-				return new WP_Error( 'websocket_invalid_ticket', 'Ticket from the future.' );
+				return new WP_Error( 'websocket_invalid_access_token', 'Access token from the future.' );
 			}
 			if ( get_current_blog_id() !== $claims['blog_id'] ) {
-				return new WP_Error( 'websocket_invalid_ticket', 'Ticket for another site.' );
+				return new WP_Error( 'websocket_invalid_access_token', 'Access token for another site.' );
 			}
 
 			return array(

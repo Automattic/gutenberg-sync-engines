@@ -17,11 +17,11 @@ if ( ! class_exists( 'WP_WebSocket_Token_Controller' ) ) {
 	 * WebSocket server consumes the token (single use) and requires that the
 	 * token's user matches the user authenticated by the logged_in cookie.
 	 *
-	 * In TICKET mode (a `WP_SYNC_WEBSOCKET_TICKET_SECRET` is configured,
-	 * see WP_WebSocket_Ticket) the same route returns a signed, expiring
-	 * ticket instead, which a server verifies with the shared secret and
+	 * In ACCESS-TOKEN mode (a `WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET` is configured,
+	 * see WP_WebSocket_Access_Token) the same route returns a signed, expiring
+	 * access token instead, which a server verifies with the shared secret and
 	 * no database — the credential a host's own relay needs. The request
-	 * may name the tab's post room (`room`), which the ticket then allows.
+	 * may name the tab's post room (`room`), which the access token then allows.
 	 *
 	 * @since 7.4.0
 	 * @access private
@@ -66,7 +66,7 @@ if ( ! class_exists( 'WP_WebSocket_Token_Controller' ) ) {
 					'permission_callback' => array( $this, 'check_permissions' ),
 					'args'                => array(
 						'room' => array(
-							'description' => 'The post room the tab follows; a ticket allows it (ticket mode only).',
+							'description' => 'The post room the tab follows; an access token allows it (access-token mode only).',
 							'type'        => 'string',
 							'required'    => false,
 						),
@@ -95,18 +95,18 @@ if ( ! class_exists( 'WP_WebSocket_Token_Controller' ) ) {
 		}
 
 		/**
-		 * Mints a one-time token bound to the current user — or, in ticket
-		 * mode, a signed ticket allowing the tab's post room.
+		 * Mints a one-time token bound to the current user — or, in access token
+		 * mode, a signed access token allowing the tab's post room.
 		 *
 		 * @since 7.4.0
-		 * @since n.e.x.t Ticket mode, and the optional `room` parameter.
+		 * @since n.e.x.t Access-token mode, and the optional `room` parameter.
 		 *
 		 * @param WP_REST_Request|null $request The request.
 		 * @return WP_REST_Response|WP_Error Response containing the token,
 		 *                                   or why the room was refused.
 		 */
 		public function handle_request( ?WP_REST_Request $request = null ) {
-			if ( class_exists( 'WP_WebSocket_Ticket' ) && WP_WebSocket_Ticket::is_enabled() ) {
+			if ( class_exists( 'WP_WebSocket_Access_Token' ) && WP_WebSocket_Access_Token::is_enabled() ) {
 				$room = $request ? $request->get_param( 'room' ) : null;
 				if ( null !== $room && '' !== $room ) {
 					if ( ! is_string( $room ) || ! $this->can_sync_post_room( $room ) ) {
@@ -122,8 +122,8 @@ if ( ! class_exists( 'WP_WebSocket_Token_Controller' ) ) {
 
 				return new WP_REST_Response(
 					array(
-						'expires_in' => WP_WebSocket_Ticket::TTL,
-						'token'      => WP_WebSocket_Ticket::mint( get_current_user_id(), WP_WebSocket_Ticket::grants( $room ) ),
+						'expires_in' => WP_WebSocket_Access_Token::TTL,
+						'token'      => WP_WebSocket_Access_Token::mint( get_current_user_id(), WP_WebSocket_Access_Token::grants( $room ) ),
 					),
 					200
 				);
@@ -144,7 +144,7 @@ if ( ! class_exists( 'WP_WebSocket_Token_Controller' ) ) {
 
 		/**
 		 * Whether the current user may sync a single-post room: the room
-		 * a ticket names must be a `postType/<type>:<id>` room the user
+		 * an access token names must be a `postType/<type>:<id>` room the user
 		 * can edit, the same check the sync endpoints make.
 		 *
 		 * @since n.e.x.t

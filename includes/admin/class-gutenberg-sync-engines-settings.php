@@ -588,10 +588,10 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				'<p class="description">%s</p>',
 				esc_html__( 'It only applies while short polling is the transport in use: with long polling or WebSocket selected, the channel runs only while that transport is down and short polling is the fallback.', 'gutenberg-sync-engines' )
 			);
-			if ( class_exists( 'WP_WebSocket_Ticket' ) && WP_WebSocket_Ticket::is_enabled() ) {
+			if ( class_exists( 'WP_WebSocket_Access_Token' ) && WP_WebSocket_Access_Token::is_enabled() ) {
 				printf(
 					'<p class="description">%s</p>',
-					esc_html__( 'A ticket secret is configured: each socket carries a signed, short-lived ticket that a server checks without WordPress, so the WebSocket URL may point at a relay of your own (see examples/advisory-relay in the plugin) instead of the sync daemon.', 'gutenberg-sync-engines' )
+					esc_html__( 'An access token secret is configured: each socket carries a signed, short-lived access token that a server checks without WordPress, so the WebSocket URL may point at a relay of your own (see examples/advisory-relay in the plugin) instead of the sync daemon.', 'gutenberg-sync-engines' )
 				);
 			}
 		}

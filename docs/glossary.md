@@ -21,8 +21,8 @@ use these terms freely; none of them is standard outside this project
   the tabs following a room (client id, presence token, latest
   presence), sent to every follower whenever it changes. It is the
   channel's coverage answer over that link.
-- **Ticket** — a signed, two-minute pass WordPress hands an editor tab
-  for its socket handshake when a `WP_SYNC_WEBSOCKET_TICKET_SECRET` is
+- **Access token** — a signed, two-minute pass WordPress hands an editor tab
+  for its socket handshake when a `WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET` is
   configured: it names the user, the site, and the rooms the tab may
   follow, and any server sharing the secret can check it without
   asking WordPress. It is what lets a host run its own relay

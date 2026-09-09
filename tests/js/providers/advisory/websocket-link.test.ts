@@ -150,8 +150,8 @@ describe( 'advisory channel over the websocket link', () => {
 		settings();
 		const ws = await start();
 
-		// The credential is requested for this tab's post room (in ticket
-		// mode the ticket allows exactly that room), and rides the
+		// The credential is requested for this tab's post room (in access token
+		// mode the access token allows exactly that room), and rides the
 		// subprotocol offer, never the URL.
 		expect( apiFetch ).toHaveBeenCalledWith( {
 			method: 'POST',

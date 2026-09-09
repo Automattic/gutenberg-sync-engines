@@ -61,13 +61,13 @@ This plugin provides:
   head cursor) when every peer is reachable. Long polling turns it off
   while connected. Rules and failure cases: `docs/plan/advisory-channel.md`.
   The websocket link can end at a host's OWN relay instead of the
-  daemon: with a `WP_SYNC_WEBSOCKET_TICKET_SECRET` configured
-  (constant, env, or the `wp_sync_websocket_ticket_secret` filter),
-  the token route mints a signed two-minute ticket (JWT HS256, claims
-  `user_id`/`blog_id`/`rooms`/`iat`/`exp`, `WP_WebSocket_Ticket`)
+  daemon: with a `WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET` configured
+  (constant, env, or the `wp_sync_websocket_access_token_secret` filter),
+  the token route mints a signed two-minute access token (JWT HS256, claims
+  `user_id`/`blog_id`/`rooms`/`iat`/`exp`, `WP_WebSocket_Access_Token`)
   that a relay verifies with the secret alone; the daemon accepts
-  tickets too. `examples/advisory-relay/relay.mjs` is the reference
-  relay (Node + `ws`); the ticket and frame formats are in the
+  access tokens too. `examples/advisory-relay/relay.mjs` is the reference
+  relay (Node + `ws`); the access token and frame formats are in the
   advisory-channel doc's "Bring your own relay" section.
   The same presence lane decides a per-post room's LIFETIME under the
   "Unsaved changes" setting (default: an empty room is reset to the
@@ -415,7 +415,7 @@ and restores the previous transport at teardown. No spec is skipped.
 The same config also runs the example advisory relay
 (`examples/advisory-relay/relay.mjs`) on port 8790 with a fixed test
 secret; `collaboration-websocket-advisory-relay.spec.ts` activates
-the `tests/e2e/plugins/advisory-relay-ticket.php` fixture (same
+the `tests/e2e/plugins/advisory-relay-access-token.php` fixture (same
 secret, socket URL aimed at the relay) for its duration, so the
 relay lane never touches the daemon's auth path.
 (The old y-websocket PEER-relay fixture lane — the test WS provider

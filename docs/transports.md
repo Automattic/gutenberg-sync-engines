@@ -65,13 +65,13 @@ plaintext `ws://` must never leave a dev box; terminating TLS in front
 of the daemon is the operator's job.
 
 The advisory channel's websocket link can end at a server that is not
-the plugin's daemon. With a `WP_SYNC_WEBSOCKET_TICKET_SECRET`
-configured, each tab carries a signed, two-minute ticket (a JSON Web
+the plugin's daemon. With a `WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET`
+configured, each tab carries a signed, two-minute access token (a JSON Web
 Token, HS256) that a relay checks with the shared secret and no call
 to WordPress; `examples/advisory-relay/` is a Node relay a host can run
 as is or port, and `docs/plan/advisory-channel.md` ("Bring your own
-relay") lists the ticket claims and the message formats. The daemon
-accepts tickets too. The websocket *transport* cannot be relayed this
+relay") lists the access token claims and the message formats. The daemon
+accepts access tokens too. The websocket *transport* cannot be relayed this
 way: it does engine work and writes rows.
 
 The websocket-only e2e suite runs against

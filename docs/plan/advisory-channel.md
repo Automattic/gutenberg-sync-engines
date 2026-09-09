@@ -230,7 +230,7 @@ Client:
     `hello` (client id), `presence`, `announce`, `bye`. Coverage is
     computed from discovered tokens and the last awareness map.
 -   `src/providers/advisory/websocket-link.ts`: one socket per tab to the
-    sync daemon — or to a host's own relay in ticket mode ("Bring your
+    sync daemon — or to a host's own relay in access-token mode ("Bring your
     own relay" below) — opened with the same token handshake as the
     websocket transport (the socket URL rides the page settings under
     `websocket-advisory`). Frames: the tab follows its post's room
@@ -291,28 +291,28 @@ tells the tabs in a room who is present and passes "go and poll"
 notices between them. It never sees content, writes nothing, and never
 calls WordPress — the one thing it must do on its own is decide whether
 a connection comes from a signed-in user who may follow the rooms it
-asks for. WordPress settles that by handing each tab a **ticket**.
+asks for. WordPress settles that by handing each tab an **access token**.
 
 Only the advisory lane can be relayed this way. The websocket
 *transport* does engine work and writes rows; it always needs the
 plugin's daemon.
 
-### The ticket
+### The access token
 
-Ticket mode is on when a secret is configured on the WordPress side:
-the `WP_SYNC_WEBSOCKET_TICKET_SECRET` constant, else the environment
-variable of the same name, else the `wp_sync_websocket_ticket_secret`
+Access-token mode is on when a secret is configured on the WordPress side:
+the `WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET` constant, else the environment
+variable of the same name, else the `wp_sync_websocket_access_token_secret`
 filter. With a secret, `POST /wp-sync/v1/ws-token` (the same route the
-websocket transport uses) returns a ticket instead of a one-time
+websocket transport uses) returns an access token instead of a one-time
 token; nothing about the client changes except that it names its
 post room in the request body (`{ "room": "postType/post:12" }`) so
-the ticket can allow it. The plugin's own daemon verifies tickets too
+the access token can allow it. The plugin's own daemon verifies access tokens too
 and skips the cookie check when one is valid, so one switch serves the
-daemon and a relay alike. Session revocation then has ticket-lifetime
-latency for relayed sockets instead of the daemon's 10-second sweep;
+daemon and a relay alike. Session revocation then waits out the access token's lifetime
+for relayed sockets instead of the daemon's 10-second sweep;
 acceptable for a lane that carries no content.
 
-A ticket is a JSON Web Token signed with HMAC-SHA256 (`HS256`) over the
+An access token is a JSON Web Token signed with HMAC-SHA256 (`HS256`) over the
 shared secret — the shape every JWT library parses. Claims:
 
 ```json
@@ -331,7 +331,7 @@ shared secret — the shape every JWT library parses. Claims:
     by `blog_id` AND room, never by room alone: room names are not
     site-qualified, so one relay (and one secret) serving several
     WordPress sites would otherwise put two sites' tabs in one roster
-    and send each site's presence to the other. The ticket refusal
+    and send each site's presence to the other. The access token refusal
     already keeps a tab's presence away from a server without the
     secret; this keeps it away from the wrong site behind a shared
     one.
@@ -343,11 +343,11 @@ shared secret — the shape every JWT library parses. Claims:
     lane). A follow for any other room is refused with an error frame.
     Without this claim a user could watch who is editing any post and
     nudge them to poll — small, but cheap to close.
--   `iat`, `exp`: Unix seconds; a ticket lives 2 minutes. Verifiers
+-   `iat`, `exp`: Unix seconds; an access token lives 2 minutes. Verifiers
     allow 30 seconds of clock skew.
 
-The ticket rides the handshake the way the one-time token did: the
-browser offers `Sec-WebSocket-Protocol: wp-sync, wp-sync-token.<ticket>`
+The access token rides the handshake the way the one-time token did: the
+browser offers `Sec-WebSocket-Protocol: wp-sync, wp-sync-token.<token>`
 and the server must echo `wp-sync` alone. (Not the URL: query strings
 end up in access logs.) A relay verifies, in this order: the page
 `Origin` is on its allowlist; the offer carries `wp-sync` and a
@@ -366,9 +366,9 @@ JSON text frames. Tab → relay:
   "presence_token": "abc…", "presence": { … } | null, "announce": "postType/post:12" | "*" }
 ```
 
--   The first frame for a `room` **follows** it: check the ticket's
+-   The first frame for a `room` **follows** it: check the access token's
     `rooms`, then bind this socket to that `client_id` for the room
-    (the roster is the ticket's site's, see `blog_id` above). A
+    (the roster is the access token's site's, see `blog_id` above). A
     later frame with a different `client_id` for the same room is a
     protocol violation: close with `1008` (it could impersonate another
     tab). `client_id` is a positive integer; `room` matches
@@ -400,9 +400,10 @@ Relay → tabs:
     rather than closing for an invalid frame, so a bug in one message
     does not cost the tab its roster.
 
-Keep the rest of the daemon's hygiene: text frames only, a payload cap
-(64 KB is plenty), a ping every 15 seconds with a missed pong closing
-the socket, and a per-socket message budget (200 per 5 seconds).
+The size limits above are the daemon's; the reference relay keeps
+only a payload cap (64 KB) and a ping every 15 seconds, closing a
+socket that misses one. A per-socket message budget (the daemon uses
+200 per 5 seconds) is a sensible extra for a public relay.
 
 ### What a relay does not do
 
@@ -425,8 +426,8 @@ parameter (read the `Sec-WebSocket-Protocol` offer instead, and echo
 `wp-sync`); it names one room per token in `room_name` (read the
 `rooms` list and the `<kind>/*` rule); it checks no `Origin` (add the
 allowlist); and it speaks Yjs, not these frames (an advisory mode is a
-new message handler, the ~150 lines of `relay.mjs`). Set
-`WP_SYNC_WEBSOCKET_TICKET_SECRET` to the same value as its
+new message handler; `relay.mjs` shows the whole of it). Set
+`WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET` to the same value as its
 `VIP_RTC_WS_AUTH_SECRET`.
 
 ## Failure behavior
@@ -501,10 +502,10 @@ uses it to poll sooner and to show presence faster.**
     roster, presence relay, notices to the other followers only, the
     scan's one-announce-per-batch, a dropped follower, permissions and
     the client-id binding, nothing written to storage), and
-    `tests/phpunit/wpWebSocketTicket.php` (ticket mode: the signed
-    ticket's claims and expiry, tampered / foreign / `alg: none`
-    tickets refused, the rooms rule, the route's grants and refusals,
-    the daemon accepting a ticket without a cookie).
+    `tests/phpunit/wpWebSocketAccessToken.php` (access-token mode: the signed
+    access token's claims and expiry, tampered / foreign / `alg: none`
+    access tokens refused, the rooms rule, the route's grants and refusals,
+    the daemon accepting an access token without a cookie).
 -   e2e: `tests/e2e/specs/http-only/collaboration-advisory-channel.spec.ts`
     (two tabs connect over the channel and an edit still propagates;
     idle polling drops to the safety cadence) and, on the daemon lane,
@@ -515,5 +516,5 @@ uses it to poll sooner and to show presence faster.**
     with the example Node relay standing in for the daemon: the config
     runs `examples/advisory-relay/relay.mjs` on port 8790 with a fixed
     test secret, and the spec activates the
-    `tests/e2e/plugins/advisory-relay-ticket.php` fixture, which
+    `tests/e2e/plugins/advisory-relay-access-token.php` fixture, which
     configures that secret and points the socket URL at the relay).

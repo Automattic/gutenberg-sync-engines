@@ -14,7 +14,7 @@ import { test, expect } from '../../config/collaboration-fixtures';
  * The advisory channel over its WebSocket link, relayed by a server that
  * is NOT the plugin's daemon: the example bring-your-own relay
  * (examples/advisory-relay/relay.mjs), which checks each tab's signed
- * ticket with the shared secret and never touches WordPress or its
+ * access token with the shared secret and never touches WordPress or its
  * database. The config runs the relay on port 8790; the fixture plugin
  * activated here configures the same secret on the site and points the
  * socket URL at the relay. Two tabs meet in the relay's roster, an idle
@@ -27,7 +27,7 @@ import { test, expect } from '../../config/collaboration-fixtures';
 const REPO_ROOT = path.resolve( __dirname, '../../../..' );
 const TRANSPORT_OPTION = 'gutenberg_sync_engines_transport';
 const ADVISORY_OPTION = 'gutenberg_sync_engines_advisory_channel';
-const FIXTURE_PLUGIN = 'gutenberg-test-plugin-advisory-relay-ticket';
+const FIXTURE_PLUGIN = 'gutenberg-test-plugin-advisory-relay-access-token';
 const RELAY_URL = 'ws://localhost:8790';
 
 function wpCli( ...args: string[] ): string {
@@ -125,7 +125,7 @@ test.describe( 'Collaboration - advisory channel over a bring-your-own relay', (
 	test.beforeAll( async ( { requestUtils } ) => {
 		// Short polling for this spec (the lane selected websocket), the
 		// websocket link as the advisory channel, and the fixture that
-		// turns ticket mode on and aims the socket URL at the relay.
+		// turns access-token mode on and aims the socket URL at the relay.
 		wpCli( 'option', 'update', TRANSPORT_OPTION, 'http-polling' );
 		wpCli( 'option', 'update', ADVISORY_OPTION, 'websocket-advisory' );
 		await requestUtils.activatePlugin( FIXTURE_PLUGIN );
@@ -146,7 +146,7 @@ test.describe( 'Collaboration - advisory channel over a bring-your-own relay', (
 		await collaborationUtils.teardown();
 	} );
 
-	test( 'two tabs meet in the relay roster on signed tickets, poll on demand, and converge over REST', async ( {
+	test( 'two tabs meet in the relay roster on signed access tokens, poll on demand, and converge over REST', async ( {
 		collaborationUtils,
 		requestUtils,
 		page,
@@ -164,7 +164,7 @@ test.describe( 'Collaboration - advisory channel over a bring-your-own relay', (
 		expect( await socketUrl( page ) ).toBe( RELAY_URL );
 
 		// The relay's roster names both tabs as soon as both sockets are
-		// open: it accepted both tickets without asking WordPress.
+		// open: it accepted both access tokens without asking WordPress.
 		await waitForOpenPeer( page, 30000 );
 		await waitForOpenPeer( page2, 30000 );
 		const state = await advisoryState( page );

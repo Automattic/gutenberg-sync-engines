@@ -26,7 +26,7 @@ import {
  * The WebSocket link of the advisory channel (`channel.ts`): one socket
  * per tab to the plugin's sync daemon (the same daemon and the same
  * one-time token handshake the websocket TRANSPORT uses) — or, in
- * ticket mode, to any relay a host runs that verifies the signed ticket
+ * access-token mode, to any relay a host runs that verifies the signed access token
  * (`examples/advisory-relay/`; the format is in
  * docs/plan/advisory-channel.md). The server relays presence and "go
  * and poll" notices between the tabs in a room. The socket carries no
@@ -105,9 +105,9 @@ function wantsConnection(): boolean {
 }
 
 /**
- * Fetches the handshake credential: a one-time token, or in ticket mode
- * a signed ticket allowing the tab's post room (which is why the room is
- * named; a relay refuses follows for rooms the ticket does not name).
+ * Fetches the handshake credential: a one-time token, or in access-token mode
+ * a signed access token allowing the tab's post room (which is why the room is
+ * named; a relay refuses follows for rooms the access token does not name).
  */
 async function fetchToken(): Promise< string > {
 	const room = getPresenceRoom();

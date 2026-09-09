@@ -1,17 +1,17 @@
 <?php
 /**
- * Tests for WebSocket TICKET mode: with a shared secret configured, the
- * token route mints a signed, expiring ticket naming the user, the site,
+ * Tests for WebSocket ACCESS-TOKEN mode: with a shared secret configured, the
+ * token route mints a signed, expiring access token naming the user, the site,
  * and the rooms the tab may follow; a server verifies it with the secret
  * alone (no cookie, no database read), which is what lets a host run its
- * own relay. The plugin's daemon accepts tickets too.
+ * own relay. The plugin's daemon accepts access tokens too.
  *
  * @package gutenberg-sync-engines
  *
  * @group collaboration
  */
-class Tests_Collaboration_WpWebSocketTicket extends WP_UnitTestCase {
-	const SECRET = 'unit-test-ticket-secret-0123456789abcdef0123456789abcdef';
+class Tests_Collaboration_WpWebSocketAccessToken extends WP_UnitTestCase {
+	const SECRET = 'unit-test-access token-secret-0123456789abcdef0123456789abcdef';
 
 	protected static int $editor_id;
 	protected static int $contributor_id;
@@ -34,11 +34,11 @@ class Tests_Collaboration_WpWebSocketTicket extends WP_UnitTestCase {
 
 	public function set_up() {
 		parent::set_up();
-		add_filter( 'wp_sync_websocket_ticket_secret', array( $this, 'secret' ) );
+		add_filter( 'wp_sync_websocket_access_token_secret', array( $this, 'secret' ) );
 	}
 
 	public function tear_down() {
-		remove_filter( 'wp_sync_websocket_ticket_secret', array( $this, 'secret' ) );
+		remove_filter( 'wp_sync_websocket_access_token_secret', array( $this, 'secret' ) );
 		global $wp_rest_server;
 		$wp_rest_server = null;
 		parent::tear_down();
@@ -57,12 +57,12 @@ class Tests_Collaboration_WpWebSocketTicket extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Builds a ticket by hand, so a test can vary any part of it.
+	 * Builds an access token by hand, so a test can vary any part of it.
 	 *
 	 * @param array       $claims Payload claims.
 	 * @param array|null  $header The header, default HS256.
 	 * @param string|null $secret Signing secret, default the configured one.
-	 * @return string The ticket.
+	 * @return string The access token.
 	 */
 	private function forge( array $claims, ?array $header = null, ?string $secret = null ): string {
 		$header  = self::b64(
@@ -82,17 +82,17 @@ class Tests_Collaboration_WpWebSocketTicket extends WP_UnitTestCase {
 		return array(
 			'user_id' => self::$editor_id,
 			'blog_id' => get_current_blog_id(),
-			'rooms'   => WP_WebSocket_Ticket::grants( $this->room() ),
+			'rooms'   => WP_WebSocket_Access_Token::grants( $this->room() ),
 			'iat'     => $now,
-			'exp'     => $now + WP_WebSocket_Ticket::TTL,
+			'exp'     => $now + WP_WebSocket_Access_Token::TTL,
 		);
 	}
 
-	public function test_ticket_mode_is_off_without_a_secret() {
-		remove_filter( 'wp_sync_websocket_ticket_secret', array( $this, 'secret' ) );
+	public function test_access_token_mode_is_off_without_a_secret() {
+		remove_filter( 'wp_sync_websocket_access_token_secret', array( $this, 'secret' ) );
 
-		$this->assertFalse( WP_WebSocket_Ticket::is_enabled() );
-		$refused = WP_WebSocket_Ticket::verify( $this->forge( $this->claims( time() ) ) );
+		$this->assertFalse( WP_WebSocket_Access_Token::is_enabled() );
+		$refused = WP_WebSocket_Access_Token::verify( $this->forge( $this->claims( time() ) ) );
 		$this->assertWPError( $refused );
 
 		// The route keeps minting one-time tokens (hex, consumed once).
@@ -101,17 +101,17 @@ class Tests_Collaboration_WpWebSocketTicket extends WP_UnitTestCase {
 		$this->assertSame( 200, $response->get_status() );
 		$token = $response->get_data()['token'];
 		$this->assertTrue( ctype_xdigit( $token ) );
-		$this->assertFalse( WP_WebSocket_Ticket::looks_like_ticket( $token ) );
+		$this->assertFalse( WP_WebSocket_Access_Token::looks_like_access_token( $token ) );
 		$this->assertSame( self::$editor_id, WP_WebSocket_Token_Controller::consume_token( $token ) );
 	}
 
-	public function test_mints_a_signed_expiring_ticket_naming_the_user_the_site_and_the_rooms() {
-		$now    = 1700000000;
-		$rooms  = WP_WebSocket_Ticket::grants( $this->room() );
-		$ticket = WP_WebSocket_Ticket::mint( self::$editor_id, $rooms, $now );
+	public function test_mints_a_signed_expiring_access_token_naming_the_user_the_site_and_the_rooms() {
+		$now          = 1700000000;
+		$rooms        = WP_WebSocket_Access_Token::grants( $this->room() );
+		$access_token = WP_WebSocket_Access_Token::mint( self::$editor_id, $rooms, $now );
 
-		$this->assertTrue( WP_WebSocket_Ticket::looks_like_ticket( $ticket ) );
-		list( $header, $payload ) = explode( '.', $ticket );
+		$this->assertTrue( WP_WebSocket_Access_Token::looks_like_access_token( $access_token ) );
+		list( $header, $payload ) = explode( '.', $access_token );
 		$this->assertSame(
 			array(
 				'alg' => 'HS256',
@@ -131,21 +131,21 @@ class Tests_Collaboration_WpWebSocketTicket extends WP_UnitTestCase {
 		);
 		// Byte-identical to a hand-built HS256 JWT: any JWT library
 		// verifies it.
-		$this->assertSame( $this->forge( $this->claims( $now ) ), $ticket );
+		$this->assertSame( $this->forge( $this->claims( $now ) ), $access_token );
 
-		$claims = WP_WebSocket_Ticket::verify( $ticket, $now + 60 );
+		$claims = WP_WebSocket_Access_Token::verify( $access_token, $now + 60 );
 		$this->assertSame( self::$editor_id, $claims['user_id'] );
 		$this->assertSame( $rooms, $claims['rooms'] );
 		$this->assertSame( $now + 120, $claims['exp'] );
 
 		// Expiry, with the clock-skew leeway.
-		$this->assertIsArray( WP_WebSocket_Ticket::verify( $ticket, $now + 120 + WP_WebSocket_Ticket::LEEWAY - 1 ) );
-		$expired = WP_WebSocket_Ticket::verify( $ticket, $now + 120 + WP_WebSocket_Ticket::LEEWAY );
+		$this->assertIsArray( WP_WebSocket_Access_Token::verify( $access_token, $now + 120 + WP_WebSocket_Access_Token::LEEWAY - 1 ) );
+		$expired = WP_WebSocket_Access_Token::verify( $access_token, $now + 120 + WP_WebSocket_Access_Token::LEEWAY );
 		$this->assertWPError( $expired );
-		$this->assertSame( 'websocket_invalid_ticket', $expired->get_error_code() );
+		$this->assertSame( 'websocket_invalid_access_token', $expired->get_error_code() );
 	}
 
-	public function test_refuses_tampered_foreign_and_malformed_tickets() {
+	public function test_refuses_tampered_foreign_and_malformed_access_tokens() {
 		$now    = 1700000000;
 		$claims = $this->claims( $now );
 
@@ -162,54 +162,54 @@ class Tests_Collaboration_WpWebSocketTicket extends WP_UnitTestCase {
 			'empty'              => '',
 			'bad base64 payload' => explode( '.', $this->forge( $claims ) )[0] . '.!!!.sig',
 		);
-		foreach ( $cases as $label => $ticket ) {
-			$result = WP_WebSocket_Ticket::verify( $ticket, $now );
+		foreach ( $cases as $label => $access_token ) {
+			$result = WP_WebSocket_Access_Token::verify( $access_token, $now );
 			$this->assertWPError( $result, $label );
-			$this->assertSame( 'websocket_invalid_ticket', $result->get_error_code(), $label );
+			$this->assertSame( 'websocket_invalid_access_token', $result->get_error_code(), $label );
 		}
 
 		// A single changed character in the payload breaks the signature.
 		$good                                 = $this->forge( $claims );
 		list( $header, $payload, $signature ) = explode( '.', $good );
 		$flipped                              = substr( $payload, 0, 5 ) . ( 'A' === $payload[5] ? 'B' : 'A' ) . substr( $payload, 6 );
-		$this->assertWPError( WP_WebSocket_Ticket::verify( $header . '.' . $flipped . '.' . $signature, $now ) );
-		$this->assertIsArray( WP_WebSocket_Ticket::verify( $good, $now ) );
+		$this->assertWPError( WP_WebSocket_Access_Token::verify( $header . '.' . $flipped . '.' . $signature, $now ) );
+		$this->assertIsArray( WP_WebSocket_Access_Token::verify( $good, $now ) );
 	}
 
 	public function test_the_rooms_claim_names_the_post_room_and_the_collection_rooms() {
-		$rooms = WP_WebSocket_Ticket::grants( $this->room() );
+		$rooms = WP_WebSocket_Access_Token::grants( $this->room() );
 		$this->assertSame( array( $this->room(), 'postType/*', 'taxonomy/*', 'root/*' ), $rooms );
-		$this->assertSame( array( 'postType/*', 'taxonomy/*', 'root/*' ), WP_WebSocket_Ticket::grants( null ) );
+		$this->assertSame( array( 'postType/*', 'taxonomy/*', 'root/*' ), WP_WebSocket_Access_Token::grants( null ) );
 
 		// The rule a relay implements: exact, or `<kind>/*` for a
 		// collection room (no object id) of that kind.
-		$this->assertTrue( WP_WebSocket_Ticket::allows( $rooms, $this->room() ) );
-		$this->assertTrue( WP_WebSocket_Ticket::allows( $rooms, 'taxonomy/category' ) );
-		$this->assertTrue( WP_WebSocket_Ticket::allows( $rooms, 'root/comment' ) );
-		$this->assertTrue( WP_WebSocket_Ticket::allows( $rooms, 'postType/page' ) );
-		$this->assertFalse( WP_WebSocket_Ticket::allows( $rooms, 'postType/post:' . ( self::$post_id + 1 ) ), 'Another post' );
-		$this->assertFalse( WP_WebSocket_Ticket::allows( $rooms, 'taxonomy/category:5' ), 'A term room is not a collection' );
-		$this->assertFalse( WP_WebSocket_Ticket::allows( $rooms, 'widget/sidebar' ), 'An unlisted kind' );
-		$this->assertFalse( WP_WebSocket_Ticket::allows( array(), 'taxonomy/category' ) );
+		$this->assertTrue( WP_WebSocket_Access_Token::allows( $rooms, $this->room() ) );
+		$this->assertTrue( WP_WebSocket_Access_Token::allows( $rooms, 'taxonomy/category' ) );
+		$this->assertTrue( WP_WebSocket_Access_Token::allows( $rooms, 'root/comment' ) );
+		$this->assertTrue( WP_WebSocket_Access_Token::allows( $rooms, 'postType/page' ) );
+		$this->assertFalse( WP_WebSocket_Access_Token::allows( $rooms, 'postType/post:' . ( self::$post_id + 1 ) ), 'Another post' );
+		$this->assertFalse( WP_WebSocket_Access_Token::allows( $rooms, 'taxonomy/category:5' ), 'A term room is not a collection' );
+		$this->assertFalse( WP_WebSocket_Access_Token::allows( $rooms, 'widget/sidebar' ), 'An unlisted kind' );
+		$this->assertFalse( WP_WebSocket_Access_Token::allows( array(), 'taxonomy/category' ) );
 	}
 
-	public function test_the_token_route_mints_a_ticket_allowing_the_tabs_post_room() {
+	public function test_the_token_route_mints_a_access_token_allowing_the_tabs_post_room() {
 		wp_set_current_user( self::$editor_id );
 		$response = $this->dispatch( array( 'room' => $this->room() ) );
 		$this->assertSame( 200, $response->get_status() );
 		$data = $response->get_data();
-		$this->assertSame( WP_WebSocket_Ticket::TTL, $data['expires_in'] );
-		$claims = WP_WebSocket_Ticket::verify( $data['token'] );
+		$this->assertSame( WP_WebSocket_Access_Token::TTL, $data['expires_in'] );
+		$claims = WP_WebSocket_Access_Token::verify( $data['token'] );
 		$this->assertIsArray( $claims );
 		$this->assertSame( self::$editor_id, $claims['user_id'] );
-		$this->assertSame( WP_WebSocket_Ticket::grants( $this->room() ), $claims['rooms'] );
-		// Nothing was stored: a ticket is verified, never looked up.
+		$this->assertSame( WP_WebSocket_Access_Token::grants( $this->room() ), $claims['rooms'] );
+		// Nothing was stored: an access token is verified, never looked up.
 		$this->assertFalse( get_transient( WP_WebSocket_Token_Controller::TOKEN_TRANSIENT_PREFIX . $data['token'] ) );
 
 		// Without a room (the websocket transport's request): collection
 		// grants only.
-		$claims = WP_WebSocket_Ticket::verify( $this->dispatch( array() )->get_data()['token'] );
-		$this->assertSame( WP_WebSocket_Ticket::grants( null ), $claims['rooms'] );
+		$claims = WP_WebSocket_Access_Token::verify( $this->dispatch( array() )->get_data()['token'] );
+		$this->assertSame( WP_WebSocket_Access_Token::grants( null ), $claims['rooms'] );
 
 		// A room the user may not sync is refused, not silently dropped.
 		wp_set_current_user( self::$contributor_id );
@@ -220,61 +220,61 @@ class Tests_Collaboration_WpWebSocketTicket extends WP_UnitTestCase {
 			$this->assertSame( 403, $this->dispatch( array( 'room' => $room ) )->get_status(), $room );
 		}
 
-		// No `edit_posts` at all: no ticket of any kind.
+		// No `edit_posts` at all: no access token of any kind.
 		wp_set_current_user( self::$subscriber_id );
 		$this->assertSame( 403, $this->dispatch( array() )->get_status() );
 	}
 
-	public function test_the_daemon_accepts_a_ticket_without_a_cookie_and_keeps_the_socket_through_revalidation() {
+	public function test_the_daemon_accepts_a_access_token_without_a_cookie_and_keeps_the_socket_through_revalidation() {
 		$storage = new WP_Sync_Table_Storage();
 		$server  = new WP_WebSocket_Sync_Server( new WP_HTTP_Polling_Sync_Server( $storage ), '127.0.0.1', 8797 );
 		$auth    = new ReflectionMethod( WP_WebSocket_Sync_Server::class, 'authenticate_handshake' );
 		$auth->setAccessible( true );
-		$origin  = wp_parse_url( home_url() );
-		$origin  = $origin['scheme'] . '://' . $origin['host'] . ( isset( $origin['port'] ) ? ':' . $origin['port'] : '' );
-		$request = static function ( string $ticket, string $origin ) {
+		$origin       = wp_parse_url( home_url() );
+		$origin       = $origin['scheme'] . '://' . $origin['host'] . ( isset( $origin['port'] ) ? ':' . $origin['port'] : '' );
+		$request      = static function ( string $access_token, string $origin ) {
 			return array(
 				'headers' => array(
 					'origin'                 => $origin,
-					'sec-websocket-protocol' => 'wp-sync, wp-sync-token.' . $ticket,
+					'sec-websocket-protocol' => 'wp-sync, wp-sync-token.' . $access_token,
 				),
 				'method'  => 'GET',
 				'path'    => '/',
 				'query'   => array(),
 			);
 		};
-		$ticket  = WP_WebSocket_Ticket::mint( self::$editor_id, WP_WebSocket_Ticket::grants( $this->room() ) );
+		$access_token = WP_WebSocket_Access_Token::mint( self::$editor_id, WP_WebSocket_Access_Token::grants( $this->room() ) );
 
-		$accepted = $auth->invoke( $server, $request( $ticket, $origin ) );
+		$accepted = $auth->invoke( $server, $request( $access_token, $origin ) );
 		$this->assertSame(
 			array(
-				'cookie'  => '',
-				'ticket'  => true,
-				'user_id' => self::$editor_id,
+				'cookie'       => '',
+				'access_token' => true,
+				'user_id'      => self::$editor_id,
 			),
 			$accepted
 		);
 
-		// The Origin allowlist still stands in front of the ticket.
-		$this->assertWPError( $auth->invoke( $server, $request( $ticket, 'https://evil.example' ) ) );
+		// The Origin allowlist still stands in front of the access token.
+		$this->assertWPError( $auth->invoke( $server, $request( $access_token, 'https://evil.example' ) ) );
 
-		$tampered = $auth->invoke( $server, $request( $ticket . 'x', $origin ) );
+		$tampered = $auth->invoke( $server, $request( $access_token . 'x', $origin ) );
 		$this->assertWPError( $tampered );
-		$this->assertSame( 'websocket_invalid_ticket', $tampered->get_error_code() );
+		$this->assertSame( 'websocket_invalid_access_token', $tampered->get_error_code() );
 
 		$unknown = $auth->invoke( $server, $request( $this->forge( array_merge( $this->claims( time() ), array( 'user_id' => 987654321 ) ) ), $origin ) );
 		$this->assertWPError( $unknown );
-		$this->assertSame( 'websocket_invalid_ticket', $unknown->get_error_code() );
+		$this->assertSame( 'websocket_invalid_access_token', $unknown->get_error_code() );
 
-		// Ticket mode off: a ticket is just a token nobody minted, and the
+		// Access-token mode off: an access token is just a token nobody minted, and the
 		// cookie path (which needs a cookie) refuses.
-		remove_filter( 'wp_sync_websocket_ticket_secret', array( $this, 'secret' ) );
-		$this->assertWPError( $auth->invoke( $server, $request( $ticket, $origin ) ) );
-		add_filter( 'wp_sync_websocket_ticket_secret', array( $this, 'secret' ) );
+		remove_filter( 'wp_sync_websocket_access_token_secret', array( $this, 'secret' ) );
+		$this->assertWPError( $auth->invoke( $server, $request( $access_token, $origin ) ) );
+		add_filter( 'wp_sync_websocket_access_token_secret', array( $this, 'secret' ) );
 
-		// The sweep: a ticket socket with no cookie stays open while its
+		// The sweep: an access token socket with no cookie stays open while its
 		// user keeps the capability; a cookie socket without a cookie,
-		// or a ticket socket whose user lost it, is closed.
+		// or an access token socket whose user lost it, is closed.
 		$connections = array();
 		$clients     = new ReflectionProperty( WP_WebSocket_Sync_Server::class, 'clients' );
 		$clients->setAccessible( true );
@@ -284,7 +284,7 @@ class Tests_Collaboration_WpWebSocketTicket extends WP_UnitTestCase {
 				1 => array( self::$editor_id, true ),
 				2 => array( self::$editor_id, false ),
 				3 => array( self::$subscriber_id, true ),
-			) as $key => list( $user_id, $by_ticket )
+			) as $key => list( $user_id, $by_access_token )
 		) {
 			$connections[ $key ] = $this->recording_connection();
 			$entries[ $key ]     = array(
@@ -297,7 +297,7 @@ class Tests_Collaboration_WpWebSocketTicket extends WP_UnitTestCase {
 				'last_seen'     => microtime( true ),
 				'message_times' => array(),
 				'rooms'         => array(),
-				'ticket'        => $by_ticket,
+				'access_token'  => $by_access_token,
 				'user_id'       => $user_id,
 			);
 		}
@@ -307,9 +307,9 @@ class Tests_Collaboration_WpWebSocketTicket extends WP_UnitTestCase {
 		$revalidate->setAccessible( true );
 		$revalidate->invoke( $server );
 
-		$this->assertFalse( $connections[1]->closed, 'A ticket socket stays open without a cookie' );
+		$this->assertFalse( $connections[1]->closed, 'An access token socket stays open without a cookie' );
 		$this->assertTrue( $connections[2]->closed, 'A cookie socket needs its cookie' );
-		$this->assertTrue( $connections[3]->closed, 'A ticket socket whose user lost edit_posts is closed' );
+		$this->assertTrue( $connections[3]->closed, 'An access token socket whose user lost edit_posts is closed' );
 	}
 
 	/**
