@@ -12,6 +12,12 @@ release, which the release script generates from the commit history.
 
 ### Changed
 
+-   The polling interval now defaults to 5 seconds instead of 1, and 0
+    (the first release's "built-in cadence") means that default. It only
+    applies while a peer is out of the advisory channel's reach: with
+    every peer reachable, tabs poll on demand. Sites that want the old
+    cadence set the interval to 1 on Settings → Collaboration.
+
 -   Collaboration rooms are now stored in two plugin-owned database
     tables, `{prefix}sync_updates` and `{prefix}sync_room_meta`, instead
     of as post meta on hidden `wp_sync_storage` posts, so collaboration
@@ -43,11 +49,16 @@ release, which the release script generates from the commit history.
     `gutenberg_sync_engines_advisory_max_peers`; console:
     `wpSync.advisory()`. See `docs/plan/advisory-channel.md`.
 
--   Settings → Collaboration: the "Transport" select (short-polling,
-    long-polling, WebSocket; short-polling is always the fallback) gains
-    an "Advisory channel" select beside it: WebRTC between editor tabs
-    (`webrtc-advisory`, the default), WebSocket to the sync daemon
-    (`websocket-advisory`), or off.
+-   Settings → Collaboration: one "Transport" list replaces the transport
+    select. Its entries are polling, polling with a WebRTC advisory
+    channel (the default), polling with a WebSocket advisory channel,
+    long polling, and WebSocket; each stands for a transport and an
+    advisory channel, so the pairs that would conflict (a WebSocket
+    transport with a WebSocket advisory channel) cannot be chosen. The
+    two stay separate options for WP-CLI and scripts
+    (`gutenberg_sync_engines_transport`,
+    `gutenberg_sync_engines_advisory_channel`: `webrtc-advisory`,
+    `websocket-advisory`, or empty for off).
 
 -   A host can run its own WebSocket relay (Node, Go, a hosted
     service) for the advisory channel instead of the plugin's PHP
@@ -57,11 +68,13 @@ release, which the release script generates from the commit history.
     route hands each editor tab a signed, two-minute access token (a JSON Web
     Token, HS256) naming the user, the site, and the rooms the tab may
     follow, which the relay checks with the shared secret alone. The
-    plugin's daemon accepts access tokens too. A new "WebSocket URL"
-    field on Settings → Collaboration says where tabs connect, for the
-    WebSocket transport and the WebSocket advisory channel alike (empty
-    keeps the host and port constants; the `wp_sync_websocket_url`
-    filter still wins). `examples/advisory-relay/` is
+    plugin's daemon accepts access tokens too. Two server URL fields on
+    Settings → Collaboration, each with a "Test" button that connects
+    from the browser, say where tabs connect: the WebSocket transport
+    server (the sync daemon; empty keeps the host and port constants,
+    and the `wp_sync_websocket_url` filter still wins) and the WebSocket
+    advisory server (a relay of your own; empty means the sync daemon).
+    `examples/advisory-relay/` is
     a reference relay to run or port; `docs/plan/advisory-channel.md`
     documents the access token and the message formats
     ([#92](https://github.com/Automattic/gutenberg-sync-engines/issues/92)).

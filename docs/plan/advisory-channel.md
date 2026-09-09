@@ -89,10 +89,11 @@ enabled, the advisory channel) until it is back.
 
 ## Plugin settings
 
-Two independent settings:
+Two stored options, chosen through one list:
 
-1. Transport: short-polling (default), long-polling, or WebSocket. The
-   default short-polling transport is always available as a fallback.
+1. Transport: `http-polling` (default), `http-long-polling`, or
+   `websocket`. The default short-polling transport is always available
+   as a fallback.
 2. Advisory channel: `webrtc-advisory` (default), `websocket-advisory`,
    or off. An advisory channel reduces polling by signaling to peers when
    updates are available. It serves whenever short polling does, so under
@@ -101,10 +102,15 @@ Two independent settings:
    (`wp collaboration sync-server`), or a host's own relay ("Bring your
    own relay" below); a tab that cannot open its socket keeps the timer
    cadence, exactly like a tab whose WebRTC failed.
-3. WebSocket URL: where tabs connect for the WebSocket transport and the
-   WebSocket advisory channel. Empty means the daemon on the
-   `WP_SYNC_WEBSOCKET_HOST`/`PORT` constants; the `wp_sync_websocket_url`
-   filter overrides it for hosts that configure in code.
+
+The screen shows them as one "Transport" list of five entries (see
+"What exists now"), because the two options can conflict: a WebSocket
+transport with a WebSocket advisory channel looks configured and does
+nothing. Beside them: the WebSocket transport server URL (the daemon;
+empty means the `WP_SYNC_WEBSOCKET_HOST`/`PORT` constants, and the
+`wp_sync_websocket_url` filter overrides it for hosts that configure in
+code), the WebSocket advisory server URL (a relay; empty means the
+daemon), and the polling interval (default 5 seconds).
 
 ## The rules, stated plainly
 
@@ -261,10 +267,16 @@ Client:
     `sendsWhileAlone` are exempt), the announce-after-send, the base
     presence overlay (per client, on top of the poll response's copy),
     and the long-poll disable hook.
--   Settings → Collaboration: a "Transport" select (short-polling,
-    long-polling, WebSocket) and an "Advisory channel" select (WebRTC
-    between tabs, WebSocket to the sync daemon, or off), independent of
-    each other.
+-   Settings → Collaboration: one "Transport" list whose entries are
+    (transport, advisory channel) pairs — polling; polling with a
+    WebRTC advisory channel (default); polling with a WebSocket advisory
+    channel; long polling; WebSocket — so the conflicting pairs cannot
+    be chosen. Long polling and WebSocket store WebRTC as the fallback
+    channel. The stored options stay `gutenberg_sync_engines_transport`
+    and `gutenberg_sync_engines_advisory_channel`. Two server URL fields
+    (transport server, advisory server) with "Test" buttons show only
+    for the entries that need them; the polling interval only for the
+    polling entries.
 -   `src/providers/websocket/websocket-manager.ts`: the websocket
     transport as a preferred transport. While its socket is open it
     moves everything; whenever it is not (token refused, daemon
@@ -291,8 +303,7 @@ section is everything a relay author needs, in any language.
 The websocket link does not have to end at the plugin's PHP daemon. A
 host that cannot run a long-lived PHP process, or that already runs
 WebSocket servers in Node or Go, can enter a relay of its own as the
-WebSocket URL on the settings screen (or through the
-`wp_sync_websocket_url` filter). The relay is small because the lane is small: it
+"WebSocket advisory server" on the settings screen. The relay is small because the lane is small: it
 tells the tabs in a room who is present and passes "go and poll"
 notices between them. It never sees content, writes nothing, and never
 calls WordPress — the one thing it must do on its own is decide whether

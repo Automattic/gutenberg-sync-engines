@@ -54,7 +54,7 @@ item 3) — that engine is allowed to declare its own transport story,
 including "manual sync with long delays," without penalty.
 
 The short-polling cadence is tunable: the "Polling interval" field on
-Settings → Collaboration slows active-tab polling down to 25 seconds
+Settings → Collaboration (default 5 seconds) slows active-tab polling down to 25 seconds
 for hosts that want fewer requests (see
 `src/providers/http-polling/README.md` for the exact semantics).
 
@@ -63,8 +63,10 @@ Two websocket specifics. The one-time auth token rides the
 because query strings end up in server and proxy access logs. And
 plaintext `ws://` must never leave a dev box; terminating TLS in front
 of the daemon is the operator's job, and the `wss://` address goes in
-the "WebSocket URL" field on Settings → Collaboration (or the
-`wp_sync_websocket_url` filter, which wins).
+the "WebSocket transport server" field on Settings → Collaboration (or
+the `wp_sync_websocket_url` filter, which wins). The advisory channel
+has its own "WebSocket advisory server" field, for a relay; empty means
+the daemon.
 
 The advisory channel's websocket link can end at a server that is not
 the plugin's daemon. With a `WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET`

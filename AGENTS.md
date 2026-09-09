@@ -66,9 +66,17 @@ This plugin provides:
   the token route mints a signed two-minute access token (JWT HS256, claims
   `user_id`/`blog_id`/`rooms`/`iat`/`exp`, `WP_WebSocket_Access_Token`)
   that a relay verifies with the secret alone; the daemon accepts
-  access tokens too. The relay's address goes in the "WebSocket URL"
-  setting (`gutenberg_sync_engines_websocket_url`; empty = the
-  HOST/PORT constants; the `wp_sync_websocket_url` filter wins). The
+  access tokens too. The relay's address goes in the "WebSocket
+  advisory server" setting (`gutenberg_sync_engines_advisory_websocket_url`;
+  empty = the transport server, `gutenberg_sync_engines_websocket_url`,
+  itself empty = the HOST/PORT constants; the `wp_sync_websocket_url`
+  filter wins for the transport). The screen shows ONE "Transport"
+  radio list of (transport, advisory) pairs — the form field
+  `gutenberg_sync_engines_delivery` is never stored; its sanitize
+  callback writes the two real options, which WP-CLI, the fuzzer, and
+  the e2e specs keep setting directly. The polling interval defaults
+  to 5 s (0 means the default); e2e global setup pins the tests site
+  to 1 s so the suite's timing is unchanged. The
   DEV wp-env config defines a development secret
   (`wp-env-development-secret-not-for-production`), so the dev daemon
   and a local relay run in access-token mode out of the box; the TESTS

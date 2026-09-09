@@ -46,7 +46,9 @@ Storage (where a room's updates live):
   plugin (`uninstall.php`) or running `wp collaboration storage drop`
   removes them. `wp collaboration storage status` shows what a site has.
 
-The active engine and transport are chosen on the plugin's **Settings →
+The active engine, and how editors get each other's changes (polling,
+polling with an advisory channel over WebRTC or a WebSocket, long
+polling, or WebSocket), are chosen on the plugin's **Settings →
 Collaboration** screen (or via `wp_sync_engine` / the
 `WP_COLLABORATION_TRANSPORT` config value).
 

@@ -48,7 +48,7 @@
     "release": "node bin/release.mjs",
     "rtc:http": "node ./tests/e2e/bin/rtc-dev.mjs --mode=http",
     "rtc:ws": "node ./tests/e2e/bin/rtc-dev.mjs --mode=websockets",
-    "rtc:ws:advisory": "",
+    "rtc:ws:advisory": "WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET=wp-env-development-secret-not-for-production node ./examples/advisory-relay/relay.mjs",
     "start": "wp-scripts start",
     "test:e2e": "playwright test --config tests/e2e/playwright.config.ts",
     "test:e2e:websocket": "playwright test --config tests/e2e/playwright.rtc-websocket.config.ts",

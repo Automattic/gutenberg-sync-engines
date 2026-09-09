@@ -92,6 +92,18 @@ async function globalSetup( config: FullConfig ) {
 		} );
 	}
 
+	/*
+	 * The suite's timing assumes the 1-second polling cadence the client
+	 * used before the setting's default became 5 seconds. Pin it: the
+	 * specs certify convergence mechanics and the advisory channel's
+	 * on-demand polling, not the shipped default cadence.
+	 */
+	await requestUtils.rest( {
+		method: 'POST',
+		path: '/wp/v2/settings',
+		data: { gutenberg_sync_engines_polling_interval: 1 },
+	} );
+
 	// Reset the environment to a clean slate before the tests run.
 	await Promise.all( [
 		requestUtils.activateTheme( 'twentytwentyone' ),

@@ -34,12 +34,11 @@ one).
     tokens instead of one-time tokens, and the plugin's own daemon accepts
     them too.
 
-    Then, under Settings → Collaboration, enter the relay's address
-    (`wss://relay.example.com`) as the WebSocket URL and choose "WebSocket
-    to the sync daemon" as the advisory channel. The transport stays short
-    polling. (Hosts that keep configuration in code can set the URL with
-    the `wp_sync_websocket_url` filter instead; the screen then shows it
-    read-only.)
+    Then, under Settings → Collaboration, choose "Polling with a WebSocket
+    advisory channel" and enter the relay's address
+    (`wss://relay.example.com`) as the WebSocket advisory server. The
+    "Test" button beside it connects from your browser and says whether
+    the relay accepted the access token.
 
 3. Run the relay with the same secret:
 
@@ -64,4 +63,8 @@ never see each other even when their posts share an id.
 The websocket e2e suite runs this relay against the tests site with a
 fixed test secret (`npm run test:e2e:websocket -- advisory-relay`). To
 try it by hand against the dev site, start the relay with
-`npm run rtc:ws:advisory`.
+`npm run rtc:ws:advisory` (it runs with the dev site's secret from
+`.wp-env.json`), then under Settings → Collaboration choose "Polling
+with a WebSocket advisory channel" and enter `ws://localhost:8790` as
+the WebSocket advisory server. The "Test" button beside the field
+confirms the connection.

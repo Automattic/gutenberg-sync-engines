@@ -316,10 +316,12 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 				'nonce'         => wp_create_nonce( 'wp_rest' ),
 			);
 			if ( self::CHANNEL_WEBSOCKET === $channel ) {
-				// The same daemon and URL the websocket transport announces
-				// (`wp_sync_websocket_url` filters it), whichever transport
-				// the site selected: the daemon serves advisory sockets too.
-				$settings['socketUrl'] = class_exists( 'WP_WebSocket_Sync_Transport' ) ? WP_WebSocket_Sync_Transport::get_socket_url() : '';
+				// The "WebSocket advisory server" setting, else the same
+				// daemon and URL the websocket transport announces: the
+				// daemon serves advisory sockets too.
+				$settings['socketUrl'] = class_exists( 'Gutenberg_Sync_Engines_Settings' )
+					? Gutenberg_Sync_Engines_Settings::advisory_websocket_url()
+					: ( class_exists( 'WP_WebSocket_Sync_Transport' ) ? WP_WebSocket_Sync_Transport::get_socket_url() : '' );
 			} else {
 				$settings['iceServers'] = self::ice_servers();
 				$settings['maxPeers']   = max( 1, $max_peers );
