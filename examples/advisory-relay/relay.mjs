@@ -192,11 +192,25 @@ function refuse( socket, status, text ) {
 }
 
 /**
- * Per room, the connections following it.
+ * Per room, the connections following it — keyed by SITE and room, so
+ * one relay (and one secret) can serve several WordPress sites without
+ * their tabs meeting: room names alone (`postType/post:12`) are not
+ * site-qualified, and the site comes from the ticket's `blog_id`.
  *
  * @type {Map<string, Set<Follower>>}
  */
 const rooms = new Map();
+
+/**
+ * The roster key for a site's room.
+ *
+ * @param {number} blogId The site, from the ticket.
+ * @param {string} room   The room.
+ * @return {string} The key.
+ */
+function scope( blogId, room ) {
+	return `${ blogId }/${ room }`;
+}
 
 /**
  * Every open connection.
@@ -210,12 +224,13 @@ const followers = new Set();
  */
 class Follower {
 	/**
-	 * @param {import('ws').WebSocket}             ws     The socket.
-	 * @param {{user_id: number, rooms: string[]}} claims The ticket's claims.
+	 * @param {import('ws').WebSocket}                              ws     The socket.
+	 * @param {{user_id: number, blog_id: number, rooms: string[]}} claims The ticket's claims.
 	 */
 	constructor( ws, claims ) {
 		this.ws = ws;
 		this.userId = claims.user_id;
+		this.blogId = claims.blog_id;
 		this.grants = claims.rooms;
 		/** @type {Map<string, {clientId: number, token: string, presence: unknown}>} */
 		this.follows = new Map();
@@ -247,10 +262,11 @@ class Follower {
  * Sends a room's roster — every follower's client id, presence token,
  * and latest presence — to each of its followers.
  *
- * @param {string} room The room.
+ * @param {number} blogId The site.
+ * @param {string} room   The room.
  */
-function sendRoster( room ) {
-	const roomFollowers = rooms.get( room );
+function sendRoster( blogId, room ) {
+	const roomFollowers = rooms.get( scope( blogId, room ) );
 	if ( ! roomFollowers ) {
 		return;
 	}
@@ -274,11 +290,11 @@ function sendRoster( room ) {
  *
  * @param {string}   room      The room whose followers are told.
  * @param {string}   announced The room the notice names (or `*`).
- * @param {Follower} sender    The follower to skip.
+ * @param {Follower} sender    The follower to skip (its site scopes the room).
  */
 function sendAnnounce( room, announced, sender ) {
 	const frame = { event: 'announce', room: announced, type: 'advisory' };
-	for ( const follower of rooms.get( room ) ?? [] ) {
+	for ( const follower of rooms.get( scope( sender.blogId, room ) ) ?? [] ) {
 		if ( follower !== sender ) {
 			follower.send( frame );
 		}
@@ -383,10 +399,11 @@ function handleMessage( follower, message ) {
 		}
 		follow = { clientId, token: presenceToken ?? '', presence: null };
 		follower.follows.set( room, follow );
-		if ( ! rooms.has( room ) ) {
-			rooms.set( room, new Set() );
+		const key = scope( follower.blogId, room );
+		if ( ! rooms.has( key ) ) {
+			rooms.set( key, new Set() );
 		}
-		rooms.get( room ).add( follower );
+		rooms.get( key ).add( follower );
 		rosterChanged = true;
 	} else if ( follow.clientId !== clientId ) {
 		// One client id per socket and room: a different id could
@@ -404,7 +421,7 @@ function handleMessage( follower, message ) {
 		rosterChanged = true;
 	}
 	if ( rosterChanged ) {
-		sendRoster( room );
+		sendRoster( follower.blogId, room );
 	}
 	if ( undefined !== announce ) {
 		sendAnnounce( room, announce, follower );
@@ -419,15 +436,16 @@ function handleMessage( follower, message ) {
 function handleClose( follower ) {
 	followers.delete( follower );
 	for ( const room of follower.follows.keys() ) {
-		const roomFollowers = rooms.get( room );
+		const key = scope( follower.blogId, room );
+		const roomFollowers = rooms.get( key );
 		if ( ! roomFollowers ) {
 			continue;
 		}
 		roomFollowers.delete( follower );
 		if ( 0 === roomFollowers.size ) {
-			rooms.delete( room );
+			rooms.delete( key );
 		} else {
-			sendRoster( room );
+			sendRoster( follower.blogId, room );
 		}
 	}
 	follower.follows.clear();

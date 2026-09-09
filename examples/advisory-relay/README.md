@@ -53,6 +53,12 @@ Environment: `WP_SYNC_WEBSOCKET_TICKET_SECRET` (required),
 `ALLOWED_ORIGINS` (required, comma-separated), `PORT` (8790), `HOST`
 (0.0.0.0), `BLOG_ID` (optional; refuse tickets for any other site).
 
+One relay can serve several WordPress sites (a multisite network, or
+separate installs sharing the secret): rosters are kept per site and
+room, using the site id in each ticket, so tabs from different sites
+never see each other even when their posts share an id. List every
+site's origin in `ALLOWED_ORIGINS`.
+
 ## Trying it locally
 
 The websocket e2e suite runs this relay against the tests site with a
