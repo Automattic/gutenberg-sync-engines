@@ -303,13 +303,13 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 					'transport'   => 'http-long-polling',
 					'advisory'    => self::ADVISORY_WEBRTC,
 					'label'       => __( 'Long polling', 'gutenberg-sync-engines' ),
-					'description' => __( 'The server holds polling requests open until changes are delivered.', 'gutenberg-sync-engines' ),
+					'description' => __( 'The server holds polling requests open until changes are delivered. The client falls back to the default polling transport on failure.', 'gutenberg-sync-engines' ),
 				),
 				self::DELIVERY_WEBSOCKET         => array(
 					'transport'   => 'websocket',
 					'advisory'    => self::ADVISORY_WEBRTC,
 					'label'       => __( 'WebSocket', 'gutenberg-sync-engines' ),
-					'description' => __( 'Changes are exchanged over a persistent socket connection to WordPress (the sync daemon, wp collaboration sync-server).', 'gutenberg-sync-engines' ),
+					'description' => __( 'Changes are exchanged over a persistent socket connection to WordPress (the sync daemon, wp collaboration sync-server). The client falls back to the default polling transport on failure.', 'gutenberg-sync-engines' ),
 				),
 			);
 		}
@@ -556,10 +556,6 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				);
 			}
 			echo '</fieldset>';
-			printf(
-				'<p class="description">%s</p>',
-				esc_html__( 'With long polling or WebSocket, an editor that cannot connect falls back to polling with a WebRTC advisory channel until it can.', 'gutenberg-sync-engines' )
-			);
 		}
 
 		/**
@@ -575,7 +571,10 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				esc_attr( self::POLLING_INTERVAL_OPTION ),
 				(int) self::polling_interval(),
 				esc_html__( 'seconds', 'gutenberg-sync-engines' ),
-				esc_html__( 'How often each editor asks the server for changes while collaborating, unless an advisory channel reaches every peer (then it polls only when told). A larger interval reduces server load, but edits take that much longer to reach other editors. Editing alone, the editor polls every 4 seconds for a short while after opening, then waits for company.', 'gutenberg-sync-engines' )
+				wp_kses(
+					__( 'The base polling interval. When an advisory channel is connected, the interval raises to <code>25</code> seconds.', 'gutenberg-sync-engines' ),
+					array( 'code' => array() )
+				)
 			);
 			$this->show_row_for( self::POLLING_INTERVAL_OPTION, array( self::DELIVERY_POLLING, self::DELIVERY_POLLING_WEBRTC, self::DELIVERY_POLLING_WEBSOCKET ) );
 		}
