@@ -54,7 +54,7 @@ item 3) — that engine is allowed to declare its own transport story,
 including "manual sync with long delays," without penalty.
 
 The short-polling cadence is tunable: the "Polling interval" field on
-Settings → Collaboration slows active-tab polling down to 25 seconds
+Settings → Collaboration (default 5 seconds) slows active-tab polling down to 25 seconds
 for hosts that want fewer requests (see
 `src/providers/http-polling/README.md` for the exact semantics).
 
@@ -62,7 +62,21 @@ Two websocket specifics. The one-time auth token rides the
 `Sec-WebSocket-Protocol` offer list rather than the URL query string,
 because query strings end up in server and proxy access logs. And
 plaintext `ws://` must never leave a dev box; terminating TLS in front
-of the daemon is the operator's job.
+of the daemon is the operator's job, and the `wss://` address goes in
+the "WebSocket transport server" field on Settings → Collaboration (or
+the `wp_sync_websocket_url` filter, which wins). The advisory channel
+has its own "WebSocket advisory server" field, for a relay; empty means
+the daemon.
+
+The advisory channel's websocket link can end at a server that is not
+the plugin's daemon. With a `WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET`
+configured, each tab carries a signed, two-minute access token (a JSON Web
+Token, HS256) that a relay checks with the shared secret and no call
+to WordPress; `examples/advisory-relay/` is a Node relay a host can run
+as is or port, and `docs/plan/advisory-channel.md` ("Bring your own
+relay") lists the access token claims and the message formats. The daemon
+accepts access tokens too. The websocket *transport* cannot be relayed this
+way: it does engine work and writes rows.
 
 The websocket-only e2e suite runs against
 the real transport: it selects the websocket transport on the tests

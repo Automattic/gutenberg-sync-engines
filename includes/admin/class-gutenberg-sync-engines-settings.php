@@ -9,13 +9,21 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 
 	/**
 	 * The Settings → Collaboration admin screen: choose the active sync
-	 * ENGINE and TRANSPORT.
+	 * ENGINE, how editor tabs get each other's changes (the TRANSPORT and,
+	 * with it, the advisory channel), and the unsaved-changes policy.
 	 *
 	 * The engine choice is stored in the framework's own `wp_sync_engine`
 	 * option (read by WP_Sync_Engine_Registry). The transport choice is
 	 * stored here and fed to the framework through the
 	 * `wp_collaboration_transport` filter, so a single screen drives both
 	 * axes of the swappable stack.
+	 *
+	 * The screen shows ONE "Transport" list, but stores two options: the
+	 * transport slug and the advisory channel. Each entry in the list is
+	 * one pair (see delivery_choices()), so the screen can never select
+	 * the pairs that would silently conflict (a WebSocket transport with a
+	 * WebSocket advisory channel). WP-CLI, the fuzzer, and the e2e specs
+	 * keep setting the two options directly.
 	 *
 	 * @since 0.1.0
 	 */
@@ -37,9 +45,26 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		const TRANSPORT_OPTION = 'gutenberg_sync_engines_transport';
 
 		/**
-		 * Option storing the de-rtc commit cadence in SECONDS. 0 keeps the
-		 * settle cycle (pseudo-realtime); the Distributed Editing vision's
-		 * operating point is 10.
+		 * The form field behind the "Transport" list. NOT an option: its
+		 * sanitize callback writes the transport and advisory options and
+		 * the value itself is never stored (see register()).
+		 *
+		 * @since n.e.x.t
+		 * @var string
+		 */
+		const DELIVERY_FIELD = 'gutenberg_sync_engines_delivery';
+
+		const DELIVERY_POLLING           = 'polling';
+		const DELIVERY_POLLING_WEBRTC    = 'polling-webrtc';
+		const DELIVERY_POLLING_WEBSOCKET = 'polling-websocket';
+		const DELIVERY_LONG_POLLING      = 'long-polling';
+		const DELIVERY_WEBSOCKET         = 'websocket';
+
+		/**
+		 * Option storing the de-rtc commit cadence in SECONDS. 0 commits
+		 * whenever edits settle (pseudo-realtime); unset means
+		 * DE_RTC_COMMIT_INTERVAL_DEFAULT, the Distributed Editing vision's
+		 * operating point.
 		 *
 		 * @since 0.3.0
 		 * @var string
@@ -47,10 +72,20 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		const DE_RTC_COMMIT_INTERVAL_OPTION = 'gutenberg_sync_engines_de_rtc_commit_interval';
 
 		/**
-		 * Option storing the HTTP short-polling interval in SECONDS. 0 keeps
-		 * the built-in defaults (1 second with collaborators, 4 seconds
-		 * alone). Capped at 25 so polling always beats the server's
-		 * 30-second awareness timeout.
+		 * The de-rtc commit cadence in seconds when none is set.
+		 *
+		 * @since n.e.x.t
+		 * @var int
+		 */
+		const DE_RTC_COMMIT_INTERVAL_DEFAULT = 10;
+
+		/**
+		 * Option storing the HTTP short-polling interval in SECONDS: how
+		 * often a tab asks the server for changes while collaborating
+		 * without an advisory channel covering every peer. Unset (or 0,
+		 * the first release's "built-in") means POLLING_INTERVAL_DEFAULT.
+		 * Capped at 25 so polling always beats the server's 30-second
+		 * awareness timeout.
 		 *
 		 * @since 0.4.0
 		 * @var string
@@ -58,9 +93,17 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		const POLLING_INTERVAL_OPTION = 'gutenberg_sync_engines_polling_interval';
 
 		/**
+		 * The polling interval in seconds when none is set.
+		 *
+		 * @since n.e.x.t
+		 * @var int
+		 */
+		const POLLING_INTERVAL_DEFAULT = 5;
+
+		/**
 		 * Option holding the advisory channel choice: `webrtc-advisory` (the
 		 * default browser-to-browser link), `websocket-advisory` (one socket
-		 * per tab to the sync daemon, which relays between the tabs in a
+		 * per tab to a WebSocket server, which relays between the tabs in a
 		 * room) or the empty string for off. `web-rtc`, the slug the first
 		 * release stored, still reads as `webrtc-advisory`.
 		 *
@@ -72,6 +115,28 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		const ADVISORY_WEBSOCKET     = 'websocket-advisory';
 		const ADVISORY_LEGACY_WEBRTC = 'web-rtc';
 		const ADVISORY_DEFAULT       = self::ADVISORY_WEBRTC;
+
+		/**
+		 * Option: the WebSocket URL editor tabs connect to for the
+		 * WebSocket TRANSPORT — the plugin's sync daemon. Empty (the
+		 * default) means `ws://<WP_SYNC_WEBSOCKET_HOST>:<WP_SYNC_WEBSOCKET_PORT>`;
+		 * the `wp_sync_websocket_url` filter still applies last.
+		 *
+		 * @since n.e.x.t
+		 * @var string
+		 */
+		const WEBSOCKET_URL_OPTION = 'gutenberg_sync_engines_websocket_url';
+
+		/**
+		 * Option: the WebSocket URL editor tabs connect to for the
+		 * WebSocket ADVISORY channel — the sync daemon or a host's own
+		 * relay (examples/advisory-relay). Empty (the default) means the
+		 * transport's URL, i.e. the daemon.
+		 *
+		 * @since n.e.x.t
+		 * @var string
+		 */
+		const ADVISORY_WEBSOCKET_URL_OPTION = 'gutenberg_sync_engines_advisory_websocket_url';
 
 		/**
 		 * Option holding the unsaved-changes policy: `discard` (the saved post
@@ -99,6 +164,19 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			add_action( 'init', array( $this, 'register_options' ) );
 			add_action( 'admin_init', array( $this, 'register_settings' ) );
 
+			// The "Transport" list writes two options and stores nothing
+			// itself: answering with the old value makes update_option()
+			// a no-op for the field's own name.
+			add_filter(
+				'pre_update_option_' . self::DELIVERY_FIELD,
+				static function ( $value, $old_value ) {
+					unset( $value );
+					return $old_value;
+				},
+				10,
+				2
+			);
+
 			// Feed the stored transport choice to the framework.
 			add_filter(
 				'wp_collaboration_transport',
@@ -110,18 +188,20 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		}
 
 		/**
-		 * The engines this plugin provides, as slug => label. Filterable so
-		 * additional engine plugins can appear on the screen.
+		 * The engines this plugin provides, as slug => name. Filterable so
+		 * additional engine plugins can appear on the screen (see
+		 * engine_descriptions() for the text shown under the chosen one).
 		 *
 		 * @since 0.1.0
+		 * @since n.e.x.t Names only; the descriptions moved to engine_descriptions().
 		 *
 		 * @return array<string, string> Engine choices.
 		 */
 		public static function engine_choices(): array {
 			$choices = array(
-				'intent-log' => __( 'Intent log (server-authoritative; conflicts go to review)', 'gutenberg-sync-engines' ),
-				'yjs-server' => __( 'Yjs server (server-authoritative CRDT; concurrent conflicts merge silently, last writer wins — no review lane)', 'gutenberg-sync-engines' ),
-				'de-rtc'     => __( 'DE-RTC (server-governed three-way merges of content proposals; conflicts escalate)', 'gutenberg-sync-engines' ),
+				'intent-log' => __( 'Intent log', 'gutenberg-sync-engines' ),
+				'yjs-server' => __( 'Yjs server', 'gutenberg-sync-engines' ),
+				'de-rtc'     => __( 'DE-RTC', 'gutenberg-sync-engines' ),
 			);
 
 			/**
@@ -129,9 +209,36 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			 *
 			 * @since 0.1.0
 			 *
-			 * @param array<string, string> $choices Engine slug => label.
+			 * @param array<string, string> $choices Engine slug => name.
 			 */
 			return (array) apply_filters( 'gutenberg_sync_engines_engine_choices', $choices );
+		}
+
+		/**
+		 * One sentence per engine, shown under the select for the engine
+		 * chosen. Filterable so additional engine plugins can describe
+		 * themselves.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return array<string, string> Engine slug => description.
+		 */
+		public static function engine_descriptions(): array {
+			$descriptions = array(
+				'intent-log' => __( 'Concurrent edits merge by operational transform. Conflicts escalate for review.', 'gutenberg-sync-engines' ),
+				'yjs-server' => __( 'Concurrent edits merge silently via a conflict-free algorithm. No review lane.', 'gutenberg-sync-engines' ),
+				'de-rtc'     => __( 'Editors propose revisions against a base version and the server conducts a three-way merge. Conflicts escalate for review.', 'gutenberg-sync-engines' ),
+			);
+
+			/**
+			 * Filters the sync engine descriptions shown on the settings
+			 * screen.
+			 *
+			 * @since n.e.x.t
+			 *
+			 * @param array<string, string> $descriptions Engine slug => description.
+			 */
+			return (array) apply_filters( 'gutenberg_sync_engines_engine_descriptions', $descriptions );
 		}
 
 		/**
@@ -162,6 +269,79 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		}
 
 		/**
+		 * The "Transport" list: each entry is one (transport, advisory
+		 * channel) pair. Long polling and the WebSocket transport carry
+		 * everything themselves while connected; the WebRTC advisory
+		 * channel they store is what serves when the connection is down
+		 * and tabs fall back to polling.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return array<string, array{transport: string, advisory: string, label: string, description: string}> Choices.
+		 */
+		public static function delivery_choices(): array {
+			return array(
+				self::DELIVERY_POLLING           => array(
+					'transport'   => 'http-polling',
+					'advisory'    => '',
+					'label'       => __( 'Polling', 'gutenberg-sync-engines' ),
+					'description' => __( 'The editor polls the server on an interval.', 'gutenberg-sync-engines' ),
+				),
+				self::DELIVERY_POLLING_WEBRTC    => array(
+					'transport'   => 'http-polling',
+					'advisory'    => self::ADVISORY_WEBRTC,
+					'label'       => __( 'Polling with a WebRTC advisory channel (default)', 'gutenberg-sync-engines' ),
+					'description' => __( 'Peers connect to each other to share announcements and poll for updates only when needed. WebRTC connectivity is not guaranteed. Peers fall back to polling on failure.', 'gutenberg-sync-engines' ),
+				),
+				self::DELIVERY_POLLING_WEBSOCKET => array(
+					'transport'   => 'http-polling',
+					'advisory'    => self::ADVISORY_WEBSOCKET,
+					'label'       => __( 'Polling with a WebSocket advisory channel', 'gutenberg-sync-engines' ),
+					'description' => __( 'Peers connect via a socket to share announcements and poll for updates only when needed. Peers fall back to polling on failure.', 'gutenberg-sync-engines' ),
+				),
+				self::DELIVERY_LONG_POLLING      => array(
+					'transport'   => 'http-long-polling',
+					'advisory'    => self::ADVISORY_WEBRTC,
+					'label'       => __( 'Long polling', 'gutenberg-sync-engines' ),
+					'description' => __( 'The server holds polling requests open until updates are delivered. Peers fall back to polling on failure.', 'gutenberg-sync-engines' ),
+				),
+				self::DELIVERY_WEBSOCKET         => array(
+					'transport'   => 'websocket',
+					'advisory'    => self::ADVISORY_WEBRTC,
+					'label'       => __( 'WebSocket', 'gutenberg-sync-engines' ),
+					'description' => __( 'Updates are exchanged over a persistent socket connection to WordPress. Peers fall back to polling on failure.', 'gutenberg-sync-engines' ),
+				),
+			);
+		}
+
+		/**
+		 * The list entry the stored transport and advisory options amount
+		 * to. Long polling and the WebSocket transport map to their entry
+		 * whatever advisory channel is stored (it only serves as fallback).
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return string A DELIVERY_* value.
+		 */
+		public static function delivery(): string {
+			$transport = (string) get_option( self::TRANSPORT_OPTION, 'http-polling' );
+			if ( 'http-long-polling' === $transport ) {
+				return self::DELIVERY_LONG_POLLING;
+			}
+			if ( 'websocket' === $transport ) {
+				return self::DELIVERY_WEBSOCKET;
+			}
+			switch ( self::advisory_channel() ) {
+				case self::ADVISORY_WEBSOCKET:
+					return self::DELIVERY_POLLING_WEBSOCKET;
+				case self::ADVISORY_WEBRTC:
+					return self::DELIVERY_POLLING_WEBRTC;
+				default:
+					return self::DELIVERY_POLLING;
+			}
+		}
+
+		/**
 		 * Adds the Settings → Collaboration submenu.
 		 *
 		 * @since 0.1.0
@@ -187,15 +367,6 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * runs `admin_init`. This is the sole registration of
 		 * `wp_sync_engine` — the framework does not register it.
 		 *
-		 * `wp_sync_engine` deliberately has NO registered default and only
-		 * `sanitize_key` sanitization, mirroring the framework registration
-		 * this replaces. A registered default is poison here: it makes
-		 * `update_option( 'wp_sync_engine', <that-default> )` a silent no-op
-		 * (the old-value lookup reports the default, so nothing is written)
-		 * while WP_Sync_Engine_Registry — which passes its own explicit
-		 * fallback to `get_option()` — never sees it. And unknown slugs are
-		 * harmless: the registry falls back to its default engine.
-		 *
 		 * @since 0.1.0
 		 *
 		 * @return void
@@ -211,8 +382,16 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 					'show_in_rest'      => true,
 				)
 			);
+
+			/*
+			 * The transport and advisory options are NOT in the page's
+			 * settings group: options.php writes every option of the group
+			 * on save, posted or not (an unposted one arrives as null and
+			 * would be sanitized to its default), and these two are written
+			 * by the "Transport" list's sanitize callback instead.
+			 */
 			register_setting(
-				self::PAGE,
+				self::PAGE . '-stored',
 				self::TRANSPORT_OPTION,
 				array(
 					'type'              => 'string',
@@ -221,6 +400,14 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			);
 			register_setting(
 				self::PAGE,
+				self::DELIVERY_FIELD,
+				array(
+					'type'              => 'string',
+					'sanitize_callback' => array( $this, 'sanitize_delivery' ),
+				)
+			);
+			register_setting(
+				self::PAGE . '-stored',
 				self::ADVISORY_OPTION,
 				array(
 					'type'              => 'string',
@@ -228,6 +415,28 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 					'sanitize_callback' => array( $this, 'sanitize_advisory' ),
 					'show_in_rest'      => true,
 					'default'           => self::ADVISORY_DEFAULT,
+				)
+			);
+			register_setting(
+				self::PAGE,
+				self::WEBSOCKET_URL_OPTION,
+				array(
+					'type'              => 'string',
+					'description'       => __( 'WebSocket transport server URL (ws:// or wss://; empty for the default host and port)', 'gutenberg-sync-engines' ),
+					'sanitize_callback' => array( __CLASS__, 'sanitize_websocket_url' ),
+					'show_in_rest'      => true,
+					'default'           => '',
+				)
+			);
+			register_setting(
+				self::PAGE,
+				self::ADVISORY_WEBSOCKET_URL_OPTION,
+				array(
+					'type'              => 'string',
+					'description'       => __( 'WebSocket advisory server URL (ws:// or wss://; empty for the transport server)', 'gutenberg-sync-engines' ),
+					'sanitize_callback' => array( __CLASS__, 'sanitize_websocket_url' ),
+					'show_in_rest'      => true,
+					'default'           => '',
 				)
 			);
 			register_setting(
@@ -246,10 +455,10 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				self::POLLING_INTERVAL_OPTION,
 				array(
 					'type'              => 'integer',
-					'description'       => __( 'HTTP short-polling interval in seconds (0 = defaults)', 'gutenberg-sync-engines' ),
+					'description'       => __( 'HTTP short-polling interval in seconds', 'gutenberg-sync-engines' ),
 					'sanitize_callback' => array( $this, 'sanitize_polling_interval' ),
 					'show_in_rest'      => true,
-					'default'           => 0,
+					'default'           => self::POLLING_INTERVAL_DEFAULT,
 				)
 			);
 			register_setting(
@@ -257,16 +466,17 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				self::DE_RTC_COMMIT_INTERVAL_OPTION,
 				array(
 					'type'              => 'integer',
-					'description'       => __( 'Distributed Editing commit cadence in seconds (0 = every settle)', 'gutenberg-sync-engines' ),
+					'description'       => __( 'DE-RTC commit cadence in seconds (0 = every settle)', 'gutenberg-sync-engines' ),
 					'sanitize_callback' => array( $this, 'sanitize_commit_interval' ),
 					'show_in_rest'      => true,
-					'default'           => 0,
+					'default'           => self::DE_RTC_COMMIT_INTERVAL_DEFAULT,
 				)
 			);
 		}
 
 		/**
-		 * Sanitizes the polling interval: whole seconds, 0-25.
+		 * Sanitizes the polling interval: whole seconds, 0-25 (0 and
+		 * unset both mean the default).
 		 *
 		 * @since 0.4.0
 		 *
@@ -275,6 +485,18 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 */
 		public function sanitize_polling_interval( $value ): int {
 			return max( 0, min( 25, (int) $value ) );
+		}
+
+		/**
+		 * The polling interval in effect, in seconds.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return int 1-25.
+		 */
+		public static function polling_interval(): int {
+			$value = (int) get_option( self::POLLING_INTERVAL_OPTION, self::POLLING_INTERVAL_DEFAULT );
+			return $value > 0 ? min( 25, $value ) : self::POLLING_INTERVAL_DEFAULT;
 		}
 
 		/**
@@ -290,61 +512,69 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		}
 
 		/**
-		 * Registers the settings screen sections and fields (admin only —
-		 * the settings-field helpers exist only in wp-admin).
+		 * Registers the settings sections and fields.
 		 *
 		 * @since 0.1.0
 		 *
 		 * @return void
 		 */
 		public function register_settings(): void {
-			add_settings_section(
-				'gutenberg_sync_engines_main',
-				__( 'Real-time collaboration', 'gutenberg-sync-engines' ),
-				array( $this, 'render_section_intro' ),
-				self::PAGE
+			// One untitled section: the field labels are the headings.
+			add_settings_section( 'gutenberg_sync_engines_main', '', '__return_null', self::PAGE );
+			$fields = array(
+				array( 'wp_sync_engine', __( 'Sync engine', 'gutenberg-sync-engines' ), 'render_engine_field' ),
+				array( self::DE_RTC_COMMIT_INTERVAL_OPTION, __( 'DE-RTC commit cadence', 'gutenberg-sync-engines' ), 'render_commit_interval_field' ),
+				array( self::DELIVERY_FIELD, __( 'Transport', 'gutenberg-sync-engines' ), 'render_delivery_field' ),
+				array( self::ADVISORY_WEBSOCKET_URL_OPTION, __( 'WebSocket advisory server', 'gutenberg-sync-engines' ), 'render_advisory_websocket_url_field' ),
+				array( self::WEBSOCKET_URL_OPTION, __( 'WebSocket transport server', 'gutenberg-sync-engines' ), 'render_websocket_url_field' ),
+				array( self::POLLING_INTERVAL_OPTION, __( 'Polling interval', 'gutenberg-sync-engines' ), 'render_polling_interval_field' ),
+				array( self::UNSAVED_OPTION, __( 'Unsaved changes', 'gutenberg-sync-engines' ), 'render_unsaved_field' ),
 			);
-			add_settings_field(
-				'wp_sync_engine',
-				__( 'Sync engine', 'gutenberg-sync-engines' ),
-				array( $this, 'render_engine_field' ),
-				self::PAGE,
-				'gutenberg_sync_engines_main'
-			);
-			add_settings_field(
-				self::TRANSPORT_OPTION,
-				__( 'Transport', 'gutenberg-sync-engines' ),
-				array( $this, 'render_transport_field' ),
-				self::PAGE,
-				'gutenberg_sync_engines_main'
-			);
-			add_settings_field(
-				self::ADVISORY_OPTION,
-				__( 'Advisory channel', 'gutenberg-sync-engines' ),
-				array( $this, 'render_advisory_field' ),
-				self::PAGE,
-				'gutenberg_sync_engines_main'
-			);
-			add_settings_field(
-				self::UNSAVED_OPTION,
-				__( 'Unsaved changes', 'gutenberg-sync-engines' ),
-				array( $this, 'render_unsaved_field' ),
-				self::PAGE,
-				'gutenberg_sync_engines_main'
-			);
-			add_settings_field(
-				self::POLLING_INTERVAL_OPTION,
-				__( 'Polling interval', 'gutenberg-sync-engines' ),
-				array( $this, 'render_polling_interval_field' ),
-				self::PAGE,
-				'gutenberg_sync_engines_main'
-			);
-			add_settings_field(
-				self::DE_RTC_COMMIT_INTERVAL_OPTION,
-				__( 'Distributed Editing commit cadence', 'gutenberg-sync-engines' ),
-				array( $this, 'render_commit_interval_field' ),
-				self::PAGE,
-				'gutenberg_sync_engines_main'
+			foreach ( $fields as list( $id, $label, $renderer ) ) {
+				add_settings_field( $id, $label, array( $this, $renderer ), self::PAGE, 'gutenberg_sync_engines_main' );
+			}
+		}
+
+		/**
+		 * Renders the "Transport" radio list.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return void
+		 */
+		public function render_delivery_field(): void {
+			$current = self::delivery();
+			echo '<fieldset>';
+			foreach ( self::delivery_choices() as $value => $choice ) {
+				printf(
+					'<p><label><input type="radio" name="%1$s" value="%2$s" %3$s /> <strong>%4$s</strong><br /><span class="description">%5$s</span></label></p>',
+					esc_attr( self::DELIVERY_FIELD ),
+					esc_attr( $value ),
+					checked( $current, $value, false ),
+					esc_html( $choice['label'] ),
+					esc_html( $choice['description'] )
+				);
+			}
+			echo '</fieldset>';
+
+			// Shown only while DE-RTC is the engine: its commits travel
+			// through the autosave endpoint, so the transport's job shrinks.
+			printf(
+				'<p class="description" id="%1$s-de-rtc-note">%2$s</p><script>( function () {
+					var note   = document.getElementById( %3$s );
+					var select = document.getElementById( "wp_sync_engine" );
+					if ( ! note || ! select ) {
+						return;
+					}
+					var toggle = function () {
+						note.style.display = "de-rtc" === select.value ? "" : "none";
+					};
+					select.addEventListener( "change", toggle );
+					toggle();
+				} )();</script>',
+				esc_attr( self::DELIVERY_FIELD ),
+				esc_html__( 'When using the DE-RTC sync engine, the transport only carries peer presence information.', 'gutenberg-sync-engines' ),
+				wp_json_encode( self::DELIVERY_FIELD . '-de-rtc-note' )
 			);
 		}
 
@@ -356,40 +586,17 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * @return void
 		 */
 		public function render_polling_interval_field(): void {
-			$value = (int) get_option( self::POLLING_INTERVAL_OPTION, 0 );
 			printf(
-				'<input type="number" min="0" max="25" step="1" name="%1$s" id="%1$s" value="%2$d" class="small-text" /> %3$s<p class="description">%4$s</p>',
+				'<input type="number" min="1" max="25" step="1" name="%1$s" id="%1$s" value="%2$d" class="small-text" /> %3$s<p class="description">%4$s</p>',
 				esc_attr( self::POLLING_INTERVAL_OPTION ),
-				(int) $value,
+				(int) self::polling_interval(),
 				esc_html__( 'seconds', 'gutenberg-sync-engines' ),
-				esc_html__( 'HTTP short-polling only. How often each editor asks the server for new updates while collaborating. 0 keeps the defaults: every second with collaborators, every 4 seconds when editing alone. A larger interval reduces server load, but edits take that much longer to reach other editors.', 'gutenberg-sync-engines' )
+				wp_kses(
+					__( 'The base polling interval. When an advisory channel is connected, the interval raises to <code>25</code> seconds.', 'gutenberg-sync-engines' ),
+					array( 'code' => array() )
+				)
 			);
-
-			/*
-			 * The dial only applies to the short-polling transport: HIDE its
-			 * row (live, following the transport select) rather than disable
-			 * the input — a disabled input drops out of the POST and saving
-			 * under another transport would silently reset the stored
-			 * interval. A hidden row still submits, so the value survives
-			 * transport round-trips. Without JS the row simply stays visible.
-			 */
-			printf(
-				'<script>( function () {
-					var input  = document.getElementById( %1$s );
-					var select = document.getElementById( %2$s );
-					if ( ! input || ! select ) {
-						return;
-					}
-					var row    = input.closest( "tr" );
-					var toggle = function () {
-						row.style.display = "http-polling" === select.value ? "" : "none";
-					};
-					select.addEventListener( "change", toggle );
-					toggle();
-				} )();</script>',
-				wp_json_encode( self::POLLING_INTERVAL_OPTION ),
-				wp_json_encode( self::TRANSPORT_OPTION )
-			);
+			$this->show_row_for( self::POLLING_INTERVAL_OPTION, array( self::DELIVERY_POLLING, self::DELIVERY_POLLING_WEBRTC, self::DELIVERY_POLLING_WEBSOCKET ) );
 		}
 
 		/**
@@ -400,13 +607,16 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * @return void
 		 */
 		public function render_commit_interval_field(): void {
-			$value = (int) get_option( self::DE_RTC_COMMIT_INTERVAL_OPTION, 0 );
+			$value = (int) get_option( self::DE_RTC_COMMIT_INTERVAL_OPTION, self::DE_RTC_COMMIT_INTERVAL_DEFAULT );
 			printf(
 				'<input type="number" min="0" max="300" step="1" name="%1$s" id="%1$s" value="%2$d" class="small-text" /> %3$s<p class="description">%4$s</p>',
 				esc_attr( self::DE_RTC_COMMIT_INTERVAL_OPTION ),
 				(int) $value,
 				esc_html__( 'seconds', 'gutenberg-sync-engines' ),
-				esc_html__( 'Distributed Editing (de-rtc) only. 0 commits whenever edits settle (pseudo-realtime). 10 is the Distributed Editing vision\'s save-and-sync cadence: edits coalesce locally and the room advances every ten seconds, cutting request rate and upload bytes on constrained hosts. Peers see each other\'s work at this cadence.', 'gutenberg-sync-engines' )
+				wp_kses(
+					__( 'Peers see each other\'s work at this cadence. When set to <code>0</code>, commits are sent continuously whenever edits settle. Under DE-RTC an edit stays private until the next commit, so this cadence, not the polling interval, decides how soon peers see it.', 'gutenberg-sync-engines' ),
+					array( 'code' => array() )
+				)
 			);
 
 			/*
@@ -440,8 +650,8 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 *
 		 * @since 0.1.0
 		 *
-		 * @param string $value Submitted slug.
-		 * @return string A valid transport slug.
+		 * @param mixed $value Submitted value.
+		 * @return string Transport slug.
 		 */
 		public function sanitize_transport( $value ): string {
 			$value   = sanitize_key( (string) $value );
@@ -450,39 +660,193 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		}
 
 		/**
-		 * Section intro copy.
+		 * Sanitizes the "Transport" list's value and writes the pair of
+		 * options it stands for. The value itself is not stored.
 		 *
-		 * @since 0.1.0
+		 * @since n.e.x.t
 		 *
-		 * @return void
+		 * @param mixed $value Submitted value.
+		 * @return string The DELIVERY_* value applied.
 		 */
-		public function render_section_intro(): void {
-			echo '<p>' . esc_html__( 'Choose how concurrent edits are merged (engine) and how updates travel between editors (transport). Both apply site-wide.', 'gutenberg-sync-engines' ) . '</p>';
+		public function sanitize_delivery( $value ): string {
+			$choices = self::delivery_choices();
+			$value   = (string) $value;
+			if ( ! isset( $choices[ $value ] ) ) {
+				$value = self::DELIVERY_POLLING_WEBRTC;
+			}
+			update_option( self::TRANSPORT_OPTION, $choices[ $value ]['transport'] );
+			update_option( self::ADVISORY_OPTION, $choices[ $value ]['advisory'] );
+			return $value;
 		}
 
 		/**
-		 * Renders the engine <select>.
+		 * Renders the engine <select>, with the chosen engine's description
+		 * under it (swapped live as the choice changes).
 		 *
 		 * @since 0.1.0
 		 *
 		 * @return void
 		 */
 		public function render_engine_field(): void {
-			$this->render_select( 'wp_sync_engine', self::engine_choices(), (string) get_option( 'wp_sync_engine', 'intent-log' ) );
+			$current      = (string) get_option( 'wp_sync_engine', 'intent-log' );
+			$descriptions = self::engine_descriptions();
+			$this->render_select( 'wp_sync_engine', self::engine_choices(), $current );
+			printf(
+				'<p class="description" id="wp_sync_engine-description">%s</p>',
+				esc_html( $descriptions[ $current ] ?? '' )
+			);
+			printf(
+				'<script>( function () {
+					var select       = document.getElementById( "wp_sync_engine" );
+					var description  = document.getElementById( "wp_sync_engine-description" );
+					var descriptions = %s;
+					if ( ! select || ! description ) {
+						return;
+					}
+					select.addEventListener( "change", function () {
+						description.textContent = descriptions[ select.value ] || "";
+					} );
+				} )();</script>',
+				wp_json_encode( $descriptions )
+			);
 		}
 
 		/**
-		 * Renders the transport <select>.
+		 * Sanitizes a WebSocket URL: a `ws://` or `wss://` URL, or the
+		 * empty string for the default.
 		 *
-		 * @since 0.1.0
+		 * @since n.e.x.t
+		 *
+		 * @param mixed $value Submitted value.
+		 * @return string The URL, or ''.
+		 */
+		public static function sanitize_websocket_url( $value ): string {
+			$value = trim( (string) $value );
+			if ( '' === $value ) {
+				return '';
+			}
+			return (string) esc_url_raw( $value, array( 'ws', 'wss' ) );
+		}
+
+		/**
+		 * The configured WebSocket transport URL, or '' for the default.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return string The URL, or ''.
+		 */
+		public static function websocket_url(): string {
+			return self::sanitize_websocket_url( get_option( self::WEBSOCKET_URL_OPTION, '' ) );
+		}
+
+		/**
+		 * The WebSocket URL the advisory channel connects to: the advisory
+		 * server setting, else the transport's URL (the sync daemon serves
+		 * both).
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return string The URL.
+		 */
+		public static function advisory_websocket_url(): string {
+			$url = self::sanitize_websocket_url( get_option( self::ADVISORY_WEBSOCKET_URL_OPTION, '' ) );
+			if ( '' !== $url ) {
+				return $url;
+			}
+			return class_exists( 'WP_WebSocket_Sync_Transport' ) ? WP_WebSocket_Sync_Transport::get_socket_url() : '';
+		}
+
+		/**
+		 * Renders the WebSocket advisory server URL field.
+		 *
+		 * @since n.e.x.t
 		 *
 		 * @return void
 		 */
-		public function render_transport_field(): void {
-			$this->render_select( self::TRANSPORT_OPTION, self::transport_choices(), (string) get_option( self::TRANSPORT_OPTION, 'http-polling' ) );
+		public function render_advisory_websocket_url_field(): void {
+			$this->render_url_input(
+				self::ADVISORY_WEBSOCKET_URL_OPTION,
+				self::sanitize_websocket_url( get_option( self::ADVISORY_WEBSOCKET_URL_OPTION, '' ) ),
+				self::advisory_websocket_url()
+			);
+			if ( class_exists( 'WP_WebSocket_Access_Token' && true !== WP_WebSocket_Access_Token::is_enabled() ) ) {
+				printf( '<p class="description">The access token is NOT configured. Please provide a <code>WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET</code>.</p>' );
+			}
+			$this->show_row_for( self::ADVISORY_WEBSOCKET_URL_OPTION, array( self::DELIVERY_POLLING_WEBSOCKET ) );
+		}
+
+		/**
+		 * Renders the WebSocket transport server URL field.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return void
+		 */
+		public function render_websocket_url_field(): void {
+			$effective = class_exists( 'WP_WebSocket_Sync_Transport' ) ? WP_WebSocket_Sync_Transport::get_socket_url() : '';
+			$this->render_url_input( self::WEBSOCKET_URL_OPTION, self::websocket_url(), $effective );
+			$this->show_row_for( self::WEBSOCKET_URL_OPTION, array( self::DELIVERY_WEBSOCKET ) );
+		}
+
+		/**
+		 * Renders a server URL input with a "Test" button that opens a
+		 * WebSocket from THIS browser (the one that has to reach the
+		 * server) with a real credential from the token route, and
+		 * reports whether the handshake succeeded.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $name      Option name (input name and id).
+		 * @param string $value     Stored value ('' for the default).
+		 * @param string $effective The URL in effect, tested when the
+		 *                          input is empty.
+		 * @return void
+		 */
+		private function render_url_input( string $name, string $value, string $effective ): void {
 			printf(
-				'<p class="description">%s</p>',
-				esc_html__( 'The default short-polling transport is always available as a fallback.', 'gutenberg-sync-engines' )
+				'<input type="url" class="regular-text code" name="%1$s" id="%1$s" value="%2$s" placeholder="%3$s" %4$s /> <button type="button" class="button" data-test-url="%1$s">%5$s</button> <span class="description" id="%1$s-result" role="status"></span>',
+				esc_attr( $name ),
+				esc_attr( $value ),
+				esc_attr( $effective ),
+				has_filter( 'wp_sync_websocket_url' ) && self::WEBSOCKET_URL_OPTION === $name ? 'readonly' : '',
+				esc_html__( 'Test', 'gutenberg-sync-engines' )
+			);
+		}
+
+		/**
+		 * Shows a field's row only while one of the given "Transport" list
+		 * entries is selected. The row is hidden, not disabled: a disabled
+		 * input drops out of the POST and saving would reset the stored
+		 * value. Without JS the row simply stays visible.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string   $input_id   The field's input id.
+		 * @param string[] $deliveries DELIVERY_* values that show it.
+		 * @return void
+		 */
+		private function show_row_for( string $input_id, array $deliveries ): void {
+			printf(
+				'<script>( function () {
+					var input  = document.getElementById( %1$s );
+					var radios = document.querySelectorAll( "input[name=" + %2$s + "]" );
+					if ( ! input || ! radios.length ) {
+						return;
+					}
+					var row    = input.closest( "tr" );
+					var shown  = %3$s;
+					var toggle = function () {
+						var checked = document.querySelector( "input[name=" + %2$s + "]:checked" );
+						row.style.display = checked && -1 !== shown.indexOf( checked.value ) ? "" : "none";
+					};
+					radios.forEach( function ( radio ) {
+						radio.addEventListener( "change", toggle );
+					} );
+					toggle();
+				} )();</script>',
+				wp_json_encode( $input_id ),
+				wp_json_encode( self::DELIVERY_FIELD ),
+				wp_json_encode( array_values( $deliveries ) )
 			);
 		}
 
@@ -500,8 +864,8 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		}
 
 		/**
-		 * Normalizes a stored or submitted advisory channel value to one of
-		 * the known slugs.
+		 * Maps a stored advisory value (including the legacy `web-rtc`) to
+		 * a current slug.
 		 *
 		 * @since n.e.x.t
 		 *
@@ -549,45 +913,29 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * @return void
 		 */
 		public function render_unsaved_field(): void {
-			$this->render_select(
-				self::UNSAVED_OPTION,
-				array(
-					self::UNSAVED_DISCARD => __( 'Discarded when the last editor leaves (default)', 'gutenberg-sync-engines' ),
-					self::UNSAVED_KEEP    => __( 'Kept as a shared working copy', 'gutenberg-sync-engines' ),
+			$current = $this->sanitize_unsaved( get_option( self::UNSAVED_OPTION, self::UNSAVED_DEFAULT ) );
+			$choices = array(
+				self::UNSAVED_DISCARD => array(
+					__( 'Discard when the last editor leaves.', 'gutenberg-sync-engines' ),
+					__( 'Unsaved edits are discarded (after confirmation). The next editor continues from the saved post.', 'gutenberg-sync-engines' ),
 				),
-				(string) get_option( self::UNSAVED_OPTION, self::UNSAVED_DEFAULT )
-			);
-			printf(
-				'<p class="description">%s</p>',
-				esc_html__( 'While people are editing together, unsaved changes are shared live. When the last editor leaves the post, either they are discarded (the saved post and its autosaves are the only durable copy, as the unsaved-changes warning says) or they are kept and the next editor continues from them.', 'gutenberg-sync-engines' )
-			);
-		}
-
-		/**
-		 * Renders the advisory channel field.
-		 *
-		 * @since n.e.x.t
-		 *
-		 * @return void
-		 */
-		public function render_advisory_field(): void {
-			$this->render_select(
-				self::ADVISORY_OPTION,
-				array(
-					self::ADVISORY_WEBRTC    => __( 'WebRTC between editor tabs (default)', 'gutenberg-sync-engines' ),
-					self::ADVISORY_WEBSOCKET => __( 'WebSocket to the sync daemon', 'gutenberg-sync-engines' ),
-					''                       => __( 'Off', 'gutenberg-sync-engines' ),
+				self::UNSAVED_KEEP    => array(
+					__( 'Keep as a shared working copy.', 'gutenberg-sync-engines' ),
+					__( 'Unsaved edits are kept indefinitely. The next editor continues from them.', 'gutenberg-sync-engines' ),
 				),
-				self::advisory_channel()
 			);
-			printf(
-				'<p class="description">%s</p>',
-				esc_html__( 'An advisory channel reduces polling by signaling to peers when updates are available. WebRTC connects the tabs to each other directly; WebSocket relays through the same sync daemon the WebSocket transport uses (it must be running), which also reaches tabs that cannot connect directly.', 'gutenberg-sync-engines' )
-			);
-			printf(
-				'<p class="description">%s</p>',
-				esc_html__( 'It only applies while short polling is the transport in use: with long polling or WebSocket selected, the channel runs only while that transport is down and short polling is the fallback.', 'gutenberg-sync-engines' )
-			);
+			echo '<fieldset>';
+			foreach ( $choices as $value => list( $label, $description ) ) {
+				printf(
+					'<p><label><input type="radio" name="%1$s" value="%2$s" %3$s /> <strong>%4$s</strong><br /><span class="description">%5$s</span></label></p>',
+					esc_attr( self::UNSAVED_OPTION ),
+					esc_attr( $value ),
+					checked( $current, $value, false ),
+					esc_html( $label ),
+					esc_html( $description )
+				);
+			}
+			echo '</fieldset>';
 		}
 
 		/**
@@ -634,7 +982,8 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			 * than a Settings → Writing checkbox. Say so, and link there,
 			 * instead of leaving an engine picker that quietly has no effect.
 			 */
-			if ( function_exists( 'wp_is_collaboration_enabled' ) && ! wp_is_collaboration_enabled() ) {
+			$collaboration_enabled = ! function_exists( 'wp_is_collaboration_enabled' ) || wp_is_collaboration_enabled();
+			if ( ! $collaboration_enabled ) {
 				printf(
 					'<div class="notice notice-warning"><p>%1$s</p></div>',
 					wp_kses(
@@ -656,7 +1005,80 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			do_settings_sections( self::PAGE );
 			submit_button();
 			echo '</form>';
+			$this->render_test_script( $collaboration_enabled );
 			echo '</div>';
+		}
+
+		/**
+		 * The "Test" buttons' script: fetch a credential from the token
+		 * route (the same one editors use), open a WebSocket to the URL in
+		 * the field (or its placeholder, the URL in effect) from this
+		 * browser, and report whether the handshake succeeded within five
+		 * seconds. A refused handshake means the server is unreachable
+		 * from here, is not a sync server or relay, or (for a relay) does
+		 * not share the access-token secret.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param bool $collaboration_enabled Whether the token route exists.
+		 * @return void
+		 */
+		private function render_test_script( bool $collaboration_enabled ): void {
+			printf(
+				'<script>( function () {
+					var tokenUrl = %1$s;
+					var nonce    = %2$s;
+					var enabled  = %3$s;
+					var messages = %4$s;
+					document.querySelectorAll( "button[data-test-url]" ).forEach( function ( button ) {
+						var input  = document.getElementById( button.getAttribute( "data-test-url" ) );
+						var result = document.getElementById( button.getAttribute( "data-test-url" ) + "-result" );
+						button.addEventListener( "click", function () {
+							var url = input.value.trim() || input.placeholder;
+							result.textContent = messages.testing;
+							if ( ! enabled ) {
+								result.textContent = messages.disabled;
+								return;
+							}
+							fetch( tokenUrl, {
+								method: "POST",
+								credentials: "same-origin",
+								headers: { "X-WP-Nonce": nonce }
+							} ).then( function ( response ) {
+								return response.ok ? response.json() : Promise.reject( new Error( "token" ) );
+							} ).then( function ( data ) {
+								return new Promise( function ( resolve, reject ) {
+									var socket  = new WebSocket( url, [ "wp-sync", "wp-sync-token." + data.token ] );
+									var timer   = setTimeout( function () { socket.close(); reject( new Error( "timeout" ) ); }, 5000 );
+									socket.onopen = function () { clearTimeout( timer ); socket.close(); resolve(); };
+									socket.onerror = function () { clearTimeout( timer ); reject( new Error( "refused" ) ); };
+									socket.onclose = function ( event ) { if ( ! event.wasClean ) { clearTimeout( timer ); reject( new Error( "refused" ) ); } };
+								} );
+							} ).then( function () {
+								result.textContent = messages.ok.replace( "%%s", url );
+							}, function ( error ) {
+								result.textContent = ( messages[ error.message ] || messages.refused ).replace( "%%s", url );
+							} );
+						} );
+					} );
+				} )();</script>',
+				wp_json_encode( rest_url( 'wp-sync/v1/ws-token' ) ),
+				wp_json_encode( wp_create_nonce( 'wp_rest' ) ),
+				$collaboration_enabled ? 'true' : 'false',
+				wp_json_encode(
+					array(
+						'testing'  => __( 'Connecting…', 'gutenberg-sync-engines' ),
+						'disabled' => __( 'Turn on real-time collaboration first.', 'gutenberg-sync-engines' ),
+						'token'    => __( 'Could not get a credential from WordPress.', 'gutenberg-sync-engines' ),
+						/* translators: %s: the WebSocket URL tested. */
+						'timeout'  => __( 'No answer from %s within five seconds.', 'gutenberg-sync-engines' ),
+						/* translators: %s: the WebSocket URL tested. */
+						'refused'  => __( 'Could not connect to %s from this browser.', 'gutenberg-sync-engines' ),
+						/* translators: %s: the WebSocket URL tested. */
+						'ok'       => __( 'Connected to %s.', 'gutenberg-sync-engines' ),
+					)
+				)
+			);
 		}
 	}
 }

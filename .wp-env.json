@@ -13,7 +13,8 @@
   "config": {
     "WP_DEBUG": true,
     "SCRIPT_DEBUG": true,
-    "WP_SYNC_WEBSOCKET_HOST": "localhost"
+    "WP_SYNC_WEBSOCKET_HOST": "localhost",
+    "WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET": "wp-env-development-secret-not-for-production"
   },
   "mappings": {
     "wp-content/plugins/gutenberg-sync-engines": ".",

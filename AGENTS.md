@@ -60,6 +60,31 @@ This plugin provides:
   peer is unreachable, on demand (with the heartbeat carrying the room's
   head cursor) when every peer is reachable. Long polling turns it off
   while connected. Rules and failure cases: `docs/plan/advisory-channel.md`.
+  The websocket link can end at a host's OWN relay instead of the
+  daemon: with a `WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET` configured
+  (constant, env, or the `wp_sync_websocket_access_token_secret` filter),
+  the token route mints a signed two-minute access token (JWT HS256, claims
+  `user_id`/`blog_id`/`rooms`/`iat`/`exp`, `WP_WebSocket_Access_Token`)
+  that a relay verifies with the secret alone; the daemon accepts
+  access tokens too. The relay's address goes in the "WebSocket
+  advisory server" setting (`gutenberg_sync_engines_advisory_websocket_url`;
+  empty = the transport server, `gutenberg_sync_engines_websocket_url`,
+  itself empty = the HOST/PORT constants; the `wp_sync_websocket_url`
+  filter wins for the transport). The screen shows ONE "Transport"
+  radio list of (transport, advisory) pairs — the form field
+  `gutenberg_sync_engines_delivery` is never stored; its sanitize
+  callback writes the two real options, which WP-CLI, the fuzzer, and
+  the e2e specs keep setting directly. The polling interval defaults
+  to 5 s (0 means the default); e2e global setup pins the tests site
+  to 1 s so the suite's timing is unchanged. The
+  DEV wp-env config defines a development secret
+  (`wp-env-development-secret-not-for-production`), so the dev daemon
+  and a local relay run in access-token mode out of the box; the TESTS
+  config does not, so the daemon lane keeps certifying the cookie path
+  and only the relay spec (through its fixture plugin) uses access
+  tokens. `examples/advisory-relay/relay.mjs` is the reference
+  relay (Node + `ws`); the access token and frame formats are in the
+  advisory-channel doc's "Bring your own relay" section.
   The same presence lane decides a per-post room's LIFETIME under the
   "Unsaved changes" setting (default: an empty room is reset to the
   saved post; the room's generation token tells clients to start over).
@@ -227,6 +252,11 @@ The framework/plugin split is complete: the framework ships **neither** engines
   Jest) and `tests/phpunit/test-vectors/` (replayed by PHPUnit) — kept
   byte-identical by `tests/js/engines/intent-log/vector-parity.test.js`;
   regenerate with the `tests/tools/` scripts and always update both.
+- `examples/` — code a host copies rather than the plugin runs:
+  `advisory-relay/` (the bring-your-own WebSocket relay for the
+  advisory channel, Node + `ws`, plus its README). Linted with
+  `npm run lint:js`; the websocket e2e config runs it for the
+  advisory-relay spec.
 - `docs/` — the conceptual docs, indexed by `docs/README.md`:
   `engine-comparison.md` (the decision guide: scorecard, parity table,
   resource profiles, per-engine known gaps), `principles.md` (P1-P7),
@@ -398,6 +428,12 @@ selects the websocket transport on the tests site, publishes the
 `wp collaboration sync-server` PHP daemon from the tests env's cli
 image on host port 8787 (health-checked on the daemon's own /health),
 and restores the previous transport at teardown. No spec is skipped.
+The same config also runs the example advisory relay
+(`examples/advisory-relay/relay.mjs`) on port 8790 with a fixed test
+secret; `collaboration-websocket-advisory-relay.spec.ts` activates
+the `tests/e2e/plugins/advisory-relay-access-token.php` fixture (same
+secret, socket URL aimed at the relay) for its duration, so the
+relay lane never touches the daemon's auth path.
 (The old y-websocket PEER-relay fixture lane — the test WS provider
 plugin plus `rtc-test-ws-sync-server.mjs` — only demonstrated
 client-merging engines and none remains; the fixture files are kept

@@ -150,7 +150,14 @@ describe( 'advisory channel over the websocket link', () => {
 		settings();
 		const ws = await start();
 
-		// The token rides the subprotocol offer, never the URL.
+		// The credential is requested for this tab's post room (in access token
+		// mode the access token allows exactly that room), and rides the
+		// subprotocol offer, never the URL.
+		expect( apiFetch ).toHaveBeenCalledWith( {
+			method: 'POST',
+			path: '/wp-sync/v1/ws-token',
+			data: { room: ROOM },
+		} );
 		expect( ws.url ).toBe( URL );
 		expect( ws.protocols ).toEqual( [ 'wp-sync', 'wp-sync-token.t0ken' ] );
 		expect( channel.getAdvisoryDebugState() ).toMatchObject( {

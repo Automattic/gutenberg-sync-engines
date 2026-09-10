@@ -147,6 +147,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			$transports = GUTENBERG_SYNC_ENGINES_PATH . 'includes/transports/';
 			require_once $transports . 'class-wp-http-polling-sync-server.php';
 			require_once $transports . 'class-wp-http-long-polling-sync-server.php';
+			require_once $transports . 'websocket/class-wp-websocket-access-token.php';
 			require_once $transports . 'websocket/class-wp-websocket-token-controller.php';
 			require_once $transports . 'websocket/class-wp-websocket-connection.php';
 			require_once $transports . 'websocket/class-wp-websocket-sync-server.php';
@@ -342,8 +343,8 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 				$commit_interval  = 0;
 				$polling_interval = 0;
 				if ( class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
-					$commit_interval  = (int) get_option( Gutenberg_Sync_Engines_Settings::DE_RTC_COMMIT_INTERVAL_OPTION, 0 );
-					$polling_interval = (int) get_option( Gutenberg_Sync_Engines_Settings::POLLING_INTERVAL_OPTION, 0 );
+					$commit_interval  = (int) get_option( Gutenberg_Sync_Engines_Settings::DE_RTC_COMMIT_INTERVAL_OPTION, Gutenberg_Sync_Engines_Settings::DE_RTC_COMMIT_INTERVAL_DEFAULT );
+					$polling_interval = Gutenberg_Sync_Engines_Settings::polling_interval();
 				}
 				$settings = array(
 					'deRtcCommitIntervalMs' => max( 0, $commit_interval ) * 1000,

@@ -89,17 +89,28 @@ enabled, the advisory channel) until it is back.
 
 ## Plugin settings
 
-Two independent settings:
+Two stored options, chosen through one list:
 
-1. Transport: short-polling (default), long-polling, or WebSocket. The
-   default short-polling transport is always available as a fallback.
+1. Transport: `http-polling` (default), `http-long-polling`, or
+   `websocket`. The default short-polling transport is always available
+   as a fallback.
 2. Advisory channel: `webrtc-advisory` (default), `websocket-advisory`,
    or off. An advisory channel reduces polling by signaling to peers when
    updates are available. It serves whenever short polling does, so under
    a preferred transport it is only active while that transport is down.
    The WebSocket link needs the same daemon the WebSocket transport uses
-   (`wp collaboration sync-server`); a tab that cannot open its socket
-   keeps the timer cadence, exactly like a tab whose WebRTC failed.
+   (`wp collaboration sync-server`), or a host's own relay ("Bring your
+   own relay" below); a tab that cannot open its socket keeps the timer
+   cadence, exactly like a tab whose WebRTC failed.
+
+The screen shows them as one "Transport" list of five entries (see
+"What exists now"), because the two options can conflict: a WebSocket
+transport with a WebSocket advisory channel looks configured and does
+nothing. Beside them: the WebSocket transport server URL (the daemon;
+empty means the `WP_SYNC_WEBSOCKET_HOST`/`PORT` constants, and the
+`wp_sync_websocket_url` filter overrides it for hosts that configure in
+code), the WebSocket advisory server URL (a relay; empty means the
+daemon), and the polling interval (default 5 seconds).
 
 ## The rules, stated plainly
 
@@ -230,7 +241,8 @@ Client:
     `hello` (client id), `presence`, `announce`, `bye`. Coverage is
     computed from discovered tokens and the last awareness map.
 -   `src/providers/advisory/websocket-link.ts`: one socket per tab to the
-    sync daemon, opened with the same one-time token handshake as the
+    sync daemon — or to a host's own relay in access-token mode ("Bring your
+    own relay" below) — opened with the same token handshake as the
     websocket transport (the socket URL rides the page settings under
     `websocket-advisory`). Frames: the tab follows its post's room
     (`{type: 'advisory', room, client_id, presence_token}`), sends its
@@ -255,10 +267,16 @@ Client:
     `sendsWhileAlone` are exempt), the announce-after-send, the base
     presence overlay (per client, on top of the poll response's copy),
     and the long-poll disable hook.
--   Settings → Collaboration: a "Transport" select (short-polling,
-    long-polling, WebSocket) and an "Advisory channel" select (WebRTC
-    between tabs, WebSocket to the sync daemon, or off), independent of
-    each other.
+-   Settings → Collaboration: one "Transport" list whose entries are
+    (transport, advisory channel) pairs — polling; polling with a
+    WebRTC advisory channel (default); polling with a WebSocket advisory
+    channel; long polling; WebSocket — so the conflicting pairs cannot
+    be chosen. Long polling and WebSocket store WebRTC as the fallback
+    channel. The stored options stay `gutenberg_sync_engines_transport`
+    and `gutenberg_sync_engines_advisory_channel`. Two server URL fields
+    (transport server, advisory server) with "Test" buttons show only
+    for the entries that need them; the polling interval only for the
+    polling entries.
 -   `src/providers/websocket/websocket-manager.ts`: the websocket
     transport as a preferred transport. While its socket is open it
     moves everything; whenever it is not (token refused, daemon
@@ -275,6 +293,161 @@ Client:
 -   `src/engines/de-rtc/session.ts`: announces after a commit lands
     through the autosave lane, since those rows never pass through the
     polling manager.
+
+## Bring your own relay
+
+Status: implemented (issue #92, 2026-09-08). The reference relay is
+`examples/advisory-relay/relay.mjs` (Node, one dependency: `ws`); this
+section is everything a relay author needs, in any language.
+
+The websocket link does not have to end at the plugin's PHP daemon. A
+host that cannot run a long-lived PHP process, or that already runs
+WebSocket servers in Node or Go, can enter a relay of its own as the
+"WebSocket advisory server" on the settings screen. The relay is small because the lane is small: it
+tells the tabs in a room who is present and passes "go and poll"
+notices between them. It never sees content, writes nothing, and never
+calls WordPress — the one thing it must do on its own is decide whether
+a connection comes from a signed-in user who may follow the rooms it
+asks for. WordPress settles that by handing each tab an **access token**.
+
+Only the advisory lane can be relayed this way. The websocket
+*transport* does engine work and writes rows; it always needs the
+plugin's daemon.
+
+### The access token
+
+Access-token mode is on when a secret is configured on the WordPress side:
+the `WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET` constant, else the environment
+variable of the same name, else the `wp_sync_websocket_access_token_secret`
+filter. With a secret, `POST /wp-sync/v1/ws-token` (the same route the
+websocket transport uses) returns an access token instead of a one-time
+token; nothing about the client changes except that it names its
+post room in the request body (`{ "room": "postType/post:12" }`) so
+the access token can allow it. The plugin's own daemon verifies access tokens too
+and skips the cookie check when one is valid, so one switch serves the
+daemon and a relay alike. Session revocation then waits out the access token's lifetime
+for relayed sockets instead of the daemon's 10-second sweep;
+acceptable for a lane that carries no content.
+
+An access token is a JSON Web Token signed with HMAC-SHA256 (`HS256`) over the
+shared secret — the shape every JWT library parses. Claims:
+
+```json
+{
+  "user_id": 4,
+  "blog_id": 1,
+  "rooms": [ "postType/post:12", "postType/*", "taxonomy/*", "root/*" ],
+  "iat": 1757300000,
+  "exp": 1757300120
+}
+```
+
+-   `user_id`, `blog_id`: the signed-in user and the site (multisite
+    blog id; 1 on a single site). The names match the VIP real-time
+    collaboration server's tokens on purpose. A relay keys its rosters
+    by `blog_id` AND room, never by room alone: room names are not
+    site-qualified, so one relay (and one secret) serving several
+    WordPress sites would otherwise put two sites' tabs in one roster
+    and send each site's presence to the other. The access token refusal
+    already keeps a tab's presence away from a server without the
+    secret; this keeps it away from the wrong site behind a shared
+    one.
+-   `rooms`: what the tab may follow. An entry is an exact room name,
+    or `<kind>/*`, which allows every **collection** room of that kind
+    — a room name without an object id, such as `taxonomy/category`
+    or `root/comment`. WordPress mints the tab's post room plus the
+    three wildcards (collection rooms carry presence only over this
+    lane). A follow for any other room is refused with an error frame.
+    Without this claim a user could watch who is editing any post and
+    nudge them to poll — small, but cheap to close.
+-   `iat`, `exp`: Unix seconds; an access token lives 2 minutes. Verifiers
+    allow 30 seconds of clock skew.
+
+The access token rides the handshake the way the one-time token did: the
+browser offers `Sec-WebSocket-Protocol: wp-sync, wp-sync-token.<token>`
+and the server must echo `wp-sync` alone. (Not the URL: query strings
+end up in access logs.) A relay verifies, in this order: the
+offer carries `wp-sync` and a `wp-sync-token.` entry; the signature
+checks against the secret with a constant-time comparison; the
+header's `alg` is exactly `HS256` (refuse `none` and everything else);
+`exp` has not passed (with leeway); the claims have the shapes above.
+Anything else: refuse the upgrade with `403` before the socket opens.
+The access token is the whole of the check: a server without the
+secret cannot complete the handshake, and a browser without a token
+from WordPress cannot either, so no `Origin` allowlist is needed (the
+plugin's daemon keeps one because it also serves the transport).
+
+### The frames
+
+JSON text frames. Tab → relay:
+
+```json
+{ "type": "advisory", "room": "postType/post:12", "client_id": 3,
+  "presence_token": "abc…", "presence": { … } | null, "announce": "postType/post:12" | "*" }
+```
+
+-   The first frame for a `room` **follows** it: check the access token's
+    `rooms`, then bind this socket to that `client_id` for the room
+    (the roster is the access token's site's, see `blog_id` above). A
+    later frame with a different `client_id` for the same room is a
+    protocol violation: close with `1008` (it could impersonate another
+    tab). `client_id` is a positive integer; `room` matches
+    `^[^/]+/[^/:]+(?::\S+)?$` and is at most 200 bytes.
+-   `presence_token` (a string of at most 64 bytes; only the tab's post
+    room carries one) and `presence` (an object or `null`, at most
+    16 KB) replace what the roster shows for this tab. Either change
+    re-sends the roster.
+-   `announce` names a room the tab just landed rows in (or `*`):
+    relay it to the room's OTHER followers.
+
+Relay → tabs:
+
+```json
+{ "type": "advisory", "event": "roster", "room": "postType/post:12",
+  "peers": [ { "client_id": 3, "token": "abc…", "presence": { … } | null }, … ] }
+{ "type": "advisory", "event": "announce", "room": "<the room named>" }
+{ "type": "error", "code": "rest_cannot_edit", "message": "…", "rooms": [ "…" ] }
+```
+
+-   Send the full `roster` of a room to every follower whenever it
+    changes: a follow, a presence or token change, a socket closing.
+    The list includes the receiving tab itself; tabs drop their own id.
+-   When a socket closes, drop it from every room it followed and send
+    those rosters. A closed advisory socket is NOT a closed tab: the
+    tab's presence record and leave beacon stay the polling
+    transport's, so a room is never reset because a relay blinked.
+-   Error frames are advisory too; the client ignores them. Send one
+    rather than closing for an invalid frame, so a bug in one message
+    does not cost the tab its roster.
+
+The size limits above are the daemon's; the reference relay keeps
+only a payload cap (64 KB) and a ping every 15 seconds, closing a
+socket that misses one. A per-socket message budget (the daemon uses
+200 per 5 seconds) is a sensible extra for a public relay.
+
+### What a relay does not do
+
+The plugin's daemon scans the database once a second and tells
+followers about rows that landed off the channel: a script, WP-CLI, a
+tab on the websocket transport. A relay cannot read the database. This
+is shipped without a replacement: the heartbeat's head-cursor check
+(rule 5 above) covers exactly this case, at 10 seconds for a focused
+tab and up to 120 seconds for a hidden one, the same as under the
+WebRTC link. A later option is a `POST` from the REST write path to the
+relay; it is not built.
+
+### Adapting the VIP real-time collaboration server
+
+That server (Automattic/vip-real-time-collaboration, Node) already
+verifies an HS256 JWT with a shared secret and the same claim names
+(`user_id`, `blog_id`, `iat`, `exp`), so its token code is reusable.
+The differences to bridge: it reads the token from an `?auth=` query
+parameter (read the `Sec-WebSocket-Protocol` offer instead, and echo
+`wp-sync`); it names one room per token in `room_name` (read the
+`rooms` list and the `<kind>/*` rule); and it speaks Yjs, not these frames (an advisory mode is a
+new message handler; `relay.mjs` shows the whole of it). Set
+`WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET` to the same value as its
+`VIP_RTC_WS_AUTH_SECRET`.
 
 ## Failure behavior
 
@@ -343,14 +516,24 @@ uses it to poll sooner and to show presence faster.**
 -   PHPUnit: `tests/phpunit/gutenbergSyncEnginesAdvisoryPresence.php`
     (token record and expiry, others-present from tokens and awareness,
     mailbox relay with caps, permission fence, leave route, page-render
-    settings including the chosen link) and
+    settings including the chosen link),
     `tests/phpunit/wpWebSocketAdvisory.php` (the daemon's advisory mode:
     roster, presence relay, notices to the other followers only, the
     scan's one-announce-per-batch, a dropped follower, permissions and
-    the client-id binding, nothing written to storage).
+    the client-id binding, nothing written to storage), and
+    `tests/phpunit/wpWebSocketAccessToken.php` (access-token mode: the signed
+    access token's claims and expiry, tampered / foreign / `alg: none`
+    access tokens refused, the rooms rule, the route's grants and refusals,
+    the daemon accepting an access token without a cookie).
 -   e2e: `tests/e2e/specs/http-only/collaboration-advisory-channel.spec.ts`
     (two tabs connect over the channel and an edit still propagates;
     idle polling drops to the safety cadence) and, on the daemon lane,
     `tests/e2e/specs/websocket-only/collaboration-websocket-advisory.spec.ts`
     (the same over the websocket link, with short polling selected for
-    its duration).
+    its duration) and
+    `collaboration-websocket-advisory-relay.spec.ts` (the same again
+    with the example Node relay standing in for the daemon: the config
+    runs `examples/advisory-relay/relay.mjs` on port 8790 with a fixed
+    test secret, and the spec activates the
+    `tests/e2e/plugins/advisory-relay-access-token.php` fixture, which
+    configures that secret and points the socket URL at the relay).
