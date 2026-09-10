@@ -27,6 +27,7 @@ const mockCallbacks: {
 	presence: Array< ( room: string ) => void >;
 	cursor: Array< ( cursor: number ) => void >;
 	engine: Array< ( engine: string ) => void >;
+	awareness: Array< () => void >;
 } = {
 	others: [],
 	coverage: [],
@@ -34,6 +35,7 @@ const mockCallbacks: {
 	presence: [],
 	cursor: [],
 	engine: [],
+	awareness: [],
 };
 const mockSetDisabled = jest.fn();
 const mockAnnounceLocalWrite = jest.fn();
@@ -86,6 +88,8 @@ jest.mock( '../../../../src/providers/advisory/channel', () => ( {
 
 jest.mock( '../../../../src/providers/advisory/announce', () => ( {
 	announceLocalWrite: mockAnnounceLocalWrite,
+	onLocalAwarenessChange: ( cb: () => void ) =>
+		mockCallbacks.awareness.push( cb ),
 } ) );
 
 jest.mock( '../../../../src/providers/http-polling/utils', () => ( {
@@ -145,6 +149,7 @@ describe( 'polling-manager cadence', () => {
 		mockCallbacks.presence.length = 0;
 		mockCallbacks.cursor.length = 0;
 		mockCallbacks.engine.length = 0;
+		mockCallbacks.awareness.length = 0;
 		mockSetDisabled.mockClear();
 		mockAnnounceLocalWrite.mockClear();
 		jest.isolateModules( () => {
@@ -429,6 +434,41 @@ describe( 'polling-manager cadence', () => {
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 3 );
 		await jest.advanceTimersByTimeAsync( 100 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 4 );
+	} );
+
+	it( 'a changed awareness state under coverage polls on demand and announces it', async () => {
+		mockPostSyncUpdate.mockResolvedValue( response( [ 1, 2 ] ) );
+		mockOthers = true;
+		mockCoverage = true;
+		register();
+		await jest.advanceTimersByTimeAsync( 0 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
+		expect( mockAnnounceLocalWrite ).not.toHaveBeenCalled();
+
+		// Slow awareness names a new block: the state must not wait out
+		// the safety cadence, so a poll goes shortly, and the peers on
+		// the channel are told to come and read it.
+		mockCallbacks.awareness.forEach( ( cb ) => cb() );
+		await jest.advanceTimersByTimeAsync( 350 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+		expect( mockAnnounceLocalWrite ).toHaveBeenCalledTimes( 1 );
+		expect( mockAnnounceLocalWrite ).toHaveBeenCalledWith( 'test-room' );
+
+		// Nothing else changed: no further poll and no further rumor.
+		await jest.advanceTimersByTimeAsync( 10000 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+		expect( mockAnnounceLocalWrite ).toHaveBeenCalledTimes( 1 );
+	} );
+
+	it( 'a changed awareness state while alone waits for company', async () => {
+		mockPostSyncUpdate.mockResolvedValue( response( [ 1 ] ) );
+		register();
+		await jest.advanceTimersByTimeAsync( 0 );
+		const before = mockPostSyncUpdate.mock.calls.length;
+		mockCallbacks.awareness.forEach( ( cb ) => cb() );
+		await jest.advanceTimersByTimeAsync( 350 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( before );
+		expect( mockAnnounceLocalWrite ).not.toHaveBeenCalled();
 	} );
 
 	it( 'a local update under coverage polls on demand', async () => {

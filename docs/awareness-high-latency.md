@@ -44,14 +44,15 @@ The value can travel two ways, chosen by "Awareness channel":
 - **Sync transport** (default). The value is one more field on the
   framework's awareness state (`gseBlock`), so it travels with the same
   requests as content under polling, long polling, and WebSocket alike.
-  No server change. It goes out with the next request that carries
-  awareness. Under short polling that is the next poll. With an advisory
-  channel connected, tabs that can reach every peer poll only when
-  content changes, so the value can sit unseen for a while, until the
-  next content poll. Turn the advisory channel off to see what plain
-  slow polling looks like on its own. Under long polling the value goes
-  out with the next reissued request. Under WebSocket it goes out with
-  the transport's periodic awareness message, every 10 seconds.
+  No server change. A new value asks the transport to send it right
+  away, the same way a content change does: under short polling a poll
+  goes out shortly (even when the advisory channel has every peer
+  reachable and the timer is quiet), and once it has landed the tab
+  tells the peers on the advisory channel to poll and read it. Under
+  long polling the held request is reissued with the new value. Under
+  WebSocket it goes out with the transport's periodic awareness message,
+  every 10 seconds. Nothing is sent while the tab is alone; the first
+  request with company carries the whole state anyway.
 - **WordPress Heartbeat.** The value travels on WordPress's admin
   Heartbeat request instead, a separate request that repeats on its own
   timer. The server keeps each post's latest values in short-term storage
@@ -85,7 +86,10 @@ session sees a cursor that jumps every few seconds. Who is in the post
   stays, so it does not flicker as others come and go. Every peer's
   avatar sits in one stack above the block, overlapped like the header's
   collaborator avatars, in the order they arrived. Hovering the stack
-  spreads it out and shows every name.
+  spreads it out and shows every name. A peer joining a stack that is
+  already there pops in, and a peer other than the first leaving one pops
+  out; the first peer on a block appears and disappears plainly. Both
+  animations are off under the "reduce motion" system setting.
 - **Nothing lingers.** When the peer's next value names another block,
   the old block's outline and badge go at once. There is no trail and no
   countdown.

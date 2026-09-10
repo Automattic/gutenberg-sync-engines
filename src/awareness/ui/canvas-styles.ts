@@ -97,6 +97,57 @@ ${ Array.from(
 		}; }`
 ).join( '\n' ) }
 
+/*
+ * Joining and leaving a stack that is already drawn. A joiner pops in
+ * from nothing (its slot grows from zero so the neighbors slide rather
+ * than jump); a leaver shrinks away and its slot closes. The first badge
+ * on a block appears and disappears plainly (no class). The pop-in fills
+ * backwards only, so the base rules (and the hover spread) take over the
+ * moment it ends; the pop-out fills forwards, staying collapsed until
+ * the badge is removed.
+ */
+@keyframes gse-avatar-pop-in {
+	from {
+		width: 0;
+		margin-inline-start: 0;
+		transform: scale(0.3);
+		opacity: 0;
+	}
+	60% {
+		width: 24px;
+		margin-inline-start: -8px;
+		transform: scale(1.15);
+		opacity: 1;
+	}
+	to {
+		width: 24px;
+		margin-inline-start: -8px;
+		transform: scale(1);
+		opacity: 1;
+	}
+}
+@keyframes gse-avatar-pop-out {
+	from {
+		width: 24px;
+		margin-inline-start: -8px;
+		transform: scale(1);
+		opacity: 1;
+	}
+	to {
+		width: 0;
+		margin-inline-start: 0;
+		transform: scale(0.3);
+		opacity: 0;
+	}
+}
+.gse-avatar-group > .gse-avatar.is-entering {
+	animation: gse-avatar-pop-in 0.3s cubic-bezier(0.15, 0, 0.15, 1) backwards;
+}
+.gse-avatar-group > .gse-avatar.is-leaving {
+	animation: gse-avatar-pop-out 0.25s cubic-bezier(0.85, 0, 0.85, 1) forwards;
+	pointer-events: none;
+}
+
 /* The avatar badge (the framework's Avatar, badge variant, small). */
 .gse-avatar {
 	position: relative;
@@ -190,6 +241,12 @@ ${ Array.from(
 	.gse-avatar,
 	.gse-avatar__name {
 		transition: none;
+	}
+	.gse-avatar-group > .gse-avatar.is-entering {
+		animation: none;
+	}
+	.gse-avatar-group > .gse-avatar.is-leaving {
+		display: none;
 	}
 }
 `;

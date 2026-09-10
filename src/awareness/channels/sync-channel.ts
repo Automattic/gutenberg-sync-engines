@@ -19,6 +19,7 @@
 /**
  * Internal dependencies
  */
+import { announceLocalAwarenessChange } from '../../providers/advisory/announce';
 import type { Channel, PeerIdentity, PeerListener } from '../types';
 
 /**
@@ -169,6 +170,10 @@ export function createSyncChannel( options: SyncChannelOptions ): Channel {
 		},
 		publish( block ) {
 			awareness.setLocalStateField( BLOCK_FIELD, block );
+			// The transport may have no request due for a while (short
+			// polling with every peer on the advisory channel): ask it to
+			// carry the new block now rather than with the next content.
+			announceLocalAwarenessChange();
 		},
 	};
 }

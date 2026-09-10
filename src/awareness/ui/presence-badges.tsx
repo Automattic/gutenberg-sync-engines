@@ -6,7 +6,10 @@
  *
  * A block with several peers gets one stack, primary peer first, overlapped
  * like the header's collaborator avatars. Hovering the stack spreads it out
- * and shows every name.
+ * and shows every name. A peer joining a stack that is already drawn pops
+ * in, and a peer other than the first leaving one pops out (the badge
+ * stays mounted for the animation, then goes); the first peer on a block
+ * appears and disappears plainly.
  *
  * Badges cannot live inside the block wrapper: for text blocks that
  * wrapper is the editable element itself, and a child there would become
@@ -18,7 +21,13 @@
  * WordPress dependencies
  */
 import { subscribe, useSelect } from '@wordpress/data';
-import { createPortal, useEffect, useState } from '@wordpress/element';
+import {
+	createPortal,
+	useEffect,
+	useLayoutEffect,
+	useRef,
+	useState,
+} from '@wordpress/element';
 import { __ } from '@wordpress/i18n';
 
 /**
@@ -32,14 +41,35 @@ import { ensureCanvasStyles, getCanvasDocument } from './canvas-styles';
 /** How long after the last editor change to re-measure the blocks. */
 const RELAYOUT_DELAY_MS = 500;
 
+/** How long a departed badge stays mounted for its pop-out animation. */
+export const LEAVE_ANIMATION_MS = 250;
+
 /** Inline styles that may carry CSS custom properties. */
 type StyleWithVars = React.CSSProperties & Record< `--${ string }`, string >;
 
 interface PlacedStack {
+	/** The block element's id: the stack's identity across peer changes. */
+	blockId: string;
 	/** The block's peers, primary first. */
 	peers: Peer[];
 	top: number;
 	left: number;
+}
+
+/** A badge kept mounted while its peer's departure animates. */
+interface LeavingBadge {
+	peer: Peer;
+	/** Where in the stack the peer was drawn. */
+	index: number;
+}
+
+/** One badge in a rendered stack. */
+interface StackBadge {
+	peer: Peer;
+	/** Joined a stack that already had a badge: pop in. */
+	entering: boolean;
+	/** Departed from a stack that keeps its first badge: pop out. */
+	leaving: boolean;
 }
 
 /**
@@ -76,8 +106,12 @@ export function nameColorOn( color: string ): string {
 	return luminance > 0.6 ? '#1e1e1e' : '#fff';
 }
 
-function Badge( { peer }: { peer: Peer } ) {
+function Badge( { peer, entering, leaving }: StackBadge ) {
 	const [ loaded, setLoaded ] = useState( false );
+	// Decided once, when the badge mounts: later renders (a re-measure,
+	// a peer elsewhere) must not cut the pop-in short by dropping the
+	// class.
+	const [ popsIn ] = useState( entering );
 	const name = peer.identity.name || __( 'Anonymous User' );
 	const src = peer.identity.avatarUrl;
 	const className = [
@@ -85,6 +119,8 @@ function Badge( { peer }: { peer: Peer } ) {
 		'is-badge',
 		'is-small',
 		loaded ? 'has-src' : null,
+		popsIn ? 'is-entering' : null,
+		leaving ? 'is-leaving' : null,
 	]
 		.filter( Boolean )
 		.join( ' ' );
@@ -149,6 +185,7 @@ function measure( doc: Document, peers: Map< string, Peer > ): PlacedStack[] {
 				return;
 			}
 			placed.push( {
+				blockId: element.id || blockPeers[ 0 ].key,
 				peers: blockPeers,
 				top: rect.top + scrollY,
 				left: rect.left + scrollX,
@@ -156,6 +193,41 @@ function measure( doc: Document, peers: Map< string, Peer > ): PlacedStack[] {
 		}
 	);
 	return placed;
+}
+
+/**
+ * The badges to draw for one stack: the current peers, with a departed
+ * peer's badge kept at its old place while it pops out. A peer who is
+ * back before their pop-out ends is simply current again.
+ *
+ * @param stack    The measured stack.
+ * @param previous The peers drawn for this block last time, if any.
+ * @param leaving  The departed badges still animating for this block.
+ * @return The badges in stack order.
+ */
+function stackBadges(
+	stack: PlacedStack,
+	previous: Peer[] | undefined,
+	leaving: LeavingBadge[]
+): StackBadge[] {
+	const badges: StackBadge[] = stack.peers.map( ( peer ) => ( {
+		peer,
+		entering:
+			!! previous?.length &&
+			! previous.some( ( drawn ) => drawn.key === peer.key ),
+		leaving: false,
+	} ) );
+	for ( const departed of leaving ) {
+		if ( stack.peers.some( ( peer ) => peer.key === departed.peer.key ) ) {
+			continue;
+		}
+		badges.splice( Math.min( departed.index, badges.length ), 0, {
+			peer: departed.peer,
+			entering: false,
+			leaving: true,
+		} );
+	}
+	return badges;
 }
 
 /**
@@ -170,7 +242,87 @@ export function PresenceBadges() {
 	const peers = useSelect( ( select ) => select( store ).getPeers(), [] );
 	const [ layoutTick, setLayoutTick ] = useState( 0 );
 	const [ placed, setPlaced ] = useState< PlacedStack[] >( [] );
+	const [ leaving, setLeaving ] = useState<
+		Record< string, LeavingBadge[] >
+	>( {} );
+	// The peers drawn per block on the last commit, in stack order: what
+	// decides who is joining and who has departed. Peers, not keys, so a
+	// departure still has an identity to draw once the store has dropped
+	// the peer (a tab that closed).
+	const drawnRef = useRef< Record< string, Peer[] > >( {} );
+	const leaveTimers = useRef< Set< ReturnType< typeof setTimeout > > >(
+		new Set()
+	);
 	const doc = getCanvasDocument();
+
+	// Departures: a peer drawn last time but not now, from a stack that
+	// still stands, keeps a badge for the pop-out unless they were the
+	// stack's first peer. Runs before paint so the badge never blinks off
+	// and back on. Stacks that are gone entirely animate nothing.
+	useLayoutEffect( () => {
+		const drawn = drawnRef.current;
+		const departures: Record< string, LeavingBadge[] > = {};
+		const next: Record< string, Peer[] > = {};
+		for ( const stack of placed ) {
+			const before = drawn[ stack.blockId ] ?? [];
+			next[ stack.blockId ] = stack.peers;
+			before.forEach( ( peer, index ) => {
+				if (
+					0 === index ||
+					stack.peers.some( ( current ) => current.key === peer.key )
+				) {
+					return;
+				}
+				( departures[ stack.blockId ] ??= [] ).push( { peer, index } );
+			} );
+		}
+		drawnRef.current = next;
+		if ( ! Object.keys( departures ).length ) {
+			return;
+		}
+		setLeaving( ( current ) => {
+			const merged = { ...current };
+			for ( const blockId in departures ) {
+				merged[ blockId ] = [
+					...( merged[ blockId ] ?? [] ).filter(
+						( kept ) =>
+							! departures[ blockId ].some(
+								( gone ) => gone.peer.key === kept.peer.key
+							)
+					),
+					...departures[ blockId ],
+				];
+			}
+			return merged;
+		} );
+		const timer = setTimeout( () => {
+			leaveTimers.current.delete( timer );
+			setLeaving( ( current ) => {
+				const remaining: Record< string, LeavingBadge[] > = {};
+				for ( const blockId in current ) {
+					const kept = current[ blockId ].filter(
+						( badge ) =>
+							! departures[ blockId ]?.some(
+								( gone ) => gone.peer.key === badge.peer.key
+							)
+					);
+					if ( kept.length ) {
+						remaining[ blockId ] = kept;
+					}
+				}
+				return remaining;
+			} );
+		}, LEAVE_ANIMATION_MS );
+		leaveTimers.current.add( timer );
+	}, [ placed ] );
+
+	useEffect( () => {
+		const timers = leaveTimers.current;
+		return () => {
+			timers.forEach( ( timer ) => clearTimeout( timer ) );
+			timers.clear();
+		};
+	}, [] );
 
 	// Editor changes, debounced: the canvas settles before we measure.
 	useEffect( () => {
@@ -255,7 +407,7 @@ export function PresenceBadges() {
 		<div className="gse-presence-layer">
 			{ placed.map( ( stack ) => (
 				<div
-					key={ stack.peers[ 0 ].key }
+					key={ stack.blockId }
 					className="gse-presence-badge"
 					style={ {
 						top: `${ stack.top }px`,
@@ -263,8 +415,12 @@ export function PresenceBadges() {
 					} }
 				>
 					<div className="gse-avatar-group" role="group">
-						{ stack.peers.map( ( peer ) => (
-							<Badge key={ peer.key } peer={ peer } />
+						{ stackBadges(
+							stack,
+							drawnRef.current[ stack.blockId ],
+							leaving[ stack.blockId ] ?? []
+						).map( ( badge ) => (
+							<Badge key={ badge.peer.key } { ...badge } />
 						) ) }
 					</div>
 				</div>
