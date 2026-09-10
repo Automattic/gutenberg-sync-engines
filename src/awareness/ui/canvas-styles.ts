@@ -30,18 +30,38 @@ const CANVAS_STYLES = `
 /*
  * The full-block outline, on every block a peer is in. The framework's
  * rule ends in :not(:focus) so the editor's own focus outline (the same
- * pseudo-element, the same geometry, the admin color) takes over when
- * the local user selects that block; here the peer's outline stays, so
- * only the color needs to win over the editor's focus rule.
+ * pseudo-element, the admin color) takes over when the local user selects
+ * that block; here the peer's outline stays, so the color and the
+ * geometry need to win over the editor's focus rule.
+ *
+ * The framework draws the outline 2px INSIDE the block box, which on a
+ * text block is the text's own edge. Here the pseudo-element is pushed
+ * out by 1px plus the outline width, so the outline's inner edge sits
+ * 1px clear of the text.
+ *
+ * The pseudo-element comes into being when the class lands, so the short
+ * fade runs exactly when the outline appears (and again if a block the
+ * editor was already outlining gains a peer, since the animation name
+ * changes then).
  */
+@keyframes gse-outline-fade-in {
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 1;
+	}
+}
 .block-editor-block-list__block.gse-presence::after {
+	animation: gse-outline-fade-in 0.15s ease-out;
+	--gse-outline-inset: calc(-1px - var(--wp-admin-border-width-focus, 2px) / var(--wp-block-editor-iframe-zoom-out-scale, 1));
 	content: "";
 	position: absolute;
 	pointer-events: none;
-	top: 0;
-	right: 0;
-	bottom: 0;
-	left: 0;
+	top: var(--gse-outline-inset) !important;
+	right: var(--gse-outline-inset) !important;
+	bottom: var(--gse-outline-inset) !important;
+	left: var(--gse-outline-inset) !important;
 	outline-color: var(--gse-outline-color) !important;
 	outline-style: solid;
 	outline-width: calc(var(--wp-admin-border-width-focus, 2px) / var(--wp-block-editor-iframe-zoom-out-scale, 1));
@@ -242,6 +262,7 @@ ${ Array.from(
 	.gse-avatar__name {
 		transition: none;
 	}
+	.block-editor-block-list__block.gse-presence::after,
 	.gse-avatar-group > .gse-avatar.is-entering {
 		animation: none;
 	}
