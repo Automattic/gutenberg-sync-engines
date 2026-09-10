@@ -41,7 +41,11 @@ Storage (where a room's updates live):
 - Two plugin-owned tables, `{prefix}sync_updates` (the update log) and
   `{prefix}sync_room_meta` (lineage, awareness, engine bookkeeping),
   substituted for Gutenberg's default post-meta storage. No collaboration
-  write touches post caches. Activating the plugin creates the tables;
+  write touches post caches. On a site with a persistent object cache
+  (Redis, Memcached), who is present in a room is kept in the cache
+  rather than the database, the storage strategy the WordPress hosting
+  performance tests recommended; a poll that changes nothing writes
+  nothing. Activating the plugin creates the tables;
   deactivating it leaves them and every room in place; deleting the
   plugin (`uninstall.php`) or running `wp collaboration storage drop`
   removes them. `wp collaboration storage status` shows what a site has.
