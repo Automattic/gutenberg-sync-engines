@@ -61,7 +61,20 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		const AWARENESS_TIMEOUT = 30;
 
 		/**
+		 * Default rounding of awareness timestamps, in seconds. A poll that
+		 * carries the same state inside the same bucket changes nothing, so
+		 * the transport skips the write (see `awareness_timestamp()`).
+		 *
+		 * @since n.e.x.t
+		 * @var int
+		 */
+		const AWARENESS_TIMESTAMP_GRANULARITY = 10;
+
+		/**
 		 * Room meta key of the room's generation token (see room_generation()).
+		 * Write-once per room lifetime, which is why the table storage may
+		 * serve it from the object cache (`WP_Sync_Table_Storage::GENERATION_KEY`
+		 * names the same key).
 		 *
 		 * @since n.e.x.t
 		 */
@@ -790,6 +803,35 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		}
 
 		/**
+		 * The `updated_at` an awareness entry written now carries: the
+		 * current time rounded UP to the next multiple of the granularity.
+		 * Two polls inside one bucket produce identical entries, so the
+		 * second one has nothing to write; the entry is still expired by
+		 * `AWARENESS_TIMEOUT` seconds after the bucket, at most one bucket
+		 * later than it would be with exact timestamps.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param int $now Current Unix time.
+		 * @return int Rounded Unix time.
+		 */
+		public static function awareness_timestamp( int $now ): int {
+			/**
+			 * Filters how coarsely awareness timestamps are rounded, in
+			 * seconds. 1 disables the rounding (every poll writes).
+			 *
+			 * @since n.e.x.t
+			 *
+			 * @param int $granularity Rounding step in seconds. Default 10.
+			 */
+			$granularity = (int) apply_filters( 'wp_sync_awareness_timestamp_granularity', self::AWARENESS_TIMESTAMP_GRANULARITY );
+			if ( $granularity < 1 ) {
+				$granularity = 1;
+			}
+			return (int) ceil( $now / $granularity ) * $granularity;
+		}
+
+		/**
 		 * Processes and stores an awareness update from a client.
 		 *
 		 * @since 7.0.0
@@ -823,13 +865,27 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 				$updated_awareness[] = array(
 					'client_id'  => $client_id,
 					'state'      => $awareness_update,
-					'updated_at' => $current_time,
+					'updated_at' => self::awareness_timestamp( $current_time ),
 					'wp_user_id' => get_current_user_id(),
 				);
 			}
 
-			// This action can fail, but it shouldn't fail the entire request.
-			$this->storage->set_awareness_state( $room, $updated_awareness );
+			// A stable order makes "nothing changed" a plain comparison.
+			usort(
+				$updated_awareness,
+				static function ( array $a, array $b ): int {
+					return $a['client_id'] <=> $b['client_id'];
+				}
+			);
+
+			// Most polls carry the same state inside the same timestamp
+			// bucket and nothing has expired: then the stored array is
+			// already what we would write, and the write is skipped. That
+			// is what keeps an idle poll read-only. The write can fail; it
+			// shouldn't fail the entire request.
+			if ( $updated_awareness !== $existing_awareness ) {
+				$this->storage->set_awareness_state( $room, $updated_awareness );
+			}
 
 			// Convert to client_id => state map for response.
 			$response = array();

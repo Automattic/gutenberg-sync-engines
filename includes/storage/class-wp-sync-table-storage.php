@@ -5,7 +5,7 @@
  * @package GutenbergSyncEngines
  */
 
-// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- This class IS the storage layer: every query against the plugin's tables lives here, and none of it may go through an object cache (rooms hold unsaved collaborative content; reads must see every write).
+// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- This class IS the storage layer: every query against the plugin's tables lives here. Update rows and engine bookkeeping never go through an object cache (rooms hold unsaved collaborative content; reads must see every write); only presence and the two write-once room keys do, and only on a host with a persistent cache (see the class docblock).
 
 if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 
@@ -41,6 +41,27 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 	 * than `add_update()` restores `$wpdb->insert_id` to what it was, and
 	 * it keeps naming the last update row.
 	 *
+	 * On a host with a persistent object cache (`wp_using_ext_object_cache()`)
+	 * three things leave the database, following the storage strategy the
+	 * WordPress hosting tests recommended ("custom table with transients",
+	 * wordpress-develop#11599):
+	 *
+	 * - Awareness (who is present, cursors) lives ONLY in the object cache,
+	 *   group `WP_Sync_Table_Schema::CACHE_GROUP`, never in a row. It is
+	 *   ephemeral by design (entries expire after seconds), so losing it on
+	 *   a cache flush costs one poll round trip and nothing else. Without a
+	 *   persistent cache it stays a row of `sync_room_meta`, read fresh on
+	 *   every call: the per-request `WP_Object_Cache` would go stale in a
+	 *   long-running process such as the websocket daemon.
+	 * - The engine lineage stamp and the polling transport's room
+	 *   generation token are cached after their first read. Both are
+	 *   written once per room lifetime and cleared only by `reset_room()`,
+	 *   which also drops the cached copies, so a cached read is always the
+	 *   stored value. Absence is never cached (the room may be stamped a
+	 *   moment later). No other room meta is cached: checkpoints and
+	 *   canonical documents are rewritten under races where the last cache
+	 *   writer need not be the last row writer.
+	 *
 	 * A room needs no creation step (there is no per-room parent row), so
 	 * looking at a room never brings it into existence; `get_room_engine()`
 	 * and `peek_room_engine()` are the same read. The per-request caches
@@ -69,6 +90,27 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * @var string
 		 */
 		const AWARENESS_KEY = '_awareness';
+
+		/**
+		 * Room-meta key holding the polling transport's room generation
+		 * token (`WP_HTTP_Polling_Sync_Server::GENERATION_META_KEY`). Named
+		 * here because it is one of the two write-once keys the storage may
+		 * serve from the object cache.
+		 *
+		 * @since n.e.x.t
+		 * @var string
+		 */
+		const GENERATION_KEY = 'generation';
+
+		/**
+		 * How long a cached awareness array may live without a write.
+		 * Every poll rewrites it while anyone is present, so this only
+		 * bounds the memory a deserted room holds in the cache.
+		 *
+		 * @since n.e.x.t
+		 * @var int
+		 */
+		const AWARENESS_CACHE_TTL = 5 * MINUTE_IN_SECONDS;
 
 		/**
 		 * Longest room identifier the `room` column holds.
@@ -159,6 +201,14 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * @return array<int, mixed> Awareness state.
 		 */
 		public function get_awareness_state( string $room ): array {
+			if ( $this->uses_object_cache() ) {
+				if ( ! $this->is_storable_room( $room ) ) {
+					return array();
+				}
+				$cached = wp_cache_get( $this->cache_key( $room, self::AWARENESS_KEY ), WP_Sync_Table_Schema::CACHE_GROUP );
+				return is_array( $cached ) ? array_values( $cached ) : array();
+			}
+
 			$awareness = $this->read_meta( $room, self::AWARENESS_KEY );
 			if ( ! is_string( $awareness ) ) {
 				return array();
@@ -170,7 +220,8 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 
 		/**
 		 * Sets awareness state for a given room (whole-array, last writer
-		 * wins).
+		 * wins). On a host with a persistent object cache the array is
+		 * written to the cache only; see the class docblock.
 		 *
 		 * @since n.e.x.t
 		 *
@@ -179,7 +230,103 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * @return bool True on success, false on failure.
 		 */
 		public function set_awareness_state( string $room, array $awareness ): bool {
+			if ( $this->uses_object_cache() ) {
+				if ( ! $this->is_storable_room( $room ) ) {
+					return false;
+				}
+				return (bool) wp_cache_set(
+					$this->cache_key( $room, self::AWARENESS_KEY ),
+					array_values( $awareness ),
+					WP_Sync_Table_Schema::CACHE_GROUP,
+					self::AWARENESS_CACHE_TTL
+				);
+			}
+
 			return $this->upsert_meta( $room, self::AWARENESS_KEY, (string) wp_json_encode( $awareness ) );
+		}
+
+		/**
+		 * Whether presence and the write-once room keys are served from
+		 * the object cache: only when the cache outlives the request.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return bool Whether a persistent object cache is in use.
+		 */
+		private function uses_object_cache(): bool {
+			// The flag is unset (null) until wp_start_object_cache() ran, as
+			// in the PHPUnit bootstrap: no persistent cache.
+			return (bool) wp_using_ext_object_cache();
+		}
+
+		/**
+		 * The object-cache key for one (room, key) pair. Rooms may hold
+		 * characters some cache backends reject, so the room is hashed.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $room Room identifier.
+		 * @param string $key  Room-meta key.
+		 * @return string Cache key.
+		 */
+		private function cache_key( string $room, string $key ): string {
+			return $key . ':' . md5( $room );
+		}
+
+		/**
+		 * Whether a room-meta key may be served from the object cache:
+		 * only the two written once per room lifetime.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $key Room-meta key.
+		 * @return bool Whether reads of the key may be cached.
+		 */
+		private function is_cacheable_key( string $key ): bool {
+			return self::ENGINE_KEY === $key || self::GENERATION_KEY === $key;
+		}
+
+		/**
+		 * Reads a write-once room-meta value through the object cache when
+		 * one is in use. Only found values are cached; absence is read
+		 * from the table every time.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $room Room identifier.
+		 * @param string $key  A key `is_cacheable_key()` accepts.
+		 * @return string|null The stored value, or null when absent.
+		 */
+		private function read_write_once_meta( string $room, string $key ): ?string {
+			if ( ! $this->uses_object_cache() ) {
+				return $this->read_meta( $room, $key );
+			}
+
+			$cache_key = $this->cache_key( $room, $key );
+			$cached    = wp_cache_get( $cache_key, WP_Sync_Table_Schema::CACHE_GROUP );
+			if ( is_string( $cached ) ) {
+				return $cached;
+			}
+
+			$value = $this->read_meta( $room, $key );
+			if ( is_string( $value ) && '' !== $value ) {
+				wp_cache_set( $cache_key, $value, WP_Sync_Table_Schema::CACHE_GROUP );
+			}
+			return $value;
+		}
+
+		/**
+		 * Drops the cached copies of a room's presence and write-once keys.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $room Room identifier.
+		 * @return void
+		 */
+		private function forget_room_cache( string $room ): void {
+			foreach ( array( self::AWARENESS_KEY, self::ENGINE_KEY, self::GENERATION_KEY ) as $key ) {
+				wp_cache_delete( $this->cache_key( $room, $key ), WP_Sync_Table_Schema::CACHE_GROUP );
+			}
 		}
 
 		/**
@@ -306,7 +453,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * @return string|null Engine slug, or null for a room with no lineage.
 		 */
 		public function get_room_engine( string $room ): ?string {
-			$engine = $this->read_meta( $room, self::ENGINE_KEY );
+			$engine = $this->read_write_once_meta( $room, self::ENGINE_KEY );
 			return is_string( $engine ) && '' !== $engine ? $engine : null;
 		}
 
@@ -374,7 +521,9 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * @return mixed Decoded value, or null when absent.
 		 */
 		public function get_room_meta( string $room, string $key ) {
-			$value = $this->read_meta( $room, $key );
+			$value = $this->is_cacheable_key( $key )
+				? $this->read_write_once_meta( $room, $key )
+				: $this->read_meta( $room, $key );
 			if ( ! is_string( $value ) || '' === $value ) {
 				return null;
 			}
@@ -394,6 +543,10 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * @return bool True on success, false on failure.
 		 */
 		public function set_room_meta( string $room, string $key, $value ): bool {
+			if ( $this->is_cacheable_key( $key ) ) {
+				// Written once per room lifetime; the next read re-primes.
+				wp_cache_delete( $this->cache_key( $room, $key ), WP_Sync_Table_Schema::CACHE_GROUP );
+			}
 			return $this->upsert_meta( $room, $key, (string) wp_json_encode( $value ) );
 		}
 
@@ -422,6 +575,8 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 			if ( ! $this->is_storable_room( $room ) ) {
 				return true;
 			}
+
+			$this->forget_room_cache( $room );
 
 			$updates = $wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->sync_updates} WHERE room = %s", $room ) );
 			$meta    = $wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->sync_room_meta} WHERE room = %s", $room ) );

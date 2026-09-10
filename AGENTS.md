@@ -94,7 +94,25 @@ This plugin provides:
   live in two plugin-owned tables, `{$prefix}sync_updates` (the update log;
   the row id is the cursor) and `{$prefix}sync_room_meta` (lineage,
   awareness, engine bookkeeping — one row per room and key), so no
-  collaboration write touches post caches. `WP_Sync_Table_Schema` owns
+  collaboration write touches post caches. On a host with a persistent
+  object cache (`wp_using_ext_object_cache()`) the storage follows the
+  strategy the WordPress hosting tests recommended
+  (`custom-table-with-transients`, wordpress-develop#11599): awareness
+  lives ONLY in the object cache (group
+  `WP_Sync_Table_Schema::CACHE_GROUP`, never a row), and the two
+  write-once keys (engine lineage, the polling transport's generation
+  token) are cached after their first read; `reset_room()` drops the
+  cached copies. Nothing else is cached — checkpoints and canonical
+  docs are rewritten under races — and without a persistent cache every
+  read hits the tables (the per-request cache would go stale in the
+  websocket daemon). Independently of the cache, the polling transport
+  rounds awareness timestamps to 10-second buckets
+  (`wp_sync_awareness_timestamp_granularity`) and skips the write when a
+  poll changes nothing, so an idle poll is read-only: with a persistent
+  cache it runs the cursor snapshot plus the engine's own floor read
+  (two queries; six without a cache, seven before the skip). To
+  re-measure, dispatch a poll under the `query` filter as
+  `tests/phpunit/wpHttpPollingSyncServer.php` does. `WP_Sync_Table_Schema` owns
   the lifecycle: activation creates the tables (dbDelta), a bumped
   `DB_VERSION` upgrades them on the next load, deactivation leaves them
   and every room alone, and `uninstall.php` / `wp collaboration storage

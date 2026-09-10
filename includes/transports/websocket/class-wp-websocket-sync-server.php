@@ -1594,6 +1594,7 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 			foreach ( $connected_clients_by_room as $room => $connected_client_ids ) {
 				$entries      = $this->sync->get_storage()->get_awareness_state( $room );
 				$current_time = time();
+				$fresh_stamp  = WP_HTTP_Polling_Sync_Server::awareness_timestamp( $current_time );
 				$kept         = array();
 				$changed      = false;
 				$removed_any  = false;
@@ -1604,10 +1605,14 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 
 					if ( $is_connected ) {
 						// Refresh the timestamp so a quiet-but-connected
-						// client is not expired.
-						$entry['updated_at'] = $current_time;
-						$changed             = true;
-						$kept[]              = $entry;
+						// client is not expired. Timestamps are rounded to
+						// a bucket, so a tick inside the same bucket writes
+						// nothing.
+						if ( $entry['updated_at'] !== $fresh_stamp ) {
+							$entry['updated_at'] = $fresh_stamp;
+							$changed             = true;
+						}
+						$kept[] = $entry;
 						continue;
 					}
 
