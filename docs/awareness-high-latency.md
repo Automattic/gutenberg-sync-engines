@@ -80,8 +80,12 @@ session sees a cursor that jumps every few seconds. Who is in the post
 - **A badge.** The peer's avatar (or their initials on their color) sits
   above the block's top-left corner, like Gutenberg's own block label.
   Hovering it shows the name.
-- **One peer per block.** When two peers are in one block, the first one
-  is shown. Stacked avatars are a later step.
+- **Several peers in one block.** The outline takes the color of the
+  peer who entered the block first, and keeps it as long as that peer
+  stays, so it does not flicker as others come and go. Every peer's
+  avatar sits in one stack above the block, overlapped like the header's
+  collaborator avatars, in the order they arrived. Hovering the stack
+  spreads it out and shows every name.
 - **Nothing lingers.** When the peer's next value names another block,
   the old block's outline and badge go at once. There is no trail and no
   countdown.
@@ -90,8 +94,8 @@ session sees a cursor that jumps every few seconds. Who is in the post
   the outline appears on it.
 
 How it is drawn (`src/awareness/ui/`): the public `editor.BlockListBlock`
-filter marks the block a peer named with a class, the peer's color, and
-the peer's id. The badge cannot be added inside the block, because for
+filter marks the block a peer named with a class, the first peer's color,
+and the ids of every peer in it. The badge cannot be added inside the block, because for
 text blocks the block element is exactly what people type into, and
 anything added there would count as content. So the plugin measures where
 each marked block sits and draws the badge separately, on top of the

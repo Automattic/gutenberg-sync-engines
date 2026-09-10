@@ -1,8 +1,12 @@
 /**
- * The avatar badges: one per block a peer is in, placed above the block's
- * top-left corner like the framework's own block label. Rendered into the
- * block canvas document (the editor iframe) at page coordinates measured
- * from the marked block wrappers, so they scroll with the content.
+ * The avatar badges: one stack per block a peer is in, placed above the
+ * block's top-left corner like the framework's own block label. Rendered
+ * into the block canvas document (the editor iframe) at page coordinates
+ * measured from the marked block wrappers, so they scroll with the content.
+ *
+ * A block with several peers gets one stack, primary peer first, overlapped
+ * like the header's collaborator avatars. Hovering the stack spreads it out
+ * and shows every name.
  *
  * Badges cannot live inside the block wrapper: for text blocks that
  * wrapper is the editable element itself, and a child there would become
@@ -22,7 +26,7 @@ import { __ } from '@wordpress/i18n';
  */
 import { store } from '../store';
 import type { Peer } from '../types';
-import { PEER_ATTRIBUTE } from './block-indicator';
+import { PEERS_ATTRIBUTE, PEERS_SEPARATOR } from './block-indicator';
 import { ensureCanvasStyles, getCanvasDocument } from './canvas-styles';
 
 /** How long after the last editor change to re-measure the blocks. */
@@ -31,8 +35,9 @@ const RELAYOUT_DELAY_MS = 500;
 /** Inline styles that may carry CSS custom properties. */
 type StyleWithVars = React.CSSProperties & Record< `--${ string }`, string >;
 
-interface PlacedBadge {
-	peer: Peer;
+interface PlacedStack {
+	/** The block's peers, primary first. */
+	peers: Peer[];
 	top: number;
 	left: number;
 }
@@ -117,19 +122,26 @@ function Badge( { peer }: { peer: Peer } ) {
  *
  * @param doc   The canvas document.
  * @param peers The peers, by key.
- * @return Badges to draw.
+ * @return Stacks to draw, one per block.
  */
-function measure( doc: Document, peers: Map< string, Peer > ): PlacedBadge[] {
+function measure( doc: Document, peers: Map< string, Peer > ): PlacedStack[] {
 	const win = doc.defaultView;
 	const scrollX = win?.scrollX ?? 0;
 	const scrollY = win?.scrollY ?? 0;
-	const placed: PlacedBadge[] = [];
-	doc.querySelectorAll< HTMLElement >( `[${ PEER_ATTRIBUTE }]` ).forEach(
+	const placed: PlacedStack[] = [];
+	doc.querySelectorAll< HTMLElement >( `[${ PEERS_ATTRIBUTE }]` ).forEach(
 		( element ) => {
-			const peer = peers.get(
-				element.getAttribute( PEER_ATTRIBUTE ) ?? ''
-			);
-			if ( ! peer ) {
+			const keys = ( element.getAttribute( PEERS_ATTRIBUTE ) ?? '' )
+				.split( PEERS_SEPARATOR )
+				.filter( Boolean );
+			const blockPeers: Peer[] = [];
+			for ( const key of keys ) {
+				const peer = peers.get( key );
+				if ( peer ) {
+					blockPeers.push( peer );
+				}
+			}
+			if ( ! blockPeers.length ) {
 				return;
 			}
 			const rect = element.getBoundingClientRect();
@@ -137,7 +149,7 @@ function measure( doc: Document, peers: Map< string, Peer > ): PlacedBadge[] {
 				return;
 			}
 			placed.push( {
-				peer,
+				peers: blockPeers,
 				top: rect.top + scrollY,
 				left: rect.left + scrollX,
 			} );
@@ -157,7 +169,7 @@ function measure( doc: Document, peers: Map< string, Peer > ): PlacedBadge[] {
 export function PresenceBadges() {
 	const peers = useSelect( ( select ) => select( store ).getPeers(), [] );
 	const [ layoutTick, setLayoutTick ] = useState( 0 );
-	const [ placed, setPlaced ] = useState< PlacedBadge[] >( [] );
+	const [ placed, setPlaced ] = useState< PlacedStack[] >( [] );
 	const doc = getCanvasDocument();
 
 	// Editor changes, debounced: the canvas settles before we measure.
@@ -209,7 +221,7 @@ export function PresenceBadges() {
 			subtree: true,
 			childList: true,
 			attributes: true,
-			attributeFilter: [ PEER_ATTRIBUTE ],
+			attributeFilter: [ PEERS_ATTRIBUTE ],
 		} );
 		return () => {
 			resize?.disconnect();
@@ -241,16 +253,20 @@ export function PresenceBadges() {
 
 	return createPortal(
 		<div className="gse-presence-layer">
-			{ placed.map( ( badge ) => (
+			{ placed.map( ( stack ) => (
 				<div
-					key={ badge.peer.key }
+					key={ stack.peers[ 0 ].key }
 					className="gse-presence-badge"
 					style={ {
-						top: `${ badge.top }px`,
-						left: `${ badge.left }px`,
+						top: `${ stack.top }px`,
+						left: `${ stack.left }px`,
 					} }
 				>
-					<Badge peer={ badge.peer } />
+					<div className="gse-avatar-group" role="group">
+						{ stack.peers.map( ( peer ) => (
+							<Badge key={ peer.key } peer={ peer } />
+						) ) }
+					</div>
 				</div>
 			) ) }
 		</div>,

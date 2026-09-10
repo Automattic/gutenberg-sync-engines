@@ -34,6 +34,12 @@ export interface Peer {
 	color: string;
 	/** The block the peer is in (syncId or clientId), or null. */
 	block: string | null;
+	/**
+	 * When the peer entered their current block, as a counter the store
+	 * advances on every block change. Peers sharing a block are ordered by
+	 * it: the lowest value is the peer who has been there longest.
+	 */
+	entered: number;
 }
 
 /**

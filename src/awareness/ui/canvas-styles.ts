@@ -11,6 +11,11 @@
  *   `packages/editor/src/components/collaborators-overlay/overlay-iframe-styles.ts`.
  * - The badge mirrors the `Avatar` component's `badge` variant from
  *   `packages/editor/src/components/collaborators-overlay/avatar-iframe-styles.ts`.
+ * - The stack mirrors `AvatarGroup` from
+ *   `packages/editor/src/components/collaborators-presence/avatar-group/`
+ *   (later avatars tucked 8px under earlier ones), with one addition: the
+ *   header group expands nothing on hover, while here hovering the stack
+ *   spreads it out and opens every badge so each name can be read.
  *
  * The compiled design tokens (`collaborator-styles.ts` there) are inlined.
  */
@@ -66,6 +71,32 @@ const CANVAS_STYLES = `
 	width: max-content;
 }
 
+/*
+ * The stack: the block's peers side by side, primary first. Later avatars
+ * tuck under earlier ones (negative start margin, descending z-index).
+ * Hovering anywhere on the stack removes the overlap; the badges' own
+ * hover rules below open each name at the same time.
+ */
+.gse-avatar-group {
+	display: flex;
+	align-items: center;
+}
+.gse-avatar-group > .gse-avatar + .gse-avatar {
+	margin-inline-start: -8px;
+	transition: margin-inline-start 0.3s cubic-bezier(0.15, 0, 0.15, 1);
+}
+.gse-avatar-group:hover > .gse-avatar + .gse-avatar {
+	margin-inline-start: 4px;
+	transition-timing-function: cubic-bezier(0.85, 0, 0.85, 1);
+}
+${ Array.from(
+	{ length: 10 },
+	( _, index ) =>
+		`.gse-avatar-group > .gse-avatar:nth-child(${ index + 1 }) { z-index: ${
+			10 - index
+		}; }`
+).join( '\n' ) }
+
 /* The avatar badge (the framework's Avatar, badge variant, small). */
 .gse-avatar {
 	position: relative;
@@ -83,7 +114,7 @@ const CANVAS_STYLES = `
 		column-gap 0.3s cubic-bezier(0.15, 0, 0.15, 1),
 		padding-inline-end 0.3s cubic-bezier(0.15, 0, 0.15, 1);
 }
-.gse-avatar:hover {
+.gse-avatar-group:hover .gse-avatar {
 	grid-template-columns: min-content 1fr;
 	column-gap: 4px;
 	padding-inline-end: 8px;
@@ -150,11 +181,12 @@ const CANVAS_STYLES = `
 	white-space: nowrap;
 	transition: opacity 0.15s cubic-bezier(0.15, 0, 0.15, 1);
 }
-.gse-avatar:hover .gse-avatar__name {
+.gse-avatar-group:hover .gse-avatar__name {
 	opacity: 1;
 	transition-timing-function: cubic-bezier(0.85, 0, 0.85, 1);
 }
 @media (prefers-reduced-motion: reduce) {
+	.gse-avatar-group > .gse-avatar + .gse-avatar,
 	.gse-avatar,
 	.gse-avatar__name {
 		transition: none;
