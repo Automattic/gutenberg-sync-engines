@@ -556,6 +556,26 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				);
 			}
 			echo '</fieldset>';
+
+			// Shown only while DE-RTC is the engine: its commits travel
+			// through the autosave endpoint, so the transport's job shrinks.
+			printf(
+				'<p class="description" id="%1$s-de-rtc-note">%2$s</p><script>( function () {
+					var note   = document.getElementById( %3$s );
+					var select = document.getElementById( "wp_sync_engine" );
+					if ( ! note || ! select ) {
+						return;
+					}
+					var toggle = function () {
+						note.style.display = "de-rtc" === select.value ? "" : "none";
+					};
+					select.addEventListener( "change", toggle );
+					toggle();
+				} )();</script>',
+				esc_attr( self::DELIVERY_FIELD ),
+				esc_html__( 'When using the DE-RTC sync engine, the transport only carries peer presence information.', 'gutenberg-sync-engines' ),
+				wp_json_encode( self::DELIVERY_FIELD . '-de-rtc-note' )
+			);
 		}
 
 		/**
