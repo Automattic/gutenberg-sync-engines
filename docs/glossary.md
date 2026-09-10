@@ -111,6 +111,9 @@ use these terms freely; none of them is standard outside this project
   whose truth is one whole document per version.
 - **Oracle** — a benchmark check that decides whether a run was correct
   (for example, "did any edit disappear?").
+- **Slow awareness** — the optional mode where editors exchange only the
+  block they are in, once per interval, instead of live cursors. See
+  `docs/awareness-high-latency.md`.
 - **syncId** — the stable identity stamped on each block
   (`metadata.syncId`) so engines can track a block across edits and
   saves.
