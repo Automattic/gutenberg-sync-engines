@@ -21,6 +21,10 @@ Start here if you want to:
 - **See what we'd change with hindsight** →
   [architecture-decisions.md](architecture-decisions.md) — four early
   decisions worth revisiting, and what each change would cost.
+- **Show presence on a slow connection** →
+  [awareness-high-latency.md](awareness-high-latency.md) — the slow
+  awareness mode: which block each editor is in, once per interval, as an
+  outline and a badge instead of live cursors.
 - **Look up a term** → [glossary.md](glossary.md) — the project's own
   vocabulary in plain words.
 - **See what we plan to build next** → [plan/](plan/README.md) — one

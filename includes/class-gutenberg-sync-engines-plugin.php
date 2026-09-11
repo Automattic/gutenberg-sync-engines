@@ -183,6 +183,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			}
 
 			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/admin/class-gutenberg-sync-engines-settings.php';
+			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/awareness/class-gutenberg-sync-engines-heartbeat-awareness.php';
 		}
 
 		/**
@@ -207,6 +208,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			add_filter( 'wp_sync_transport_client_config', array( $this, 'filter_transport_client_config' ), 10, 2 );
 			add_action( 'enqueue_block_editor_assets', array( $this, 'enqueue_editor_assets' ) );
 			( new Gutenberg_Sync_Engines_Advisory_Presence() )->register();
+			( new Gutenberg_Sync_Engines_Heartbeat_Awareness() )->register();
 
 			( new Gutenberg_Sync_Engines_Settings() )->register();
 		}
@@ -326,29 +328,44 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			$asset  = GUTENBERG_SYNC_ENGINES_PATH . 'build/sync-engines.asset.php';
 			if ( file_exists( $bundle ) && file_exists( $asset ) ) {
 				$meta = require $asset;
+
+				/*
+				 * Plugin-owned client settings (the framework announcement
+				 * stays untouched): the de-rtc commit cadence dial, the
+				 * short-polling interval, and the slow awareness mode, all
+				 * stored in seconds and passed in milliseconds for the
+				 * client's timers.
+				 */
+				$commit_interval    = 0;
+				$polling_interval   = 0;
+				$awareness_interval = 0;
+				$awareness_channel  = 'sync';
+				if ( class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
+					$commit_interval    = (int) get_option( Gutenberg_Sync_Engines_Settings::DE_RTC_COMMIT_INTERVAL_OPTION, Gutenberg_Sync_Engines_Settings::DE_RTC_COMMIT_INTERVAL_DEFAULT );
+					$polling_interval   = Gutenberg_Sync_Engines_Settings::polling_interval();
+					$awareness_interval = Gutenberg_Sync_Engines_Settings::awareness_interval();
+					$awareness_channel  = Gutenberg_Sync_Engines_Settings::awareness_channel();
+				}
+
+				// The Heartbeat awareness channel needs wp.heartbeat on the page.
+				$dependencies = isset( $meta['dependencies'] ) ? $meta['dependencies'] : array();
+				if ( $awareness_interval > 0 && 'heartbeat' === $awareness_channel ) {
+					$dependencies[] = 'heartbeat';
+				}
+
 				wp_enqueue_script(
 					'gutenberg-sync-engines',
 					GUTENBERG_SYNC_ENGINES_URL . 'build/sync-engines.js',
-					isset( $meta['dependencies'] ) ? $meta['dependencies'] : array(),
+					$dependencies,
 					isset( $meta['version'] ) ? $meta['version'] : GUTENBERG_SYNC_ENGINES_VERSION,
 					true
 				);
 
-				/*
-				 * Plugin-owned client settings (the framework announcement
-				 * stays untouched): the de-rtc commit cadence dial and the
-				 * short-polling interval, both stored in seconds and passed
-				 * in milliseconds for the client's timers.
-				 */
-				$commit_interval  = 0;
-				$polling_interval = 0;
-				if ( class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
-					$commit_interval  = (int) get_option( Gutenberg_Sync_Engines_Settings::DE_RTC_COMMIT_INTERVAL_OPTION, Gutenberg_Sync_Engines_Settings::DE_RTC_COMMIT_INTERVAL_DEFAULT );
-					$polling_interval = Gutenberg_Sync_Engines_Settings::polling_interval();
-				}
 				$settings = array(
 					'deRtcCommitIntervalMs' => max( 0, $commit_interval ) * 1000,
 					'httpPollingIntervalMs' => max( 0, min( 25, $polling_interval ) ) * 1000,
+					'awarenessIntervalMs'   => $awareness_interval * 1000,
+					'awarenessChannel'      => $awareness_channel,
 				);
 
 				/*

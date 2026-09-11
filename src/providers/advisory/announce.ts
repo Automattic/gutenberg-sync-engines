@@ -1,16 +1,22 @@
 /**
- * The "I just wrote rows" notice, decoupled from the channel that carries
- * it. Anything that lands rows on the server outside the polling manager
- * (de-rtc's commits ride the autosave endpoint) calls `announceLocalWrite`;
- * the advisory channel subscribes and tells the peers to poll.
+ * Two notices, decoupled from the channels that carry them:
  *
- * A notice is a rumor: it carries a room name (or `*` for "some room") and
- * nothing else. Receivers poll and find out.
+ * - "I just wrote rows". Anything that lands rows on the server outside
+ *   the polling manager (de-rtc's commits ride the autosave endpoint)
+ *   calls `announceLocalWrite`; the advisory channel subscribes and tells
+ *   the peers to poll. A notice is a rumor: it carries a room name (or
+ *   `*` for "some room") and nothing else. Receivers poll and find out.
+ * - "My presence changed". Slow awareness calls
+ *   `announceLocalAwarenessChange` when it names a new block on the local
+ *   awareness state; the polling manager subscribes and carries the state
+ *   to the server now instead of on the next content poll, then tells the
+ *   peers to come and read it.
  */
 
 export const ANY_ROOM = '*';
 
 const listeners: Array< ( room: string ) => void > = [];
+const awarenessListeners: Array< () => void > = [];
 
 /**
  * Announces that this tab landed rows on the server.
@@ -34,8 +40,27 @@ export function onLocalWrite( callback: ( room: string ) => void ): void {
 }
 
 /**
+ * Announces that this tab's local awareness state changed.
+ */
+export function announceLocalAwarenessChange(): void {
+	for ( const callback of awarenessListeners ) {
+		callback();
+	}
+}
+
+/**
+ * Subscribes to local awareness change notices.
+ *
+ * @param callback Called on every change.
+ */
+export function onLocalAwarenessChange( callback: () => void ): void {
+	awarenessListeners.push( callback );
+}
+
+/**
  * Resets the module state. Test use only.
  */
 export function resetAnnounceForTesting(): void {
 	listeners.length = 0;
+	awarenessListeners.length = 0;
 }

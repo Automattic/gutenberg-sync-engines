@@ -46,6 +46,18 @@ release, which the release script generates from the commit history.
 
 ### Added
 
+-   Slow awareness, for connections too slow for live cursors: Settings →
+    Collaboration gains an "Awareness interval" (0 keeps the built-in
+    cursors) and an "Awareness channel" (the sync transport, or WordPress
+    Heartbeat as a separate request stream). With an interval set, each
+    editor reports which block its selection is in, checked once per
+    interval and sent when it changes. Other editors see Gutenberg's
+    block outline and avatar badge on that block instead of a cursor.
+    When several editors share a block, the outline keeps the color of
+    whoever arrived first and the avatars stack, spreading out on hover
+    to show every name. A block that has not reached an editor yet shows
+    nothing until it arrives. See `docs/awareness-high-latency.md`.
+
 -   An advisory channel between the browser tabs editing one post: a
     direct WebRTC link, discovered and negotiated through the heartbeat
     WordPress already sends and through the sync polls themselves,

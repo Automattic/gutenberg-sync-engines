@@ -36,7 +36,10 @@ import {
 	startAdvisoryChannel,
 	stopAdvisoryChannel,
 } from '../advisory/channel';
-import { announceLocalWrite } from '../advisory/announce';
+import {
+	announceLocalWrite,
+	onLocalAwarenessChange,
+} from '../advisory/announce';
 import {
 	applyAnswer,
 	buildProbe,
@@ -441,6 +444,12 @@ let pollsFinished = 0;
 const pollDoneResolvers: Array< { target: number; resolve: () => void } > = [];
 let localUpdatePollTimer: ReturnType< typeof setTimeout > | null = null;
 let announcePollTimer: ReturnType< typeof setTimeout > | null = null;
+/**
+ * The local awareness state changed since the last request was built
+ * (slow awareness named a new block). The request that carries it
+ * announces to the peers on the channel, so they poll and see it.
+ */
+let localAwarenessChanged = false;
 let lastAnnouncePollAt = 0;
 let advisoryHooksInstalled = false;
 
@@ -659,6 +668,50 @@ function reschedule(): void {
 	if ( ! isPolling && hasCompany() ) {
 		poll();
 	}
+}
+
+/**
+ * Local work is waiting (a queued update, or a changed awareness state):
+ * send it on demand when no timer will pick it up soon. That is when the
+ * loop is quiet (alone), a request is in flight with nothing scheduled
+ * behind it (alone, mid-poll), or the pending timer is the slow safety
+ * cadence (every peer on the channel). A scheduled timer at the normal
+ * cadence, or a long-poll re-issue, needs no help. A parked long poll is
+ * woken either way: local work must not wait out the hold.
+ *
+ * @param held Whether the work sits in a held queue (alone, holdable
+ *             codec), which waits for company or a flush instead.
+ */
+function wakeForLocalWork( held = false ): void {
+	const needsWake =
+		! held &&
+		( longPollMode
+			? ! isPolling
+			: ! pollingTimeoutId || isAlone() || advisoryCoversEveryone() );
+	if ( needsWake ) {
+		pollSoonForLocalUpdate();
+	}
+
+	if ( longPollMode && inFlightParkController ) {
+		parkAbortedForLocalUpdate = true;
+		const controller = inFlightParkController;
+		inFlightParkController = null;
+		controller.abort();
+	}
+}
+
+/**
+ * Slow awareness named a new block on the local awareness state. Alone,
+ * nobody is there to read it and the first poll with company carries the
+ * whole state anyway; otherwise carry it now and, once it has landed,
+ * tell the peers on the channel to poll for it.
+ */
+function onLocalAwarenessChanged(): void {
+	if ( 0 === roomStates.size || isAlone() ) {
+		return;
+	}
+	localAwarenessChanged = true;
+	wakeForLocalWork();
 }
 
 /**
@@ -1130,6 +1183,10 @@ function poll(): void {
 		const { payload, roomsInRequest } = buildPayloadForRequest(
 			selectRoomsForRequest()
 		);
+		// Whether this request is the one carrying a changed awareness
+		// state (built from the state as it is now).
+		const carriesAwarenessChange = localAwarenessChanged;
+		localAwarenessChanged = false;
 
 		// Emit 'connecting' status only for rooms in this request. Rooms
 		// rotated out of this poll keep their prior status.
@@ -1257,12 +1314,16 @@ function poll(): void {
 					hasCollaborators = true;
 				}
 
-				// Rows this tab just landed: tell the peers on the channel
-				// to poll. A rumor only — the poll is what delivers them.
+				// Rows this tab just landed, or a changed awareness state
+				// on its post's room: tell the peers on the channel to
+				// poll. A rumor only — the poll is what delivers them.
 				const sentUpdates = payload.rooms.find(
 					( sent ) => sent.room === room.room
 				)?.updates.length;
-				if ( sentUpdates ) {
+				if (
+					sentUpdates ||
+					( carriesAwarenessChange && roomState.isPrimaryRoom )
+				) {
 					announceLocalWrite( room.room );
 				}
 
@@ -1364,6 +1425,10 @@ function poll(): void {
 			// Whatever the cause, the probe's signals never arrived: back to
 			// the outbox for the next carrier.
 			probeFailed( payload.advisory?.seq );
+			if ( carriesAwarenessChange ) {
+				// The next request carries the state and announces it.
+				localAwarenessChanged = true;
+			}
 			if ( parkAbortedForLocalUpdate ) {
 				/*
 				 * Deliberate wake: the parked request carried no updates, so
@@ -1724,34 +1789,9 @@ function registerRoom( {
 
 		updateQueue.add( update );
 
-		/*
-		 * Send on demand when no timer will pick this up soon: the loop is
-		 * quiet (alone), a request is in flight with nothing scheduled
-		 * behind it (alone, mid-poll), or the pending timer is the slow
-		 * safety cadence (every peer on the channel). A scheduled timer
-		 * at the normal cadence, or a long-poll re-issue, needs no help.
-		 */
 		// A held queue (alone, holdable codec) waits for company or a
-		// flush. Otherwise wake when no timer will send this soon: none
-		// pending, or the pending one is the slow safety cadence (alone
-		// with an exempt codec, or every peer on the channel).
-		const held = holdWhileAlone && isAlone();
-		const needsWake =
-			! held &&
-			( longPollMode
-				? ! isPolling
-				: ! pollingTimeoutId || isAlone() || advisoryCoversEveryone() );
-		if ( needsWake ) {
-			pollSoonForLocalUpdate();
-		}
-
-		if ( longPollMode && inFlightParkController ) {
-			// Wake the parked poll: local work must not wait out the hold.
-			parkAbortedForLocalUpdate = true;
-			const controller = inFlightParkController;
-			inFlightParkController = null;
-			controller.abort();
-		}
+		// flush; see wakeForLocalWork for when a wake is needed.
+		wakeForLocalWork( holdWhileAlone && isAlone() );
 	}
 
 	function unregister(): void {
@@ -1791,6 +1831,7 @@ function registerRoom( {
 		window.addEventListener( 'beforeunload', handleBeforeUnload );
 		window.addEventListener( 'pagehide', handlePageHide );
 		document.addEventListener( 'visibilitychange', handleVisibilityChange );
+		onLocalAwarenessChange( onLocalAwarenessChanged );
 		areListenersRegistered = true;
 	}
 

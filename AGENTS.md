@@ -134,6 +134,9 @@ The framework/plugin split is complete: the framework ships **neither** engines
 - `gutenberg-sync-engines.php` — plugin entry.
 - `includes/` — server PHP: `engines/{intent-log,yjs-server,de-rtc}/`,
   `transports/{...,websocket/}`, `admin/` (the Collaboration settings screen),
+  `awareness/` (the WordPress Heartbeat lane of slow awareness: stores each
+  tab's block in a per-post transient and answers with the other tabs';
+  see `docs/awareness-high-latency.md`),
   `storage/` (the room storage tables: `class-wp-sync-table-schema.php`
   — names, definition, create/upgrade/drop, loaded by the plugin entry
   ahead of the activation hook; `class-wp-sync-table-storage.php` — the
@@ -235,6 +238,18 @@ The framework/plugin split is complete: the framework ships **neither** engines
     by eslint), inherited from the retired yjs-relay engine and used by
     yjs-server.
   - `providers/{http-polling,http-long-polling,websocket}/` — transports.
+  - `awareness/` — SLOW AWARENESS (`docs/awareness-high-latency.md`),
+    on when the "Awareness interval" setting is above 0: each tab
+    publishes the block its selection is in (`metadata.syncId`, else the
+    editor clientId, or null) once per interval, over the sync
+    transport's awareness state (field `gseBlock`) or WordPress
+    Heartbeat (`channels/`), and peers draw Gutenberg's block outline and
+    avatar badge on that block (`ui/`, through the public
+    `editor.BlockListBlock` filter plus a badge layer drawn into the
+    canvas document). `registry.ts` installs the field's equality check
+    on EVERY awareness instance the engines create, in every mode: a
+    peer can carry the field at any time and core-data throws on an
+    unknown field. Jest: `tests/js/awareness/`.
   - `framework.ts` — unlocks `@wordpress/sync` private APIs once and re-exports
     the framework runtime the adapters use.
 - `gutenberg/` — a **pinned, squashed git subtree of Gutenberg** (source only;
@@ -556,6 +571,17 @@ they exist so a failure is observable without re-instrumenting:
 - **Jest scope:** `jest.config.js` sets `roots: [src, tests]`. Without it,
   `wp-scripts test-unit-js` recurses into the subtree's ~1030 monorepo suites.
 - **phpcs scope:** `phpcs.xml.dist` excludes `/gutenberg/*`.
+- **Slow awareness rides whatever carries awareness.** Over the sync
+  transport the block name goes out on the framework awareness state,
+  and a new name raises `announceLocalAwarenessChange`
+  (`src/providers/advisory/announce.ts`): the polling manager treats it
+  like queued local work (a poll shortly, even under full advisory
+  coverage where no timer runs) and announces to the channel peers once
+  it has landed, so they poll for it. Alone, nothing is sent. The e2e
+  spec turns the advisory channel off for its duration. Under the Heartbeat channel the plugin SETS the admin
+  Heartbeat interval on post edit screens, and the advisory channel's
+  discovery probe rides that same beat, so its cadence follows the
+  awareness interval too.
 - **wp-env is a devDep here.** `@wordpress/scripts` does NOT bundle it. It's
   pinned to `@wordpress/env@^11` (for auto-port) with a top-level `overrides`
   entry, because scripts@30 only *optionally* peer-depends on env 10 — the
