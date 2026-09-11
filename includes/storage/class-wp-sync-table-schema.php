@@ -75,6 +75,33 @@ if ( ! class_exists( 'WP_Sync_Table_Schema' ) ) {
 		const ROOM_META_TABLE = 'sync_room_meta';
 
 		/**
+		 * Object-cache group for the per-room values the storage serves
+		 * from a persistent cache (presence, and the write-once lineage and
+		 * generation keys). Per site, never global: `switch_to_blog()`
+		 * re-prefixes it like the tables. Flushed whenever every room is
+		 * emptied or the tables are dropped.
+		 *
+		 * @since n.e.x.t
+		 * @var string
+		 */
+		const CACHE_GROUP = 'wp_sync_rooms';
+
+		/**
+		 * Forgets every cached per-room value for the current site.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return void
+		 */
+		public static function flush_cache(): void {
+			if ( function_exists( 'wp_cache_supports' ) && wp_cache_supports( 'flush_group' ) ) {
+				wp_cache_flush_group( self::CACHE_GROUP );
+				return;
+			}
+			wp_cache_flush();
+		}
+
+		/**
 		 * Registers the table names on `$wpdb` for the current site.
 		 *
 		 * Runs on every load, before anything reads `$wpdb->sync_updates`
@@ -259,6 +286,7 @@ if ( ! class_exists( 'WP_Sync_Table_Schema' ) ) {
 				$wpdb->query( "DROP TABLE IF EXISTS `{$table}`" );
 			}
 			delete_option( self::DB_VERSION_OPTION );
+			self::flush_cache();
 		}
 
 		/**
@@ -294,6 +322,7 @@ if ( ! class_exists( 'WP_Sync_Table_Schema' ) ) {
 				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Deliberate wipe of every room; the name is one of the two registered tables.
 				$ok = false !== $wpdb->query( "DELETE FROM `{$table}`" ) && $ok;
 			}
+			self::flush_cache();
 			return $ok;
 		}
 

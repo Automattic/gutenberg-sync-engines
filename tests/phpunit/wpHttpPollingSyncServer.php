@@ -679,6 +679,138 @@ class Tests_Collaboration_WpHttpPollingSyncServer extends WP_Test_REST_Controlle
 		$this->assertContains( 'update', $types );
 	}
 
+	/**
+	 * Runs a callback and returns every SQL statement it issued.
+	 *
+	 * @param callable $callback What to run.
+	 * @return string[] The statements, in order.
+	 */
+	private function record_queries( callable $callback ): array {
+		$seen     = array();
+		$recorder = static function ( $query ) use ( &$seen ) {
+			$seen[] = (string) $query;
+			return $query;
+		};
+		add_filter( 'query', $recorder );
+		try {
+			$callback();
+		} finally {
+			remove_filter( 'query', $recorder );
+		}
+		return $seen;
+	}
+
+	private function queries_touching( array $queries, string $table ): array {
+		return array_values(
+			array_filter(
+				$queries,
+				static function ( string $query ) use ( $table ) {
+					return false !== stripos( $query, $table );
+				}
+			)
+		);
+	}
+
+	private function write_queries( array $queries ): array {
+		return array_values(
+			array_filter(
+				$queries,
+				static function ( string $query ) {
+					return (bool) preg_match( '/^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i', $query );
+				}
+			)
+		);
+	}
+
+	public function test_a_poll_carrying_unchanged_awareness_writes_nothing() {
+		global $wpdb;
+		wp_set_current_user( self::$editor_id );
+
+		// One wide bucket so the two polls cannot straddle a boundary.
+		$wide = static fn() => HOUR_IN_SECONDS;
+		add_filter( 'wp_sync_awareness_timestamp_granularity', $wide );
+
+		$room  = $this->get_post_room();
+		$first = $this->record_queries( fn() => $this->dispatch_sync( array( $this->build_room( $room, 1, 0, array( 'user' => 'one' ) ) ) ) );
+		$this->assertNotEmpty( $this->write_queries( $this->queries_touching( $first, $wpdb->sync_room_meta ) ), 'The first poll records the client.' );
+
+		$second = $this->record_queries( fn() => $this->dispatch_sync( array( $this->build_room( $room, 1, 0, array( 'user' => 'one' ) ) ) ) );
+		$this->assertSame( array(), $this->write_queries( $second ), 'A poll that changes nothing is read-only.' );
+
+		$changed = $this->record_queries(
+			fn() => $this->dispatch_sync(
+				array(
+					$this->build_room(
+						$room,
+						1,
+						0,
+						array(
+							'user'   => 'one',
+							'cursor' => 4,
+						)
+					),
+				)
+			)
+		);
+		$this->assertNotEmpty( $this->write_queries( $this->queries_touching( $changed, $wpdb->sync_room_meta ) ), 'A changed state is written.' );
+
+		remove_filter( 'wp_sync_awareness_timestamp_granularity', $wide );
+	}
+
+	public function test_awareness_timestamps_round_up_to_the_bucket() {
+		$this->assertSame( 100, WP_HTTP_Polling_Sync_Server::awareness_timestamp( 100 ) );
+		$this->assertSame( 110, WP_HTTP_Polling_Sync_Server::awareness_timestamp( 101 ) );
+		$this->assertSame( 110, WP_HTTP_Polling_Sync_Server::awareness_timestamp( 110 ) );
+
+		$exact = static fn() => 1;
+		add_filter( 'wp_sync_awareness_timestamp_granularity', $exact );
+		$this->assertSame( 101, WP_HTTP_Polling_Sync_Server::awareness_timestamp( 101 ) );
+		remove_filter( 'wp_sync_awareness_timestamp_granularity', $exact );
+	}
+
+	public function test_an_idle_poll_with_a_persistent_object_cache_reads_one_table_once() {
+		global $wpdb;
+		wp_set_current_user( self::$editor_id );
+
+		$wide     = static fn() => HOUR_IN_SECONDS;
+		add_filter( 'wp_sync_awareness_timestamp_granularity', $wide );
+		$previous = wp_using_ext_object_cache( true );
+		try {
+			$room = $this->get_post_room();
+
+			// A room with history: one update stamps the lineage, and the
+			// first read mints the generation token.
+			$this->dispatch_sync(
+				array(
+					$this->build_room(
+						$room,
+						1,
+						0,
+						array( 'user' => 'one' ),
+						array(
+							array(
+								'type' => 'update',
+								'data' => 'dGVzdA==',
+							),
+						)
+					),
+				)
+			);
+			$response = $this->dispatch_sync( array( $this->build_room( $room, 2, 0, array( 'user' => 'two' ) ) ) );
+			$cursor   = (int) $response->get_data()['rooms'][0]['end_cursor'];
+
+			// Now the idle poll: same awareness, nothing new to fetch.
+			$idle = $this->record_queries( fn() => $this->dispatch_sync( array( $this->build_room( $room, 2, $cursor, array( 'user' => 'two' ) ) ) ) );
+
+			$this->assertSame( array(), $this->write_queries( $idle ), 'Nothing is written.' );
+			$this->assertSame( array(), $this->queries_touching( $idle, $wpdb->sync_room_meta ), 'Presence, lineage, and the generation token come from the cache.' );
+			$this->assertCount( 1, $this->queries_touching( $idle, $wpdb->sync_updates ), 'Only the cursor snapshot reads the update log.' );
+		} finally {
+			wp_using_ext_object_cache( (bool) $previous );
+			remove_filter( 'wp_sync_awareness_timestamp_granularity', $wide );
+		}
+	}
+
 	public function test_sync_own_updates_not_returned() {
 		wp_set_current_user( self::$editor_id );
 

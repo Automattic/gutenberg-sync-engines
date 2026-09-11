@@ -35,6 +35,15 @@ release, which the release script generates from the commit history.
     are not migrated: those posts stay behind unused, and every room
     rebuilds from its saved post on the next session.
 
+-   On a site with a persistent object cache (Redis, Memcached), who is
+    present in a room is now kept in the object cache instead of the
+    database, following the storage strategy the WordPress hosting
+    performance tests recommended. A poll that changes nothing no longer
+    writes to the database at all, and with a persistent cache it runs
+    two queries instead of seven. A cache flush costs one poll round trip of presence
+    and nothing else. Sites without a persistent cache keep using the
+    tables and still gain the skipped writes.
+
 ### Added
 
 -   Slow awareness, for connections too slow for live cursors: Settings →

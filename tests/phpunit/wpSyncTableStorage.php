@@ -185,6 +185,112 @@ class Tests_Collaboration_WpSyncTableStorage extends WP_UnitTestCase {
 		$this->assertSame( array(), $storage->get_awareness_state( $room ) );
 	}
 
+	/**
+	 * Runs a callback with `wp_using_ext_object_cache()` reporting a
+	 * persistent cache. The test suite's in-memory cache stands in for it:
+	 * within one test it outlives every storage instance, like a real
+	 * persistent cache outlives requests.
+	 *
+	 * @param callable $callback What to run.
+	 */
+	private function with_persistent_object_cache( callable $callback ): void {
+		// The flag is null in the PHPUnit bootstrap, and passing null back
+		// would leave it set: restore an explicit false in that case.
+		$previous = wp_using_ext_object_cache( true );
+		try {
+			$callback();
+		} finally {
+			wp_using_ext_object_cache( (bool) $previous );
+		}
+	}
+
+	private function count_queries( callable $callback ): int {
+		global $wpdb;
+		$before = $wpdb->num_queries;
+		$callback();
+		return $wpdb->num_queries - $before;
+	}
+
+	public function test_with_a_persistent_object_cache_awareness_never_touches_the_tables() {
+		global $wpdb;
+		$room = $this->room();
+
+		$this->with_persistent_object_cache(
+			function () use ( $room, $wpdb ) {
+				$entries = array(
+					array(
+						'client_id'  => 5,
+						'state'      => array( 'user' => 'five' ),
+						'updated_at' => 100,
+						'wp_user_id' => 1,
+					),
+				);
+
+				$queries = $this->count_queries(
+					function () use ( $room, $entries ) {
+						$this->assertSame( array(), $this->storage()->get_awareness_state( $room ) );
+						$this->assertTrue( $this->storage()->set_awareness_state( $room, $entries ) );
+						$this->assertSame( $entries, $this->storage()->get_awareness_state( $room ), 'A fresh instance reads what another wrote.' );
+					}
+				);
+				$this->assertSame( 0, $queries, 'Presence lives in the cache only.' );
+
+				$this->assertNull(
+					$wpdb->get_var( $wpdb->prepare( "SELECT meta_value FROM {$wpdb->sync_room_meta} WHERE room = %s AND meta_key = %s", $room, WP_Sync_Table_Storage::AWARENESS_KEY ) ),
+					'No awareness row is written.'
+				);
+
+				$this->assertTrue( $this->storage()->reset_room( $room ) );
+				$this->assertSame( array(), $this->storage()->get_awareness_state( $room ), 'A reset forgets the cached presence.' );
+			}
+		);
+	}
+
+	public function test_with_a_persistent_object_cache_the_write_once_keys_are_read_once() {
+		$room = $this->room();
+
+		$this->with_persistent_object_cache(
+			function () use ( $room ) {
+				$storage = $this->storage();
+
+				// Absence is never cached: an unstamped room is re-read.
+				$this->assertSame( 1, $this->count_queries( fn() => $this->assertNull( $storage->get_room_engine( $room ) ) ) );
+				$this->assertSame( 1, $this->count_queries( fn() => $this->assertNull( $storage->get_room_engine( $room ) ) ) );
+
+				$this->assertTrue( $storage->set_room_engine( $room, 'intent-log' ) );
+				$this->assertSame( 0, $this->count_queries( fn() => $this->assertSame( 'intent-log', $this->storage()->get_room_engine( $room ) ) ), 'The read-back after stamping primed the cache.' );
+
+				$this->assertSame( 1, $this->count_queries( fn() => $this->assertNull( $storage->get_room_meta( $room, WP_Sync_Table_Storage::GENERATION_KEY ) ) ) );
+				$this->assertTrue( $storage->set_room_meta( $room, WP_Sync_Table_Storage::GENERATION_KEY, 'g7' ) );
+				$this->assertSame( 1, $this->count_queries( fn() => $this->assertSame( 'g7', $this->storage()->get_room_meta( $room, WP_Sync_Table_Storage::GENERATION_KEY ) ) ), 'First read after the write hits the table.' );
+				$this->assertSame( 0, $this->count_queries( fn() => $this->assertSame( 'g7', $this->storage()->get_room_meta( $room, WP_Sync_Table_Storage::GENERATION_KEY ) ) ), 'Second read is served from the cache.' );
+
+				// Engine bookkeeping is never cached.
+				$storage->set_room_meta( $room, 'checkpoint', array( 'cursor' => 3 ) );
+				$this->assertSame( 1, $this->count_queries( fn() => $storage->get_room_meta( $room, 'checkpoint' ) ) );
+				$this->assertSame( 1, $this->count_queries( fn() => $storage->get_room_meta( $room, 'checkpoint' ) ) );
+
+				$this->assertTrue( $storage->reset_room( $room ) );
+				$this->assertNull( $this->storage()->get_room_engine( $room ), 'A reset forgets the cached lineage.' );
+				$this->assertNull( $this->storage()->get_room_meta( $room, WP_Sync_Table_Storage::GENERATION_KEY ), 'A reset forgets the cached generation.' );
+			}
+		);
+	}
+
+	public function test_without_a_persistent_object_cache_every_read_hits_the_tables() {
+		$this->assertNotTrue( wp_using_ext_object_cache(), 'The suite runs without a persistent cache.' );
+		$storage = $this->storage();
+		$room    = $this->room();
+
+		$storage->set_room_engine( $room, 'de-rtc' );
+		$storage->set_awareness_state( $room, array( array( 'client_id' => 1 ) ) );
+
+		$this->assertSame( 1, $this->count_queries( fn() => $this->assertSame( 'de-rtc', $storage->get_room_engine( $room ) ) ) );
+		$this->assertSame( 1, $this->count_queries( fn() => $this->assertSame( 'de-rtc', $storage->get_room_engine( $room ) ) ) );
+		$this->assertSame( 1, $this->count_queries( fn() => $this->assertCount( 1, $storage->get_awareness_state( $room ) ) ) );
+		$this->assertSame( 1, $this->count_queries( fn() => $this->assertCount( 1, $storage->get_awareness_state( $room ) ) ) );
+	}
+
 	public function test_room_meta_round_trips_and_replaces() {
 		$storage = $this->storage();
 		$room    = $this->room();
