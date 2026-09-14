@@ -572,12 +572,13 @@ they exist so a failure is observable without re-instrumenting:
   `wp-scripts test-unit-js` recurses into the subtree's ~1030 monorepo suites.
 - **phpcs scope:** `phpcs.xml.dist` excludes `/gutenberg/*`.
 - **Slow awareness rides whatever carries awareness.** Over the sync
-  transport the block name goes out on the framework awareness state,
-  and a new name raises `announceLocalAwarenessChange`
-  (`src/providers/advisory/announce.ts`): the polling manager treats it
-  like queued local work (a poll shortly, even under full advisory
-  coverage where no timer runs) and announces to the channel peers once
-  it has landed, so they poll for it. Alone, nothing is sent. The e2e
+  transport the block name goes out on the framework awareness state
+  (`gseBlock`), which is one of the BASE presence fields the advisory
+  channel's presence lane carries peer to peer, so under short polling
+  a new name reaches every reachable peer with no request at all. A
+  new name also raises `announceLocalAwarenessChange`
+  (`src/providers/advisory/announce.ts`), which the polling manager
+  uses only under long polling, to reissue a parked request. The e2e
   spec turns the advisory channel off for its duration. Under the Heartbeat channel the plugin SETS the admin
   Heartbeat interval on post edit screens, and the advisory channel's
   discovery probe rides that same beat, so its cadence follows the

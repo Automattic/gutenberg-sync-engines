@@ -5,11 +5,12 @@
  * Nothing between `setLocalStateField` and the peers' `onStateChange`
  * inspects awareness content (the server stores it opaquely), so this
  * needs no engine, transport, or PHP change and works over http-polling,
- * long-polling, and websocket alike. The field goes out with the next
- * request that carries awareness: the next poll (under short polling with
- * an advisory channel covering every peer, that is the next poll a content
- * change causes), the next long-poll reissue, or the websocket's periodic
- * awareness frame. The Heartbeat channel is the one with its own cadence.
+ * long-polling, and websocket alike. Under short polling the advisory
+ * channel's presence lane carries the field to every reachable peer within
+ * a moment, and the timer polls carry it to the rest; under long polling
+ * it rides the next request (a parked one is reissued); under websocket it
+ * goes with the periodic awareness frame. The Heartbeat channel is the one
+ * with its own cadence.
  *
  * While this channel is active the framework's live-cursor field
  * (`editorState`) is suppressed on the local state, so peers see the block
@@ -170,9 +171,8 @@ export function createSyncChannel( options: SyncChannelOptions ): Channel {
 		},
 		publish( block ) {
 			awareness.setLocalStateField( BLOCK_FIELD, block );
-			// The transport may have no request due for a while (short
-			// polling with every peer on the advisory channel): ask it to
-			// carry the new block now rather than with the next content.
+			// A parked long poll would hold the value until the server
+			// answers: let the transport reissue it now.
 			announceLocalAwarenessChange();
 		},
 	};

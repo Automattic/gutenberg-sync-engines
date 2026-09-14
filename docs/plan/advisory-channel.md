@@ -198,6 +198,10 @@ A lone tab holds its updates until company arrives. Two cases matter:
 Cursors and selections stay on the base transport by decision: over the
 channel they would point at content positions the receiver has not yet
 polled for. Rethinking awareness for low-latency lanes is out of scope.
+The one exception is slow awareness's block name (`gseBlock`, see
+[awareness-high-latency.md](../awareness-high-latency.md)): it names a
+block rather than a position, and a receiver that does not hold that
+block yet shows nothing until it arrives, so it rides the presence lane.
 
 What happens to the room when the last editor leaves is a separate
 switch, [room-lifetime.md](room-lifetime.md).

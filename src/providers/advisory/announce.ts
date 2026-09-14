@@ -8,9 +8,10 @@
  *   `*` for "some room") and nothing else. Receivers poll and find out.
  * - "My presence changed". Slow awareness calls
  *   `announceLocalAwarenessChange` when it names a new block on the local
- *   awareness state; the polling manager subscribes and carries the state
- *   to the server now instead of on the next content poll, then tells the
- *   peers to come and read it.
+ *   awareness state. Under short polling the advisory channel's presence
+ *   lane already carries the field, so the polling manager only reacts
+ *   under long polling, where it reissues a parked request so the value
+ *   does not wait out the hold.
  */
 
 export const ANY_ROOM = '*';

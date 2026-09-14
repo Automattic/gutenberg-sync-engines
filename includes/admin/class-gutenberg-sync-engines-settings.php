@@ -1080,7 +1080,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			$choices = array(
 				self::AWARENESS_CHANNEL_SYNC      => array(
 					__( 'Sync transport.', 'gutenberg-sync-engines' ),
-					__( 'The block name travels with the same requests as content. With an advisory channel connected, it waits for the next content request.', 'gutenberg-sync-engines' ),
+					__( 'The block name travels on the sync transport, beside the content. With an advisory channel connected it reaches the other editors directly, without waiting for a request.', 'gutenberg-sync-engines' ),
 				),
 				self::AWARENESS_CHANNEL_HEARTBEAT => array(
 					__( 'WordPress Heartbeat.', 'gutenberg-sync-engines' ),

@@ -44,15 +44,12 @@ The value can travel two ways, chosen by "Awareness channel":
 - **Sync transport** (default). The value is one more field on the
   framework's awareness state (`gseBlock`), so it travels with the same
   requests as content under polling, long polling, and WebSocket alike.
-  No server change. A new value asks the transport to send it right
-  away, the same way a content change does: under short polling a poll
-  goes out shortly (even when the advisory channel has every peer
-  reachable and the timer is quiet), and once it has landed the tab
-  tells the peers on the advisory channel to poll and read it. Under
-  long polling the held request is reissued with the new value. Under
-  WebSocket it goes out with the transport's periodic awareness message,
-  every 10 seconds. Nothing is sent while the tab is alone; the first
-  request with company carries the whole state anyway.
+  No server change. Under short polling the advisory channel carries
+  the value straight to every peer it can reach, within a moment, the
+  same way it carries who is present; peers it cannot reach get it on
+  their next timer poll. Under long polling the held request is
+  reissued with the new value. Under WebSocket it goes out with the
+  transport's periodic awareness message, every 10 seconds.
 - **WordPress Heartbeat.** The value travels on WordPress's admin
   Heartbeat request instead, a separate request that repeats on its own
   timer. The server keeps each post's latest values in short-term storage

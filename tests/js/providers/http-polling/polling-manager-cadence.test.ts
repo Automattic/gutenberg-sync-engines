@@ -436,38 +436,19 @@ describe( 'polling-manager cadence', () => {
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 4 );
 	} );
 
-	it( 'a changed awareness state under coverage polls on demand and announces it', async () => {
+	it( 'a changed awareness state under coverage rides the presence lane, not a poll', async () => {
 		mockPostSyncUpdate.mockResolvedValue( response( [ 1, 2 ] ) );
 		mockOthers = true;
 		mockCoverage = true;
 		register();
 		await jest.advanceTimersByTimeAsync( 0 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
-		expect( mockAnnounceLocalWrite ).not.toHaveBeenCalled();
 
-		// Slow awareness names a new block: the state must not wait out
-		// the safety cadence, so a poll goes shortly, and the peers on
-		// the channel are told to come and read it.
+		// Slow awareness names a new block: the advisory channel's
+		// presence lane carries the field, so no poll and no rumor.
 		mockCallbacks.awareness.forEach( ( cb ) => cb() );
-		await jest.advanceTimersByTimeAsync( 350 );
-		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
-		expect( mockAnnounceLocalWrite ).toHaveBeenCalledTimes( 1 );
-		expect( mockAnnounceLocalWrite ).toHaveBeenCalledWith( 'test-room' );
-
-		// Nothing else changed: no further poll and no further rumor.
 		await jest.advanceTimersByTimeAsync( 10000 );
-		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
-		expect( mockAnnounceLocalWrite ).toHaveBeenCalledTimes( 1 );
-	} );
-
-	it( 'a changed awareness state while alone waits for company', async () => {
-		mockPostSyncUpdate.mockResolvedValue( response( [ 1 ] ) );
-		register();
-		await jest.advanceTimersByTimeAsync( 0 );
-		const before = mockPostSyncUpdate.mock.calls.length;
-		mockCallbacks.awareness.forEach( ( cb ) => cb() );
-		await jest.advanceTimersByTimeAsync( 350 );
-		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( before );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
 		expect( mockAnnounceLocalWrite ).not.toHaveBeenCalled();
 	} );
 

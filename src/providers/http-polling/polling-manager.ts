@@ -40,6 +40,7 @@ import {
 	announceLocalWrite,
 	onLocalAwarenessChange,
 } from '../advisory/announce';
+import { BLOCK_FIELD } from '../../awareness/channels/sync-channel';
 import {
 	applyAnswer,
 	buildProbe,
@@ -444,12 +445,6 @@ let pollsFinished = 0;
 const pollDoneResolvers: Array< { target: number; resolve: () => void } > = [];
 let localUpdatePollTimer: ReturnType< typeof setTimeout > | null = null;
 let announcePollTimer: ReturnType< typeof setTimeout > | null = null;
-/**
- * The local awareness state changed since the last request was built
- * (slow awareness named a new block). The request that carries it
- * announces to the peers on the channel, so they poll and see it.
- */
-let localAwarenessChanged = false;
 let lastAnnouncePollAt = 0;
 let advisoryHooksInstalled = false;
 
@@ -691,27 +686,31 @@ function wakeForLocalWork( held = false ): void {
 	if ( needsWake ) {
 		pollSoonForLocalUpdate();
 	}
-
-	if ( longPollMode && inFlightParkController ) {
-		parkAbortedForLocalUpdate = true;
-		const controller = inFlightParkController;
-		inFlightParkController = null;
-		controller.abort();
-	}
+	abortParkedLongPoll();
 }
 
 /**
- * Slow awareness named a new block on the local awareness state. Alone,
- * nobody is there to read it and the first poll with company carries the
- * whole state anyway; otherwise carry it now and, once it has landed,
- * tell the peers on the channel to poll for it.
+ * Wakes a parked long poll so local work does not wait out the hold.
  */
-function onLocalAwarenessChanged(): void {
-	if ( 0 === roomStates.size || isAlone() ) {
+function abortParkedLongPoll(): void {
+	if ( ! longPollMode || ! inFlightParkController ) {
 		return;
 	}
-	localAwarenessChanged = true;
-	wakeForLocalWork();
+	parkAbortedForLocalUpdate = true;
+	const controller = inFlightParkController;
+	inFlightParkController = null;
+	controller.abort();
+}
+
+/**
+ * Slow awareness named a new block on the local awareness state. Under
+ * short polling the advisory channel's presence lane carries the field
+ * to reachable peers, and the timer polls carry it to the rest, so
+ * nothing needs to happen here. Under long polling the channel is off
+ * and the value rides the next request: reissue a parked one now.
+ */
+function onLocalAwarenessChanged(): void {
+	abortParkedLongPoll();
 }
 
 /**
@@ -775,11 +774,17 @@ function mergedAwareness( state: RoomState ): AwarenessState {
 	return merged;
 }
 
-const BASE_PRESENCE_FIELDS = [ 'collaboratorInfo', 'name', 'isActive' ];
+const BASE_PRESENCE_FIELDS = [
+	'collaboratorInfo',
+	'name',
+	'isActive',
+	BLOCK_FIELD,
+];
 
 /**
- * The part of an awareness state that says WHO this is (not where their
- * cursor is): the fields the channel carries.
+ * The part of an awareness state that says WHO this is and, under slow
+ * awareness, WHICH BLOCK they are in (not where their cursor is): the
+ * fields the channel carries.
  *
  * @param state The local awareness state.
  */
@@ -852,9 +857,11 @@ function installAdvisoryHooks(): void {
 		}
 	} );
 	// Only BASE presence rides the channel (who is here: user info, name,
-	// activity). Cursors and selections stay on the polls by decision:
-	// over the channel they would point at content positions the
-	// receiver has not polled for yet.
+	// activity, and the slow-awareness block name, which names a block
+	// the receiver may not hold yet and then shows nothing until it
+	// does). Cursors and selections stay on the polls by decision: over
+	// the channel they would point at content positions the receiver
+	// has not polled for yet.
 	setPresenceSource( () =>
 		Array.from( roomStates.values() ).map( ( state ) => ( {
 			room: state.room,
@@ -1183,10 +1190,6 @@ function poll(): void {
 		const { payload, roomsInRequest } = buildPayloadForRequest(
 			selectRoomsForRequest()
 		);
-		// Whether this request is the one carrying a changed awareness
-		// state (built from the state as it is now).
-		const carriesAwarenessChange = localAwarenessChanged;
-		localAwarenessChanged = false;
 
 		// Emit 'connecting' status only for rooms in this request. Rooms
 		// rotated out of this poll keep their prior status.
@@ -1314,16 +1317,12 @@ function poll(): void {
 					hasCollaborators = true;
 				}
 
-				// Rows this tab just landed, or a changed awareness state
-				// on its post's room: tell the peers on the channel to
-				// poll. A rumor only — the poll is what delivers them.
+				// Rows this tab just landed: tell the peers on the channel
+				// to poll. A rumor only — the poll is what delivers them.
 				const sentUpdates = payload.rooms.find(
 					( sent ) => sent.room === room.room
 				)?.updates.length;
-				if (
-					sentUpdates ||
-					( carriesAwarenessChange && roomState.isPrimaryRoom )
-				) {
+				if ( sentUpdates ) {
 					announceLocalWrite( room.room );
 				}
 
@@ -1425,10 +1424,6 @@ function poll(): void {
 			// Whatever the cause, the probe's signals never arrived: back to
 			// the outbox for the next carrier.
 			probeFailed( payload.advisory?.seq );
-			if ( carriesAwarenessChange ) {
-				// The next request carries the state and announces it.
-				localAwarenessChanged = true;
-			}
 			if ( parkAbortedForLocalUpdate ) {
 				/*
 				 * Deliberate wake: the parked request carried no updates, so
