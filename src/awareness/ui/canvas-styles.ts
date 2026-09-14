@@ -299,17 +299,3 @@ export function getCanvasDocument(): Document {
 	);
 	return iframe?.contentDocument ?? document;
 }
-
-/**
- * Finds a block's wrapper element in either document.
- *
- * @param clientId Block clientId.
- * @return The element, or null.
- */
-export function getBlockElement( clientId: string ): HTMLElement | null {
-	const id = `block-${ clientId }`;
-	return (
-		getCanvasDocument().getElementById( id ) ??
-		document.getElementById( id )
-	);
-}

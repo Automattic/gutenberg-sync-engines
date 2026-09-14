@@ -10,6 +10,10 @@
  *
  * The primary peer is whoever entered the block first and is still there,
  * so the outline color does not flicker when others come and go.
+ *
+ * The outline's styles reach the canvas document through the badge layer
+ * (`PresenceBadges` injects them whenever any peer exists), so this
+ * component only marks the wrapper.
  */
 
 /**
@@ -17,7 +21,6 @@
  */
 import { createHigherOrderComponent } from '@wordpress/compose';
 import { useSelect } from '@wordpress/data';
-import { useEffect } from '@wordpress/element';
 import { addFilter } from '@wordpress/hooks';
 
 /**
@@ -25,7 +28,6 @@ import { addFilter } from '@wordpress/hooks';
  */
 import { getSyncId } from '../block-id';
 import { store } from '../store';
-import { ensureCanvasStyles, getBlockElement } from './canvas-styles';
 
 interface BlockListBlockProps {
 	clientId: string;
@@ -62,17 +64,6 @@ const withPeerPresence = createHigherOrderComponent(
 				[ syncId, clientId ]
 			);
 			const primary = peers[ 0 ];
-
-			useEffect( () => {
-				if ( ! primary ) {
-					return;
-				}
-				const element = getBlockElement( clientId );
-				if ( element ) {
-					ensureCanvasStyles( element.ownerDocument );
-				}
-			}, [ primary, clientId ] );
-
 			if ( ! primary ) {
 				return <BlockListBlock { ...props } />;
 			}
