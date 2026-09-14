@@ -1,7 +1,8 @@
 /**
- * The publisher: samples which block the local selection is in and hands
- * it to the channel, once per interval (the sync channel) or whenever the
- * channel asks (the Heartbeat channel flushes right before each beat).
+ * The publisher: samples which block the local selection is in once per
+ * interval and hands it to the sync channel when it changed. (The
+ * Heartbeat channel needs no publisher: it reads the selection itself
+ * as each probe is built.)
  */
 
 /**
@@ -13,20 +14,13 @@ import type { BlockTreeReader } from './block-id';
 export interface PublisherOptions {
 	reader: BlockTreeReader;
 	intervalMs: number;
-	/**
-	 * `timer`: publish on start and then every interval, only when the
-	 * block changed. `manual`: publish on every `flush()` (the caller
-	 * owns the cadence and wants the current value each time).
-	 */
-	schedule: 'timer' | 'manual';
 	onPublish: ( block: string | null ) => void;
 }
 
 export interface Publisher {
+	/** Publishes now, then every interval while the block changes. */
 	start: () => void;
 	stop: () => void;
-	/** Samples the selection now and publishes it; returns the block. */
-	flush: () => string | null;
 }
 
 /**
@@ -38,38 +32,31 @@ export interface Publisher {
 export function createPresencePublisher(
 	options: PublisherOptions
 ): Publisher {
-	const { reader, intervalMs, schedule, onPublish } = options;
+	const { reader, intervalMs, onPublish } = options;
 	let timer: ReturnType< typeof setInterval > | null = null;
-	let published = false;
-	let lastBlock: string | null = null;
+	/** The last block published; undefined before the first publish. */
+	let lastBlock: string | null | undefined;
 
-	function flush(): string | null {
+	function publish(): void {
 		const block = focusedBlockId( reader );
-		if ( 'timer' === schedule && published && block === lastBlock ) {
-			return block;
+		if ( block === lastBlock ) {
+			return;
 		}
-		published = true;
 		lastBlock = block;
 		onPublish( block );
-		return block;
 	}
 
 	return {
 		start() {
-			if ( 'timer' !== schedule ) {
-				return;
-			}
-			flush();
-			timer = setInterval( flush, intervalMs );
+			publish();
+			timer = setInterval( publish, intervalMs );
 		},
 		stop() {
 			if ( timer ) {
 				clearInterval( timer );
 				timer = null;
 			}
-			published = false;
-			lastBlock = null;
+			lastBlock = undefined;
 		},
-		flush,
 	};
 }

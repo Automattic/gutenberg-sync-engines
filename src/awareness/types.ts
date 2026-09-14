@@ -74,5 +74,4 @@ export type PeerRoster = ( peers: PeerReport[] ) => void;
 export interface Channel {
 	start: () => void;
 	stop: () => void;
-	publish: ( block: string | null ) => void;
 }

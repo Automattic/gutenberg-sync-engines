@@ -22,6 +22,7 @@ import {
 } from './channels/sync-channel';
 import type { AwarenessHost } from './channels/sync-channel';
 import { createPresencePublisher } from './publisher';
+import type { Publisher } from './publisher';
 import { getRegisteredAwareness, onAwarenessRegistered } from './registry';
 import { registerAwarenessStore, store } from './store';
 import type { Channel, SlowAwarenessSettings } from './types';
@@ -102,37 +103,38 @@ function startSession(
 ): () => void {
 	const { setPeers: onPeers, reset } = dispatch( store );
 
-	// The channel, then the publisher wired to it.
 	let channel: Channel;
+	let publisher: Publisher | null = null;
 	let restoreSelection: ( () => void ) | null = null;
-	const useHeartbeat =
-		'heartbeat' === settings.channel && isHeartbeatAvailable();
-	const publisher = createPresencePublisher( {
-		reader,
-		intervalMs: settings.intervalMs,
-		schedule: useHeartbeat ? 'manual' : 'timer',
-		onPublish: ( block ) => channel.publish( block ),
-	} );
-	if ( useHeartbeat ) {
+	if ( 'heartbeat' === settings.channel && isHeartbeatAvailable() ) {
 		// Presence (who is here) still rides the sync transport; only the
 		// block name moves over Heartbeat, on the advisory channel's
-		// discovery probe. Suppress the live cursor on the sync side so
-		// peers see the block outline only.
+		// discovery probe, which reads the selection as it is built.
+		// Suppress the live cursor on the sync side so peers see the
+		// block outline only.
 		restoreSelection = suppressRealtimeSelection( awareness );
 		channel = createHeartbeatChannel( {
+			reader,
 			intervalMs: settings.intervalMs,
-			beforeSend: () => publisher.flush(),
 			onPeers,
 		} );
 	} else {
-		channel = createSyncChannel( { awareness, onPeers } );
+		// The publisher samples the selection once per interval and
+		// hands the channel each new block.
+		const sync = createSyncChannel( { awareness, onPeers } );
+		publisher = createPresencePublisher( {
+			reader,
+			intervalMs: settings.intervalMs,
+			onPublish: sync.publish,
+		} );
+		channel = sync;
 	}
 
 	channel.start();
-	publisher.start();
+	publisher?.start();
 
 	return () => {
-		publisher.stop();
+		publisher?.stop();
 		channel.stop();
 		restoreSelection?.();
 		reset();

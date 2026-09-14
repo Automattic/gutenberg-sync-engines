@@ -31,6 +31,7 @@ jest.mock( '@wordpress/hooks', () => ( {
 /**
  * Internal dependencies
  */
+import type { BlockTreeReader } from '../../../src/awareness/block-id';
 import {
 	createHeartbeatChannel,
 	isHeartbeatAvailable,
@@ -67,14 +68,26 @@ describe( 'heartbeat channel', () => {
 	} );
 
 	function setup( intervalMs = 15000 ) {
-		const beforeSend = jest.fn();
+		let selected: string | null = null;
+		const reader: BlockTreeReader = {
+			getSelectedBlockClientId: () => selected,
+			getSelectionStart: () => ( {} ),
+			getBlockAttributes: ( clientId ) =>
+				'p1' === clientId ? { metadata: { syncId: 's1' } } : null,
+		};
 		const onPeers = jest.fn();
 		const channel = createHeartbeatChannel( {
+			reader,
 			intervalMs,
-			beforeSend,
 			onPeers,
 		} );
-		return { channel, beforeSend, onPeers };
+		return {
+			channel,
+			onPeers,
+			select( clientId: string | null ) {
+				selected = clientId;
+			},
+		};
 	}
 
 	function answer( peers: unknown[] ): void {
@@ -99,15 +112,14 @@ describe( 'heartbeat channel', () => {
 		expect( connectNow ).not.toHaveBeenCalled();
 	} );
 
-	it( 'sets the interval, connects, and stamps the latest block on each probe', () => {
-		const { channel, beforeSend } = setup( 15000 );
+	it( 'sets the interval, connects, and stamps the selected block on each probe', () => {
+		const { channel, select } = setup( 15000 );
 		channel.start();
 		expect( interval ).toHaveBeenCalledWith( 15 );
 		expect( connectNow ).toHaveBeenCalled();
 
-		// The publisher flushes inside beforeSend, so the probe carries
-		// what it just published.
-		beforeSend.mockImplementation( () => channel.publish( 's1' ) );
+		// The probe reads the selection as it is built.
+		select( 'p1' );
 		const data: Record< string, unknown > = {};
 		hooks[ 'heartbeat.send' ]( data );
 		expect( data[ HEARTBEAT_DATA_KEY ] ).toMatchObject( {
@@ -117,7 +129,7 @@ describe( 'heartbeat channel', () => {
 			block: 's1',
 		} );
 
-		beforeSend.mockImplementation( () => channel.publish( null ) );
+		select( null );
 		const next: Record< string, unknown > = {};
 		hooks[ 'heartbeat.send' ]( next );
 		expect( next[ HEARTBEAT_DATA_KEY ] ).toMatchObject( { block: null } );

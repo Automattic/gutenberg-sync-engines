@@ -59,7 +59,6 @@ describe( 'presence publisher', () => {
 		const publisher = createPresencePublisher( {
 			reader: tree.reader,
 			intervalMs: 5000,
-			schedule: 'timer',
 			onPublish: ( block ) => published.push( block ),
 		} );
 
@@ -94,7 +93,6 @@ describe( 'presence publisher', () => {
 		const publisher = createPresencePublisher( {
 			reader: tree.reader,
 			intervalMs: 1000,
-			schedule: 'timer',
 			onPublish: ( block ) => published.push( block ),
 		} );
 		tree.select( 'p3' );
@@ -110,23 +108,23 @@ describe( 'presence publisher', () => {
 		publisher.stop();
 	} );
 
-	it( 'in manual mode publishes on every flush, unchanged or not', () => {
+	it( 'publishes on start even when nothing is selected', () => {
 		const tree = fakeReader();
 		const published: Array< string | null > = [];
 		const publisher = createPresencePublisher( {
 			reader: tree.reader,
-			intervalMs: 5000,
-			schedule: 'manual',
+			intervalMs: 1000,
 			onPublish: ( block ) => published.push( block ),
 		} );
 		publisher.start();
-		jest.advanceTimersByTime( 20000 );
-		expect( published ).toEqual( [] );
+		expect( published ).toEqual( [ null ] );
+		jest.advanceTimersByTime( 3000 );
+		expect( published ).toEqual( [ null ] );
 
-		tree.select( 'p1' );
-		expect( publisher.flush() ).toBe( 's1' );
-		expect( publisher.flush() ).toBe( 's1' );
-		expect( published ).toEqual( [ 's1', 's1' ] );
+		// A restart publishes again, so a fresh channel gets the value.
+		publisher.stop();
+		publisher.start();
+		expect( published ).toEqual( [ null, null ] );
 		publisher.stop();
 	} );
 } );

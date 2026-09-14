@@ -23,6 +23,11 @@
 import { announceLocalAwarenessChange } from '../../providers/advisory/announce';
 import type { Channel, PeerIdentity, PeerRoster } from '../types';
 
+/** The sync channel: the publisher hands it each new block. */
+export interface SyncChannel extends Channel {
+	publish: ( block: string | null ) => void;
+}
+
 /**
  * The awareness-instance surface this channel relies on. Structurally
  * matches core-data's `PostEditorAwareness` (a typed y-protocols Awareness
@@ -123,7 +128,7 @@ export function suppressRealtimeSelection(
  * @param options Channel options.
  * @return The channel.
  */
-export function createSyncChannel( options: SyncChannelOptions ): Channel {
+export function createSyncChannel( options: SyncChannelOptions ): SyncChannel {
 	const { awareness, onPeers } = options;
 	let unsubscribe: ( () => void ) | null = null;
 	let restoreSetter: ( () => void ) | null = null;

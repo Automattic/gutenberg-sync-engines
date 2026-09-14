@@ -2,8 +2,10 @@
  * The WordPress Heartbeat channel: the block name rides the advisory
  * channel's discovery probe, which travels on the admin Heartbeat request
  * (and on sync polls), fully separate from the sync transport's awareness
- * state. The server keeps it on the tab's presence token and answers with
- * every other tab's block, name, and avatar.
+ * state. The channel reads the selection itself as each probe is built,
+ * so the beat is the cadence and no publisher runs. The server keeps the
+ * value on the tab's presence token and answers with every other tab's
+ * block, name, and avatar.
  *
  * This is the "awareness and content on different channels" shape. The
  * content still moves at the sync transport's pace (set the site's polling
@@ -27,6 +29,8 @@ import {
 	setProbeFields,
 } from '../../providers/advisory/signaling';
 import type { DiscoveredPeer } from '../../providers/advisory/signaling';
+import { focusedBlockId } from '../block-id';
+import type { BlockTreeReader } from '../block-id';
 import type { Channel, PeerRoster } from '../types';
 
 interface HeartbeatApi {
@@ -35,9 +39,8 @@ interface HeartbeatApi {
 }
 
 export interface HeartbeatChannelOptions {
+	reader: BlockTreeReader;
 	intervalMs: number;
-	/** Called right before each send so the publisher can flush. */
-	beforeSend: () => void;
 	onPeers: PeerRoster;
 }
 
@@ -67,9 +70,8 @@ export function isHeartbeatAvailable(): boolean {
 export function createHeartbeatChannel(
 	options: HeartbeatChannelOptions
 ): Channel {
-	const { intervalMs, beforeSend, onPeers } = options;
+	const { reader, intervalMs, onPeers } = options;
 	const seconds = Math.max( 1, Math.round( intervalMs / 1000 ) );
-	let latest: string | null = null;
 	let unsubscribe: ( () => void ) | null = null;
 
 	function arm(): void {
@@ -104,10 +106,7 @@ export function createHeartbeatChannel(
 			if ( unsubscribe || ! isHeartbeatAvailable() ) {
 				return;
 			}
-			setProbeFields( () => {
-				beforeSend();
-				return { block: latest };
-			} );
+			setProbeFields( () => ( { block: focusedBlockId( reader ) } ) );
 			unsubscribe = onAnswer( onAnswered );
 			arm();
 			// Announce the join without waiting a full interval.
@@ -120,10 +119,6 @@ export function createHeartbeatChannel(
 			setProbeFields( null );
 			unsubscribe();
 			unsubscribe = null;
-			latest = null;
-		},
-		publish( block ) {
-			latest = block;
 		},
 	};
 }
