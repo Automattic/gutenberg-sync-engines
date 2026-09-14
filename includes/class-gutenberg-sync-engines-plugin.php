@@ -183,7 +183,6 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			}
 
 			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/admin/class-gutenberg-sync-engines-settings.php';
-			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/awareness/class-gutenberg-sync-engines-heartbeat-awareness.php';
 		}
 
 		/**
@@ -208,7 +207,6 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			add_filter( 'wp_sync_transport_client_config', array( $this, 'filter_transport_client_config' ), 10, 2 );
 			add_action( 'enqueue_block_editor_assets', array( $this, 'enqueue_editor_assets' ) );
 			( new Gutenberg_Sync_Engines_Advisory_Presence() )->register();
-			( new Gutenberg_Sync_Engines_Heartbeat_Awareness() )->register();
 
 			( new Gutenberg_Sync_Engines_Settings() )->register();
 		}
@@ -347,7 +345,8 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 					$awareness_channel  = Gutenberg_Sync_Engines_Settings::awareness_channel();
 				}
 
-				// The Heartbeat awareness channel needs wp.heartbeat on the page.
+				// Slow awareness over Heartbeat rides the advisory channel's
+				// discovery probe and needs wp.heartbeat on the page.
 				$dependencies = isset( $meta['dependencies'] ) ? $meta['dependencies'] : array();
 				if ( $awareness_interval > 0 && 'heartbeat' === $awareness_channel ) {
 					$dependencies[] = 'heartbeat';

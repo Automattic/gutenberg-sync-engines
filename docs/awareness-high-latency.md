@@ -52,8 +52,10 @@ The value can travel two ways, chosen by "Awareness channel":
   transport's periodic awareness message, every 10 seconds.
 - **WordPress Heartbeat.** The value travels on WordPress's admin
   Heartbeat request instead, a separate request that repeats on its own
-  timer. The server keeps each post's latest values in short-term storage
-  and answers with every other live person's value and identity. This is
+  timer: it rides the same discovery beat the advisory channel already
+  sends, so the site needs an advisory channel selected (the default).
+  The server keeps each tab's latest value on the tab's presence record
+  and answers with every other live tab's value and identity. This is
   what happens when presence and content travel separately: raise the
   site's polling interval and presence arrives well before the content it
   refers to, and shows nothing until that content catches up. Heartbeat
@@ -106,13 +108,13 @@ framework's own cursor layer is on the page.
 
 ## Known limitations
 
-- The Heartbeat store keeps its data in short-term storage and does not
-  protect against two people saving at the same instant. When that
-  happens, one person's entry can overwrite the other's for one beat. A
-  durable version belongs in the plugin's room storage.
-- Under the Heartbeat channel, when your own tab is in the background, a
-  peer who left can stay marked until the server drops their entry (four
-  intervals, never less than a minute).
+- The Heartbeat channel's presence records live in short-term storage
+  and are not protected against two people saving at the same instant.
+  When that happens, one person's entry can overwrite the other's for
+  one beat.
+- Under the Heartbeat channel, a peer whose tab crashed (no leave notice
+  reached the server) can stay marked until their presence record
+  expires, up to five minutes.
 - This only works in the post editor. Nothing is sent until the editor has
   finished loading and knows which post is open.
 

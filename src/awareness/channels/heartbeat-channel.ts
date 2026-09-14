@@ -1,6 +1,9 @@
 /**
- * The WordPress Heartbeat channel: the block name travels on the admin
- * Heartbeat request, fully separate from the sync transport.
+ * The WordPress Heartbeat channel: the block name rides the advisory
+ * channel's discovery probe, which travels on the admin Heartbeat request
+ * (and on sync polls), fully separate from the sync transport's awareness
+ * state. The server keeps it on the tab's presence token and answers with
+ * every other tab's block, name, and avatar.
  *
  * This is the "awareness and content on different channels" shape. The
  * content still moves at the sync transport's pace (set the site's polling
@@ -10,35 +13,21 @@
  *
  * Heartbeat's own rules apply: the interval is 1-3600 s, but 5 s is a
  * temporary "fast" mode that reverts after 30 ticks, so it is re-armed on
- * every tick; the server may enforce a minimum; Heartbeat slows down when
- * the window loses focus. The advisory channel's discovery probe rides the
- * same beat, so its cadence follows the awareness interval too.
+ * every answer; the server may enforce a minimum; Heartbeat slows down when
+ * the window loses focus. The discovery probe rides the same beat, so its
+ * cadence follows the awareness interval too.
  */
-
-/**
- * WordPress dependencies
- */
-import { addAction, removeAction } from '@wordpress/hooks';
 
 /**
  * Internal dependencies
  */
+import {
+	isSignalingAvailable,
+	onAnswer,
+	setProbeFields,
+} from '../../providers/advisory/signaling';
+import type { DiscoveredPeer } from '../../providers/advisory/signaling';
 import type { Channel, PeerListener } from '../types';
-
-/** The Heartbeat data key, on both the request and the response. */
-export const HEARTBEAT_KEY = 'gutenberg_sync_engines_awareness';
-
-const HOOK_NAMESPACE = 'gutenberg-sync-engines/awareness';
-
-interface HeartbeatPeer {
-	client_id: number;
-	user?: { id?: number | null; name?: string; avatar?: string };
-	block?: string | null;
-}
-
-interface HeartbeatResponse {
-	peers?: HeartbeatPeer[];
-}
 
 interface HeartbeatApi {
 	interval: ( speed: number | string, ticks?: number ) => number;
@@ -46,8 +35,6 @@ interface HeartbeatApi {
 }
 
 export interface HeartbeatChannelOptions {
-	postId: number;
-	clientId: number;
 	intervalMs: number;
 	/** Called right before each send so the publisher can flush. */
 	beforeSend: () => void;
@@ -62,12 +49,14 @@ function getHeartbeat(): HeartbeatApi | null {
 }
 
 /**
- * Whether Heartbeat is available on this page.
+ * Whether this channel can run on this page: `wp.heartbeat` exists and
+ * the advisory channel's probe rides it (the site has an advisory channel
+ * selected and this is a per-post editor screen).
  *
- * @return True when `wp.heartbeat` exists.
+ * @return True when available.
  */
 export function isHeartbeatAvailable(): boolean {
-	return null !== getHeartbeat();
+	return null !== getHeartbeat() && isSignalingAvailable();
 }
 
 /**
@@ -79,48 +68,38 @@ export function isHeartbeatAvailable(): boolean {
 export function createHeartbeatChannel(
 	options: HeartbeatChannelOptions
 ): Channel {
-	const { postId, clientId, intervalMs, beforeSend, onPeer, onPeerGone } =
-		options;
+	const { intervalMs, beforeSend, onPeer, onPeerGone } = options;
 	const seconds = Math.max( 1, Math.round( intervalMs / 1000 ) );
 	const known = new Set< string >();
 	let latest: string | null = null;
-	let started = false;
+	let unsubscribe: ( () => void ) | null = null;
 
 	function arm(): void {
 		getHeartbeat()?.interval( seconds );
 	}
 
-	function onSend( data: Record< string, unknown > ): void {
-		beforeSend();
-		data[ HEARTBEAT_KEY ] = {
-			post_id: postId,
-			client_id: clientId,
-			block: latest,
-		};
-	}
-
-	function onTick( data: Record< string, unknown > ): void {
+	function onPeers( peers: DiscoveredPeer[] ): void {
 		// Five seconds is Heartbeat's temporary fast mode; keep it armed.
 		if ( 5 === seconds ) {
 			arm();
 		}
-		const payload = data?.[ HEARTBEAT_KEY ] as
-			| HeartbeatResponse
-			| undefined;
-		if ( ! payload ) {
-			return;
-		}
 		const present = new Set< string >();
-		for ( const peer of payload.peers ?? [] ) {
-			const key = String( peer.client_id );
+		for ( const peer of peers ) {
+			// A tab whose sync session has not started yet has no client
+			// id, and a peer without a block was answered to a probe
+			// without one (not this channel's).
+			if ( ! peer.clientId || ! ( 'block' in peer ) ) {
+				continue;
+			}
+			const key = String( peer.clientId );
 			present.add( key );
 			known.add( key );
 			onPeer(
 				key,
 				{
-					userId: peer.user?.id ?? null,
-					name: peer.user?.name ?? '',
-					avatarUrl: peer.user?.avatar,
+					userId: peer.userId || null,
+					name: peer.name ?? '',
+					avatarUrl: peer.avatar || undefined,
 				},
 				peer.block ?? null
 			);
@@ -135,23 +114,25 @@ export function createHeartbeatChannel(
 
 	return {
 		start() {
-			if ( started || ! isHeartbeatAvailable() ) {
+			if ( unsubscribe || ! isHeartbeatAvailable() ) {
 				return;
 			}
-			started = true;
-			addAction( 'heartbeat.send', HOOK_NAMESPACE, onSend );
-			addAction( 'heartbeat.tick', HOOK_NAMESPACE, onTick );
+			setProbeFields( () => {
+				beforeSend();
+				return { block: latest };
+			} );
+			unsubscribe = onAnswer( onPeers );
 			arm();
 			// Announce the join without waiting a full interval.
 			getHeartbeat()?.connectNow();
 		},
 		stop() {
-			if ( ! started ) {
+			if ( ! unsubscribe ) {
 				return;
 			}
-			started = false;
-			removeAction( 'heartbeat.send', HOOK_NAMESPACE );
-			removeAction( 'heartbeat.tick', HOOK_NAMESPACE );
+			setProbeFields( null );
+			unsubscribe();
+			unsubscribe = null;
 			known.clear();
 			latest = null;
 		},

@@ -134,9 +134,6 @@ The framework/plugin split is complete: the framework ships **neither** engines
 - `gutenberg-sync-engines.php` — plugin entry.
 - `includes/` — server PHP: `engines/{intent-log,yjs-server,de-rtc}/`,
   `transports/{...,websocket/}`, `admin/` (the Collaboration settings screen),
-  `awareness/` (the WordPress Heartbeat lane of slow awareness: stores each
-  tab's block in a per-post transient and answers with the other tabs';
-  see `docs/awareness-high-latency.md`),
   `storage/` (the room storage tables: `class-wp-sync-table-schema.php`
   — names, definition, create/upgrade/drop, loaded by the plugin entry
   ahead of the activation hook; `class-wp-sync-table-storage.php` — the
@@ -579,10 +576,13 @@ they exist so a failure is observable without re-instrumenting:
   new name also raises `announceLocalAwarenessChange`
   (`src/providers/advisory/announce.ts`), which the polling manager
   uses only under long polling, to reissue a parked request. The e2e
-  spec turns the advisory channel off for its duration. Under the Heartbeat channel the plugin SETS the admin
-  Heartbeat interval on post edit screens, and the advisory channel's
-  discovery probe rides that same beat, so its cadence follows the
-  awareness interval too.
+  spec turns the advisory channel off for its duration. Under the
+  Heartbeat channel the block name is a field on the advisory channel's
+  discovery probe (`block`), kept on the tab's presence token by
+  `Gutenberg_Sync_Engines_Advisory_Presence` and answered back with
+  each peer's name and avatar, so it needs an advisory channel
+  selected; the plugin also SETS the admin Heartbeat interval on post
+  edit screens, so the probe's cadence follows the awareness interval.
 - **wp-env is a devDep here.** `@wordpress/scripts` does NOT bundle it. It's
   pinned to `@wordpress/env@^11` (for auto-port) with a top-level `overrides`
   entry, because scripts@30 only *optionally* peer-depends on env 10 — the

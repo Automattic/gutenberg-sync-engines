@@ -1084,7 +1084,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				),
 				self::AWARENESS_CHANNEL_HEARTBEAT => array(
 					__( 'WordPress Heartbeat.', 'gutenberg-sync-engines' ),
-					__( 'A separate request stream with its own timing, so presence can arrive before the content it points at. This also changes how often Heartbeat itself runs on editor screens, to match the interval above.', 'gutenberg-sync-engines' ),
+					__( 'A separate request stream with its own timing, so presence can arrive before the content it points at. The block name rides the advisory channel\'s discovery beat, so this needs an advisory channel selected above. This also changes how often Heartbeat itself runs on editor screens, to match the interval above.', 'gutenberg-sync-engines' ),
 				),
 			);
 			echo '<fieldset>';

@@ -16,7 +16,12 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 	protected static int $post_id;
 
 	public static function wpSetUpBeforeClass( WP_UnitTest_Factory $factory ) {
-		self::$editor_id       = $factory->user->create( array( 'role' => 'editor' ) );
+		self::$editor_id       = $factory->user->create(
+			array(
+				'role'         => 'editor',
+				'display_name' => 'Riley',
+			)
+		);
 		self::$other_editor_id = $factory->user->create( array( 'role' => 'editor' ) );
 		self::$subscriber_id   = $factory->user->create( array( 'role' => 'subscriber' ) );
 		self::$post_id         = $factory->post->create( array( 'post_author' => self::$editor_id ) );
@@ -116,6 +121,103 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 		$this->assertTrue( $again['others'] );
 		$this->assertSame( 'tok-b', $again['peers'][0]['token'] );
 		$this->assertSame( 22, $again['peers'][0]['client_id'] );
+	}
+
+	public function test_a_probe_with_a_block_keeps_it_on_the_token_and_answers_peers_with_theirs() {
+		$this->beat(
+			'tok-a',
+			array(
+				'client_id' => 11,
+				'block'     => 's-one',
+			)
+		);
+
+		// A probe without a block key (a tab not running slow awareness
+		// over Heartbeat) gets the plain discovery answer.
+		wp_set_current_user( self::$other_editor_id );
+		$plain = $this->beat( 'tok-b', array( 'client_id' => 22 ) );
+		$this->assertSame( array( 'token', 'client_id', 'user_id' ), array_keys( $plain['peers'][0] ) );
+
+		// A probe with one gets every other tab's block, name, and avatar.
+		$peers = $this->beat(
+			'tok-b',
+			array(
+				'client_id' => 22,
+				'block'     => null,
+			)
+		)['peers'];
+		$this->assertCount( 1, $peers );
+		$this->assertSame( 'tok-a', $peers[0]['token'] );
+		$this->assertSame( 's-one', $peers[0]['block'] );
+		$this->assertSame( 'Riley', $peers[0]['name'] );
+		$this->assertNotEmpty( $peers[0]['avatar'] );
+
+		// The block stays on the token across a probe without one, and a
+		// null block means present but in no block.
+		wp_set_current_user( self::$editor_id );
+		$this->beat( 'tok-a', array( 'client_id' => 11 ) );
+		$peers = $this->beat(
+			'tok-a',
+			array(
+				'client_id' => 11,
+				'block'     => 's-two',
+			)
+		)['peers'];
+		$this->assertNull( $peers[0]['block'], 'tok-b reported null' );
+		wp_set_current_user( self::$other_editor_id );
+		$peers = $this->beat(
+			'tok-b',
+			array(
+				'client_id' => 22,
+				'block'     => null,
+			)
+		)['peers'];
+		$this->assertSame( 's-two', $peers[0]['block'] );
+
+		// Unusable values are stored as null.
+		$cases = array( str_repeat( 'a', Gutenberg_Sync_Engines_Advisory_Presence::MAX_BLOCK_BYTES + 1 ), array( 'nested' => true ), '', 42 );
+		foreach ( $cases as $index => $bad ) {
+			wp_set_current_user( self::$editor_id );
+			$this->beat(
+				'tok-a',
+				array(
+					'client_id' => 11,
+					'block'     => $bad,
+				)
+			);
+			wp_set_current_user( self::$other_editor_id );
+			$peers = $this->beat(
+				'tok-b',
+				array(
+					'client_id' => 22,
+					'block'     => null,
+				)
+			)['peers'];
+			$this->assertNull( $peers[0]['block'], "case $index" );
+		}
+	}
+
+	public function test_the_heartbeat_interval_follows_the_awareness_setting_on_editor_screens_only() {
+		$GLOBALS['pagenow'] = 'post.php';
+		$this->assertSame( array( 'x' => 1 ), $this->presence->filter_heartbeat_settings( array( 'x' => 1 ) ), 'Off: untouched' );
+
+		update_option( Gutenberg_Sync_Engines_Settings::AWARENESS_INTERVAL_OPTION, 15 );
+		update_option( Gutenberg_Sync_Engines_Settings::AWARENESS_CHANNEL_OPTION, 'heartbeat' );
+		$this->assertSame( 15, $this->presence->filter_heartbeat_settings( array() )['interval'] );
+
+		$GLOBALS['pagenow'] = 'post-new.php';
+		$this->assertSame( 15, $this->presence->filter_heartbeat_settings( array() )['interval'] );
+
+		$GLOBALS['pagenow'] = 'index.php';
+		$this->assertArrayNotHasKey( 'interval', $this->presence->filter_heartbeat_settings( array() ) );
+
+		update_option( Gutenberg_Sync_Engines_Settings::AWARENESS_CHANNEL_OPTION, 'sync' );
+		$GLOBALS['pagenow'] = 'post.php';
+		$this->assertArrayNotHasKey( 'interval', $this->presence->filter_heartbeat_settings( array() ), 'Sync channel leaves Heartbeat alone' );
+
+		delete_option( Gutenberg_Sync_Engines_Settings::AWARENESS_INTERVAL_OPTION );
+		delete_option( Gutenberg_Sync_Engines_Settings::AWARENESS_CHANNEL_OPTION );
+		unset( $GLOBALS['pagenow'] );
 	}
 
 	public function test_heartbeat_ignores_probes_without_permission_or_for_non_post_rooms() {

@@ -80,7 +80,7 @@ export function startSlowAwareness(
 		if ( ! awareness ) {
 			return;
 		}
-		stopSession = startSession( settings, postId, awareness, reader );
+		stopSession = startSession( settings, awareness, reader );
 	}
 
 	const unsubscribeEditor = subscribe( tryStart, 'core/editor' );
@@ -98,7 +98,6 @@ export function startSlowAwareness(
 
 function startSession(
 	settings: SlowAwarenessSettings,
-	postId: number,
 	awareness: AwarenessHost,
 	reader: BlockTreeReader
 ): () => void {
@@ -134,12 +133,11 @@ function startSession(
 	} );
 	if ( useHeartbeat ) {
 		// Presence (who is here) still rides the sync transport; only the
-		// block name moves over Heartbeat. Suppress the live cursor on the
-		// sync side so peers see the block outline only.
+		// block name moves over Heartbeat, on the advisory channel's
+		// discovery probe. Suppress the live cursor on the sync side so
+		// peers see the block outline only.
 		restoreSelection = suppressRealtimeSelection( awareness );
 		channel = createHeartbeatChannel( {
-			postId,
-			clientId: awareness.clientID,
 			intervalMs: settings.intervalMs,
 			beforeSend: () => publisher.flush(),
 			onPeer,
