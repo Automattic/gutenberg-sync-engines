@@ -80,8 +80,7 @@ describe( 'sync channel', () => {
 		local.editorState = { selection: { type: 'cursor' } };
 		const channel = createSyncChannel( {
 			awareness: host,
-			onPeer: jest.fn(),
-			onPeerGone: jest.fn(),
+			onPeers: jest.fn(),
 		} );
 
 		channel.start();
@@ -113,15 +112,10 @@ describe( 'sync channel', () => {
 		expect( local.editorState ).toEqual( { selection: {} } );
 	} );
 
-	it( 'reports every connected peer’s block and departures', () => {
+	it( 'reports every connected peer’s block as one roster', () => {
 		const { host } = fakeAwareness();
-		const onPeer = jest.fn();
-		const onPeerGone = jest.fn();
-		const channel = createSyncChannel( {
-			awareness: host,
-			onPeer,
-			onPeerGone,
-		} );
+		const onPeers = jest.fn();
+		const channel = createSyncChannel( { awareness: host, onPeers } );
 		channel.start();
 
 		host.emit( [
@@ -130,27 +124,33 @@ describe( 'sync channel', () => {
 			peer( 3, undefined ),
 			peer( 4, 's4', { isConnected: false } ),
 		] );
-		expect( onPeer ).toHaveBeenCalledTimes( 2 );
-		expect( onPeer ).toHaveBeenCalledWith(
-			'2',
-			{ userId: 102, name: 'User 2', avatarUrl: 'https://a/2' },
-			's1'
-		);
-		expect( onPeer ).toHaveBeenCalledWith(
-			'3',
-			{ userId: 103, name: 'User 3', avatarUrl: 'https://a/3' },
-			null
-		);
-		expect( onPeerGone ).not.toHaveBeenCalled();
+		expect( onPeers ).toHaveBeenLastCalledWith( [
+			{
+				key: '2',
+				identity: {
+					userId: 102,
+					name: 'User 2',
+					avatarUrl: 'https://a/2',
+				},
+				block: 's1',
+			},
+			{
+				key: '3',
+				identity: {
+					userId: 103,
+					name: 'User 3',
+					avatarUrl: 'https://a/3',
+				},
+				block: null,
+			},
+		] );
 
 		// Peer 3 leaves; peer 4 reconnects.
 		host.emit( [ peer( 2, 's2' ), peer( 4, 's4' ) ] );
-		expect( onPeerGone ).toHaveBeenCalledWith( '3' );
-		expect( onPeer ).toHaveBeenLastCalledWith(
-			'4',
-			{ userId: 104, name: 'User 4', avatarUrl: 'https://a/4' },
-			's4'
-		);
+		expect( onPeers ).toHaveBeenLastCalledWith( [
+			expect.objectContaining( { key: '2', block: 's2' } ),
+			expect.objectContaining( { key: '4', block: 's4' } ),
+		] );
 		channel.stop();
 	} );
 

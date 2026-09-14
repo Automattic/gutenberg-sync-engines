@@ -21,7 +21,7 @@
  * Internal dependencies
  */
 import { announceLocalAwarenessChange } from '../../providers/advisory/announce';
-import type { Channel, PeerIdentity, PeerListener } from '../types';
+import type { Channel, PeerIdentity, PeerRoster } from '../types';
 
 /**
  * The awareness-instance surface this channel relies on. Structurally
@@ -60,8 +60,7 @@ export const BLOCK_FIELD = 'gseBlock';
 
 export interface SyncChannelOptions {
 	awareness: AwarenessHost;
-	onPeer: PeerListener;
-	onPeerGone: ( key: string ) => void;
+	onPeers: PeerRoster;
 }
 
 /**
@@ -125,10 +124,9 @@ export function suppressRealtimeSelection(
  * @return The channel.
  */
 export function createSyncChannel( options: SyncChannelOptions ): Channel {
-	const { awareness, onPeer, onPeerGone } = options;
+	const { awareness, onPeers } = options;
 	let unsubscribe: ( () => void ) | null = null;
 	let restoreSetter: ( () => void ) | null = null;
-	const known = new Set< string >();
 
 	return {
 		start() {
@@ -139,26 +137,17 @@ export function createSyncChannel( options: SyncChannelOptions ): Channel {
 			restoreSetter = suppressRealtimeSelection( awareness );
 			unsubscribe =
 				awareness.onStateChange?.( ( states ) => {
-					const present = new Set< string >();
-					for ( const state of states ) {
-						if ( state.isMe || ! state.isConnected ) {
-							continue;
-						}
-						const key = String( state.clientId );
-						present.add( key );
-						known.add( key );
-						onPeer(
-							key,
-							identityFromState( state ),
-							state.gseBlock ?? null
-						);
-					}
-					for ( const key of Array.from( known ) ) {
-						if ( ! present.has( key ) ) {
-							known.delete( key );
-							onPeerGone( key );
-						}
-					}
+					onPeers(
+						states
+							.filter(
+								( state ) => ! state.isMe && state.isConnected
+							)
+							.map( ( state ) => ( {
+								key: String( state.clientId ),
+								identity: identityFromState( state ),
+								block: state.gseBlock ?? null,
+							} ) )
+					);
 				} ) ?? null;
 		},
 		stop() {
@@ -167,7 +156,6 @@ export function createSyncChannel( options: SyncChannelOptions ): Channel {
 			restoreSetter?.();
 			restoreSetter = null;
 			awareness.setLocalStateField( BLOCK_FIELD, undefined );
-			known.clear();
 		},
 		publish( block ) {
 			awareness.setLocalStateField( BLOCK_FIELD, block );

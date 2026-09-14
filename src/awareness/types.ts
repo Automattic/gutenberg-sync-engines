@@ -52,14 +52,21 @@ export interface SlowAwarenessSettings {
 }
 
 /**
- * Called with a peer's latest block. Idempotent: the same block again is
- * a no-op downstream.
+ * One peer as a channel reports it: the store adds the color and the
+ * entry order.
  */
-export type PeerListener = (
-	key: string,
-	identity: PeerIdentity,
-	block: string | null
-) => void;
+export interface PeerReport {
+	key: string;
+	identity: PeerIdentity;
+	block: string | null;
+}
+
+/**
+ * Called with the full roster of peers every time the channel hears
+ * from the server or the transport. Peers missing from a roster have
+ * left. Idempotent: the same roster again is a no-op downstream.
+ */
+export type PeerRoster = ( peers: PeerReport[] ) => void;
 
 /**
  * A way for the local block to reach peers and theirs to reach us.

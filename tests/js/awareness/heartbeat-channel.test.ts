@@ -68,15 +68,13 @@ describe( 'heartbeat channel', () => {
 
 	function setup( intervalMs = 15000 ) {
 		const beforeSend = jest.fn();
-		const onPeer = jest.fn();
-		const onPeerGone = jest.fn();
+		const onPeers = jest.fn();
 		const channel = createHeartbeatChannel( {
 			intervalMs,
 			beforeSend,
-			onPeer,
-			onPeerGone,
+			onPeers,
 		} );
-		return { channel, beforeSend, onPeer, onPeerGone };
+		return { channel, beforeSend, onPeers };
 	}
 
 	function answer( peers: unknown[] ): void {
@@ -131,8 +129,8 @@ describe( 'heartbeat channel', () => {
 		expect( after[ HEARTBEAT_DATA_KEY ] ).not.toHaveProperty( 'block' );
 	} );
 
-	it( 'fans peers out of each answer and reports the ones that vanished', () => {
-		const { channel, onPeer, onPeerGone } = setup( 15000 );
+	it( 'reports each answer as one roster', () => {
+		const { channel, onPeers } = setup( 15000 );
 		channel.start();
 
 		answer( [
@@ -155,34 +153,41 @@ describe( 'heartbeat channel', () => {
 			// A tab whose sync session has not started yet.
 			{ token: 'c', client_id: 0, user_id: 7, block: 's9' },
 		] );
-		expect( onPeer ).toHaveBeenCalledTimes( 2 );
-		expect( onPeer ).toHaveBeenCalledWith(
-			'2',
-			{ userId: 5, name: 'Riley', avatarUrl: 'https://a/r' },
-			's1'
-		);
-		expect( onPeer ).toHaveBeenCalledWith(
-			'3',
-			{ userId: 6, name: 'Sam', avatarUrl: undefined },
-			null
-		);
+		expect( onPeers ).toHaveBeenCalledTimes( 1 );
+		expect( onPeers ).toHaveBeenLastCalledWith( [
+			{
+				key: '2',
+				identity: {
+					userId: 5,
+					name: 'Riley',
+					avatarUrl: 'https://a/r',
+				},
+				block: 's1',
+			},
+			{
+				key: '3',
+				identity: { userId: 6, name: 'Sam', avatarUrl: undefined },
+				block: null,
+			},
+		] );
 
 		// A tick without the advisory answer changes nothing.
 		hooks[ 'heartbeat.tick' ]( {} );
-		expect( onPeerGone ).not.toHaveBeenCalled();
+		expect( onPeers ).toHaveBeenCalledTimes( 1 );
 
 		answer( [ { token: 'b', client_id: 3, user_id: 6, block: 's2' } ] );
-		expect( onPeerGone ).toHaveBeenCalledWith( '2' );
-		expect( onPeer ).toHaveBeenLastCalledWith(
-			'3',
-			{ userId: 6, name: '', avatarUrl: undefined },
-			's2'
-		);
+		expect( onPeers ).toHaveBeenLastCalledWith( [
+			{
+				key: '3',
+				identity: { userId: 6, name: '', avatarUrl: undefined },
+				block: 's2',
+			},
+		] );
 
 		// Stopped: later answers reach nobody.
 		channel.stop();
 		answer( [] );
-		expect( onPeerGone ).toHaveBeenCalledTimes( 1 );
+		expect( onPeers ).toHaveBeenCalledTimes( 2 );
 	} );
 
 	it( 're-arms the five-second fast mode on every answer', () => {

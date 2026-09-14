@@ -11,11 +11,19 @@ import { createRegistry } from '@wordpress/data';
 /**
  * Internal dependencies
  */
+import { getPeerColor } from '../../../src/awareness/colors';
 import { store } from '../../../src/awareness/store';
+import type { PeerReport } from '../../../src/awareness/types';
 
 const riley = { userId: 2, name: 'Riley', avatarUrl: 'https://a/riley' };
 const sam = { userId: 3, name: 'Sam' };
 const kim = { userId: 4, name: 'Kim' };
+
+const report = (
+	key: string,
+	identity: PeerReport[ 'identity' ],
+	block: string | null
+): PeerReport => ( { key, identity, block } );
 
 describe( 'awareness store', () => {
 	let registry: ReturnType< typeof createRegistry >;
@@ -25,15 +33,20 @@ describe( 'awareness store', () => {
 		registry.register( store );
 	} );
 
-	it( 'finds a block’s peer by syncId or by clientId', () => {
-		const { setPeer } = registry.dispatch( store );
+	it( 'finds a block’s peer by syncId or by clientId, colored by user', () => {
+		const { setPeers } = registry.dispatch( store );
 		const { getPeersForBlock, getPeers } = registry.select( store );
 
-		setPeer( '10', riley, '#6F42C1', 's1' );
-		setPeer( '11', sam, '#D94145', 'c-plain' );
+		setPeers( [
+			report( '10', riley, 's1' ),
+			report( '11', sam, 'c-plain' ),
+		] );
 
 		expect( getPeersForBlock( 's1', 'c1' )[ 0 ]?.identity.name ).toBe(
 			'Riley'
+		);
+		expect( getPeersForBlock( 's1', 'c1' )[ 0 ]?.color ).toBe(
+			getPeerColor( 2, 10 )
 		);
 		expect(
 			getPeersForBlock( undefined, 'c-plain' )[ 0 ]?.identity.name
@@ -45,33 +58,35 @@ describe( 'awareness store', () => {
 		] );
 	} );
 
-	it( 'moves a peer between blocks on one dispatch', () => {
-		const { setPeer } = registry.dispatch( store );
-		const { getPeersForBlock } = registry.select( store );
+	it( 'moves a peer between blocks and drops peers missing from the roster', () => {
+		const { setPeers } = registry.dispatch( store );
+		const { getPeersForBlock, getPeers } = registry.select( store );
 
-		setPeer( '10', riley, '#6F42C1', 's1' );
-		setPeer( '10', riley, '#6F42C1', 's2' );
+		setPeers( [ report( '10', riley, 's1' ), report( '11', sam, 's3' ) ] );
+		setPeers( [ report( '10', riley, 's2' ) ] );
 		expect( getPeersForBlock( 's1', 'c1' ) ).toEqual( [] );
 		expect( getPeersForBlock( 's2', 'c2' )[ 0 ]?.key ).toBe( '10' );
+		expect( getPeersForBlock( 's3', 'c3' ) ).toEqual( [] );
+		expect( getPeers() ).toHaveLength( 1 );
 
 		// In no block at all: present, but drawn nowhere.
-		setPeer( '10', riley, '#6F42C1', null );
+		setPeers( [ report( '10', riley, null ) ] );
 		expect( getPeersForBlock( 's2', 'c2' ) ).toEqual( [] );
-		expect( registry.select( store ).getPeers() ).toHaveLength( 1 );
+		expect( getPeers() ).toHaveLength( 1 );
 	} );
 
 	it( 'keeps object identity when nothing changed', () => {
-		const { setPeer } = registry.dispatch( store );
+		const { setPeers } = registry.dispatch( store );
 		const { getPeersForBlock, getPeers } = registry.select( store );
 
-		setPeer( '10', riley, '#6F42C1', 's1' );
+		setPeers( [ report( '10', riley, 's1' ) ] );
 		const before = getPeersForBlock( 's1', 'c1' );
 		const peersBefore = getPeers();
-		setPeer( '10', { ...riley }, '#6F42C1', 's1' );
+		setPeers( [ report( '10', { ...riley }, 's1' ) ] );
 		expect( getPeersForBlock( 's1', 'c1' ) ).toBe( before );
 		expect( getPeers() ).toBe( peersBefore );
 
-		setPeer( '10', { ...riley, name: 'Riley R.' }, '#6F42C1', 's1' );
+		setPeers( [ report( '10', { ...riley, name: 'Riley R.' }, 's1' ) ] );
 		expect( getPeersForBlock( 's1', 'c1' ) ).not.toBe( before );
 		// An empty block always answers with the same array.
 		expect( getPeersForBlock( 's9', 'c9' ) ).toBe(
@@ -80,31 +95,46 @@ describe( 'awareness store', () => {
 	} );
 
 	it( 'orders the peers in one block by who entered it first', () => {
-		const { setPeer, removePeer, reset } = registry.dispatch( store );
+		const { setPeers, reset } = registry.dispatch( store );
 		const { getPeersForBlock, getPeers } = registry.select( store );
-
-		// Sam is known first, but Riley enters s1 first.
-		setPeer( '11', sam, '#D94145', 's2' );
-		setPeer( '10', riley, '#6F42C1', 's1' );
-		setPeer( '11', sam, '#D94145', 's1' );
-		setPeer( '12', kim, '#0E8A5D', 's1' );
 		const keys = () =>
 			getPeersForBlock( 's1', 'c1' ).map( ( peer ) => peer.key );
+
+		// Sam is known first, but Riley enters s1 first.
+		setPeers( [ report( '11', sam, 's2' ) ] );
+		setPeers( [ report( '11', sam, 's2' ), report( '10', riley, 's1' ) ] );
+		setPeers( [ report( '11', sam, 's1' ), report( '10', riley, 's1' ) ] );
+		setPeers( [
+			report( '11', sam, 's1' ),
+			report( '10', riley, 's1' ),
+			report( '12', kim, 's1' ),
+		] );
 		expect( keys() ).toEqual( [ '10', '11', '12' ] );
 
-		// A repeated report, or a renamed peer, keeps their place.
-		setPeer( '10', riley, '#6F42C1', 's1' );
-		setPeer( '10', { ...riley, name: 'Riley R.' }, '#6F42C1', 's1' );
+		// A repeated roster, or a renamed peer, keeps everyone's place.
+		setPeers( [
+			report( '11', sam, 's1' ),
+			report( '10', { ...riley, name: 'Riley R.' }, 's1' ),
+			report( '12', kim, 's1' ),
+		] );
 		expect( keys() ).toEqual( [ '10', '11', '12' ] );
 
 		// Leaving and coming back puts the peer at the end.
-		setPeer( '10', riley, '#6F42C1', 's2' );
+		setPeers( [
+			report( '11', sam, 's1' ),
+			report( '10', riley, 's2' ),
+			report( '12', kim, 's1' ),
+		] );
 		expect( keys() ).toEqual( [ '11', '12' ] );
-		setPeer( '10', riley, '#6F42C1', 's1' );
+		setPeers( [
+			report( '11', sam, 's1' ),
+			report( '10', riley, 's1' ),
+			report( '12', kim, 's1' ),
+		] );
 		expect( keys() ).toEqual( [ '11', '12', '10' ] );
 
 		// A peer who drops off the channel entirely leaves the stack.
-		removePeer( '11' );
+		setPeers( [ report( '10', riley, 's1' ), report( '12', kim, 's1' ) ] );
 		expect( keys() ).toEqual( [ '12', '10' ] );
 
 		reset();

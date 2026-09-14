@@ -17,7 +17,8 @@ import { createReduxStore, createSelector, register } from '@wordpress/data';
 /**
  * Internal dependencies
  */
-import type { Peer, PeerIdentity } from './types';
+import { getPeerColor } from './colors';
+import type { Peer, PeerReport } from './types';
 
 export const STORE_NAME = 'gutenberg-sync-engines/awareness';
 
@@ -27,19 +28,16 @@ interface State {
 	nextEntered: number;
 }
 
-/** What a channel reports: a peer, without the store-owned entry order. */
-export type PeerReport = Omit< Peer, 'entered' >;
+/** A peer with its color decided, before the store assigns entry order. */
+type ColoredPeer = Omit< Peer, 'entered' >;
 
-type Action =
-	| { type: 'SET_PEER'; peer: PeerReport }
-	| { type: 'REMOVE_PEER'; key: string }
-	| { type: 'RESET' };
+type Action = { type: 'SET_PEERS'; peers: ColoredPeer[] } | { type: 'RESET' };
 
 const DEFAULT_STATE: State = { peers: {}, nextEntered: 1 };
 
 const NO_PEERS: Peer[] = [];
 
-function samePeer( a: PeerReport, b: PeerReport ): boolean {
+function samePeer( a: ColoredPeer, b: ColoredPeer ): boolean {
 	return (
 		a.key === b.key &&
 		a.block === b.block &&
@@ -52,33 +50,30 @@ function samePeer( a: PeerReport, b: PeerReport ): boolean {
 
 function reducer( state: State = DEFAULT_STATE, action: Action ): State {
 	switch ( action.type ) {
-		case 'SET_PEER': {
-			const existing = state.peers[ action.peer.key ];
-			if ( existing && samePeer( existing, action.peer ) ) {
-				return state;
+		case 'SET_PEERS': {
+			// The roster replaces the peers wholesale: anyone missing has
+			// left. A peer still in the same block (a repeat, a name or
+			// avatar change) keeps their place; a different block is a
+			// new entry.
+			const peers: Record< string, Peer > = {};
+			let nextEntered = state.nextEntered;
+			let changed =
+				action.peers.length !== Object.keys( state.peers ).length;
+			for ( const report of action.peers ) {
+				const existing = state.peers[ report.key ];
+				if ( existing && samePeer( existing, report ) ) {
+					peers[ report.key ] = existing;
+					continue;
+				}
+				changed = true;
+				const staysInBlock =
+					existing && existing.block === report.block;
+				peers[ report.key ] = {
+					...report,
+					entered: staysInBlock ? existing.entered : nextEntered++,
+				};
 			}
-			// The same block again (a name or avatar change) keeps the
-			// peer's place in the block; a different block is a new entry.
-			const staysInBlock =
-				existing && existing.block === action.peer.block;
-			const entered = staysInBlock ? existing.entered : state.nextEntered;
-			return {
-				peers: {
-					...state.peers,
-					[ action.peer.key ]: { ...action.peer, entered },
-				},
-				nextEntered: staysInBlock
-					? state.nextEntered
-					: state.nextEntered + 1,
-			};
-		}
-		case 'REMOVE_PEER': {
-			if ( ! state.peers[ action.key ] ) {
-				return state;
-			}
-			const peers = { ...state.peers };
-			delete peers[ action.key ];
-			return { ...state, peers };
+			return changed ? { peers, nextEntered } : state;
 		}
 		case 'RESET':
 			return DEFAULT_STATE;
@@ -87,16 +82,22 @@ function reducer( state: State = DEFAULT_STATE, action: Action ): State {
 }
 
 const actions = {
-	setPeer(
-		key: string,
-		identity: PeerIdentity,
-		color: string,
-		block: string | null
-	): Action {
-		return { type: 'SET_PEER', peer: { key, identity, color, block } };
-	},
-	removePeer( key: string ): Action {
-		return { type: 'REMOVE_PEER', key };
+	/**
+	 * The full roster of peers, as a channel reports it.
+	 *
+	 * @param reports The peers.
+	 */
+	setPeers( reports: PeerReport[] ): Action {
+		return {
+			type: 'SET_PEERS',
+			peers: reports.map( ( report ) => ( {
+				...report,
+				color: getPeerColor(
+					report.identity.userId,
+					Number( report.key )
+				),
+			} ) ),
+		};
 	},
 	reset(): Action {
 		return { type: 'RESET' };

@@ -27,7 +27,7 @@ import {
 	setProbeFields,
 } from '../../providers/advisory/signaling';
 import type { DiscoveredPeer } from '../../providers/advisory/signaling';
-import type { Channel, PeerListener } from '../types';
+import type { Channel, PeerRoster } from '../types';
 
 interface HeartbeatApi {
 	interval: ( speed: number | string, ticks?: number ) => number;
@@ -38,8 +38,7 @@ export interface HeartbeatChannelOptions {
 	intervalMs: number;
 	/** Called right before each send so the publisher can flush. */
 	beforeSend: () => void;
-	onPeer: PeerListener;
-	onPeerGone: ( key: string ) => void;
+	onPeers: PeerRoster;
 }
 
 function getHeartbeat(): HeartbeatApi | null {
@@ -68,9 +67,8 @@ export function isHeartbeatAvailable(): boolean {
 export function createHeartbeatChannel(
 	options: HeartbeatChannelOptions
 ): Channel {
-	const { intervalMs, beforeSend, onPeer, onPeerGone } = options;
+	const { intervalMs, beforeSend, onPeers } = options;
 	const seconds = Math.max( 1, Math.round( intervalMs / 1000 ) );
-	const known = new Set< string >();
 	let latest: string | null = null;
 	let unsubscribe: ( () => void ) | null = null;
 
@@ -78,38 +76,27 @@ export function createHeartbeatChannel(
 		getHeartbeat()?.interval( seconds );
 	}
 
-	function onPeers( peers: DiscoveredPeer[] ): void {
+	function onAnswered( peers: DiscoveredPeer[] ): void {
 		// Five seconds is Heartbeat's temporary fast mode; keep it armed.
 		if ( 5 === seconds ) {
 			arm();
 		}
-		const present = new Set< string >();
-		for ( const peer of peers ) {
-			// A tab whose sync session has not started yet has no client
-			// id, and a peer without a block was answered to a probe
-			// without one (not this channel's).
-			if ( ! peer.clientId || ! ( 'block' in peer ) ) {
-				continue;
-			}
-			const key = String( peer.clientId );
-			present.add( key );
-			known.add( key );
-			onPeer(
-				key,
-				{
-					userId: peer.userId || null,
-					name: peer.name ?? '',
-					avatarUrl: peer.avatar || undefined,
-				},
-				peer.block ?? null
-			);
-		}
-		for ( const key of Array.from( known ) ) {
-			if ( ! present.has( key ) ) {
-				known.delete( key );
-				onPeerGone( key );
-			}
-		}
+		onPeers(
+			peers
+				// A tab whose sync session has not started yet has no
+				// client id, and a peer without a block was answered to a
+				// probe without one (not this channel's).
+				.filter( ( peer ) => peer.clientId && 'block' in peer )
+				.map( ( peer ) => ( {
+					key: String( peer.clientId ),
+					identity: {
+						userId: peer.userId || null,
+						name: peer.name ?? '',
+						avatarUrl: peer.avatar || undefined,
+					},
+					block: peer.block ?? null,
+				} ) )
+		);
 	}
 
 	return {
@@ -121,7 +108,7 @@ export function createHeartbeatChannel(
 				beforeSend();
 				return { block: latest };
 			} );
-			unsubscribe = onAnswer( onPeers );
+			unsubscribe = onAnswer( onAnswered );
 			arm();
 			// Announce the join without waiting a full interval.
 			getHeartbeat()?.connectNow();
@@ -133,7 +120,6 @@ export function createHeartbeatChannel(
 			setProbeFields( null );
 			unsubscribe();
 			unsubscribe = null;
-			known.clear();
 			latest = null;
 		},
 		publish( block ) {

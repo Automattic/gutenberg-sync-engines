@@ -21,11 +21,10 @@ import {
 	suppressRealtimeSelection,
 } from './channels/sync-channel';
 import type { AwarenessHost } from './channels/sync-channel';
-import { getPeerColor } from './colors';
 import { createPresencePublisher } from './publisher';
 import { getRegisteredAwareness, onAwarenessRegistered } from './registry';
 import { registerAwarenessStore, store } from './store';
-import type { Channel, PeerIdentity, SlowAwarenessSettings } from './types';
+import type { Channel, SlowAwarenessSettings } from './types';
 
 interface EditorStoreSelectors {
 	getCurrentPostId: () => number | null | undefined;
@@ -101,24 +100,7 @@ function startSession(
 	awareness: AwarenessHost,
 	reader: BlockTreeReader
 ): () => void {
-	const { setPeer, removePeer, reset } = dispatch( store );
-
-	function onPeer(
-		key: string,
-		identity: PeerIdentity,
-		block: string | null
-	): void {
-		setPeer(
-			key,
-			identity,
-			getPeerColor( identity.userId, Number( key ) ),
-			block
-		);
-	}
-
-	function onPeerGone( key: string ): void {
-		removePeer( key );
-	}
+	const { setPeers: onPeers, reset } = dispatch( store );
 
 	// The channel, then the publisher wired to it.
 	let channel: Channel;
@@ -140,11 +122,10 @@ function startSession(
 		channel = createHeartbeatChannel( {
 			intervalMs: settings.intervalMs,
 			beforeSend: () => publisher.flush(),
-			onPeer,
-			onPeerGone,
+			onPeers,
 		} );
 	} else {
-		channel = createSyncChannel( { awareness, onPeer, onPeerGone } );
+		channel = createSyncChannel( { awareness, onPeers } );
 	}
 
 	channel.start();
