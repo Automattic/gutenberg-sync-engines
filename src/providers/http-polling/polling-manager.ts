@@ -36,7 +36,11 @@ import {
 	startAdvisoryChannel,
 	stopAdvisoryChannel,
 } from '../advisory/channel';
-import { announceLocalWrite } from '../advisory/announce';
+import {
+	announceLocalWrite,
+	onLocalAwarenessChange,
+} from '../advisory/announce';
+import { BLOCK_FIELD } from '../../awareness/channels/sync-channel';
 import {
 	applyAnswer,
 	buildProbe,
@@ -662,6 +666,54 @@ function reschedule(): void {
 }
 
 /**
+ * Local work is waiting (a queued update, or a changed awareness state):
+ * send it on demand when no timer will pick it up soon. That is when the
+ * loop is quiet (alone), a request is in flight with nothing scheduled
+ * behind it (alone, mid-poll), or the pending timer is the slow safety
+ * cadence (every peer on the channel). A scheduled timer at the normal
+ * cadence, or a long-poll re-issue, needs no help. A parked long poll is
+ * woken either way: local work must not wait out the hold.
+ *
+ * @param held Whether the work sits in a held queue (alone, holdable
+ *             codec), which waits for company or a flush instead.
+ */
+function wakeForLocalWork( held = false ): void {
+	const needsWake =
+		! held &&
+		( longPollMode
+			? ! isPolling
+			: ! pollingTimeoutId || isAlone() || advisoryCoversEveryone() );
+	if ( needsWake ) {
+		pollSoonForLocalUpdate();
+	}
+	abortParkedLongPoll();
+}
+
+/**
+ * Wakes a parked long poll so local work does not wait out the hold.
+ */
+function abortParkedLongPoll(): void {
+	if ( ! longPollMode || ! inFlightParkController ) {
+		return;
+	}
+	parkAbortedForLocalUpdate = true;
+	const controller = inFlightParkController;
+	inFlightParkController = null;
+	controller.abort();
+}
+
+/**
+ * Slow awareness named a new block on the local awareness state. Under
+ * short polling the advisory channel's presence lane carries the field
+ * to reachable peers, and the timer polls carry it to the rest, so
+ * nothing needs to happen here. Under long polling the channel is off
+ * and the value rides the next request: reissue a parked one now.
+ */
+function onLocalAwarenessChanged(): void {
+	abortParkedLongPoll();
+}
+
+/**
  * A local update was queued while the loop is quiet or on the slow safety
  * cadence: poll shortly. The delay lets the rest of a burst pile in; it is
  * NOT reset by later updates, so a long burst cannot starve the send.
@@ -722,11 +774,17 @@ function mergedAwareness( state: RoomState ): AwarenessState {
 	return merged;
 }
 
-const BASE_PRESENCE_FIELDS = [ 'collaboratorInfo', 'name', 'isActive' ];
+const BASE_PRESENCE_FIELDS = [
+	'collaboratorInfo',
+	'name',
+	'isActive',
+	BLOCK_FIELD,
+];
 
 /**
- * The part of an awareness state that says WHO this is (not where their
- * cursor is): the fields the channel carries.
+ * The part of an awareness state that says WHO this is and, under slow
+ * awareness, WHICH BLOCK they are in (not where their cursor is): the
+ * fields the channel carries.
  *
  * @param state The local awareness state.
  */
@@ -799,9 +857,11 @@ function installAdvisoryHooks(): void {
 		}
 	} );
 	// Only BASE presence rides the channel (who is here: user info, name,
-	// activity). Cursors and selections stay on the polls by decision:
-	// over the channel they would point at content positions the
-	// receiver has not polled for yet.
+	// activity, and the slow-awareness block name, which names a block
+	// the receiver may not hold yet and then shows nothing until it
+	// does). Cursors and selections stay on the polls by decision: over
+	// the channel they would point at content positions the receiver
+	// has not polled for yet.
 	setPresenceSource( () =>
 		Array.from( roomStates.values() ).map( ( state ) => ( {
 			room: state.room,
@@ -1724,34 +1784,9 @@ function registerRoom( {
 
 		updateQueue.add( update );
 
-		/*
-		 * Send on demand when no timer will pick this up soon: the loop is
-		 * quiet (alone), a request is in flight with nothing scheduled
-		 * behind it (alone, mid-poll), or the pending timer is the slow
-		 * safety cadence (every peer on the channel). A scheduled timer
-		 * at the normal cadence, or a long-poll re-issue, needs no help.
-		 */
 		// A held queue (alone, holdable codec) waits for company or a
-		// flush. Otherwise wake when no timer will send this soon: none
-		// pending, or the pending one is the slow safety cadence (alone
-		// with an exempt codec, or every peer on the channel).
-		const held = holdWhileAlone && isAlone();
-		const needsWake =
-			! held &&
-			( longPollMode
-				? ! isPolling
-				: ! pollingTimeoutId || isAlone() || advisoryCoversEveryone() );
-		if ( needsWake ) {
-			pollSoonForLocalUpdate();
-		}
-
-		if ( longPollMode && inFlightParkController ) {
-			// Wake the parked poll: local work must not wait out the hold.
-			parkAbortedForLocalUpdate = true;
-			const controller = inFlightParkController;
-			inFlightParkController = null;
-			controller.abort();
-		}
+		// flush; see wakeForLocalWork for when a wake is needed.
+		wakeForLocalWork( holdWhileAlone && isAlone() );
 	}
 
 	function unregister(): void {
@@ -1791,6 +1826,7 @@ function registerRoom( {
 		window.addEventListener( 'beforeunload', handleBeforeUnload );
 		window.addEventListener( 'pagehide', handlePageHide );
 		document.addEventListener( 'visibilitychange', handleVisibilityChange );
+		onLocalAwarenessChange( onLocalAwarenessChanged );
 		areListenersRegistered = true;
 	}
 

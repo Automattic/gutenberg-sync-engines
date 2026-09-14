@@ -19,6 +19,8 @@ class Tests_Collaboration_GutenbergSyncEnginesSettings extends WP_UnitTestCase {
 				Gutenberg_Sync_Engines_Settings::WEBSOCKET_URL_OPTION,
 				Gutenberg_Sync_Engines_Settings::ADVISORY_WEBSOCKET_URL_OPTION,
 				Gutenberg_Sync_Engines_Settings::POLLING_INTERVAL_OPTION,
+				Gutenberg_Sync_Engines_Settings::AWARENESS_INTERVAL_OPTION,
+				Gutenberg_Sync_Engines_Settings::AWARENESS_CHANNEL_OPTION,
 			) as $option
 		) {
 			delete_option( $option );
@@ -108,5 +110,38 @@ class Tests_Collaboration_GutenbergSyncEnginesSettings extends WP_UnitTestCase {
 
 		update_option( Gutenberg_Sync_Engines_Settings::POLLING_INTERVAL_OPTION, 99 );
 		$this->assertSame( 25, Gutenberg_Sync_Engines_Settings::polling_interval(), 'Capped below the awareness timeout' );
+	}
+
+	public function test_the_awareness_settings_are_off_by_default_and_clamped() {
+		$settings = new Gutenberg_Sync_Engines_Settings();
+
+		$this->assertSame( 0, Gutenberg_Sync_Engines_Settings::awareness_interval() );
+		$this->assertSame( 'sync', Gutenberg_Sync_Engines_Settings::awareness_channel() );
+
+		$this->assertSame( 0, $settings->sanitize_awareness_interval( -3 ) );
+		$this->assertSame( 5, $settings->sanitize_awareness_interval( '5' ) );
+		$this->assertSame( Gutenberg_Sync_Engines_Settings::AWARENESS_INTERVAL_MAX, $settings->sanitize_awareness_interval( 9999 ) );
+
+		$this->assertSame( 'heartbeat', $settings->sanitize_awareness_channel( 'heartbeat' ) );
+		$this->assertSame( 'sync', $settings->sanitize_awareness_channel( 'sync' ) );
+		$this->assertSame( 'sync', $settings->sanitize_awareness_channel( 'carrier-pigeon' ) );
+
+		update_option( Gutenberg_Sync_Engines_Settings::AWARENESS_INTERVAL_OPTION, 15 );
+		update_option( Gutenberg_Sync_Engines_Settings::AWARENESS_CHANNEL_OPTION, 'heartbeat' );
+		$this->assertSame( 15, Gutenberg_Sync_Engines_Settings::awareness_interval() );
+		$this->assertSame( 'heartbeat', Gutenberg_Sync_Engines_Settings::awareness_channel() );
+
+		// A stored value past the cap reads as the cap.
+		update_option( Gutenberg_Sync_Engines_Settings::AWARENESS_INTERVAL_OPTION, 9999 );
+		$this->assertSame( Gutenberg_Sync_Engines_Settings::AWARENESS_INTERVAL_MAX, Gutenberg_Sync_Engines_Settings::awareness_interval() );
+	}
+
+	public function test_the_awareness_settings_are_exposed_to_the_rest_api() {
+		( new Gutenberg_Sync_Engines_Settings() )->register_options();
+		$registered = get_registered_settings();
+		foreach ( array( Gutenberg_Sync_Engines_Settings::AWARENESS_INTERVAL_OPTION, Gutenberg_Sync_Engines_Settings::AWARENESS_CHANNEL_OPTION ) as $option ) {
+			$this->assertArrayHasKey( $option, $registered );
+			$this->assertTrue( $registered[ $option ]['show_in_rest'] );
+		}
 	}
 }

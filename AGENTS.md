@@ -235,6 +235,18 @@ The framework/plugin split is complete: the framework ships **neither** engines
     by eslint), inherited from the retired yjs-relay engine and used by
     yjs-server.
   - `providers/{http-polling,http-long-polling,websocket}/` — transports.
+  - `awareness/` — SLOW AWARENESS (`docs/awareness-high-latency.md`),
+    on when the "Awareness interval" setting is above 0: each tab
+    publishes the block its selection is in (`metadata.syncId`, else the
+    editor clientId, or null) once per interval, over the sync
+    transport's awareness state (field `gseBlock`) or WordPress
+    Heartbeat (`channels/`), and peers draw Gutenberg's block outline and
+    avatar badge on that block (`ui/`, through the public
+    `editor.BlockListBlock` filter plus a badge layer drawn into the
+    canvas document). `registry.ts` installs the field's equality check
+    on EVERY awareness instance the engines create, in every mode: a
+    peer can carry the field at any time and core-data throws on an
+    unknown field. Jest: `tests/js/awareness/`.
   - `framework.ts` — unlocks `@wordpress/sync` private APIs once and re-exports
     the framework runtime the adapters use.
 - `gutenberg/` — a **pinned, squashed git subtree of Gutenberg** (source only;
@@ -556,6 +568,21 @@ they exist so a failure is observable without re-instrumenting:
 - **Jest scope:** `jest.config.js` sets `roots: [src, tests]`. Without it,
   `wp-scripts test-unit-js` recurses into the subtree's ~1030 monorepo suites.
 - **phpcs scope:** `phpcs.xml.dist` excludes `/gutenberg/*`.
+- **Slow awareness rides whatever carries awareness.** Over the sync
+  transport the block name goes out on the framework awareness state
+  (`gseBlock`), which is one of the BASE presence fields the advisory
+  channel's presence lane carries peer to peer, so under short polling
+  a new name reaches every reachable peer with no request at all. A
+  new name also raises `announceLocalAwarenessChange`
+  (`src/providers/advisory/announce.ts`), which the polling manager
+  uses only under long polling, to reissue a parked request. The e2e
+  spec turns the advisory channel off for its duration. Under the
+  Heartbeat channel the block name is a field on the advisory channel's
+  discovery probe (`block`), kept on the tab's presence token by
+  `Gutenberg_Sync_Engines_Advisory_Presence` and answered back with
+  each peer's name and avatar, so it needs an advisory channel
+  selected; the plugin also SETS the admin Heartbeat interval on post
+  edit screens, so the probe's cadence follows the awareness interval.
 - **wp-env is a devDep here.** `@wordpress/scripts` does NOT bundle it. It's
   pinned to `@wordpress/env@^11` (for auto-port) with a top-level `overrides`
   entry, because scripts@30 only *optionally* peer-depends on env 10 — the

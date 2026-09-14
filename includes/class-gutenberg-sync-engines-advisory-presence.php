@@ -114,6 +114,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * @var int
 		 */
 		const MAX_TOKENS_PER_ROOM   = 50;
+		const MAX_BLOCK_BYTES       = 128;
 		const MAX_MAILBOX_ENTRIES   = 50;
 		const MAX_SIGNALS_PER_BEAT  = 40;
 		const MAX_SIGNAL_ID_LENGTH  = 96;
@@ -188,7 +189,37 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 			// The heartbeat can fire from any admin page, so the filter is
 			// global; it is inert unless the payload carries our key.
 			add_filter( 'heartbeat_received', array( $this, 'answer_heartbeat' ), 10, 2 );
+			add_filter( 'heartbeat_settings', array( $this, 'filter_heartbeat_settings' ) );
 			add_action( 'rest_api_init', array( $this, 'register_routes' ) );
+		}
+
+		/**
+		 * Sets Heartbeat's interval to the slow awareness cadence on the
+		 * post editor screens when awareness rides the beat, so block
+		 * names move at the configured pace. The discovery probe rides
+		 * the same beat, so its cadence changes too. Heartbeat clamps to
+		 * 1-3600 seconds.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param mixed $settings Heartbeat settings.
+		 * @return array<string, mixed> Settings with the interval applied.
+		 */
+		public function filter_heartbeat_settings( $settings ): array {
+			$settings = is_array( $settings ) ? $settings : array();
+			if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
+				return $settings;
+			}
+			$interval = Gutenberg_Sync_Engines_Settings::awareness_interval();
+			if ( $interval <= 0 || Gutenberg_Sync_Engines_Settings::AWARENESS_CHANNEL_HEARTBEAT !== Gutenberg_Sync_Engines_Settings::awareness_channel() ) {
+				return $settings;
+			}
+			global $pagenow;
+			if ( ! in_array( $pagenow, array( 'post.php', 'post-new.php' ), true ) ) {
+				return $settings;
+			}
+			$settings['interval'] = max( 1, min( 3600, $interval ) );
+			return $settings;
 		}
 
 		/**
@@ -361,6 +392,13 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * this tab's mailbox. Null for a malformed, disabled, or
 		 * unauthorized probe.
 		 *
+		 * A probe that carries a `block` key comes from a tab running slow
+		 * awareness over Heartbeat (docs/awareness-high-latency.md): the
+		 * value (a block identity, or null) is kept on the tab's token with
+		 * the user's name and avatar, and the answer's peers then carry
+		 * every other tab's `block`, `name`, and `avatar` too. Other
+		 * probes neither store nor receive those.
+		 *
 		 * @since n.e.x.t
 		 *
 		 * @param mixed $probe The probe payload.
@@ -377,7 +415,8 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 			}
 
 			$client_id = isset( $probe['client_id'] ) ? absint( $probe['client_id'] ) : 0;
-			$this->record_token( $room, $token, $client_id );
+			$awareness = array_key_exists( 'block', $probe );
+			$this->record_token( $room, $token, $client_id, false, $awareness ? self::sanitize_block( $probe['block'] ) : false );
 
 			$tokens = $this->read_tokens( $room );
 			if ( isset( $probe['signals'] ) && is_array( $probe['signals'] ) ) {
@@ -389,11 +428,17 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 				if ( $peer_token === $token ) {
 					continue;
 				}
-				$peers[] = array(
+				$peer = array(
 					'token'     => (string) $peer_token,
 					'client_id' => (int) $entry['c'],
 					'user_id'   => (int) $entry['u'],
 				);
+				if ( $awareness ) {
+					$peer['block']  = $entry['b'];
+					$peer['name']   = $entry['n'];
+					$peer['avatar'] = $entry['a'];
+				}
+				$peers[] = $peer;
 			}
 
 			return array(
@@ -1028,6 +1073,11 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 					'u' => isset( $entry['u'] ) ? (int) $entry['u'] : 0,
 					'c' => isset( $entry['c'] ) ? (int) $entry['c'] : 0,
 					'j' => ! empty( $entry['j'] ),
+					// Slow awareness over Heartbeat: the block the tab is
+					// in, and the name and avatar to draw it with.
+					'b' => isset( $entry['b'] ) ? self::sanitize_block( $entry['b'] ) : null,
+					'n' => isset( $entry['n'] ) ? (string) $entry['n'] : '',
+					'a' => isset( $entry['a'] ) ? (string) $entry['a'] : '',
 				);
 			}
 			return $live;
@@ -1039,14 +1089,19 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 *
 		 * @since n.e.x.t
 		 *
-		 * @param string $room      The room name.
-		 * @param string $token     The tab's token.
-		 * @param int    $client_id The tab's sync client id (0 when unknown).
-		 * @param bool   $joined    Whether this is a sync request (the tab's
-		 *                          join); kept once set.
+		 * @param string            $room      The room name.
+		 * @param string            $token     The tab's token.
+		 * @param int               $client_id The tab's sync client id (0 when unknown).
+		 * @param bool              $joined    Whether this is a sync request (the tab's
+		 *                                     join); kept once set.
+		 * @param string|null|false $block     The block the tab reports being in
+		 *                                     (slow awareness over Heartbeat): a
+		 *                                     block identity, null for none, or
+		 *                                     false when the probe carried no
+		 *                                     block (the last known value stays).
 		 * @return void
 		 */
-		private function record_token( string $room, string $token, int $client_id, bool $joined = false ): void {
+		private function record_token( string $room, string $token, int $client_id, bool $joined = false, $block = false ): void {
 			$this->sweep_expired( $room );
 			$tokens = $this->read_tokens( $room );
 			$known  = $tokens[ $token ] ?? null;
@@ -1060,7 +1115,17 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 				// A page-render stamp has no client id yet; keep the last
 				// known one rather than regressing to 0.
 				'c' => $client_id > 0 ? $client_id : ( $known['c'] ?? 0 ),
+				'b' => false === $block ? ( $known['b'] ?? null ) : $block,
+				'n' => $known['n'] ?? '',
+				'a' => $known['a'] ?? '',
 			);
+			if ( false !== $block ) {
+				// The name and avatar the peers draw the block with, looked
+				// up once per beat here so receivers need nothing else.
+				$user                  = wp_get_current_user();
+				$tokens[ $token ]['n'] = (string) $user->display_name;
+				$tokens[ $token ]['a'] = (string) get_avatar_url( $user->ID, array( 'size' => 48 ) );
+			}
 
 			if ( count( $tokens ) > self::MAX_TOKENS_PER_ROOM ) {
 				uasort(
@@ -1073,6 +1138,24 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 			}
 
 			set_transient( $this->tokens_key( $room ), $tokens, self::TOKENS_TRANSIENT_EXPIRY );
+		}
+
+		/**
+		 * A block identity as a tab reports it: a short string, or null.
+		 * Sync ids and editor client ids are both short (36-byte UUIDs);
+		 * anything longer is not a block name this plugin minted. The
+		 * server never interprets the value beyond this cap.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param mixed $value Submitted value.
+		 * @return string|null The identity, or null when absent or unusable.
+		 */
+		private static function sanitize_block( $value ): ?string {
+			if ( ! is_string( $value ) || '' === $value || strlen( $value ) > self::MAX_BLOCK_BYTES ) {
+				return null;
+			}
+			return $value;
 		}
 
 		/**

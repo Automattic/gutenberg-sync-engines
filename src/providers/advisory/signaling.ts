@@ -46,6 +46,13 @@ export interface DiscoveredPeer {
 	token: string;
 	clientId: number;
 	userId: number;
+	/**
+	 * Slow awareness over Heartbeat (src/awareness/channels/heartbeat-
+	 * channel.ts): present only when this tab's probe carried a block.
+	 */
+	block?: string | null;
+	name?: string;
+	avatar?: string;
 }
 
 export interface AdvisorySettings {
@@ -102,9 +109,11 @@ let lastHeartbeatSeq = 0;
 const inFlight: Map< number, OutgoingSignal[] > = new Map();
 
 let signalCarrier: ( () => boolean ) | null = null;
+let probeFields: ( () => Record< string, unknown > ) | null = null;
 
 const signalListeners: Array< ( signal: Signal ) => void > = [];
 const peersListeners: Array< ( peers: DiscoveredPeer[] ) => void > = [];
+const answerListeners: Array< ( peers: DiscoveredPeer[] ) => void > = [];
 const othersListeners: Array< ( others: boolean ) => void > = [];
 const cursorListeners: Array< ( cursor: number ) => void > = [];
 const engineListeners: Array< ( engine: string ) => void > = [];
@@ -279,7 +288,20 @@ export function buildProbe():
 		token: settings.token,
 		...( null !== syncClientId ? { client_id: syncClientId } : {} ),
 		...( signals.length > 0 ? { signals } : {} ),
+		...( probeFields ? probeFields() : {} ),
 	};
+}
+
+/**
+ * Registers extra fields every probe carries (slow awareness over
+ * Heartbeat adds the block this tab is in). Null removes them.
+ *
+ * @param source Returns the fields, read when a probe is built.
+ */
+export function setProbeFields(
+	source: ( () => Record< string, unknown > ) | null
+): void {
+	probeFields = source;
 }
 
 /**
@@ -328,6 +350,28 @@ export function onPeersChanged(
 ): void {
 	peersListeners.push( callback );
 	install();
+}
+
+/**
+ * Registers a listener for every applied answer, with the peers it
+ * reported (stale answers are skipped). Unlike `onPeersChanged` this
+ * fires whether or not the list changed, so a listener can treat each
+ * answer as a fresh roster.
+ *
+ * @param callback Called with the peers.
+ * @return Unsubscribe.
+ */
+export function onAnswer(
+	callback: ( peers: DiscoveredPeer[] ) => void
+): () => void {
+	answerListeners.push( callback );
+	install();
+	return () => {
+		const index = answerListeners.indexOf( callback );
+		if ( index >= 0 ) {
+			answerListeners.splice( index, 1 );
+		}
+	};
 }
 
 /**
@@ -531,15 +575,33 @@ export function applyAnswer( raw: unknown, seq?: number ): void {
 						'string' ===
 							typeof ( peer as { token?: unknown } ).token
 				)
-				.map( ( peer ) => ( {
-					token: peer.token,
-					clientId: Number(
-						( peer as { client_id?: unknown } ).client_id ?? 0
-					),
-					userId: Number(
-						( peer as { user_id?: unknown } ).user_id ?? 0
-					),
-				} ) )
+				.map( ( peer ) => {
+					const fields = peer as {
+						client_id?: unknown;
+						user_id?: unknown;
+						block?: unknown;
+						name?: unknown;
+						avatar?: unknown;
+					};
+					const discovered: DiscoveredPeer = {
+						token: peer.token,
+						clientId: Number( fields.client_id ?? 0 ),
+						userId: Number( fields.user_id ?? 0 ),
+					};
+					if ( 'block' in fields ) {
+						discovered.block =
+							'string' === typeof fields.block
+								? fields.block
+								: null;
+						discovered.name =
+							'string' === typeof fields.name ? fields.name : '';
+						discovered.avatar =
+							'string' === typeof fields.avatar
+								? fields.avatar
+								: '';
+					}
+					return discovered;
+				} )
 				.sort( ( a, b ) => ( a.token < b.token ? -1 : 1 ) )
 		: [];
 	const peersChanged = ! samePeers( peers, nextPeers );
@@ -554,6 +616,9 @@ export function applyAnswer( raw: unknown, seq?: number ): void {
 		for ( const callback of peersListeners ) {
 			callback( peers );
 		}
+	}
+	for ( const callback of answerListeners ) {
+		callback( peers );
 	}
 	if (
 		'number' === typeof answer.cursor &&
@@ -644,8 +709,10 @@ export function resetSignalingForTesting(): void {
 	lastAppliedSeq = 0;
 	lastHeartbeatSeq = 0;
 	connectNowScheduled = false;
+	probeFields = null;
 	signalListeners.length = 0;
 	peersListeners.length = 0;
+	answerListeners.length = 0;
 	othersListeners.length = 0;
 	cursorListeners.length = 0;
 	engineListeners.length = 0;
