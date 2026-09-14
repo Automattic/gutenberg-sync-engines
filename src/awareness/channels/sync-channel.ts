@@ -12,9 +12,11 @@
  * goes with the periodic awareness frame. The Heartbeat channel is the one
  * with its own cadence.
  *
- * While this channel is active the framework's live-cursor field
- * (`editorState`) is suppressed on the local state, so peers see the block
- * outline only, never a cursor that jumps every few seconds.
+ * The controller suppresses the framework's live-cursor field
+ * (`editorState`) on the local state for as long as slow awareness runs
+ * (`suppressRealtimeSelection`, below), and the registry installs the
+ * field's equality check on every awareness instance the engines create,
+ * so this channel only publishes and subscribes.
  */
 
 /**
@@ -131,15 +133,10 @@ export function suppressRealtimeSelection(
 export function createSyncChannel( options: SyncChannelOptions ): SyncChannel {
 	const { awareness, onPeers } = options;
 	let unsubscribe: ( () => void ) | null = null;
-	let restoreSetter: ( () => void ) | null = null;
 
 	return {
 		start() {
-			if ( awareness.equalityFieldChecks ) {
-				awareness.equalityFieldChecks[ BLOCK_FIELD ] = areBlocksEqual;
-			}
 			awareness.setUp?.();
-			restoreSetter = suppressRealtimeSelection( awareness );
 			unsubscribe =
 				awareness.onStateChange?.( ( states ) => {
 					onPeers(
@@ -158,8 +155,6 @@ export function createSyncChannel( options: SyncChannelOptions ): SyncChannel {
 		stop() {
 			unsubscribe?.();
 			unsubscribe = null;
-			restoreSetter?.();
-			restoreSetter = null;
 			awareness.setLocalStateField( BLOCK_FIELD, undefined );
 		},
 		publish( block ) {

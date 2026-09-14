@@ -75,9 +75,8 @@ describe( 'sync channel', () => {
 		expect( areBlocksEqual( 's1', undefined ) ).toBe( false );
 	} );
 
-	it( 'publishes the block as one awareness field and drops the live cursor', () => {
+	it( 'publishes the block as one awareness field', () => {
 		const { host, local } = fakeAwareness();
-		local.editorState = { selection: { type: 'cursor' } };
 		const channel = createSyncChannel( {
 			awareness: host,
 			onPeers: jest.fn(),
@@ -85,14 +84,6 @@ describe( 'sync channel', () => {
 
 		channel.start();
 		expect( host.setUp ).toHaveBeenCalled();
-		expect( host.equalityFieldChecks?.[ BLOCK_FIELD ] ).toBe(
-			areBlocksEqual
-		);
-		expect( local.editorState ).toBeUndefined();
-
-		// The framework's cursor publisher is silenced while active.
-		host.setLocalStateField( 'editorState', { selection: {} } );
-		expect( local.editorState ).toBeUndefined();
 
 		// Each publish also tells the transport to carry the state now.
 		resetAnnounceForTesting();
@@ -108,8 +99,6 @@ describe( 'sync channel', () => {
 
 		channel.stop();
 		expect( local[ BLOCK_FIELD ] ).toBeUndefined();
-		host.setLocalStateField( 'editorState', { selection: {} } );
-		expect( local.editorState ).toEqual( { selection: {} } );
 	} );
 
 	it( 'reports every connected peer’s block as one roster', () => {
@@ -154,9 +143,11 @@ describe( 'sync channel', () => {
 		channel.stop();
 	} );
 
-	it( 'restores the original setter', () => {
+	it( 'suppresses the live cursor and restores the original setter', () => {
 		const { host, local } = fakeAwareness();
+		local.editorState = { selection: { type: 'cursor' } };
 		const restore = suppressRealtimeSelection( host );
+		expect( local.editorState ).toBeUndefined();
 		host.setLocalStateField( 'editorState', 'x' );
 		expect( local.editorState ).toBeUndefined();
 		restore();

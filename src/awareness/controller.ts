@@ -24,7 +24,7 @@ import type { AwarenessHost } from './channels/sync-channel';
 import { createPresencePublisher } from './publisher';
 import type { Publisher } from './publisher';
 import { getRegisteredAwareness, onAwarenessRegistered } from './registry';
-import { registerAwarenessStore, store } from './store';
+import { store } from './store';
 import type { Channel, SlowAwarenessSettings } from './types';
 
 interface EditorStoreSelectors {
@@ -54,8 +54,6 @@ function selectStore< Selectors >( name: string ): Selectors | undefined {
 export function startSlowAwareness(
 	settings: SlowAwarenessSettings
 ): () => void {
-	registerAwarenessStore();
-
 	let stopped = false;
 	let stopSession: ( () => void ) | null = null;
 
@@ -103,16 +101,18 @@ function startSession(
 ): () => void {
 	const { setPeers: onPeers, reset } = dispatch( store );
 
+	// In both modes the framework's live cursor is suppressed on the sync
+	// transport's awareness state, so peers see the block outline only,
+	// never a cursor that jumps every few seconds. Presence (who is
+	// here) keeps riding the sync transport either way.
+	const restoreSelection = suppressRealtimeSelection( awareness );
+
 	let channel: Channel;
 	let publisher: Publisher | null = null;
-	let restoreSelection: ( () => void ) | null = null;
 	if ( 'heartbeat' === settings.channel && isHeartbeatAvailable() ) {
-		// Presence (who is here) still rides the sync transport; only the
-		// block name moves over Heartbeat, on the advisory channel's
-		// discovery probe, which reads the selection as it is built.
-		// Suppress the live cursor on the sync side so peers see the
-		// block outline only.
-		restoreSelection = suppressRealtimeSelection( awareness );
+		// Only the block name moves over Heartbeat, on the advisory
+		// channel's discovery probe, which reads the selection as it is
+		// built.
 		channel = createHeartbeatChannel( {
 			reader,
 			intervalMs: settings.intervalMs,
@@ -136,7 +136,7 @@ function startSession(
 	return () => {
 		publisher?.stop();
 		channel.stop();
-		restoreSelection?.();
+		restoreSelection();
 		reset();
 	};
 }
