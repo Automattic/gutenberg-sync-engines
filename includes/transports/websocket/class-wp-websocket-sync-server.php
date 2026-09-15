@@ -170,7 +170,7 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 		 * Maximum encoded size of one advisory presence state (who is here:
 		 * user info, name, activity — never cursors or content).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var int
 		 */
 		const MAX_ADVISORY_PRESENCE_BYTES = 16384;
@@ -178,7 +178,7 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 		/**
 		 * Maximum length of the room name an advisory notice carries.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var int
 		 */
 		const MAX_ADVISORY_ROOM_LENGTH = 200;
@@ -399,7 +399,7 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 		 * pcntl extension is optional and absent from some CLI images, and
 		 * without it Ctrl+C cannot be caught here.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 */
 		private function install_signal_handlers(): void {
 			if ( ! function_exists( 'pcntl_signal' ) || ! function_exists( 'pcntl_async_signals' ) ) {
@@ -953,7 +953,7 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 		 * changes with the room's full roster to every follower and relays
 		 * notices to the other followers. Nothing here touches storage.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param int   $key     Client key.
 		 * @param array $message Decoded frame.
@@ -1028,7 +1028,7 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 		/**
 		 * Validates an advisory frame.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param array $message Decoded frame.
 		 * @return array|WP_Error Normalized fields, or WP_Error if invalid.
@@ -1084,7 +1084,7 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 		 * storage API: a read past every row returns nothing but refreshes
 		 * the storage's cursor cache, the API's only refresh path.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room Room identifier.
 		 * @return int Head cursor.
@@ -1098,7 +1098,7 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 		/**
 		 * Whether any open socket syncs the room (the websocket transport).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room Room identifier.
 		 * @return bool Whether the room has sync subscribers.
@@ -1116,7 +1116,7 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 		 * Sends a room's roster — every follower's client id, presence
 		 * token, and latest presence — to each of its followers.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room Room identifier.
 		 */
@@ -1152,7 +1152,7 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 		/**
 		 * Relays a "rows landed, go and poll" notice to a room's followers.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string   $room        The room whose followers are told.
 		 * @param string   $announced   The room the notice names (or `*`).
@@ -1179,7 +1179,7 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 		 * the room's followers to poll and move their scan cursors to the
 		 * head, so the scan announces each row once.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string   $room Room identifier.
 		 * @param int|null $head The room's head cursor when the caller read

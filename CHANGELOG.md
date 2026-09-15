@@ -10,6 +10,8 @@ release, which the release script generates from the commit history.
 
 ## Unreleased
 
+## 0.0.1 — September 2026
+
 ### Changed
 
 -   The DE-RTC commit cadence now defaults to 10 seconds, the
@@ -244,6 +246,40 @@ sync-server`), and the daemon relays presence and "go and poll"
 -   `restoreProposalWithChanges()` (modify-before-adopt): API-only, never
     called by anything. To return together with its review-panel UI when a
     "suggested edits" feature starts.
+
+### All changes since v0.0.0
+
+-   Add simplified block level awareness, testing options ([#95](https://github.com/Automattic/gutenberg-sync-engines/pull/95))
+-   Storage: keep presence in the object cache and make idle polls read-only ([#94](https://github.com/Automattic/gutenberg-sync-engines/pull/94))
+-   Let a host run its own WebSocket relay for the notices between editor tabs ([#93](https://github.com/Automattic/gutenberg-sync-engines/pull/93))
+-   Advisory channel: a WebSocket link beside WebRTC (webrtc-advisory, websocket-advisory) ([#91](https://github.com/Automattic/gutenberg-sync-engines/pull/91))
+-   Storage: move rooms from post meta to plugin-owned tables ([#88](https://github.com/Automattic/gutenberg-sync-engines/pull/88))
+-   Unsaved changes: a setting for what happens when the last editor leaves a post ([#89](https://github.com/Automattic/gutenberg-sync-engines/pull/89))
+-   Transports: Short polling as base transport, a WebRTC advisory channel between tabs, and WebSocket as an upgrade transport ([#87](https://github.com/Automattic/gutenberg-sync-engines/pull/87))
+-   CI: run the automerge-php conformance suite in the official php image ([#86](https://github.com/Automattic/gutenberg-sync-engines/pull/86))
+-   Changelog: write highlights by hand, let git supply the rest ([#85](https://github.com/Automattic/gutenberg-sync-engines/pull/85))
+-   DE-RTC: Durable block identity and merging inside nested blocks ([#84](https://github.com/Automattic/gutenberg-sync-engines/pull/84))
+-   Activating the plugin turns on the real-time collaboration experiment ([#83](https://github.com/Automattic/gutenberg-sync-engines/pull/83))
+-   intent-log core: type-check the JS core with checkJs and drop the drifting .d.ts sidecars ([#81](https://github.com/Automattic/gutenberg-sync-engines/pull/81))
+-   Move Node-only intent-log tooling out of src; parseArgs for CLI scripts ([#79](https://github.com/Automattic/gutenberg-sync-engines/pull/79))
+-   Review lane: one row type, `parked`, for both engines ([#77](https://github.com/Automattic/gutenberg-sync-engines/pull/77))
+-   de-rtc: compare blocks by saved form, so authorship credits only changed blocks ([#80](https://github.com/Automattic/gutenberg-sync-engines/pull/80))
+-   de-rtc: drop protocol-1 content rows and the other transition code ([#78](https://github.com/Automattic/gutenberg-sync-engines/pull/78))
+-   Host cost report: one command that measures what real-time collaboration adds to a server ([#73](https://github.com/Automattic/gutenberg-sync-engines/pull/73))
+-   de-rtc: never mistake a room's own genesis content for external work ([#71](https://github.com/Automattic/gutenberg-sync-engines/pull/71))
+-   intent-log: keep a just-created block on the editor's clientId ([#66](https://github.com/Automattic/gutenberg-sync-engines/issues/66)) ([#69](https://github.com/Automattic/gutenberg-sync-engines/pull/69))
+-   Add testing instructions for console script ([#67](https://github.com/Automattic/gutenberg-sync-engines/pull/67))
+-   websocket: make Ctrl+C actually stop the sync server ([#68](https://github.com/Automattic/gutenberg-sync-engines/pull/68))
+-   de-rtc: pin restored unfiltered-html approvals so they stop refreezing the post ([#65](https://github.com/Automattic/gutenberg-sync-engines/pull/65))
+-   Send complete fixes to the human, rename issue commands, tune language rule ([#63](https://github.com/Automattic/gutenberg-sync-engines/pull/63))
+-   de-rtc: record that approval of a risky block is one-shot ([#41](https://github.com/Automattic/gutenberg-sync-engines/issues/41)) ([#61](https://github.com/Automattic/gutenberg-sync-engines/pull/61))
+-   diagnostics: materialize a room with its own recorded engine, not the site's current one ([#62](https://github.com/Automattic/gutenberg-sync-engines/pull/62))
+-   yjs-server: fill registered attribute defaults at genesis ([#38](https://github.com/Automattic/gutenberg-sync-engines/issues/38)) ([#54](https://github.com/Automattic/gutenberg-sync-engines/pull/54))
+-   intent-log: clone documents with a plain-data walk, not structuredClone ([#58](https://github.com/Automattic/gutenberg-sync-engines/pull/58))
+-   LOOP.md: lesson — element-in-DOM locator timeouts mean a stalled main thread
+-   de-rtc: one way to send Adopt and Reject decisions ([#40](https://github.com/Automattic/gutenberg-sync-engines/issues/40)) ([#53](https://github.com/Automattic/gutenberg-sync-engines/pull/53))
+-   de-rtc: keep poll-failure recovery off the commit lane ([#51](https://github.com/Automattic/gutenberg-sync-engines/pull/51))
+-   Review in the SPI, swappable storage backends, and a dead-code sweep ([#49](https://github.com/Automattic/gutenberg-sync-engines/pull/49))
 
 ## Pre-release history
 

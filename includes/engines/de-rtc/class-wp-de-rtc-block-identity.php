@@ -38,7 +38,7 @@ if ( ! class_exists( 'WP_De_RTC_Block_Identity' ) ) {
 	 * step; any disagreement leaves the content untouched. Identity is
 	 * optional — a block without an id merges exactly as it does today.
 	 *
-	 * @since n.e.x.t
+	 * @since 0.0.1
 	 */
 	class WP_De_RTC_Block_Identity {
 
@@ -52,7 +52,7 @@ if ( ! class_exists( 'WP_De_RTC_Block_Identity' ) ) {
 		/**
 		 * Stamps deterministic genesis ids onto every block that lacks one.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $content Stripped post content.
 		 * @param int    $post_id Post ID (genesis id input).
@@ -74,7 +74,7 @@ if ( ! class_exists( 'WP_De_RTC_Block_Identity' ) ) {
 		 * Stamps random creation ids onto every block that lacks one (or
 		 * duplicates an earlier one).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $content Stripped content about to become canonical.
 		 * @return string Content with every block identified.
@@ -101,7 +101,7 @@ if ( ! class_exists( 'WP_De_RTC_Block_Identity' ) ) {
 		 * ids already present elsewhere in the proposal, are left alone
 		 * (creation stamping handles them).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $proposed Proposed stripped content.
 		 * @param string $base     Base stripped content (identified).
@@ -148,7 +148,7 @@ if ( ! class_exists( 'WP_De_RTC_Block_Identity' ) ) {
 		 * Whether content has a block without an id, or two blocks sharing
 		 * one — i.e. whether stamping would change it.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $content Stripped content.
 		 * @return bool Whether any block needs an id.
@@ -168,7 +168,7 @@ if ( ! class_exists( 'WP_De_RTC_Block_Identity' ) ) {
 		/**
 		 * Lists every named block in pre-order with its path and id.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $content Stripped content.
 		 * @return array<int, array{name: string, path: int[], syncId: string|null, duplicate: bool, attrs: array}> Blocks.
@@ -181,7 +181,7 @@ if ( ! class_exists( 'WP_De_RTC_Block_Identity' ) ) {
 		/**
 		 * Stamps ids from a minter onto the blocks that need one.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string   $content Stripped content.
 		 * @param callable $mint    function( int[] $path ): ?string — the id

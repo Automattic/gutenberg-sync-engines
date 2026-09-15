@@ -38,14 +38,14 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 	 * purpose: a presence read must never create a room's storage post
 	 * (the storage API's own room lookup does).
 	 *
-	 * @since n.e.x.t
+	 * @since 0.0.1
 	 */
 	final class Gutenberg_Sync_Engines_Advisory_Presence {
 		/**
 		 * Key used in both directions of the heartbeat payload. Mirrors
 		 * HEARTBEAT_DATA_KEY in src/providers/advisory/signaling.ts.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var string
 		 */
 		const HEARTBEAT_KEY = 'gutenberg_sync_engines_advisory';
@@ -53,7 +53,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		/**
 		 * REST namespace and route of the leave beacon.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var string
 		 */
 		const REST_NAMESPACE   = 'gutenberg-sync-engines/v1';
@@ -63,7 +63,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * Storage name prefixes; the room hash (and, for mailboxes, the
 		 * recipient token) is appended.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var string
 		 */
 		const TOKENS_TRANSIENT_PREFIX = 'gse_adv_tokens_';
@@ -73,7 +73,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		/**
 		 * How often a room's abandoned mailbox rows are swept, in seconds.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var int
 		 */
 		const SWEEP_INTERVAL = 60;
@@ -84,7 +84,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * must survive at least two of those beats. Normal closes never wait
 		 * this out: the leave beacon removes the token at once.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var int
 		 */
 		const PRESENCE_TTL = 300;
@@ -92,7 +92,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		/**
 		 * How long the token transient itself lives past the last write.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var int
 		 */
 		const TOKENS_TRANSIENT_EXPIRY = 600;
@@ -102,7 +102,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * recipient beats at least every 120 seconds unless suspended; a
 		 * message older than this is stale (its sender has moved on).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var int
 		 */
 		const MAILBOX_EXPIRY = 90;
@@ -110,7 +110,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		/**
 		 * Caps that bound transient sizes and per-beat work.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var int
 		 */
 		const MAX_TOKENS_PER_ROOM   = 50;
@@ -127,7 +127,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * connections; above this the client stands the channel down and
 		 * everyone polls.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var int
 		 */
 		const DEFAULT_MAX_PEERS = 8;
@@ -136,7 +136,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * Live-awareness window, in seconds. Mirrors the sync transports'
 		 * AWARENESS_TIMEOUT: entries older than this count as disconnected.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var int
 		 */
 		const AWARENESS_TIMEOUT = 30;
@@ -144,7 +144,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		/**
 		 * The handshake message kinds the mailbox relays.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var string[]
 		 */
 		const SIGNAL_KINDS = array( 'offer', 'answer', 'ice', 'bye' );
@@ -152,7 +152,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		/**
 		 * The advisory channel's links (see channel()).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var string
 		 */
 		const CHANNEL_WEBRTC    = 'webrtc-advisory';
@@ -162,7 +162,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * The sync storage the live-awareness check reads (injected for
 		 * tests; defaults to the plugin's).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var WP_Sync_Storage|null
 		 */
 		private $storage;
@@ -170,7 +170,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		/**
 		 * Constructor.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param WP_Sync_Storage|null $storage Sync storage, or null for the plugin's.
 		 */
@@ -181,7 +181,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		/**
 		 * Hooks the heartbeat filter and the leave route.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return void
 		 */
@@ -200,7 +200,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * the same beat, so its cadence changes too. Heartbeat clamps to
 		 * 1-3600 seconds.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param mixed $settings Heartbeat settings.
 		 * @return array<string, mixed> Settings with the interval applied.
@@ -225,7 +225,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		/**
 		 * Whether the advisory channel is enabled on this site.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return bool Enabled state.
 		 */
@@ -245,7 +245,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 			 * WebRTC or a socket to the sync daemon). When false, tabs keep
 			 * the timer polling cadence.
 			 *
-			 * @since n.e.x.t
+			 * @since 0.0.1
 			 *
 			 * @param bool $enabled Defaults to the settings screen's choice.
 			 */
@@ -257,7 +257,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * (browser to browser, the default) or `websocket-advisory` (relayed
 		 * by the sync daemon).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return string The link slug.
 		 */
@@ -272,7 +272,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 			 * Filters the link the advisory channel uses: `webrtc-advisory`
 			 * or `websocket-advisory`.
 			 *
-			 * @since n.e.x.t
+			 * @since 0.0.1
 			 *
 			 * @param string $channel Defaults to the settings screen's choice.
 			 */
@@ -283,7 +283,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		/**
 		 * The ICE servers handed to the browser's RTCPeerConnection.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return array<int, array<string, mixed>> RTCIceServer-shaped entries.
 		 */
@@ -294,7 +294,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 			 * added for networks that block direct connections, but is
 			 * never required — tabs that cannot connect keep polling.
 			 *
-			 * @since n.e.x.t
+			 * @since 0.0.1
 			 *
 			 * @param array<int, array<string, mixed>> $servers RTCIceServer-shaped entries.
 			 */
@@ -312,7 +312,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * anyone else is there, and the channel configuration. Null when the
 		 * channel is disabled or the user may not sync the post.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param WP_Post $post The post being edited.
 		 * @return array<string, mixed>|null Settings for the client, or null.
@@ -331,7 +331,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 			/**
 			 * Filters the cap on advisory peers per tab.
 			 *
-			 * @since n.e.x.t
+			 * @since 0.0.1
 			 *
 			 * @param int $max_peers Defaults to 8.
 			 */
@@ -365,7 +365,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * handshake messages it sent, and reports the other tabs in the
 		 * room plus this tab's mailbox.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param mixed $response The heartbeat response being built.
 		 * @param mixed $data     The data the client sent.
@@ -399,7 +399,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * every other tab's `block`, `name`, and `avatar` too. Other
 		 * probes neither store nor receive those.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param mixed $probe The probe payload.
 		 * @return array<string, mixed>|null The answer, or null.
@@ -460,7 +460,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		/**
 		 * The engine slug the site currently resolves for a room.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room The room name.
 		 * @return string Engine slug, or the empty string when unknown.
@@ -480,7 +480,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * The room's head cursor (its newest update row id), or 0 for a room
 		 * that has no storage yet. Never creates the room.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room The room name.
 		 * @return int Head cursor.
@@ -493,7 +493,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * Whether anything is stored for the room (rows or room meta).
 		 * Never creates the room.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room The room name.
 		 * @return bool
@@ -512,7 +512,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * could not be created) is read with two indexed lookups against
 		 * its storage post.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
@@ -557,7 +557,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * Non-creating lookup of a room's storage post id under the
 		 * framework's post-meta storage.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
@@ -582,7 +582,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		/**
 		 * Registers the leave beacon route.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return void
 		 */
@@ -617,7 +617,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * A tab left its room: forget its token so peers stop counting it
 		 * and stop trying to connect to it.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param WP_REST_Request $request The beacon request.
 		 * @return WP_REST_Response The (empty) answer.
@@ -643,7 +643,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 *
 		 * Called by the transports before the engine sees the request.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room      The room name.
 		 * @param string $token     The tab's presence token.
@@ -676,7 +676,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * under the default policy, so a reload or a later opener lands on
 		 * what was saved.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room      The room name.
 		 * @param string $token     The tab's presence token.
@@ -701,7 +701,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * Whether empty per-post rooms are reset to the saved post (the
 		 * default "discard" policy) or kept as a shared working copy.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room The room name.
 		 * @return bool Whether an empty room is reset.
@@ -717,7 +717,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 			 * nobody is in it. Return false to keep rooms (and their unsaved
 			 * edits) alive across sessions as a shared working copy.
 			 *
-			 * @since n.e.x.t
+			 * @since 0.0.1
 			 *
 			 * @param bool   $enabled Defaults to the settings screen's choice.
 			 * @param string $room    The room name.
@@ -731,7 +731,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * the saved post (with a new generation token, so any client that
 		 * still holds the old room learns of the restart).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room   The room name.
 		 * @param string $reason 'join' or 'leave', for narration.
@@ -761,7 +761,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 				 * it. Engines that keep state outside the room's rows (de-rtc's
 				 * canonical options row) forget it here.
 				 *
-				 * @since n.e.x.t
+				 * @since 0.0.1
 				 *
 				 * @param string $room   The room name.
 				 * @param string $reason 'join' (a new tab found the room empty)
@@ -776,7 +776,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * Whether the room is a per-post entity room (the only kind whose
 		 * lifetime these rules govern).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room The room name.
 		 * @return bool
@@ -788,7 +788,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		/**
 		 * The sync storage: the injected one, else the plugin's.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return WP_Sync_Storage|null
 		 */
@@ -803,7 +803,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * Removes one client's awareness entry (the leaving tab's), so peers
 		 * see it go at once and the empty-room check does not count it.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room      The room name.
 		 * @param int    $client_id The leaving client's id.
@@ -833,7 +833,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * per-post entity rooms have an advisory channel; collection rooms
 		 * ride along on the same tab's polls.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room The room name.
 		 * @return bool Allowed state.
@@ -852,7 +852,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		/**
 		 * Whether a token is well-formed.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $token The token.
 		 * @return bool Validity.
@@ -866,7 +866,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * mailboxes. Recipients must be live tokens in the same room; the
 		 * kind must be known; the payload is size-capped.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string                           $room    The room name.
 		 * @param string                           $from    The sender's token.
@@ -917,7 +917,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * between its read and its write. Expired entries are dropped and
 		 * the oldest past the cap.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string                           $room     The room name.
 		 * @param string                           $to       The recipient's token.
@@ -943,7 +943,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * swap to an empty box is atomic, so a message filed meanwhile is
 		 * seen by the retry, never dropped.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room  The room name.
 		 * @param string $token The tab's token.
@@ -977,7 +977,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		/**
 		 * Decodes a stored mailbox, dropping malformed and expired entries.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string|null $stored The stored JSON, or null for none.
 		 * @return array<int, array<string, mixed>> Live entries.
@@ -1001,7 +1001,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		/**
 		 * Deletes a tab's mailbox row (on leave).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room  The room name.
 		 * @param string $token The tab's token.
@@ -1014,7 +1014,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		/**
 		 * The mailbox option name for one recipient.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room  The room name.
 		 * @param string $token The recipient's token.
@@ -1028,7 +1028,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * The option-name prefix shared by every mailbox of one room, so
 		 * the room's rows can be listed without the token record.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room The room name.
 		 * @return string Option-name prefix.
@@ -1040,7 +1040,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		/**
 		 * The token transient name for one room.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room The room name.
 		 * @return string Transient name.
@@ -1052,7 +1052,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		/**
 		 * The live tokens in a room, expired entries dropped.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room The room name.
 		 * @return array<string, array<string, int>> token => { t, u, c }.
@@ -1087,7 +1087,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * Records (or refreshes) a tab's token. A lost write under
 		 * concurrent heartbeats only delays one refresh by a beat.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string            $room      The room name.
 		 * @param string            $token     The tab's token.
@@ -1146,7 +1146,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * anything longer is not a block name this plugin minted. The
 		 * server never interprets the value beyond this cap.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param mixed $value Submitted value.
 		 * @return string|null The identity, or null when absent or unusable.
@@ -1165,7 +1165,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * found by their room prefix, so nothing else has to remember
 		 * them. Runs at most once a minute per room, on a token refresh.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
@@ -1205,7 +1205,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		/**
 		 * Removes a tab's token and its pending mail.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room  The room name.
 		 * @param string $token The tab's token.
@@ -1225,7 +1225,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		/**
 		 * Whether any OTHER tab or live sync session is in the room.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room      The room name.
 		 * @param string $token     This tab's token.
@@ -1246,7 +1246,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * other than the given client. Covers tabs without the presence
 		 * lane (an older bundle, a different editor screen) that still poll.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room      The room name.
 		 * @param int    $client_id This tab's sync client id (0 when unknown).
@@ -1271,7 +1271,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * presence must never do, so the read is gated on the
 		 * non-creating probe.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room The room name.
 		 * @return array<int, array<string, mixed>> Awareness entries.

@@ -223,7 +223,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 		 * keeps collaborating on post meta rather than failing every
 		 * request, with an admin notice saying so.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param WP_Sync_Storage $storage The storage the framework built.
 		 * @return WP_Sync_Storage Storage to use.
@@ -430,7 +430,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 		 * collaboration keeps working on the framework's post-meta storage
 		 * until they can be.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return void
 		 */

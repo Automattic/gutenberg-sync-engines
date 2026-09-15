@@ -5,7 +5,7 @@
  * Description:       Pluggable real-time collaboration engines and transports for the Gutenberg collaborative-editing framework. Without this plugin active, real-time collaboration is effectively disabled.
  * Requires at least: 6.9
  * Requires PHP:      7.4
- * Version:           0.0.0
+ * Version:           0.0.1
  * Author:            WordPress Contributors
  * License:           GPL-2.0-or-later
  * License URI:       https://www.gnu.org/licenses/gpl-2.0.html
@@ -48,7 +48,7 @@ if ( ! function_exists( 'gutenberg_sync_engines_activate' ) ) {
 	 * On a network-wide activation both steps run for every site in the
 	 * network, because the option and the tables are per site.
 	 *
-	 * @since n.e.x.t
+	 * @since 0.0.1
 	 *
 	 * @param bool $network_wide Whether the plugin is being activated for
 	 *                           the whole network.
@@ -67,7 +67,7 @@ if ( ! function_exists( 'gutenberg_sync_engines_activate_site' ) ) {
 	/**
 	 * The per-site activation steps: storage tables, then the experiment.
 	 *
-	 * @since n.e.x.t
+	 * @since 0.0.1
 	 *
 	 * @return void
 	 */
@@ -85,7 +85,7 @@ if ( ! function_exists( 'gutenberg_sync_engines_initialize_site' ) ) {
 	 * network where the plugin is active per site gets them when it
 	 * activates the plugin itself.
 	 *
-	 * @since n.e.x.t
+	 * @since 0.0.1
 	 *
 	 * @param WP_Site $new_site The site just created.
 	 * @return void
@@ -108,7 +108,7 @@ if ( ! function_exists( 'gutenberg_sync_engines_enable_collaboration_experiment'
 	 * Turns on the `gutenberg-real-time-collaboration` experiment for the
 	 * current site, leaving the other experiments as they are.
 	 *
-	 * @since n.e.x.t
+	 * @since 0.0.1
 	 *
 	 * @return void
 	 */
@@ -146,7 +146,7 @@ if ( function_exists( 'gutenberg_sync_engines_bootstrap' ) ) {
 	return;
 }
 
-define( 'GUTENBERG_SYNC_ENGINES_VERSION', '0.0.0' );
+define( 'GUTENBERG_SYNC_ENGINES_VERSION', '0.0.1' );
 define( 'GUTENBERG_SYNC_ENGINES_PATH', plugin_dir_path( __FILE__ ) );
 define( 'GUTENBERG_SYNC_ENGINES_URL', plugin_dir_url( __FILE__ ) );
 define( 'GUTENBERG_SYNC_ENGINES_FILE', __FILE__ );
@@ -173,7 +173,7 @@ if ( ! function_exists( 'gutenberg_sync_engines_load_bundled_gutenberg' ) ) {
 	 * loaded fails that activation request safely — WordPress's plugin
 	 * sandbox catches the redeclare — and the next request defers to it.)
 	 *
-	 * @since n.e.x.t
+	 * @since 0.0.1
 	 *
 	 * @return void
 	 */

@@ -65,7 +65,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 * carries the same state inside the same bucket changes nothing, so
 		 * the transport skips the write (see `awareness_timestamp()`).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var int
 		 */
 		const AWARENESS_TIMESTAMP_GRANULARITY = 10;
@@ -76,7 +76,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 * serve it from the object cache (`WP_Sync_Table_Storage::GENERATION_KEY`
 		 * names the same key).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 */
 		const GENERATION_META_KEY = 'generation';
 
@@ -145,7 +145,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 * The presence lane deciding room lifetime (join/leave resets), or
 		 * null when the plugin's presence class is unavailable.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var Gutenberg_Sync_Engines_Advisory_Presence|null
 		 */
 		protected $presence;
@@ -153,7 +153,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		/**
 		 * The presence lane this transport consults for room lifetime.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return Gutenberg_Sync_Engines_Advisory_Presence|null
 		 */
@@ -522,7 +522,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 * Shared with the WebSocket daemon, which stamps its pushed frames
 		 * the same way.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room       Room identifier.
 		 * @param int    $end_cursor The room's current cursor (0 = no rows).
@@ -556,7 +556,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 * two first readers racing to mint it. Other storages get a random
 		 * id.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
@@ -810,7 +810,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 * `AWARENESS_TIMEOUT` seconds after the bucket, at most one bucket
 		 * later than it would be with exact timestamps.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param int $now Current Unix time.
 		 * @return int Rounded Unix time.
@@ -820,7 +820,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 			 * Filters how coarsely awareness timestamps are rounded, in
 			 * seconds. 1 disables the rounding (every poll writes).
 			 *
-			 * @since n.e.x.t
+			 * @since 0.0.1
 			 *
 			 * @param int $granularity Rounding step in seconds. Default 10.
 			 */

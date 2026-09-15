@@ -99,7 +99,7 @@ if ( ! class_exists( 'WP_WebSocket_Token_Controller' ) ) {
 		 * mode, a signed access token allowing the tab's post room.
 		 *
 		 * @since 7.4.0
-		 * @since n.e.x.t Access-token mode, and the optional `room` parameter.
+		 * @since 0.0.1 Access-token mode, and the optional `room` parameter.
 		 *
 		 * @param WP_REST_Request|null $request The request.
 		 * @return WP_REST_Response|WP_Error Response containing the token,
@@ -147,7 +147,7 @@ if ( ! class_exists( 'WP_WebSocket_Token_Controller' ) ) {
 		 * an access token names must be a `postType/<type>:<id>` room the user
 		 * can edit, the same check the sync endpoints make.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room The room.
 		 * @return bool Whether the user may sync it.

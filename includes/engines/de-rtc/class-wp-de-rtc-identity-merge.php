@@ -37,14 +37,14 @@ if ( ! class_exists( 'WP_De_RTC_Identity_Merge' ) ) {
 	 * before. Identity therefore only ever adds merges; it never changes
 	 * what the core would have decided on its own.
 	 *
-	 * @since n.e.x.t
+	 * @since 0.0.1
 	 */
 	class WP_De_RTC_Identity_Merge {
 
 		/**
 		 * Merges a proposal by block identity.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $base     Accepted-base stripped content.
 		 * @param string $current  Current canonical stripped content.
@@ -252,7 +252,7 @@ if ( ! class_exists( 'WP_De_RTC_Identity_Merge' ) ) {
 		 * its own form, unless that form is unchanged from the base or its
 		 * exact subtree was previously approved.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $base     Base stripped content.
 		 * @param string $proposed Proposed stripped content.
@@ -347,7 +347,7 @@ if ( ! class_exists( 'WP_De_RTC_Identity_Merge' ) ) {
 		 * block's form in another version (the per-block true-base rule of
 		 * `blockBaseVersions`, by identity: the block may sit anywhere).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $base    Base content to rewrite.
 		 * @param string $sync_id The block's identity.
@@ -387,7 +387,7 @@ if ( ! class_exists( 'WP_De_RTC_Identity_Merge' ) ) {
 		/**
 		 * The identity of the top-level block at an index of a document.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $content Content.
 		 * @param int    $index   Top-level index.

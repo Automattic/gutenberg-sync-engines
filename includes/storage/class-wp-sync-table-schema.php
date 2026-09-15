@@ -34,7 +34,7 @@ if ( ! class_exists( 'WP_Sync_Table_Schema' ) ) {
 	 * present. `WP_Sync_Table_Storage` is the only reader and writer of
 	 * the rows.
 	 *
-	 * @since n.e.x.t
+	 * @since 0.0.1
 	 */
 	final class WP_Sync_Table_Schema {
 		/**
@@ -42,7 +42,7 @@ if ( ! class_exists( 'WP_Sync_Table_Schema' ) ) {
 		 * next load runs dbDelta again (`maybe_upgrade()`), which is how a
 		 * future migration lands without a re-activation.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var int
 		 */
 		const DB_VERSION = 1;
@@ -52,7 +52,7 @@ if ( ! class_exists( 'WP_Sync_Table_Schema' ) ) {
 		 * Written only after the tables are verified to exist, so a
 		 * matching value doubles as "the tables are usable".
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var string
 		 */
 		const DB_VERSION_OPTION = 'gutenberg_sync_engines_db_version';
@@ -60,7 +60,7 @@ if ( ! class_exists( 'WP_Sync_Table_Schema' ) ) {
 		/**
 		 * Unprefixed name of the update-log table (`$wpdb->sync_updates`).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var string
 		 */
 		const UPDATES_TABLE = 'sync_updates';
@@ -69,7 +69,7 @@ if ( ! class_exists( 'WP_Sync_Table_Schema' ) ) {
 		 * Unprefixed name of the per-room key/value table
 		 * (`$wpdb->sync_room_meta`).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var string
 		 */
 		const ROOM_META_TABLE = 'sync_room_meta';
@@ -81,7 +81,7 @@ if ( ! class_exists( 'WP_Sync_Table_Schema' ) ) {
 		 * re-prefixes it like the tables. Flushed whenever every room is
 		 * emptied or the tables are dropped.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var string
 		 */
 		const CACHE_GROUP = 'wp_sync_rooms';
@@ -89,7 +89,7 @@ if ( ! class_exists( 'WP_Sync_Table_Schema' ) ) {
 		/**
 		 * Forgets every cached per-room value for the current site.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return void
 		 */
@@ -110,7 +110,7 @@ if ( ! class_exists( 'WP_Sync_Table_Schema' ) ) {
 		 * keeps addressing the current site's tables on multisite.
 		 * Idempotent.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
@@ -137,7 +137,7 @@ if ( ! class_exists( 'WP_Sync_Table_Schema' ) ) {
 		 * row was appended (last activity for diagnostics; the basis for
 		 * any future age-based maintenance).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
@@ -178,7 +178,7 @@ if ( ! class_exists( 'WP_Sync_Table_Schema' ) ) {
 		 * tables are verified to exist, so a site without CREATE TABLE
 		 * privileges never claims a working install.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return bool Whether both tables exist afterwards.
 		 */
@@ -200,7 +200,7 @@ if ( ! class_exists( 'WP_Sync_Table_Schema' ) ) {
 		/**
 		 * Creates or upgrades the tables on every site of the network.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return void
 		 */
@@ -215,7 +215,7 @@ if ( ! class_exists( 'WP_Sync_Table_Schema' ) ) {
 		 *
 		 * One autoloaded option read per request when nothing is to do.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return bool Whether the schema is usable afterwards.
 		 */
@@ -231,7 +231,7 @@ if ( ! class_exists( 'WP_Sync_Table_Schema' ) ) {
 		 * (autoloaded option) signal that the tables are usable, for
 		 * per-request code paths that must not query the schema.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return bool Whether the recorded version is current.
 		 */
@@ -243,7 +243,7 @@ if ( ! class_exists( 'WP_Sync_Table_Schema' ) ) {
 		 * Whether both tables exist for the current site (queries the
 		 * schema; use `is_ready()` on hot paths).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
@@ -271,7 +271,7 @@ if ( ! class_exists( 'WP_Sync_Table_Schema' ) ) {
 		 * (`maybe_upgrade()` sees no recorded version), so dropping only
 		 * sticks once the plugin is deactivated or uninstalled.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
@@ -292,7 +292,7 @@ if ( ! class_exists( 'WP_Sync_Table_Schema' ) ) {
 		/**
 		 * Drops the tables on every site of the network.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return void
 		 */
@@ -307,7 +307,7 @@ if ( ! class_exists( 'WP_Sync_Table_Schema' ) ) {
 		 * gone afterwards; the next session rebuilds its room from the
 		 * saved post.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
@@ -331,7 +331,7 @@ if ( ! class_exists( 'WP_Sync_Table_Schema' ) ) {
 		 * `switch_to_blog()`. Paginates site ids so a large network never
 		 * loads every site at once.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param callable $callback Runs with each site as the current one.
 		 * @return void

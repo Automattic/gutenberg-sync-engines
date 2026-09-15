@@ -46,7 +46,7 @@ if ( ! class_exists( 'WP_De_RTC_Sync_Meta_Colocation' ) ) {
 		 * load, so the editor never receives the co-located sync-meta script
 		 * in `content.raw` (it would parse it as a block).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return void
 		 */
@@ -62,7 +62,7 @@ if ( ! class_exists( 'WP_De_RTC_Sync_Meta_Colocation' ) ) {
 		 * room re-reads it from the saved post); an editor that parsed it
 		 * would show it as a stray block and propose it back as content.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param WP_REST_Response $response The response.
 		 * @return WP_REST_Response The response, raw content stripped.

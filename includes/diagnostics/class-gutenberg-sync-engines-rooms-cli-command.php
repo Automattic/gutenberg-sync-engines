@@ -167,7 +167,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Rooms_CLI_Command' ) && defined( 'W
 		 * framework's post-meta fallback because the tables are missing)
 		 * is told which one it has.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return WP_Sync_Table_Storage Storage.
 		 */
