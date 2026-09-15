@@ -71,14 +71,14 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 	 * Instances are built fresh per call by `wp_get_sync_storage()`; the
 	 * class keeps no static state.
 	 *
-	 * @since n.e.x.t
+	 * @since 0.0.1
 	 */
 	class WP_Sync_Table_Storage implements WP_Sync_Storage {
 		/**
 		 * Room-meta key holding the engine lineage stamp. Reserved keys
 		 * start with an underscore; engine keys never do.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var string
 		 */
 		const ENGINE_KEY = '_engine';
@@ -86,7 +86,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		/**
 		 * Room-meta key holding the awareness array.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var string
 		 */
 		const AWARENESS_KEY = '_awareness';
@@ -97,7 +97,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * here because it is one of the two write-once keys the storage may
 		 * serve from the object cache.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var string
 		 */
 		const GENERATION_KEY = 'generation';
@@ -107,7 +107,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * Every poll rewrites it while anyone is present, so this only
 		 * bounds the memory a deserted room holds in the cache.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var int
 		 */
 		const AWARENESS_CACHE_TTL = 5 * MINUTE_IN_SECONDS;
@@ -115,7 +115,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		/**
 		 * Longest room identifier the `room` column holds.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var int
 		 */
 		const MAX_ROOM_LENGTH = 191;
@@ -123,7 +123,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		/**
 		 * Cache of cursors by room (highest id seen by the last read).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var array<string, int>
 		 */
 		private array $room_cursors = array();
@@ -131,7 +131,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		/**
 		 * Cache of update counts by room (as of the last read).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var array<string, int>
 		 */
 		private array $room_update_counts = array();
@@ -140,7 +140,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * Constructor: makes sure the table names are registered on
 		 * `$wpdb` (a no-op after the plugin entry has run).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 */
 		public function __construct() {
 			WP_Sync_Table_Schema::register_tables();
@@ -151,7 +151,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * cannot be stored (MySQL would truncate or reject them), so every
 		 * write refuses them and every read treats them as empty.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room Room identifier.
 		 * @return bool Whether the room is storable.
@@ -166,7 +166,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * Exactly one INSERT and nothing after it: engines read
 		 * `$wpdb->insert_id` right after this call for the new row's cursor.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
@@ -195,7 +195,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		/**
 		 * Gets awareness state for a given room.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room Room identifier.
 		 * @return array<int, mixed> Awareness state.
@@ -223,7 +223,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * wins). On a host with a persistent object cache the array is
 		 * written to the cache only; see the class docblock.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string            $room      Room identifier.
 		 * @param array<int, mixed> $awareness Serializable awareness state.
@@ -249,7 +249,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * Whether presence and the write-once room keys are served from
 		 * the object cache: only when the cache outlives the request.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return bool Whether a persistent object cache is in use.
 		 */
@@ -263,7 +263,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * The object-cache key for one (room, key) pair. Rooms may hold
 		 * characters some cache backends reject, so the room is hashed.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room Room identifier.
 		 * @param string $key  Room-meta key.
@@ -277,7 +277,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * Whether a room-meta key may be served from the object cache:
 		 * only the two written once per room lifetime.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $key Room-meta key.
 		 * @return bool Whether reads of the key may be cached.
@@ -291,7 +291,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * one is in use. Only found values are cached; absence is read
 		 * from the table every time.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room Room identifier.
 		 * @param string $key  A key `is_cacheable_key()` accepts.
@@ -318,7 +318,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		/**
 		 * Drops the cached copies of a room's presence and write-once keys.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room Room identifier.
 		 * @return void
@@ -333,7 +333,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * Gets the current cursor for a given room: the highest update id
 		 * seen by this instance's last `get_updates_after_cursor()`.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room Room identifier.
 		 * @return int Current cursor for the room.
@@ -346,7 +346,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * Gets the number of stored updates for a given room, as of this
 		 * instance's last `get_updates_after_cursor()`.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room Room identifier.
 		 * @return int Number of updates.
@@ -359,7 +359,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * Retrieves sync updates from a room after the given cursor, in
 		 * cursor order.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
@@ -418,7 +418,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		/**
 		 * Removes updates from a room that are older than the given cursor.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
@@ -447,7 +447,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		/**
 		 * Gets the sync engine lineage of a room.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room Room identifier.
 		 * @return string|null Engine slug, or null for a room with no lineage.
@@ -462,7 +462,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * is what every read does here; kept for the framework's
 		 * feature-detected non-creating read (`method_exists`).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room Room identifier.
 		 * @return string|null Engine slug, or null for no lineage.
@@ -477,7 +477,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * converge on whichever row landed first, and a later call never
 		 * overwrites it.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
@@ -514,7 +514,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * bookkeeping (compaction checkpoints, trim floors, canonical
 		 * documents) rides here.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room Room identifier.
 		 * @param string $key  Meta key.
@@ -535,7 +535,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * Writes a per-room metadata value (JSON-encoded), replacing any
 		 * previous value for the key in one atomic upsert.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room  Room identifier.
 		 * @param string $key   Meta key.
@@ -560,7 +560,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * unsaved collaborative content; callers own that distinction (see
 		 * the polling transport's engine-switch reset).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
@@ -587,7 +587,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		/**
 		 * Reads one raw meta value.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
@@ -616,7 +616,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		/**
 		 * Inserts or replaces one meta value in a single statement.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
@@ -659,7 +659,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * Lists every room that holds anything, with its lineage and log
 		 * statistics.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
@@ -725,7 +725,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * Size of one room at rest: update rows, and the bytes its update
 		 * and meta rows hold.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
@@ -780,7 +780,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * every heartbeat, so it stays at two indexed lookups (no row
 		 * scan, unlike get_room_size()) and never writes.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
@@ -834,7 +834,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		/**
 		 * The newest update rows of a room, raw, newest first.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
@@ -871,7 +871,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		 * Every engine-level meta value of a room, decoded, keyed by meta
 		 * key. The reserved lineage and awareness rows are left out.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *

@@ -105,7 +105,7 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Transport' ) ) {
 		 * it in code.
 		 *
 		 * @since 7.2.0
-		 * @since n.e.x.t Reads the WebSocket URL setting first.
+		 * @since 0.0.1 Reads the WebSocket URL setting first.
 		 *
 		 * @return string WebSocket URL.
 		 */

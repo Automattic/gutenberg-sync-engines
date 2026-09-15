@@ -158,7 +158,7 @@ if ( ! class_exists( 'WP_Sync_Atomic_Option' ) ) {
 		 * Deletes a row. A substitute backend without a delete of its own
 		 * has the row reset to the empty string instead.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $name Option name.
 		 * @return void

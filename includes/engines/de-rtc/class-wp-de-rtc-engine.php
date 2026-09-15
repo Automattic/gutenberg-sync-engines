@@ -149,7 +149,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * Room meta key: pinned fingerprints of restored (approved)
 		 * unfiltered-html blocks.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var string
 		 */
 		const META_APPROVED_BLOCKS = 'de_rtc_approved_blocks';
@@ -1206,7 +1206,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		/**
 		 * Loads the room's pinned block-approval fingerprints.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room Room identifier.
 		 * @return array<string, array{by: int, at: int}> Fingerprint hash
@@ -1232,7 +1232,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * approval act. An edited approved block has new bytes and no pin
 		 * match, so it re-parks — that boundary is deliberate policy (#41).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room           Room identifier.
 		 * @param array  $changed_blocks The parked row's changedBlocks ({index, html}).
@@ -1455,7 +1455,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * Null when identity cannot decide, in which case the caller runs
 		 * the positional merge core exactly as before.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $room             Room identifier.
 		 * @param int    $client_id        Proposing client id.
@@ -2570,7 +2570,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * again (a reloading tab was served nothing). Hooked to the presence
 		 * lane's `gutenberg_sync_engines_room_reset` action.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *
@@ -2586,7 +2586,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		/**
 		 * The options row holding a room's canonical chain.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @global wpdb $wpdb WordPress database abstraction object.
 		 *

@@ -16,7 +16,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage_CLI_Command' ) && defined( 'WP_CLI' 
 	 * WP-CLI (unlike the room diagnostics, which are development-only),
 	 * because a site needs these to manage its own data.
 	 *
-	 * @since n.e.x.t
+	 * @since 0.0.1
 	 */
 	final class WP_Sync_Table_Storage_CLI_Command {
 
@@ -33,7 +33,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage_CLI_Command' ) && defined( 'WP_CLI' 
 		 *
 		 *     wp collaboration storage status
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param array $args       Positional arguments (unused).
 		 * @param array $assoc_args Named arguments.
@@ -95,7 +95,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage_CLI_Command' ) && defined( 'WP_CLI' 
 		 *
 		 *     wp collaboration storage install
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return void
 		 */
@@ -120,7 +120,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage_CLI_Command' ) && defined( 'WP_CLI' 
 		 *
 		 *     wp collaboration storage reset --yes
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param array $args       Positional arguments (unused).
 		 * @param array $assoc_args Named arguments.
@@ -154,7 +154,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage_CLI_Command' ) && defined( 'WP_CLI' 
 		 *
 		 *     wp collaboration storage drop --yes
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param array $args       Positional arguments (unused).
 		 * @param array $assoc_args Named arguments.

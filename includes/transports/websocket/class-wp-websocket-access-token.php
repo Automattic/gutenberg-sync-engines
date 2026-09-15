@@ -37,14 +37,14 @@ if ( ! class_exists( 'WP_WebSocket_Access_Token' ) ) {
 	 * relay with the new value; access tokens outlive a rotation by at most
 	 * their two-minute lifetime.
 	 *
-	 * @since n.e.x.t
+	 * @since 0.0.1
 	 * @access private
 	 */
 	class WP_WebSocket_Access_Token {
 		/**
 		 * Access token lifetime in seconds (the same as the one-time token's).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var int
 		 */
 		const TTL = 2 * MINUTE_IN_SECONDS;
@@ -52,7 +52,7 @@ if ( ! class_exists( 'WP_WebSocket_Access_Token' ) ) {
 		/**
 		 * Clock skew tolerated between the minting host and the verifier.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var int
 		 */
 		const LEEWAY = 30;
@@ -60,7 +60,7 @@ if ( ! class_exists( 'WP_WebSocket_Access_Token' ) ) {
 		/**
 		 * Longest access token a verifier reads.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var int
 		 */
 		const MAX_LENGTH = 4096;
@@ -68,7 +68,7 @@ if ( ! class_exists( 'WP_WebSocket_Access_Token' ) ) {
 		/**
 		 * Most rooms an access token names.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var int
 		 */
 		const MAX_ROOMS = 50;
@@ -76,7 +76,7 @@ if ( ! class_exists( 'WP_WebSocket_Access_Token' ) ) {
 		/**
 		 * The collection wildcard suffix: `<kind>/*`.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var string
 		 */
 		const COLLECTION_WILDCARD = '/*';
@@ -89,7 +89,7 @@ if ( ! class_exists( 'WP_WebSocket_Access_Token' ) ) {
 		 * can edit that type — this grant rounds the last one up, for a
 		 * lane that carries no content.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var string[]
 		 */
 		const COLLECTION_KINDS = array( 'postType', 'taxonomy', 'root' );
@@ -98,7 +98,7 @@ if ( ! class_exists( 'WP_WebSocket_Access_Token' ) ) {
 		 * The configured secret, or the empty string when access-token mode is
 		 * off.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return string The secret.
 		 */
@@ -120,7 +120,7 @@ if ( ! class_exists( 'WP_WebSocket_Access_Token' ) ) {
 			 * daemon (or a host's own relay sharing the secret) verifies
 			 * them without a database read.
 			 *
-			 * @since n.e.x.t
+			 * @since 0.0.1
 			 *
 			 * @param string $secret The secret, or '' for off.
 			 */
@@ -132,7 +132,7 @@ if ( ! class_exists( 'WP_WebSocket_Access_Token' ) ) {
 		/**
 		 * Whether access-token mode is on.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return bool Whether a secret is configured.
 		 */
@@ -144,7 +144,7 @@ if ( ! class_exists( 'WP_WebSocket_Access_Token' ) ) {
 		 * Whether a handshake credential has a access token's shape (three
 		 * base64url segments) rather than a one-time token's (hex).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $token The offered credential.
 		 * @return bool Whether it looks like an access token.
@@ -158,7 +158,7 @@ if ( ! class_exists( 'WP_WebSocket_Access_Token' ) ) {
 		 * The rooms an access token for one editor tab allows: its post's room,
 		 * when given, plus the collection rooms of every allowed kind.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string|null $room The tab's post room, or null.
 		 * @return string[] Room grants.
@@ -179,7 +179,7 @@ if ( ! class_exists( 'WP_WebSocket_Access_Token' ) ) {
 		 * entry, or a `<kind>/*` entry when the room is a collection room
 		 * (no object id) of that kind. The rule every relay implements.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string[] $rooms The access token's `rooms` claim.
 		 * @param string   $room  The room to follow.
@@ -199,7 +199,7 @@ if ( ! class_exists( 'WP_WebSocket_Access_Token' ) ) {
 		/**
 		 * Mints an access token.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param int      $user_id The user.
 		 * @param string[] $rooms   Room grants (see grants()).
@@ -234,7 +234,7 @@ if ( ! class_exists( 'WP_WebSocket_Access_Token' ) ) {
 		 * Verifies an access token: the signature (HS256 only), the expiry with
 		 * leeway, the blog, and the claim shapes.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string   $access_token The access token.
 		 * @param int|null $now    The current time, for tests.
@@ -300,7 +300,7 @@ if ( ! class_exists( 'WP_WebSocket_Access_Token' ) ) {
 		/**
 		 * The base64url HMAC-SHA256 signature of the signing input.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $input `<header>.<payload>`.
 		 * @return string The signature.
@@ -312,7 +312,7 @@ if ( ! class_exists( 'WP_WebSocket_Access_Token' ) ) {
 		/**
 		 * Base64url without padding.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $bytes Raw bytes.
 		 * @return string Encoded.
@@ -324,7 +324,7 @@ if ( ! class_exists( 'WP_WebSocket_Access_Token' ) ) {
 		/**
 		 * The inverse of encode().
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $segment Encoded.
 		 * @return string|false Raw bytes, or false when not base64url.

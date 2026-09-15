@@ -49,7 +49,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * sanitize callback writes the transport and advisory options and
 		 * the value itself is never stored (see register()).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var string
 		 */
 		const DELIVERY_FIELD = 'gutenberg_sync_engines_delivery';
@@ -74,7 +74,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		/**
 		 * The de-rtc commit cadence in seconds when none is set.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var int
 		 */
 		const DE_RTC_COMMIT_INTERVAL_DEFAULT = 10;
@@ -95,7 +95,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		/**
 		 * The polling interval in seconds when none is set.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var int
 		 */
 		const POLLING_INTERVAL_DEFAULT = 5;
@@ -107,7 +107,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * room) or the empty string for off. `web-rtc`, the slug the first
 		 * release stored, still reads as `webrtc-advisory`.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var string
 		 */
 		const ADVISORY_OPTION        = 'gutenberg_sync_engines_advisory_channel';
@@ -122,7 +122,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * default) means `ws://<WP_SYNC_WEBSOCKET_HOST>:<WP_SYNC_WEBSOCKET_PORT>`;
 		 * the `wp_sync_websocket_url` filter still applies last.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var string
 		 */
 		const WEBSOCKET_URL_OPTION = 'gutenberg_sync_engines_websocket_url';
@@ -133,7 +133,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * relay (examples/advisory-relay). Empty (the default) means the
 		 * transport's URL, i.e. the daemon.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var string
 		 */
 		const ADVISORY_WEBSOCKET_URL_OPTION = 'gutenberg_sync_engines_advisory_websocket_url';
@@ -144,7 +144,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * `keep` (rooms live on as a shared working copy). See
 		 * docs/plan/room-lifetime.md.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var string
 		 */
 		const UNSAVED_OPTION  = 'gutenberg_sync_engines_unsaved_changes';
@@ -160,7 +160,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * peers draw an outline and an avatar on it. See
 		 * docs/awareness-high-latency.md.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var string
 		 */
 		const AWARENESS_INTERVAL_OPTION = 'gutenberg_sync_engines_awareness_interval';
@@ -171,7 +171,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * alive (a five-minute lease), so the interval stays well inside
 		 * that; it is also Heartbeat's own ceiling for a hidden tab.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var int
 		 */
 		const AWARENESS_INTERVAL_MAX = 120;
@@ -182,7 +182,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * rides the same requests as content) or `heartbeat` (the WordPress
 		 * Heartbeat request, a separate stream with its own cadence).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 * @var string
 		 */
 		const AWARENESS_CHANNEL_OPTION    = 'gutenberg_sync_engines_awareness_channel';
@@ -230,7 +230,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * engine_descriptions() for the text shown under the chosen one).
 		 *
 		 * @since 0.1.0
-		 * @since n.e.x.t Names only; the descriptions moved to engine_descriptions().
+		 * @since 0.0.1 Names only; the descriptions moved to engine_descriptions().
 		 *
 		 * @return array<string, string> Engine choices.
 		 */
@@ -256,7 +256,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * chosen. Filterable so additional engine plugins can describe
 		 * themselves.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return array<string, string> Engine slug => description.
 		 */
@@ -271,7 +271,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			 * Filters the sync engine descriptions shown on the settings
 			 * screen.
 			 *
-			 * @since n.e.x.t
+			 * @since 0.0.1
 			 *
 			 * @param array<string, string> $descriptions Engine slug => description.
 			 */
@@ -312,7 +312,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * channel they store is what serves when the connection is down
 		 * and tabs fall back to polling.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return array<string, array{transport: string, advisory: string, label: string, description: string}> Choices.
 		 */
@@ -356,7 +356,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * to. Long polling and the WebSocket transport map to their entry
 		 * whatever advisory channel is stored (it only serves as fallback).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return string A DELIVERY_* value.
 		 */
@@ -549,7 +549,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		/**
 		 * The polling interval in effect, in seconds.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return int 1-25.
 		 */
@@ -574,7 +574,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * Sanitizes the awareness interval: whole seconds, 0 to
 		 * AWARENESS_INTERVAL_MAX.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param mixed $value Submitted value.
 		 * @return int Interval in seconds.
@@ -586,7 +586,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		/**
 		 * Sanitizes the awareness channel.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param mixed $value Submitted value.
 		 * @return string `sync` or `heartbeat`.
@@ -600,7 +600,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		/**
 		 * The slow awareness interval in effect, in seconds (0 = off).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return int 0 to AWARENESS_INTERVAL_MAX.
 		 */
@@ -611,7 +611,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		/**
 		 * The slow awareness channel in effect.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return string `sync` or `heartbeat`.
 		 */
@@ -650,7 +650,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		/**
 		 * Renders the "Transport" radio list.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return void
 		 */
@@ -775,7 +775,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * Sanitizes the "Transport" list's value and writes the pair of
 		 * options it stands for. The value itself is not stored.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param mixed $value Submitted value.
 		 * @return string The DELIVERY_* value applied.
@@ -827,7 +827,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * Sanitizes a WebSocket URL: a `ws://` or `wss://` URL, or the
 		 * empty string for the default.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param mixed $value Submitted value.
 		 * @return string The URL, or ''.
@@ -843,7 +843,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		/**
 		 * The configured WebSocket transport URL, or '' for the default.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return string The URL, or ''.
 		 */
@@ -856,7 +856,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * server setting, else the transport's URL (the sync daemon serves
 		 * both).
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return string The URL.
 		 */
@@ -871,7 +871,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		/**
 		 * Renders the WebSocket advisory server URL field.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return void
 		 */
@@ -890,7 +890,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		/**
 		 * Renders the WebSocket transport server URL field.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return void
 		 */
@@ -906,7 +906,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * server) with a real credential from the token route, and
 		 * reports whether the handshake succeeded.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string $name      Option name (input name and id).
 		 * @param string $value     Stored value ('' for the default).
@@ -931,7 +931,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * input drops out of the POST and saving would reset the stored
 		 * value. Without JS the row simply stays visible.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param string   $input_id   The field's input id.
 		 * @param string[] $deliveries DELIVERY_* values that show it.
@@ -965,7 +965,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		/**
 		 * Sanitizes the advisory channel choice.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param mixed $value Submitted value.
 		 * @return string `webrtc-advisory`, `websocket-advisory`, or the empty
@@ -979,7 +979,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * Maps a stored advisory value (including the legacy `web-rtc`) to
 		 * a current slug.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param mixed $value Raw value.
 		 * @return string `webrtc-advisory`, `websocket-advisory`, or the empty
@@ -997,7 +997,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * The advisory channel the site chose: `webrtc-advisory`,
 		 * `websocket-advisory`, or the empty string for off.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return string The advisory channel slug, or the empty string.
 		 */
@@ -1008,7 +1008,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		/**
 		 * Sanitizes the unsaved-changes policy.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param mixed $value Submitted value.
 		 * @return string `discard` or `keep`.
@@ -1020,7 +1020,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		/**
 		 * Renders the unsaved-changes policy field.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return void
 		 */
@@ -1053,7 +1053,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		/**
 		 * Renders the awareness interval field.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return void
 		 */
@@ -1071,7 +1071,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		/**
 		 * Renders the awareness channel field.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @return void
 		 */
@@ -1182,7 +1182,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * from here, is not a sync server or relay, or (for a relay) does
 		 * not share the access-token secret.
 		 *
-		 * @since n.e.x.t
+		 * @since 0.0.1
 		 *
 		 * @param bool $collaboration_enabled Whether the token route exists.
 		 * @return void
