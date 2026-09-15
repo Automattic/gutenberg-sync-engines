@@ -65,6 +65,27 @@ deliberately number-free. Run `npm run bench` for a report of what the
 plugin adds to a server on your own hardware, and
 `npm run bench -- --suite=engines` for the full engine-decision numbers.
 
+**Want to try it?** Two ways, no Docker needed:
+
+- **In your browser, nothing to install.** Open the plugin's latest release
+  on the official WordPress Playground:
+  <https://playground.wordpress.net/?blueprint-url=https://raw.githubusercontent.com/Automattic/gutenberg-sync-engines/trunk/blueprints/playground.json>.
+  The blueprint ([`blueprints/playground.json`](blueprints/playground.json))
+  installs the release zip (which bundles Gutenberg), turns collaboration
+  on, and opens the editor logged in as `admin`. Every browser tab on the
+  hosted Playground is its own WordPress site, so a second tab cannot join
+  the first tab's editing session; use it to see the plugin, the
+  **Settings → Collaboration** screen, and a solo editing session.
+- **From a checkout, on your machine.** `npm run playground` (after the
+  Setup steps below) serves the checkout as the plugin on a local
+  Playground at <http://127.0.0.1:9400>. This is one WordPress behind one
+  port, so two browser windows on the same post do collaborate: the first
+  window is logged in as `admin`, and a private window can log in as
+  `editor` (password `password`). Flags after `--` go to the Playground
+  CLI (`--port=9500`, `--php=8.2`). Nothing persists across restarts,
+  and the WebSocket transport is not available there (it needs the
+  daemon that `npm run rtc:ws` runs on wp-env).
+
 **Want to help?** [`plan/`](docs/plan/README.md) holds what we intend to build
 next, one file per bug or feature, each with an example and a way to tell
 when it is done. [`docs/plan/wontfix.md`](docs/plan/wontfix.md) covers what we looked
@@ -107,6 +128,8 @@ cd gutenberg && npm install --ignore-scripts && npm run build && cd ..
 ```bash
 npm run env start         # Start WordPress (Gutenberg subtree + this plugin)
 npm run env stop          # Stop it
+npm run playground        # Or: the same checkout on a local WordPress
+                          # Playground (WebAssembly PHP + SQLite, no Docker)
 ```
 
 ### Tests
