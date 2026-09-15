@@ -16,7 +16,7 @@
 		},
 		{
 			"step": "runPHP",
-			"code": "<?php require_once '/wordpress/wp-load.php'; $experiments = (array) get_option( 'gutenberg-experiments', array() ); $experiments['gutenberg-real-time-collaboration'] = true; update_option( 'gutenberg-experiments', $experiments ); if ( ! username_exists( 'editor' ) ) { wp_insert_user( array( 'user_login' => 'editor', 'user_pass' => 'password', 'user_email' => 'editor@example.com', 'display_name' => 'Editor', 'role' => 'editor' ) ); } global $wpdb; foreach ( array( 'admin', 'editor' ) as $login ) { $user = get_user_by( 'login', $login ); if ( $user ) { update_user_meta( $user->ID, $wpdb->get_blog_prefix() . 'persisted_preferences', array( 'core/edit-post' => array( 'welcomeGuide' => false ), '_modified' => gmdate( 'c' ) ) ); } }"
+			"code": "<?php require_once '/wordpress/wp-load.php'; if ( ! username_exists( 'editor' ) ) { wp_insert_user( array( 'user_login' => 'editor', 'user_pass' => 'password', 'user_email' => 'editor@example.com', 'display_name' => 'Editor', 'role' => 'editor' ) ); } global $wpdb; foreach ( array( 'admin', 'editor' ) as $login ) { $user = get_user_by( 'login', $login ); if ( $user ) { update_user_meta( $user->ID, $wpdb->get_blog_prefix() . 'persisted_preferences', array( 'core/edit-post' => array( 'welcomeGuide' => false ), '_modified' => gmdate( 'c' ) ) ); } }"
 		}
 	]
 }

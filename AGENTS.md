@@ -283,12 +283,11 @@ The framework/plugin split is complete: the framework ships **neither** engines
   byte-identical by `tests/js/engines/intent-log/vector-parity.test.js`;
   regenerate with the `tests/tools/` scripts and always update both.
 - `bin/` — repo scripts, not shipped: `build-plugin-zip.sh` (the release
-  zip), `release.mjs` (humans only, see Releasing), `playground.mjs`
-  (`npm run playground`, see Environment).
-- `blueprints/` — WordPress Playground blueprints: `local.json` (applied
-  by `npm run playground` to the mounted checkout) and `playground.json`
-  (the public one for playground.wordpress.net; installs the latest
-  release zip).
+  zip) and `release.mjs` (humans only, see Releasing).
+- `blueprint.json` / `blueprint.local.json` — WordPress Playground
+  blueprints: the public one for playground.wordpress.net (installs the
+  latest release zip) and the one `npm run playground` applies to the
+  mounted checkout (see Environment).
 - `examples/` — code a host copies rather than the plugin runs:
   `advisory-relay/` (the bring-your-own WebSocket relay for the
   advisory channel, Node + `ws`, plus its README). Linted with
@@ -376,31 +375,30 @@ the two environments are fully independent — separate databases included.
 Personal overrides go in `.wp-env.override.json` /
 `.wp-env.tests.override.json` (both gitignored).
 
-A third, lighter option needs no Docker: `npm run playground`
-(`bin/playground.mjs`) serves the checkout on a local **WordPress
-Playground** (`@wp-playground/cli`: WebAssembly PHP + SQLite) at
-http://127.0.0.1:9400, mounted under the fixed name
+A third, lighter option needs no Docker: `npm run playground` (an
+inline script in `package.json`) serves the checkout on a local
+**WordPress Playground** (`@wp-playground/cli`: WebAssembly PHP +
+SQLite) at http://127.0.0.1:9400, mounted under the fixed name
 `wp-content/plugins/gutenberg-sync-engines` (worktree-safe, and only ONE
 mount, so the double-mount trap below does not apply) with
-`blueprints/local.json` applied: plugin activated, `WP_DEBUG` +
-`SCRIPT_DEBUG` on, the RTC experiment on, a second account (`editor`
-/ `password`), welcome guide off. The checkout is served as-is, so it
-must be BUILT (the script refuses otherwise): PHP edits are live, JS
-edits need `npm run build`. Two windows on one post collaborate over
-HTTP polling (the two-tab observer passes against it); there is no
-websocket daemon and nothing persists across restarts. Two things the
-script pins on purpose: `--login` (the blueprint's `login: true` alone
-does not log a BROWSER in on the CLI) and `--workers=1` (with several
-PHP workers a tab's login session is missing on the other workers, and
-the editor shows "Session expired" at random). `blueprints/playground.json`
-is the public twin for the OFFICIAL Playground
-(`https://playground.wordpress.net/?blueprint-url=<raw URL of that file
-on trunk>`): it installs the LATEST release zip from GitHub (Playground
-routes the cross-origin download through its own CORS proxy; the
-console shows a CORS error first, then the proxied fetch succeeds) and
-flips the experiment itself, because the v0.0.0 release predates the
-activation hook that does so. Each hosted tab is its own site, so it
-demonstrates a solo session only.
+`blueprint.local.json` applied: plugin activated (its activation hook
+turns the RTC experiment on), `WP_DEBUG` + `SCRIPT_DEBUG` on, a second
+account (`editor` / `password`), welcome guide off. The checkout is
+served as-is, so it must be BUILT (`preplayground` refuses otherwise):
+PHP edits are live, JS edits need `npm run build`. Two windows on one
+post collaborate over HTTP polling (the two-tab observer passes against
+it); there is no websocket daemon and nothing persists across restarts.
+Two flags are pinned on purpose: `--login` (the blueprint's `login:
+true` alone does not log a BROWSER in on the CLI) and `--workers=1`
+(with several PHP workers a tab's login session is missing on the other
+workers, and the editor shows "Session expired" at random).
+`blueprint.json` at the repo root is the public twin for the OFFICIAL
+Playground (`https://playground.wordpress.net/?blueprint-url=<raw URL
+of that file on trunk>`): it installs the LATEST release zip from
+GitHub (Playground routes the cross-origin download through its own
+CORS proxy; the console shows a CORS error first, then the proxied
+fetch succeeds). Each hosted tab is its own site, so it demonstrates a
+solo session only.
 
 ## Testing
 

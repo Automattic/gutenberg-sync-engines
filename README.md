@@ -2,18 +2,6 @@
 
 Pluggable real-time collaboration **engines** and **transports** for Gutenberg.
 
-Gutenberg hosts the collaboration *framework*: the `WP_Sync_Engine` /
-`WP_Sync_Transport` / `WP_Sync_Storage` contracts, the two registries (server
-and client), room permission config, storage, the client `@wordpress/sync`
-package, and the editor/data-layer integration (including the conflict-review
-UI). This plugin supplies the *implementations* that register themselves via
-filters supplied by Gutenberg.
-
-**Without this plugin active, real-time collaboration is effectively
-disabled.** The framework registers no engine or transport, so a session
-finds nothing to negotiate and the editor falls back to the classic
-exclusive post lock.
-
 ## What it provides
 
 Engines (how concurrent edits merge):
@@ -30,9 +18,9 @@ Engines (how concurrent edits merge):
 
 Transports (how updates move):
 
-- **http-polling** — short-poll `POST /wp-sync/v1/updates` (default).
-- **http-long-polling** — the same, held open until data is ready.
-- **websocket** — push over a persistent socket served by a bundled PHP
+- **http-polling**: short-poll `POST /wp-sync/v1/updates` (default).
+- **http-long-polling**: the same, held open until data is ready.
+- **websocket**: push over a persistent socket served by a bundled PHP
   daemon (`wp collaboration sync-server`). For local dev, `npm run rtc:ws`
   starts everything in one command (and `npm run rtc:http` switches back).
 
@@ -64,32 +52,6 @@ compared separately in [`docs/transports.md`](docs/transports.md). Both are
 deliberately number-free. Run `npm run bench` for a report of what the
 plugin adds to a server on your own hardware, and
 `npm run bench -- --suite=engines` for the full engine-decision numbers.
-
-**Want to try it?** Two ways, no Docker needed:
-
-- **In your browser, nothing to install.** Open the plugin's latest release
-  on the official WordPress Playground:
-  <https://playground.wordpress.net/?blueprint-url=https://raw.githubusercontent.com/Automattic/gutenberg-sync-engines/trunk/blueprints/playground.json>.
-  The blueprint ([`blueprints/playground.json`](blueprints/playground.json))
-  installs the release zip (which bundles Gutenberg), turns collaboration
-  on, and opens the editor logged in as `admin`. Every browser tab on the
-  hosted Playground is its own WordPress site, so a second tab cannot join
-  the first tab's editing session; use it to see the plugin, the
-  **Settings → Collaboration** screen, and a solo editing session.
-- **From a checkout, on your machine.** `npm run playground` (after the
-  Setup steps below) serves the checkout as the plugin on a local
-  Playground at <http://127.0.0.1:9400>. This is one WordPress behind one
-  port, so two browser windows on the same post do collaborate: the first
-  window is logged in as `admin`, and a private window can log in as
-  `editor` (password `password`). Flags after `--` go to the Playground
-  CLI (`--port=9500`, `--php=8.2`). Nothing persists across restarts,
-  and the WebSocket transport is not available there (it needs the
-  daemon that `npm run rtc:ws` runs on wp-env).
-
-**Want to help?** [`plan/`](docs/plan/README.md) holds what we intend to build
-next, one file per bug or feature, each with an example and a way to tell
-when it is done. [`docs/plan/wontfix.md`](docs/plan/wontfix.md) covers what we looked
-at and set aside, and why.
 
 ## Architecture
 
@@ -128,8 +90,15 @@ cd gutenberg && npm install --ignore-scripts && npm run build && cd ..
 ```bash
 npm run env start         # Start WordPress (Gutenberg subtree + this plugin)
 npm run env stop          # Stop it
-npm run playground        # Or: the same checkout on a local WordPress
-                          # Playground (WebAssembly PHP + SQLite, no Docker)
+```
+
+Alternatively, try it using WordPress Playground. Note: On the official
+WordPress playground, every browser tab is its own WordPress site, so a second
+tab cannot join the first tab's editing session. Instead, use a local
+Playground instance:
+
+```bash
+npm run playground
 ```
 
 ### Tests
@@ -165,4 +134,5 @@ If you need to test behavior by yourself, you can open a separate browser and us
 ```
 (async () => { const { subscribe, select } = wp.data; const clientId = await new Promise((resolve) => { const initial = select('core/block-editor').getSelectedBlockClientId(); if (initial) { resolve(initial); return; } const unsubscribe = subscribe(() => { const id = select('core/block-editor').getSelectedBlockClientId(); if (id) { unsubscribe(); resolve(id); } }); }); const doc = document.querySelector('iframe[name="editor-canvas"]')?.contentDocument ?? document; const blockEl = doc.querySelector(`[data-block="${clientId}"]`); const editable = blockEl?.querySelector('[contenteditable="true"]') ?? blockEl; if (!editable) { console.warn('No editable element found for block', clientId); return; } editable.focus(); const sel = doc.defaultView.getSelection(); if (!sel.rangeCount || !editable.contains(sel.anchorNode)) { const r = doc.createRange(); r.selectNodeContents(editable); r.collapse(false); sel.removeAllRanges(); sel.addRange(r); } let i = 0; const intervalId = setInterval(() => { const char = String(i % 10); const keyInit = { key: char, code: `Digit${char}`, keyCode: 48 + Number(char), which: 48 + Number(char), bubbles: true, cancelable: true }; editable.dispatchEvent(new KeyboardEvent('keydown', keyInit)); const notCancelled = editable.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: char, bubbles: true, cancelable: true })); if (notCancelled) { const s = doc.defaultView.getSelection(); if (s.rangeCount) { const r = s.getRangeAt(0); r.deleteContents(); const t = doc.createTextNode(char); r.insertNode(t); r.setStartAfter(t); r.setEndAfter(t); s.removeAllRanges(); s.addRange(r); } editable.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: char, bubbles: true })); } editable.dispatchEvent(new KeyboardEvent('keyup', keyInit)); i++; }, 60); window.__stopTyping = () => { clearInterval(intervalId); console.log('Stopped.'); }; console.log('Typing started on block', clientId, '— run window.__stopTyping() to stop.'); })();
 ```
+
 It will keep typing and let you test different scenarios. You can stop it by entering `window.__stopTyping()` in the same console you ran the original command.
