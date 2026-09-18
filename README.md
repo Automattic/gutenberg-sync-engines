@@ -1,33 +1,65 @@
 # Gutenberg sync engines
 
-Pluggable real-time collaboration **engines** and **transports** for Gutenberg.
+An exploratory WordPress plugin for trying out **server-aware** real-time
+collaboration in Gutenberg. It provides three candidate sync **engines**
+(how the server merges edits from several people) and several
+**transports** (how updates move between the editor and WordPress). Each
+can be selected from a settings screen, so they can be compared on the
+same site under the same conditions.
+
+**This plugin is a decision tool, not a solution.** Real-time
+collaboration was removed from WordPress 7.0, and the concerns behind
+that decision call for a change in direction: collaboration should run
+through WordPress, with Core in control. The reasoning is explored in
+[Moving to a server-aware approach for collaboration](https://make.wordpress.org/core/2026/09/18/moving-to-a-server-aware-approach-for-collaboration/).
+
+This repository is where candidates are built, measured, and compared so
+that one can be chosen. The eventual goal is to package the preferred
+engine as a feature plugin for wider testing.
 
 ## What it provides
 
-Engines (how concurrent edits merge):
+### Engines
 
-- **intent-log**: a server-authoritative log of typed intents; concurrent
-  edits merge by transform, genuine conflicts are set aside for review, and
-  no work is silently lost.
-- **yjs-server**: a server-authoritative CRDT: the vendored y-php library
-  merges every update into a canonical room document server-side, compacts
-  by itself, and materializes post content.
-- **de-rtc**: Distributed Editing's save-centric model: clients propose
-  whole content against a named base version, the server three-way-merges
-  every proposal. Genuine conflicts escalate instead of silently merging.
+- **intent-log**: the editor sends short descriptions of what changed,
+  such as "move this block". The server keeps an ordered log of these
+  and works out how to combine edits that overlap (an operational
+  transform engine). Genuine conflicts are set aside for someone to
+  review, so no work is silently lost.
+- **yjs-server**: a PHP implementation of Yjs. The server holds a shared
+  document for each post in a format built to merge automatically (a
+  CRDT), merges every update into it, compacts it by itself, and produces
+  the post content from it.
+- **de-rtc** (Distributed Editing): the server compares three versions
+  of the post, the latest saved version, the editor's proposed version,
+  and the version the editor started from, and combines the changes (a
+  three-way merge). Sync happens on save or autosave, not on every
+  change. Genuine conflicts are flagged for someone to review instead of
+  silently merging.
 
-Transports (how updates move):
+### Transports
 
-- **http-polling**: short-poll `POST /wp-sync/v1/updates` (default).
-- **http-long-polling**: the same, held open until data is ready.
-- **websocket**: push over a persistent socket served by a bundled PHP
-  daemon (`wp collaboration sync-server`). For local dev, `npm run rtc:ws`
-  starts everything in one command (and `npm run rtc:http` switches back).
+- **http-polling**: the editor asks the server for updates on a short
+  timer (`POST /wp-sync/v1/updates`). Every host can run it (default).
+- **http-long-polling**: the same request, held open by the server until
+  there is something to send.
+- **websocket**: the server pushes updates over a persistent connection
+  served by a bundled PHP daemon (`wp collaboration sync-server`). For
+  local dev, `npm run rtc:ws` starts everything in one command (and
+  `npm run rtc:http` switches back).
 
-Storage (where a room's updates live):
+**The advisory channel.** Polling is the universal base transport, but
+frequent polling costs the server and infrequent polling feels slow. An
+advisory channel connects peers and exchanges only who is present and 
+announcements of new updates (never content). With the channel open, a peer
+polls when there is something to fetch and otherwise idles. The channel
+runs over a direct WebRTC link between browsers or over a WebSocket.
 
-- Two plugin-owned tables, `{prefix}sync_updates` (the update log) and
-  `{prefix}sync_room_meta` (lineage, awareness, engine bookkeeping),
+### Storage
+
+- Two plugin-owned tables, `wp_sync_updates` (the update log) and
+  `wp_sync_room_meta` (which engine created the room, who is
+  present, engine bookkeeping),
   substituted for Gutenberg's default post-meta storage. No collaboration
   write touches post caches. On a site with a persistent object cache
   (Redis, Memcached), who is present in a room is kept in the cache
@@ -44,14 +76,17 @@ polling, or WebSocket), are chosen on the plugin's **Settings →
 Collaboration** screen (or via `wp_sync_engine` / the
 `WP_COLLABORATION_TRANSPORT` config value).
 
-**Comparing the engines?** Start with [`docs/`](docs/README.md). The short
-answer and the full trade-off — scorecard, feature parity, resource shapes,
-and each engine's known gaps — live in
-[`docs/engine-comparison.md`](docs/engine-comparison.md); the transports are
-compared separately in [`docs/transports.md`](docs/transports.md). Both are
-deliberately number-free. Run `npm run bench` for a report of what the
-plugin adds to a server on your own hardware, and
-`npm run bench -- --suite=engines` for the full engine-decision numbers.
+## Comparing the engines
+
+Moving merge work to the server has a cost, and the point of this
+repository is to measure it: run `npm run bench` for a report of what the
+plugin adds to a server on your own hardware, and `npm run bench -- --suite=engines`
+for the full engine-decision numbers.
+
+## Feedback
+
+Open GitHub issues or discuss in `#feature-realtime-collaboration` channel in
+[WordPress Slack](https://make.wordpress.org/chat/).
 
 ## Architecture
 
