@@ -123,8 +123,10 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/class-wp-sync-room-lock.php';
 			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/class-wp-sync-atomic-option.php';
 
-			// The one place awareness is read and written.
+			// Awareness, behind the same kind of drop-in seam as the lock.
+			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/interface-wp-sync-awareness-backend.php';
 			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/class-wp-sync-awareness.php';
+			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/class-wp-sync-presence-api-awareness-backend.php';
 
 			$engines = GUTENBERG_SYNC_ENGINES_PATH . 'includes/engines/';
 			require_once $engines . 'class-wp-sync-post-genesis-props.php';
@@ -198,6 +200,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 		 */
 		private function register(): void {
 			add_filter( '__unstable_wp_sync_storage', array( $this, 'filter_sync_storage' ) );
+			add_filter( 'wp_sync_awareness_backend', array( $this, 'filter_awareness_backend' ) );
 			add_filter( 'wp_sync_engines', array( $this, 'register_engines' ), 10, 2 );
 			WP_De_RTC_Sync_Meta_Colocation::register();
 			WP_De_RTC_Base_Version_Preflight::register();
@@ -236,6 +239,23 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 				return new WP_Sync_Table_Storage();
 			}
 			return $storage;
+		}
+
+		/**
+		 * Hands awareness to the Presence API plugin when that plugin is
+		 * active and recording, replacing only the default the way storage
+		 * does, so another plugin's backend is respected.
+		 *
+		 * @since 0.0.2
+		 *
+		 * @param WP_Sync_Awareness_Backend|null $backend The backend so far.
+		 * @return WP_Sync_Awareness_Backend|null Backend to use.
+		 */
+		public function filter_awareness_backend( $backend ) {
+			if ( null === $backend && WP_Sync_Presence_API_Awareness_Backend::is_available() ) {
+				return new WP_Sync_Presence_API_Awareness_Backend();
+			}
+			return $backend;
 		}
 
 		/**

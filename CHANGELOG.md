@@ -10,6 +10,24 @@ release, which the release script generates from the commit history.
 
 ## Unreleased
 
+### Added
+
+-   Awareness gained a drop-in backend seam, the third after the lock and
+    the compare-and-swap: implement `WP_Sync_Awareness_Backend` and return
+    it from the `wp_sync_awareness_backend` filter. The interface is per
+    client rather than per room, so a backend can write one client's entry
+    without rewriting anyone else's. The room array remains the default.
+-   On a site running the Presence API feature plugin, that plugin's
+    shared `wp_presence` table now holds awareness. Each client is one row
+    upserted in place, so two clients polling in the same instant cannot
+    drop each other, and a host without a persistent object cache behaves
+    like one with it. A collaborator in the editor also shows up in Who's
+    Online and the post list. Both sides speak `postType/{type}:{id}`, so
+    rooms need no mapping. This plugin's rows carry a `gse-` client id
+    prefix. Deactivating the Presence API, or
+    `remove_all_filters( 'wp_sync_awareness_backend' )`, returns
+    collaboration to the room array.
+
 ### Changed
 
 -   Every awareness read and write in the plugin now goes through one
