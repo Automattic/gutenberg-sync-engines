@@ -269,6 +269,15 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 		private float $last_sweep_at = 0;
 
 		/**
+		 * Client ids each room held at the last sweep, so the next one can
+		 * tell that somebody has since gone.
+		 *
+		 * @since 0.0.2
+		 * @var array<string, array<int, int>>
+		 */
+		private array $swept_client_ids = array();
+
+		/**
 		 * Timestamp of the last out-of-band room scan.
 		 *
 		 * @since 0.3.0
@@ -1326,7 +1335,7 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 			// with on the REST transports); the raw entry list crashes the
 			// editor's collaborator UI.
 			$awareness_map = array();
-			foreach ( $this->sync->get_storage()->get_awareness_state( $room ) as $entry ) {
+			foreach ( $this->awareness()->entries( $room, WP_HTTP_Polling_Sync_Server::AWARENESS_TIMEOUT ) as $entry ) {
 				$awareness_map[ $entry['client_id'] ] = $entry['state'];
 			}
 
@@ -1568,6 +1577,17 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 		}
 
 		/**
+		 * Who is in a room, over whichever store is serving this process.
+		 *
+		 * @since 0.0.2
+		 *
+		 * @return WP_Sync_Awareness The awareness reader and writer.
+		 */
+		private function awareness(): WP_Sync_Awareness {
+			return new WP_Sync_Awareness( $this->sync->get_storage() );
+		}
+
+		/**
 		 * Refreshes awareness for connected clients and expires stale peers.
 		 *
 		 * Connected WebSocket clients only send awareness on change (unlike
@@ -1591,48 +1611,37 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 				}
 			}
 
+			$awareness = $this->awareness();
+			$timeout   = WP_HTTP_Polling_Sync_Server::AWARENESS_TIMEOUT;
+
 			foreach ( $connected_clients_by_room as $room => $connected_client_ids ) {
-				$entries      = $this->sync->get_storage()->get_awareness_state( $room );
-				$current_time = time();
-				$fresh_stamp  = WP_HTTP_Polling_Sync_Server::awareness_timestamp( $current_time );
-				$kept         = array();
-				$changed      = false;
-				$removed_any  = false;
+				$entries = $awareness->entries( $room, $timeout );
 
 				foreach ( $entries as $entry ) {
-					$is_connected = isset( $connected_client_ids[ $entry['client_id'] ] );
-					$is_expired   = $current_time - $entry['updated_at'] >= WP_HTTP_Polling_Sync_Server::AWARENESS_TIMEOUT;
-
-					if ( $is_connected ) {
-						// Refresh the timestamp so a quiet-but-connected
-						// client is not expired. Timestamps are rounded to
-						// a bucket, so a tick inside the same bucket writes
-						// nothing.
-						if ( $entry['updated_at'] !== $fresh_stamp ) {
-							$entry['updated_at'] = $fresh_stamp;
-							$changed             = true;
-						}
-						$kept[] = $entry;
+					if ( ! isset( $connected_client_ids[ $entry['client_id'] ] ) ) {
 						continue;
 					}
 
-					if ( $is_expired ) {
-						$changed     = true;
-						$removed_any = true;
-						continue;
-					}
-
-					$kept[] = $entry;
+					// Re-record the state so a quiet but connected socket is
+					// not expired; the store skips the write if it can.
+					$entries = $awareness->put( $room, $entry['client_id'], $entry['state'], $entry['wp_user_id'], $timeout );
 				}
 
-				if ( $changed ) {
-					$this->sync->get_storage()->set_awareness_state( $room, $kept );
-				}
+				// The store expires entries, so a departure shows up only as
+				// a client id the last sweep had and this one does not.
+				$present = array_column( $entries, 'client_id' );
+				sort( $present );
 
-				if ( $removed_any ) {
+				$gone                            = array_diff( $this->swept_client_ids[ $room ] ?? array(), $present );
+				$this->swept_client_ids[ $room ] = $present;
+
+				if ( ! empty( $gone ) ) {
 					$this->broadcast_room( $room );
 				}
 			}
+
+			// Rooms nobody is connected to no longer need a memo.
+			$this->swept_client_ids = array_intersect_key( $this->swept_client_ids, $connected_clients_by_room );
 		}
 
 		/**

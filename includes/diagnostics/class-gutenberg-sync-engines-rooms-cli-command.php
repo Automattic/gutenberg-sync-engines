@@ -114,7 +114,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Rooms_CLI_Command' ) && defined( 'W
 				$type_counts[ $type ] = ( $type_counts[ $type ] ?? 0 ) + 1;
 			}
 
-			$awareness = $storage->get_awareness_state( $room );
+			$awareness = ( new WP_Sync_Awareness( $storage ) )->entries( $room, WP_HTTP_Polling_Sync_Server::AWARENESS_TIMEOUT );
 
 			$state = array(
 				'room'      => $room,
@@ -124,7 +124,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Rooms_CLI_Command' ) && defined( 'W
 				'bytes'     => $size['bytes'],
 				'row_types' => $type_counts,
 				'awareness' => array(
-					'clients' => array_keys( $awareness ),
+					'clients' => array_column( $awareness, 'client_id' ),
 				),
 				'room_meta' => $this->collect_room_meta( $storage, $room ),
 			);

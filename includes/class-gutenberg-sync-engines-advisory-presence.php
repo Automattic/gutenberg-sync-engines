@@ -814,18 +814,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 			if ( null === $storage || ! $this->room_exists( $room ) ) {
 				return;
 			}
-			$entries = $this->read_awareness( $room );
-			$kept    = array_values(
-				array_filter(
-					$entries,
-					static function ( $entry ) use ( $client_id ) {
-						return ( isset( $entry['client_id'] ) ? (int) $entry['client_id'] : 0 ) !== $client_id;
-					}
-				)
-			);
-			if ( count( $kept ) !== count( $entries ) ) {
-				$storage->set_awareness_state( $room, $kept );
-			}
+			( new WP_Sync_Awareness( $storage ) )->forget( $room, $client_id, self::AWARENESS_TIMEOUT );
 		}
 
 		/**
@@ -1253,11 +1242,9 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * @return bool Company.
 		 */
 		private function has_live_awareness_besides( string $room, int $client_id ): bool {
-			$now = time();
 			foreach ( $this->read_awareness( $room ) as $entry ) {
-				$updated_at   = isset( $entry['updated_at'] ) ? (int) $entry['updated_at'] : 0;
 				$entry_client = isset( $entry['client_id'] ) ? (int) $entry['client_id'] : 0;
-				if ( $now - $updated_at < self::AWARENESS_TIMEOUT && ( 0 === $client_id || $entry_client !== $client_id ) ) {
+				if ( 0 === $client_id || $entry_client !== $client_id ) {
 					return true;
 				}
 			}
@@ -1265,7 +1252,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		}
 
 		/**
-		 * Reads a room's awareness entries WITHOUT creating the room: on
+		 * Reads a room's LIVE awareness entries WITHOUT creating the room: on
 		 * the post-meta default the storage API's own room lookup creates
 		 * the storage post (its callers are about to write), which
 		 * presence must never do, so the read is gated on the
@@ -1285,8 +1272,8 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 			if ( null === $storage ) {
 				return array();
 			}
-			$entries = $storage->get_awareness_state( $room );
-			return is_array( $entries ) ? $entries : array();
+
+			return ( new WP_Sync_Awareness( $storage ) )->entries( $room, self::AWARENESS_TIMEOUT );
 		}
 	}
 }

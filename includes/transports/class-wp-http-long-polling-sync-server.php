@@ -202,7 +202,7 @@ if ( ! class_exists( 'WP_HTTP_Long_Polling_Sync_Server' ) ) {
 
 				$client_id = (int) $room_request['client_id'];
 				$present   = false;
-				foreach ( $this->storage->get_awareness_state( (string) $room_request['room'] ) as $entry ) {
+				foreach ( $this->awareness->entries( (string) $room_request['room'], self::AWARENESS_TIMEOUT ) as $entry ) {
 					if ( (int) $entry['client_id'] === $client_id ) {
 						$present = true;
 						break;
@@ -253,11 +253,7 @@ if ( ! class_exists( 'WP_HTTP_Long_Polling_Sync_Server' ) ) {
 				 * polling and the whole hold budget was dead code).
 				 */
 				$current_awareness = array();
-				$current_time      = time();
-				foreach ( $this->storage->get_awareness_state( $room ) as $entry ) {
-					if ( $current_time - $entry['updated_at'] >= self::AWARENESS_TIMEOUT ) {
-						continue;
-					}
+				foreach ( $this->awareness->entries( $room, self::AWARENESS_TIMEOUT ) as $entry ) {
 					$current_awareness[ $entry['client_id'] ] = $entry['state'];
 				}
 
