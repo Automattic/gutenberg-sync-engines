@@ -136,10 +136,19 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 			if ( null === $presence && class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 				$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
 			}
-			$this->presence = $presence;
-			$this->storage  = $storage;
-			$this->engines  = $engines ?? new WP_Sync_Engine_Registry( $storage );
+			$this->presence  = $presence;
+			$this->storage   = $storage;
+			$this->engines   = $engines ?? new WP_Sync_Engine_Registry( $storage );
+			$this->awareness = new WP_Sync_Awareness( $storage );
 		}
+
+		/**
+		 * Who is in a room, over whichever store serves this request.
+		 *
+		 * @since 0.0.2
+		 * @var WP_Sync_Awareness
+		 */
+		protected WP_Sync_Awareness $awareness;
 
 		/**
 		 * The presence lane deciding room lifetime (join/leave resets), or
@@ -329,7 +338,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 				$room      = $room['room'];
 
 				// Check that the client_id is not already owned by another user.
-				$existing_awareness = $this->storage->get_awareness_state( $room );
+				$existing_awareness = $this->awareness->entries( $room, self::AWARENESS_TIMEOUT );
 				foreach ( $existing_awareness as $entry ) {
 					if ( $client_id === $entry['client_id'] && $wp_user_id !== $entry['wp_user_id'] ) {
 						return new WP_Error(
@@ -842,50 +851,10 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 * @return array<int, array<string, mixed>> Map of client ID to awareness state.
 		 */
 		private function process_awareness_update( string $room, int $client_id, ?array $awareness_update ): array {
-			$existing_awareness = $this->storage->get_awareness_state( $room );
-			$updated_awareness  = array();
-			$current_time       = time();
-
-			foreach ( $existing_awareness as $entry ) {
-				// Remove this client's entry (it will be updated below).
-				if ( $client_id === $entry['client_id'] ) {
-					continue;
-				}
-
-				// Remove entries that have expired.
-				if ( $current_time - $entry['updated_at'] >= self::AWARENESS_TIMEOUT ) {
-					continue;
-				}
-
-				$updated_awareness[] = $entry;
-			}
-
-			// Add this client's awareness state.
-			if ( null !== $awareness_update ) {
-				$updated_awareness[] = array(
-					'client_id'  => $client_id,
-					'state'      => $awareness_update,
-					'updated_at' => self::awareness_timestamp( $current_time ),
-					'wp_user_id' => get_current_user_id(),
-				);
-			}
-
-			// A stable order makes "nothing changed" a plain comparison.
-			usort(
-				$updated_awareness,
-				static function ( array $a, array $b ): int {
-					return $a['client_id'] <=> $b['client_id'];
-				}
-			);
-
-			// Most polls carry the same state inside the same timestamp
-			// bucket and nothing has expired: then the stored array is
-			// already what we would write, and the write is skipped. That
-			// is what keeps an idle poll read-only. The write can fail; it
-			// shouldn't fail the entire request.
-			if ( $updated_awareness !== $existing_awareness ) {
-				$this->storage->set_awareness_state( $room, $updated_awareness );
-			}
+			// A null update is this client leaving the room.
+			$updated_awareness = null === $awareness_update
+				? $this->awareness->forget( $room, $client_id, self::AWARENESS_TIMEOUT )
+				: $this->awareness->put( $room, $client_id, $awareness_update, get_current_user_id(), self::AWARENESS_TIMEOUT );
 
 			// Convert to client_id => state map for response.
 			$response = array();

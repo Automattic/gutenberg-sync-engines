@@ -10,6 +10,15 @@ release, which the release script generates from the commit history.
 
 ## Unreleased
 
+### Changed
+
+-   Every awareness read and write in the plugin now goes through one
+    `WP_Sync_Awareness` class, where the transports, the advisory channel
+    and the rooms CLI each carried their own copy. Reads now exclude
+    expired entries everywhere, which they did not on the client id
+    ownership check, in `has_live_awareness_besides()` or in
+    `wp collaboration rooms`. The store itself is unchanged.
+
 ## 0.0.1 — September 2026
 
 ### Changed
