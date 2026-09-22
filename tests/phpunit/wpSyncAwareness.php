@@ -227,12 +227,8 @@ class Tests_Collaboration_WpSyncAwareness extends WP_UnitTestCase {
 	}
 
 	/**
-	 * A client that keeps sending the same state stays in the room.
-	 *
-	 * The Presence API leaves an unchanged row alone while it is young by
-	 * its own reckoning, which is far longer than the 30 seconds the editor
-	 * reads at, so a quiet collaborator would age out of the room while
-	 * sitting right there. The backend has to take that decision itself.
+	 * A client that keeps sending the same state stays in the room, which it
+	 * would not if the Presence API's own write skip were left to decide.
 	 */
 	public function test_a_quiet_client_is_refreshed_before_the_room_forgets_it(): void {
 		Fake_Presence_API::$enabled = true;
@@ -242,8 +238,7 @@ class Tests_Collaboration_WpSyncAwareness extends WP_UnitTestCase {
 		$this->awareness()->put( $room, 7, $state, self::$editor_id, 30 );
 
 		// Old enough that this backend refreshes, young enough that the
-		// Presence API would leave it alone: 12 seconds sits between the
-		// two, and the whole point is that this side decides.
+		// Presence API would not. The assertion below pins the second half.
 		$this->backdate( $room, 'gse-7', 12 );
 		$this->assertGreaterThan(
 			12,
@@ -272,8 +267,8 @@ class Tests_Collaboration_WpSyncAwareness extends WP_UnitTestCase {
 		$this->backdate( $room, 'gse-7', 25 );
 		$this->awareness()->put( $room, 7, $state, self::$editor_id, 30 );
 
-		// Left to the Presence API this row would go unwritten for minutes,
-		// and the client would drop out of the room five seconds from now.
+		// Left to the Presence API this row would go unwritten until long
+		// after the room had given up on the client.
 		$this->assertRowIsFresh( $room, 'gse-7' );
 	}
 
@@ -405,11 +400,8 @@ class Test_Awareness_Backend implements WP_Sync_Awareness_Backend {
  * `$enabled` is off until a test asks for it, so `is_available()` answers no
  * and the rest of the suite keeps the room array.
  *
- * It follows the real functions closely enough to be worth testing against,
- * the write skip most of all: the real `wp_set_presence()` leaves an
- * unchanged row alone while it is younger than its own lifetime allows,
- * which is far longer than the window the collaboration side reads at. A
- * stand-in that wrote every time would hide that.
+ * It copies the real write skip, because a stand-in that wrote every time
+ * would hide the bug these tests are here for.
  */
 class Fake_Presence_API {
 	/**

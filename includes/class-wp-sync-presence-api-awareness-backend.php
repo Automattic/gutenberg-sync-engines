@@ -9,20 +9,8 @@ if ( ! class_exists( 'WP_Sync_Presence_API_Awareness_Backend' ) ) {
 
 	/**
 	 * Holds awareness in the Presence API plugin's shared `wp_presence`
-	 * table instead of this plugin's room array.
-	 *
-	 * Why defer to it rather than keep our own store:
-	 *
-	 * - One row per client, upserted on a unique (room, client_id), so two
-	 *   clients writing in the same instant cannot drop each other.
-	 * - A table with a TTL behaves the same on every host, where the room
-	 *   array lives only in the object cache a site may not have (P5).
-	 * - Both sides already speak `postType/{type}:{id}`, so no room mapping.
-	 * - Presence API surfaces the same rows in Who's Online and the post
-	 *   list, so a collaborator in the editor is visible outside it.
-	 *
-	 * Presence API writes `user-{id}` and `editor-{id}` rows of its own, so
-	 * this backend writes and reads `gse-{id}` and ignores every other row.
+	 * table instead of this plugin's room array, as `gse-`-prefixed rows so
+	 * that plugin's own rows are read by neither side.
 	 *
 	 * @since 0.0.2
 	 */
@@ -36,12 +24,8 @@ if ( ! class_exists( 'WP_Sync_Presence_API_Awareness_Backend' ) ) {
 		const CLIENT_PREFIX = 'gse-';
 
 		/**
-		 * How much of the caller's window an entry may spend unwritten.
-		 *
-		 * A third of it, so two refreshes are missed before anyone counts
-		 * the client as gone. This matches the built-in store, which rewrites
-		 * a room on every 10-second timestamp bucket inside the same
-		 * 30-second window.
+		 * What fraction of the caller's window an entry may spend unwritten,
+		 * low enough that several refreshes can be missed before it expires.
 		 *
 		 * @since 0.0.2
 		 * @var int
@@ -49,24 +33,16 @@ if ( ! class_exists( 'WP_Sync_Presence_API_Awareness_Backend' ) ) {
 		const REFRESH_FRACTION = 3;
 
 		/**
-		 * Whether the Presence API is present, has its table, and is recording.
-		 *
-		 * All three matter. With recording off `wp_set_presence()` writes
-		 * nothing, and without the table every read comes back empty and
-		 * every write fails; a backend that kept answering in either case
-		 * would report an empty room forever, to the avatars in the editor
-		 * and to the callers that decide a room's lifetime from it. The room
-		 * array works in both cases, so stand down and let it serve.
-		 *
-		 * `wp_presence_has_table()` is private to that plugin, so its absence
-		 * is not treated as a failure: an older or newer Presence API without
-		 * it still passes this gate on its public functions alone.
+		 * Whether the Presence API is present, has its table and is recording,
+		 * since missing any of the three makes every room look deserted and
+		 * the room array should serve instead.
 		 *
 		 * @since 0.0.2
 		 *
 		 * @return bool Whether this backend can serve.
 		 */
 		public static function is_available(): bool {
+			// The private checks are skipped when that plugin does not have them.
 			return function_exists( 'wp_get_presence' )
 				&& function_exists( 'wp_set_presence' )
 				&& function_exists( 'wp_remove_presence' )
@@ -75,10 +51,8 @@ if ( ! class_exists( 'WP_Sync_Presence_API_Awareness_Backend' ) ) {
 		}
 
 		/**
-		 * Every live entry in a room.
-		 *
-		 * A site's `wp_presence_default_ttl` filter can return anything, so
-		 * the entries are aged again here against the caller's own window.
+		 * Every live entry in a room, aged again here because a site's
+		 * `wp_presence_default_ttl` filter can override the caller's window.
 		 *
 		 * @since 0.0.2
 		 *
@@ -132,25 +106,9 @@ if ( ! class_exists( 'WP_Sync_Presence_API_Awareness_Backend' ) ) {
 		}
 
 		/**
-		 * Records one client's awareness state.
-		 *
-		 * One upsert, so a client writing here never rewrites anyone else's
-		 * row.
-		 *
-		 * Whether the write is needed at all is decided HERE rather than left
-		 * to the Presence API, and the row is stamped with an explicit
-		 * timestamp, which is what turns that plugin's own skip off. Its skip
-		 * is measured against its own 150-second lifetime, so it can leave an
-		 * unchanged row unwritten for far longer than the caller's window
-		 * here, which is 30 seconds. The client is still sitting in the
-		 * editor, but its row ages past the window and everyone else stops
-		 * seeing it; the WebSocket sweep, which re-records exactly so a quiet
-		 * socket is not expired, would announce it as gone. Raising
-		 * `wp_presence_default_ttl` widens that gap without limit.
-		 *
-		 * So: refresh once the entry has spent a third of the window
-		 * unwritten, and skip otherwise, which keeps an idle poll read-only
-		 * the way the room array does.
+		 * Records one client's awareness state, refreshing the row once it has
+		 * spent its share of the caller's window unwritten and skipping
+		 * otherwise, so an idle poll stays read-only.
 		 *
 		 * @since 0.0.2
 		 *
@@ -172,9 +130,8 @@ if ( ! class_exists( 'WP_Sync_Presence_API_Awareness_Backend' ) ) {
 					continue;
 				}
 
-				// Comparing the encoded state, as the Presence API does: what
-				// comes back has been through JSON and is not identical to
-				// what went in.
+				// What comes back from the table has been through JSON, so it is
+				// compared encoded rather than against what went in.
 				if ( $now - $entry['updated_at'] < $refresh
 					&& $entry['wp_user_id'] === $user_id
 					&& wp_json_encode( $entry['state'] ) === wp_json_encode( $state )
@@ -186,10 +143,12 @@ if ( ! class_exists( 'WP_Sync_Presence_API_Awareness_Backend' ) ) {
 				break;
 			}
 
+			// The explicit timestamp turns off the Presence API's own write
+			// skip, which is measured against its own far longer lifetime and
+			// so would let a live client age out of the caller's window.
 			wp_set_presence( $room, self::CLIENT_PREFIX . $client_id, $state, $user_id, gmdate( 'Y-m-d H:i:s', $now ) );
 
-			// The room as it now stands, without a second read: the entries
-			// just read, with this client's own entry as written.
+			// The room as it now stands, without reading it a second time.
 			$entries[] = array(
 				'client_id'  => $client_id,
 				'state'      => $state,

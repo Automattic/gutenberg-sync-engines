@@ -120,23 +120,19 @@ This plugin provides:
   be created the filter leaves the post-meta default in place and an
   admin notice says so.
 - **Awareness:** who is in a room and what they are doing, read and
-  written ONLY through `WP_Sync_Awareness` — the transports, the advisory
-  channel and the rooms CLI all go through it. It stores to the room
-  array above by default, but the `wp_sync_awareness_backend` filter
-  takes a `WP_Sync_Awareness_Backend` instead, addressed per client
-  rather than per room. This plugin returns one on that filter when the
-  **Presence API** plugin is active, has its table and is recording, so
-  awareness lives in the shared `wp_presence` table and a collaborator in
-  the editor also shows up in Who's Online and the post list. Both sides
-  name rooms `postType/{type}:{id}`; our rows carry a `gse-` client id
-  prefix and every other row is ignored. TRAP when changing that backend:
-  `wp_set_presence()` leaves an unchanged row unwritten for up to
-  `TTL - 135` seconds (15 s at the stock 150 s TTL, minutes if a site
-  raises it), while collaboration ages entries out at 30 s — so the
-  backend decides the refresh itself and passes an explicit timestamp,
-  which is what turns that skip off. PHPUnit covers it against a
-  stand-in (`tests/phpunit/wpSyncAwareness.php`, which only defines the
-  stand-in when the real plugin is absent); against the real plugin, run
+  written ONLY through `WP_Sync_Awareness` — transports, the advisory
+  channel and the rooms CLI all go through it, never storage directly.
+  It uses the room array above by default; the
+  `wp_sync_awareness_backend` filter takes a `WP_Sync_Awareness_Backend`
+  instead, addressed per client rather than per room. This plugin
+  returns one when the **Presence API** plugin is active, has its table
+  and is recording, so awareness lives in that plugin's shared
+  `wp_presence` table under `gse-`-prefixed client ids. TRAP:
+  `wp_set_presence()` leaves an unchanged row unwritten for a stretch
+  measured against its own TTL, far longer than the window collaboration
+  ages entries out at — so the backend decides the refresh itself and
+  passes an explicit timestamp, which is what turns that skip off.
+  PHPUnit covers it against a stand-in; against the REAL plugin run
   `tests/tools/check-presence-api.php` (usage in its header).
 
 It registers through the framework's extension points: PHP `wp_sync_engines` /

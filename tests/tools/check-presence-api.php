@@ -1,12 +1,7 @@
 <?php
 /**
- * Drives this plugin's awareness against the REAL Presence API plugin.
- *
- * The PHPUnit suite exercises the backend against a stand-in, because the
- * Presence API is not a dependency of this repo. This script is the other
- * half: run it on a site where that plugin is really installed and it walks
- * the whole contract — pick-up, round trip, the write cadence, the rows the
- * Presence API keeps for its own screens — against the real table.
+ * Drives this plugin's awareness against the REAL Presence API plugin, the
+ * other half of a PHPUnit suite that can only use a stand-in.
  *
  * Usage (tests env, with the Presence API installed and active):
  *   npx wp-env --config .wp-env.tests.json run cli \
@@ -117,9 +112,8 @@ add_filter(
 $gse_awareness->put( $gse_room, 7, $gse_state, $gse_user_id, 30 );
 gse_presence_check( 0 === $gse_writes, 'an idle repeat is read-only', "writes={$gse_writes}" );
 
-// A quiet client past the refresh age IS rewritten, though the Presence
-// API's own skip, measured against its 150-second lifetime, would have left
-// the row alone until long after the editor had stopped seeing that client.
+// A quiet client past the refresh age IS rewritten, where the Presence API's
+// own skip would have left the row alone. The check below pins that premise.
 // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 $wpdb->query(
 	$wpdb->prepare(
