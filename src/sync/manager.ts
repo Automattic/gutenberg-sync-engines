@@ -254,7 +254,6 @@ export function createSyncManager(
 			editRecord: debugWrap( handlers.editRecord ),
 			getEditedRecord: debugWrap( handlers.getEditedRecord ),
 			onStatusChange: debugWrap( handlers.onStatusChange ),
-			persistCRDTDoc: debugWrap( handlers.persistCRDTDoc ),
 			refetchRecord: debugWrap( handlers.refetchRecord ),
 			restoreUndoMeta: debugWrap( handlers.restoreUndoMeta ),
 
@@ -351,10 +350,10 @@ export function createSyncManager(
 		// Expose the live providers so the manager's retry() can reach them.
 		entityState.providers = providerResults;
 
-		// Seed the document from the persisted record. Observers are attached
-		// AFTER hydration so it does not dispatch a redundant editRecord whose
+		// Seed the document from the record. Observers are attached AFTER
+		// hydration so it does not dispatch a redundant editRecord whose
 		// blocks already match the editor's parsed content.
-		core.hydrate( record, () => handlers.persistCRDTDoc() );
+		core.hydrate( record );
 
 		// Attach observers for remote-driven changes and peer saves.
 		core.observe( {
@@ -648,68 +647,6 @@ export function createSyncManager(
 	}
 
 	/**
-	 * Encode the current state of an entity's CRDT document as a snapshot.
-	 *
-	 * The result describes what the document holds right now without including
-	 * any content. It is recorded alongside an autosave so another session can
-	 * later verify its own document contains everything the autosave captured.
-	 *
-	 * @param {ObjectType} objectType Object type.
-	 * @param {ObjectID}   objectId   Object ID.
-	 * @return {string|undefined} Base64-encoded snapshot, or undefined when the
-	 *                            entity is not loaded.
-	 */
-	function getEntitySnapshot(
-		objectType: ObjectType,
-		objectId: ObjectID
-	): string | undefined {
-		const entityId = getEntityId( objectType, objectId );
-		const entityState = entityStates.get( entityId );
-
-		if ( ! entityState ) {
-			log( 'getEntitySnapshot', 'no entity state', entityId );
-			return undefined;
-		}
-
-		// Apply deferred updates so the snapshot reflects every change issued
-		// before it, including changes made in the same tick.
-		flushPendingCRDTDocUpdates();
-
-		return entityState.core.encodeSnapshot();
-	}
-
-	/**
-	 * Determine whether an entity's CRDT document contains everything a
-	 * snapshot describes.
-	 *
-	 * Returns `false` when the entity is not loaded or the snapshot cannot be
-	 * decoded, so callers fail open and surface the autosave.
-	 *
-	 * @param {ObjectType} objectType      Object type.
-	 * @param {ObjectID}   objectId        Object ID.
-	 * @param {string}     encodedSnapshot Base64-encoded snapshot.
-	 * @return {boolean} Whether the document contains the snapshotted state.
-	 */
-	function entityContainsSnapshot(
-		objectType: ObjectType,
-		objectId: ObjectID,
-		encodedSnapshot: string
-	): boolean {
-		const entityId = getEntityId( objectType, objectId );
-		const entityState = entityStates.get( entityId );
-
-		if ( ! entityState ) {
-			return false;
-		}
-
-		// Compare against the settled document, with no deferred updates
-		// pending.
-		flushPendingCRDTDocUpdates();
-
-		return entityState.core.containsSnapshot( encodedSnapshot );
-	}
-
-	/**
 	 * Update the entity record in the local store with changes from the CRDT
 	 * document.
 	 *
@@ -748,30 +685,6 @@ export function createSyncManager(
 		handlers.editRecord( changes );
 	}
 
-	/**
-	 * Create object meta to persist the CRDT document in the entity record.
-	 *
-	 * @param {ObjectType} objectType Object type.
-	 * @param {ObjectID}   objectId   Object ID.
-	 */
-	async function createPersistedCRDTDoc(
-		objectType: ObjectType,
-		objectId: ObjectID
-	): Promise< string | null > {
-		const entityId = getEntityId( objectType, objectId );
-		const entityState = entityStates.get( entityId );
-
-		if ( ! entityState ) {
-			return null;
-		}
-
-		// Local updates may be deferred when editing alone. Apply them so
-		// they are included in the serialized document.
-		flushPendingCRDTDocUpdates();
-
-		return entityState.core.serialize();
-	}
-
 	// Collect internal functions so that they can be wrapped before calling.
 	const internal = {
 		updateEntityRecord: debugWrap( _updateEntityRecord ),
@@ -779,10 +692,7 @@ export function createSyncManager(
 
 	// Wrap and return the public API.
 	return {
-		createPersistedCRDTDoc: debugWrap( createPersistedCRDTDoc ),
-		entityContainsSnapshot: debugWrap( entityContainsSnapshot ),
 		getAwareness,
-		getEntitySnapshot: debugWrap( getEntitySnapshot ),
 		load: debugWrap( loadEntity ),
 		loadCollection: debugWrap( loadCollection ),
 		// Use getter to ensure we always return the current value of `undoManager`.

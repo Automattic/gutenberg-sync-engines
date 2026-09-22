@@ -1,19 +1,8 @@
-import { useSelect, select } from '@wordpress/data';
+import { useSelect, useDispatch, select } from '@wordpress/data';
 import { useCopyToClipboard } from '@wordpress/compose';
 import { serialize } from '@wordpress/blocks';
-import {
-	store as coreDataStore,
-	privateApis as coreDataPrivateApis,
-} from '@wordpress/core-data';
-// @ts-expect-error - No type declarations available for @wordpress/block-editor
-// prettier-ignore
-import { privateApis, store as blockEditorStore } from '@wordpress/block-editor';
-import {
-	Button,
-	Modal,
-	__experimentalHStack as HStack,
-	__experimentalVStack as VStack,
-} from '@wordpress/components';
+import { store as coreDataStore } from '@wordpress/core-data';
+import { Button, Modal } from '@wordpress/components';
 import { applyFilters } from '@wordpress/hooks';
 import { useState, useEffect } from '@wordpress/element';
 import { __, sprintf, _n } from '@wordpress/i18n';
@@ -21,20 +10,17 @@ import {
 	getSyncErrorMessages,
 	ENGINE_MISMATCH,
 	PROTOCOL_MISMATCH,
-} from '../../utils/sync-error-messages';
-import { store as editorStore } from '../../store';
-import { unlock } from '../../lock-unlock';
+} from '../utils/sync-error-messages';
+import { store as hostStore } from '../../host/store';
+import { blockEditorSelectors, editorSelectors } from '../stores';
 import { useRetryCountdown } from './use-retry-countdown';
-
-const { BlockCanvasCover } = unlock( privateApis );
-const { retrySyncConnection } = unlock( coreDataPrivateApis );
+import './style.scss';
 
 // Debounce time for initial disconnected status to allow connection to establish.
 const INITIAL_DISCONNECTED_DEBOUNCE_MS = 20000;
 
 /**
  * Sync connection modal that displays when any entity reports a disconnection.
- * Uses BlockCanvasCover.Fill to render in the block canvas.
  *
  * @return The modal component or null if not disconnected.
  */
@@ -46,11 +32,12 @@ export function SyncConnectionErrorModal() {
 
 	const { connectionStatus, isCollaborationEnabled, postType } = useSelect(
 		( selectFn ) => {
-			const { getSyncConnectionStatus, getPostType } = unlock(
-				selectFn( coreDataStore )
-			);
-			const { getCurrentPostType, isCollaborationEnabledForCurrentPost } =
-				unlock( selectFn( editorStore ) );
+			const { getPostType } = selectFn( coreDataStore );
+			const {
+				getSyncConnectionStatus,
+				isCollaborationEnabledForCurrentPost,
+			} = selectFn( hostStore );
+			const { getCurrentPostType } = editorSelectors( selectFn );
 			const currentPostType = getCurrentPostType();
 			return {
 				connectionStatus: getSyncConnectionStatus() || null,
@@ -65,9 +52,10 @@ export function SyncConnectionErrorModal() {
 
 	const { onManualRetry, secondsRemaining } =
 		useRetryCountdown( connectionStatus );
+	const { retrySyncConnection } = useDispatch( hostStore );
 
 	const copyButtonRef = useCopyToClipboard( () => {
-		const blocks = select( blockEditorStore ).getBlocks();
+		const blocks = blockEditorSelectors( select ).getBlocks();
 		return serialize( blocks );
 	} );
 
@@ -203,7 +191,7 @@ export function SyncConnectionErrorModal() {
 	}
 
 	return (
-		<BlockCanvasCover.Fill>
+		<>
 			<Modal
 				overlayClassName="editor-sync-connection-error-modal"
 				isDismissible={ false }
@@ -213,14 +201,14 @@ export function SyncConnectionErrorModal() {
 				size="medium"
 				title={ messages.title }
 			>
-				<VStack spacing={ 6 }>
+				<div className="editor-sync-connection-error-modal__content">
 					<p>{ messages.description }</p>
 					{ retryCountdownText && (
 						<p className="editor-sync-connection-error-modal__retry-countdown">
 							{ retryCountdownText }
 						</p>
 					) }
-					<HStack justify="right">
+					<div className="editor-sync-connection-error-modal__actions">
 						<Button
 							__next40pxDefaultSize
 							href={ editPostHref }
@@ -253,9 +241,9 @@ export function SyncConnectionErrorModal() {
 								{ __( 'Retry' ) }
 							</Button>
 						) }
-					</HStack>
-				</VStack>
+					</div>
+				</div>
 			</Modal>
-		</BlockCanvasCover.Fill>
+		</>
 	);
 }

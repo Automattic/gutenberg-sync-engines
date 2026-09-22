@@ -1,8 +1,7 @@
-import { type ConnectionError } from '@wordpress/core-data';
+import type { ConnectionError } from '../../sync';
 import { __ } from '@wordpress/i18n';
 
-// These error codes are defined in the sync package:
-// packages/sync/src/errors.ts
+// These error codes are defined by the sync core: src/sync/errors.ts.
 export const AUTHENTICATION_FAILED = 'authentication-failed';
 export const CONNECTION_EXPIRED = 'connection-expired';
 export const CONNECTION_LIMIT_EXCEEDED = 'connection-limit-exceeded';
@@ -75,7 +74,7 @@ const ERROR_MESSAGES: Record< string, ConnectionErrorMessages > = {
  * @return Object with title, description, and canRetry flag.
  */
 export function getSyncErrorMessages(
-	error?: ConnectionError
+	error?: Pick< ConnectionError, 'code' >
 ): ConnectionErrorMessages {
 	if ( error?.code && ERROR_MESSAGES[ error?.code ] ) {
 		return ERROR_MESSAGES[ error.code ];

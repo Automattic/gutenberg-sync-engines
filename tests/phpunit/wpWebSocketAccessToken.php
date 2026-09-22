@@ -227,7 +227,7 @@ class Tests_Collaboration_WpWebSocketAccessToken extends WP_UnitTestCase {
 
 	public function test_the_daemon_accepts_a_access_token_without_a_cookie_and_keeps_the_socket_through_revalidation() {
 		$storage = new WP_Sync_Table_Storage();
-		$server  = new WP_WebSocket_Sync_Server( new WP_HTTP_Polling_Sync_Server( $storage ), '127.0.0.1', 8797 );
+		$server  = new WP_WebSocket_Sync_Server( new WP_Sync_Engines_HTTP_Polling_Sync_Server( $storage ), '127.0.0.1', 8797 );
 		$auth    = new ReflectionMethod( WP_WebSocket_Sync_Server::class, 'authenticate_handshake' );
 		$auth->setAccessible( true );
 		$origin       = wp_parse_url( home_url() );

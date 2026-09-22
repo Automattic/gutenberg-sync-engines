@@ -1,68 +1,57 @@
 /**
- * Yjs should not be considered a public API. It is a third-party library that
- * _will_ experience breaking changes in the future. However, in order to allow
- * third-party plugins to provide their own Yjs providers / sync transport, they
- * must import and consume **our instance** of Yjs due to this bug / feature:
+ * The sync core: the engine-neutral manager, the engine and transport
+ * registries with client/server negotiation, and the shared Yjs export.
  *
- * https://github.com/yjs/yjs/issues/438
- *
- * In other words, external code must be able to import Yjs from the
- * `@wordpress/sync` package in their code, e.g.:
- *
- * ```ts
- * import { Y } from '@wordpress/sync';
- * ```
- *
- * Additionally, this import must resolve to `wp.sync` via `DependencyExtractionWebpackPlugin`.
- * If you are using an older version of `@wordpress/scripts` that does not treat
- * `@wordpress/sync` as an unbundled package, then you can use Webpack externals
- * to manually resolve the package to the global `wp.sync` variable:
- *
- * ```ts
- * externals: {
- *   ...existingConfig.externals,
- *   // Resolve @wordpress/sync to the global `wp.sync` provided by WordPress.
- *   '@wordpress/sync': 'wp.sync',
- *
- *   // Resolve Yjs to the global `wp.sync.Y` provided by the sync package.
- *   // Since dependencies import 'yjs' directly, we need to avoid importing
- *   // and packaging two different Yjs instances, which would result in this
- *   // conflict:
- *   //
- *   // https://github.com/yjs/yjs/issues/438
- *   yjs: 'wp.sync.Y',
- * },
- * ```
+ * This used to be Gutenberg's `@wordpress/sync` package. It now lives in
+ * this plugin, which bundles Yjs itself. Third-party engine and transport
+ * plugins must reuse THIS Yjs instance (see https://github.com/yjs/yjs/issues/438);
+ * it is exposed on `window.gutenbergSyncEngines.Y` together with the two
+ * registration functions.
  */
-export * as Y from 'yjs';
 
 /**
- * The major version of Yjs that is bundled and exported by this package. This
- * can be used by third-party code to ensure that they are targeting a compatible
- * version of Yjs.
+ * External dependencies
+ */
+export * as Y from 'yjs';
+export { Awareness } from 'y-protocols/awareness';
+
+/**
+ * The major version of Yjs bundled by this plugin. Third-party code can
+ * check it before reusing the shared instance.
  */
 export const YJS_VERSION = '13';
 
 /**
- * The Awareness protocol should not be considered a public API. It is a
- * third-party library that will experience breaking changes in the future.
- *
- * In general, awareness for core entity types is implemented by the `core-data`
- * package and third-party Yjs providers should not provide their own awareness
- * implementation. However, it may be desirable for custom entities to have a
- * custom awareness implementation.
+ * Internal dependencies
  */
-export { Awareness } from 'y-protocols/awareness';
-
-/**
- * Private @wordpress/sync APIs.
- */
-export { privateApis } from './private-apis';
+export { createSyncManager } from './manager';
+export {
+	getAnnouncedSync,
+	getEngineAdapters,
+	registerSyncEngine,
+	resetEngineAdaptersForTesting,
+	resolveEngineAdapter,
+} from './engines';
+export type { AnnouncedSync, SyncEngineAdapter } from './engines';
+export {
+	getProviderCreators,
+	registerSyncTransport,
+	resetProviderCreatorsForTesting,
+} from './providers';
+export type { TransportRegistration } from './providers';
+export { ConnectionError, ConnectionErrorCode } from './errors';
+export {
+	CRDT_DOC_META_PERSISTENCE_KEY,
+	CRDT_RECORD_MAP_KEY,
+	LOCAL_EDITOR_ORIGIN,
+	LOCAL_UNDO_IGNORED_ORIGIN,
+} from './config';
+export { default as Delta } from './quill-delta/Delta';
 
 export type * from './types';
 
 // The engine/transport SEAM types, so engine and transport plugins can type
-// their adapters, session codecs, and providers against the framework.
+// their adapters, session codecs, and providers against the core.
 export type {
 	LocalAwarenessState,
 	AwarenessState,
@@ -72,7 +61,7 @@ export type {
 	EngineSessionCodec,
 } from './engines/session';
 
-// The engine SPI: an engine plugin implements `SyncEngine` (a factory of
+// The engine SPI: an engine implements `SyncEngine` (a factory of
 // per-entity/collection cores) and composes it with `createSyncManager`.
 export type {
 	SyncEngine,

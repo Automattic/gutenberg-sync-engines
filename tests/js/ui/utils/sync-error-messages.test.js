@@ -1,4 +1,4 @@
-import { getSyncErrorMessages } from '../sync-error-messages';
+import { getSyncErrorMessages } from '../../../../src/ui/utils/sync-error-messages';
 
 describe( 'getSyncErrorMessages', () => {
 	it.each( [

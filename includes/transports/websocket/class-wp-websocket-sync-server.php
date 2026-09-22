@@ -25,7 +25,7 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 	 * protocol is JSON text frames sharing the HTTP polling semantics: the
 	 * client sends `{type: 'sync', rooms: [...]}` room requests and the
 	 * server replies with the same room-response shape as the REST endpoint.
-	 * Updates are persisted through WP_Sync_Storage so late joiners and
+	 * Updates are persisted through WP_Sync_Engines_Storage so late joiners and
 	 * reconnecting clients catch up via their cursor, and new updates are
 	 * pushed immediately to other connected sockets subscribed to the room.
 	 *
@@ -187,9 +187,9 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 		 * Transport-agnostic sync server core.
 		 *
 		 * @since 7.4.0
-		 * @var WP_HTTP_Polling_Sync_Server
+		 * @var WP_Sync_Engines_HTTP_Polling_Sync_Server
 		 */
-		private WP_HTTP_Polling_Sync_Server $sync;
+		private WP_Sync_Engines_HTTP_Polling_Sync_Server $sync;
 
 		/**
 		 * Host to bind.
@@ -281,12 +281,12 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 		 *
 		 * @since 7.4.0
 		 *
-		 * @param WP_HTTP_Polling_Sync_Server $sync Transport seam driving rooms
+		 * @param WP_Sync_Engines_HTTP_Polling_Sync_Server $sync Transport seam driving rooms
 		 *                                          through the engine registry.
-		 * @param string                      $host Host to bind.
-		 * @param int                         $port Port to bind.
+		 * @param string                                   $host Host to bind.
+		 * @param int                                      $port Port to bind.
 		 */
-		public function __construct( WP_HTTP_Polling_Sync_Server $sync, string $host = '127.0.0.1', int $port = 8787 ) {
+		public function __construct( WP_Sync_Engines_HTTP_Polling_Sync_Server $sync, string $host = '127.0.0.1', int $port = 8787 ) {
 			$this->sync = $sync;
 			$this->host = $host;
 			$this->port = $port;
@@ -1594,14 +1594,14 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Server' ) ) {
 			foreach ( $connected_clients_by_room as $room => $connected_client_ids ) {
 				$entries      = $this->sync->get_storage()->get_awareness_state( $room );
 				$current_time = time();
-				$fresh_stamp  = WP_HTTP_Polling_Sync_Server::awareness_timestamp( $current_time );
+				$fresh_stamp  = WP_Sync_Engines_HTTP_Polling_Sync_Server::awareness_timestamp( $current_time );
 				$kept         = array();
 				$changed      = false;
 				$removed_any  = false;
 
 				foreach ( $entries as $entry ) {
 					$is_connected = isset( $connected_client_ids[ $entry['client_id'] ] );
-					$is_expired   = $current_time - $entry['updated_at'] >= WP_HTTP_Polling_Sync_Server::AWARENESS_TIMEOUT;
+					$is_expired   = $current_time - $entry['updated_at'] >= WP_Sync_Engines_HTTP_Polling_Sync_Server::AWARENESS_TIMEOUT;
 
 					if ( $is_connected ) {
 						// Refresh the timestamp so a quiet-but-connected

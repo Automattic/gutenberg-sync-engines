@@ -96,7 +96,9 @@ function hasValidAvatarUrls(
 	}
 
 	return [ '24', '48', '96' ].every(
-		( size ) => ! ( size in value ) || 'string' === typeof value[ size ]
+		( size ) =>
+			! ( size in value ) ||
+			'string' === typeof Reflect.get( value, size )
 	);
 }
 

@@ -1,4 +1,4 @@
-import type { ConnectionStatus } from '@wordpress/core-data';
+import type { ConnectionStatus } from '../../sync';
 import { useState, useEffect, useRef } from '@wordpress/element';
 
 interface UseRetryCountdownResult {

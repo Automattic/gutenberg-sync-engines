@@ -1,12 +1,24 @@
 @use "@wordpress/base-styles/colors" as *;
-@use "@wordpress/base-styles/z-index" as *;
 
+// Above every editor layer (Gutenberg's z-index map topped out at 1000000).
 .editor-sync-connection-error-modal {
-	z-index: z-index(".editor-sync-connection-error-modal");
+	z-index: 1000001;
 }
 
 .editor-sync-connection-error-modal p {
 	margin: 0;
+}
+
+.editor-sync-connection-error-modal__content {
+	display: flex;
+	flex-direction: column;
+	gap: 24px;
+}
+
+.editor-sync-connection-error-modal__actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
 }
 
 .editor-sync-connection-error-modal__retry-countdown {

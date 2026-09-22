@@ -1,5 +1,4 @@
 import { describe, expect, it, jest } from '@jest/globals';
-import { Y } from '@wordpress/sync';
 /**
  * Mock block schemas and sync providers.
  */
@@ -18,10 +17,13 @@ jest.mock( '@wordpress/blocks', () => {
 		],
 	};
 } );
-import { CRDT_RECORD_MAP_KEY } from '../../sync';
-import { applyPostChangesToCRDTDoc } from '../crdt';
-import { deserializeBlockAttributes, mergeCrdtBlocks } from '../crdt-blocks';
-import { getRootMap } from '../crdt-utils';
+import { CRDT_RECORD_MAP_KEY, Y } from '../../../../../src/sync';
+import { applyPostChangesToCRDTDoc } from '../../../../../src/engines/yjs/crdt/crdt';
+import {
+	deserializeBlockAttributes,
+	mergeCrdtBlocks,
+} from '../../../../../src/engines/yjs/crdt/crdt-blocks';
+import { getRootMap } from '../../../../../src/engines/yjs/crdt/crdt-utils';
 
 const SYNCED_PROPERTIES = new Set( [ 'blocks' ] );
 const INITIAL_SECOND = '<em>b</em><em>i</em>';

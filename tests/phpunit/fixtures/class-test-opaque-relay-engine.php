@@ -92,16 +92,16 @@ if ( ! class_exists( 'Test_Opaque_Relay_Engine' ) ) {
 		 *
 		 * @since 7.2.0
 		 */
-		private WP_Sync_Storage $storage;
+		private WP_Sync_Engines_Storage $storage;
 
 		/**
 		 * Constructor.
 		 *
 		 * @since 7.2.0
 		 *
-		 * @param WP_Sync_Storage $storage Storage backend for sync updates.
+		 * @param WP_Sync_Engines_Storage $storage Storage backend for sync updates.
 		 */
-		public function __construct( WP_Sync_Storage $storage ) {
+		public function __construct( WP_Sync_Engines_Storage $storage ) {
 			$this->storage = $storage;
 		}
 

@@ -2,7 +2,7 @@
 /**
  * WP_Sync_Engine interface
  *
- * @package gutenberg
+ * @package GutenbergSyncEngines
  */
 
 if ( ! interface_exists( 'WP_Sync_Engine' ) ) {
@@ -73,13 +73,13 @@ if ( ! interface_exists( 'WP_Sync_Engine' ) ) {
 		 *
 		 * @since 7.2.0
 		 *
-		 * @param string                                    $room      Room identifier.
-		 * @param int                                       $client_id Client identifier.
-		 * @param int                                       $cursor    Client cursor (marker of last seen update).
+		 * @param string                                        $room      Room identifier.
+		 * @param int                                           $client_id Client identifier.
+		 * @param int                                           $cursor    Client cursor (marker of last seen update).
 		 * @param array<int, array{data: string, type: string}> $updates Updates to ingest.
-		 * @param array<string, mixed>                      $context   Transport context. Currently:
-		 *                                                             'awareness' => array<int, mixed> merged
-		 *                                                             awareness map (client_id => state).
+		 * @param array<string, mixed>                          $context   Transport context. Currently:
+		 *                                                                 'awareness' => array<int, mixed> merged
+		 *                                                                 awareness map (client_id => state).
 		 * @return array{dispositions: array<int, mixed>|null}|WP_Error Ingest result. `dispositions`
 		 *                                                             is a per-update outcome list for
 		 *                                                             engines that produce one (e.g.

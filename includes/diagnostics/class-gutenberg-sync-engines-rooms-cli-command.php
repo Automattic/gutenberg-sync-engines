@@ -142,7 +142,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Rooms_CLI_Command' ) && defined( 'W
 				if ( null === $engine_slug || '' === $engine_slug ) {
 					$state['materialized'] = '(cannot materialize: room has no recorded engine lineage)';
 				} else {
-					$engine = ( new WP_HTTP_Polling_Sync_Server( $storage ) )
+					$engine = ( new WP_Sync_Engines_HTTP_Polling_Sync_Server( $storage ) )
 						->get_engine_registry()
 						->get_engine( $engine_slug );
 					if ( null === $engine ) {
@@ -172,7 +172,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Rooms_CLI_Command' ) && defined( 'W
 		 * @return WP_Sync_Table_Storage Storage.
 		 */
 		private function storage(): WP_Sync_Table_Storage {
-			$storage = gutenberg_sync_engines_storage();
+			$storage = gutenberg_sync_engines_get_storage();
 			if ( ! $storage instanceof WP_Sync_Table_Storage ) {
 				WP_CLI::error( 'Room diagnostics read the plugin\'s table storage, but the active sync storage is ' . get_class( $storage ) . ' (see `wp collaboration storage status`).' );
 			}

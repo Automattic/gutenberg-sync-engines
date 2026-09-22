@@ -30,7 +30,7 @@ if ( ! class_exists( 'WP_HTTP_Long_Polling_Sync_Server' ) ) {
 	 * @since 7.2.0
 	 * @access private
 	 */
-	class WP_HTTP_Long_Polling_Sync_Server extends WP_HTTP_Polling_Sync_Server {
+	class WP_HTTP_Long_Polling_Sync_Server extends WP_Sync_Engines_HTTP_Polling_Sync_Server {
 		/**
 		 * Transport slug.
 		 *

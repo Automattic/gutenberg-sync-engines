@@ -1,7 +1,7 @@
-import clsx from 'clsx';
 import { Children } from '@wordpress/element';
 import { sprintf, _n } from '@wordpress/i18n';
 import type { AvatarGroupProps } from './types';
+import { classNames as clsx } from '../../utils/class-names';
 
 function AvatarGroup( {
 	className,

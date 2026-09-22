@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import fastDeepEqual from 'fast-deep-equal/es6/index.js';
 import { getBlockType, getBlockTypes, getSaveContent } from '@wordpress/blocks';
 import { RichTextData } from '@wordpress/rich-text';
-import { Y } from '@wordpress/sync';
+import { Y, Delta } from '../../../sync';
 import {
 	asRichTextOffset,
 	createYMap,
@@ -12,8 +12,7 @@ import {
 	type YMapWrap,
 } from './crdt-utils';
 import { getCachedRichTextData } from './crdt-text';
-import { Delta } from '../sync';
-import { type WPBlockSelection } from '../types';
+import { type WPBlockSelection } from './types';
 
 interface BlockAttributes {
 	[ key: string ]: unknown;
@@ -695,7 +694,10 @@ export function mergeCrdtBlocks(
 					default:
 						if (
 							! fastDeepEqual(
-								incomingYBlock[ incomingBlockProperty ],
+								Reflect.get(
+									incomingYBlock,
+									incomingBlockProperty
+								),
 								localYBlock.get( incomingBlockProperty )
 							)
 						) {

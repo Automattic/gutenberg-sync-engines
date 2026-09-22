@@ -21,8 +21,7 @@ import {
 	setDeRtcBurstQuietMsForTesting,
 } from '../../../../src/engines/de-rtc/session';
 import { CRDT_RECORD_MAP_KEY } from '../../../../src/engines/yjs/constants';
-// eslint-disable-next-line import/no-unresolved -- Provided at runtime as wp.sync.
-import type { SyncConfig } from '@wordpress/sync';
+import type { SyncConfig } from '../../../../src/sync';
 
 // The doc bridge serializes/parses through the editor's block library
 // (wp.blocks at runtime). The codec treats content as an opaque string, so
@@ -102,8 +101,7 @@ describe( 'createDeRtcEngine', () => {
 
 	it( 'does NOT seed the document on hydrate; genesis bootstraps it', () => {
 		const entity = makeEntity();
-		const persist = jest.fn();
-		entity.hydrate( { blocks: [ BLOCK_A ] } as any, persist );
+		entity.hydrate( { blocks: [ BLOCK_A ] } as any );
 		expect( syncConfig.applyChangesToCRDTDoc ).not.toHaveBeenCalled();
 
 		// Pre-bootstrap, an empty doc must not reach the editor.

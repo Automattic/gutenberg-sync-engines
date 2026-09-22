@@ -1,9 +1,9 @@
 import { useSelect } from '@wordpress/data';
-import { Y } from '@wordpress/sync';
+import { Y } from '../../sync';
 // @ts-expect-error `@wordpress/block-editor` does not expose type declarations for its entry point.
 import { store as blockEditorStore } from '@wordpress/block-editor';
-import type { AbsoluteBlockIndexPath } from '../types';
-import { unlock } from '../lock-unlock';
+import type { AbsoluteBlockIndexPath } from '../../engines/yjs/crdt/types';
+import { unlock } from '../../host/unlock';
 
 /**
  * A block as represented in the block-editor store's client ID tree.
@@ -32,7 +32,7 @@ export function getContainingBlockYMap(
 	let current: Y.AbstractType< any > | null = yType;
 
 	while ( current ) {
-		const parent = current.parent;
+		const parent: Y.AbstractType< any > | null = current.parent;
 
 		if (
 			parent instanceof Y.Map &&

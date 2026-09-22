@@ -1,6 +1,27 @@
-import { render, screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-import { BlockCardBody } from '../markers';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { BlockCardBody } from '../../../../src/ui/collaboration-review-panel/markers';
+
+// The components package cannot load under this Jest setup (an ESM
+// dependency); a plain button carries what these tests need.
+jest.mock( '@wordpress/components', () => ( {
+	Button: ( { children, onClick, label, ...props } ) => (
+		<button
+			type="button"
+			onClick={ onClick }
+			aria-label={ label }
+			data-variant={ props.variant }
+		>
+			{ children }
+		</button>
+	),
+	Popover: ( { children } ) => <div>{ children }</div>,
+} ) );
+// The editor stores pull in the components package too; the tests only
+// need the store names.
+jest.mock( '@wordpress/editor', () => ( { store: 'core/editor' } ) );
+jest.mock( '@wordpress/block-editor', () => ( {
+	store: 'core/block-editor',
+} ) );
 
 const item = ( overrides = {} ) => ( {
 	id: 'i1',
@@ -15,7 +36,7 @@ const item = ( overrides = {} ) => ( {
 
 describe( 'BlockCardBody', () => {
 	afterEach( () => {
-		delete window._wpCollaborationCanUnfilteredHtml;
+		delete window._gutenbergSyncEnginesSync;
 	} );
 
 	it( 'renders ONE merged task with the two verbs and no count chip', () => {
@@ -36,12 +57,11 @@ describe( 'BlockCardBody', () => {
 			screen.getAllByRole( 'button', { name: 'Reject' } )
 		).toHaveLength( 1 );
 		// The merged summary carries both groups' content; no numeric badge.
-		expect( screen.getByText( /lost words more/ ) ).toBeVisible();
-		expect( screen.queryByText( '2' ) ).not.toBeInTheDocument();
+		expect( screen.getByText( /lost words more/ ) ).toBeTruthy();
+		expect( screen.queryByText( '2' ) ).toBeNull();
 	} );
 
 	it( 'Adopt resolves every item on the block as restored', async () => {
-		const user = userEvent.setup();
 		const onResolve = jest.fn();
 		const items = [ item(), item( { id: 'i2', unitId: 'u2' } ) ];
 		render(
@@ -50,12 +70,11 @@ describe( 'BlockCardBody', () => {
 				onResolve={ onResolve }
 			/>
 		);
-		await user.click( screen.getByRole( 'button', { name: 'Adopt' } ) );
+		fireEvent.click( screen.getByRole( 'button', { name: 'Adopt' } ) );
 		expect( onResolve ).toHaveBeenCalledWith( items, 'restored' );
 	} );
 
 	it( 'Reject resolves every item on the block as dismissed', async () => {
-		const user = userEvent.setup();
 		const onResolve = jest.fn();
 		const items = [ item(), item( { id: 'i2', unitId: 'u2' } ) ];
 		render(
@@ -64,7 +83,7 @@ describe( 'BlockCardBody', () => {
 				onResolve={ onResolve }
 			/>
 		);
-		await user.click( screen.getByRole( 'button', { name: 'Reject' } ) );
+		fireEvent.click( screen.getByRole( 'button', { name: 'Reject' } ) );
 		expect( onResolve ).toHaveBeenCalledWith( items, 'dismissed' );
 	} );
 
@@ -77,11 +96,15 @@ describe( 'BlockCardBody', () => {
 		);
 		expect(
 			screen.getByText( /Your edit on this block is pending/ )
-		).toBeVisible();
+		).toBeTruthy();
 	} );
 
 	it( 'reserves Adopt for unfiltered_html holders when any item requires approval', () => {
-		window._wpCollaborationCanUnfilteredHtml = false;
+		window._gutenbergSyncEnginesSync = {
+			engine: 'intent-log',
+			engineProtocol: 1,
+			canUnfilteredHtml: false,
+		};
 		render(
 			<BlockCardBody
 				groups={ [
@@ -97,14 +120,10 @@ describe( 'BlockCardBody', () => {
 				onResolve={ () => {} }
 			/>
 		);
-		expect(
-			screen.queryByRole( 'button', { name: 'Adopt' } )
-		).not.toBeInTheDocument();
+		expect( screen.queryByRole( 'button', { name: 'Adopt' } ) ).toBeNull();
 		expect(
 			screen.getByText( /Only someone allowed to publish unfiltered/ )
-		).toBeVisible();
-		expect(
-			screen.getByRole( 'button', { name: 'Reject' } )
-		).toBeVisible();
+		).toBeTruthy();
+		expect( screen.getByRole( 'button', { name: 'Reject' } ) ).toBeTruthy();
 	} );
 } );

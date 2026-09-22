@@ -1,15 +1,20 @@
-import {
-	privateApis as coreDataPrivateApis,
-	type CoreDataPrivateApis,
-	type ResolvedSelection,
-} from '@wordpress/core-data';
-import { unlock } from '../../../lock-unlock';
-import { resolveStartPosition } from '../resolve-start-position';
+import { describe, expect, it, jest } from '@jest/globals';
+import { resolveStartPosition } from '../../../../src/ui/collaborators-overlay/resolve-start-position';
 
-const { SelectionType } = unlock( coreDataPrivateApis ) as Pick<
-	CoreDataPrivateApis,
-	'SelectionType'
->;
+// The selection types module reaches for the block editor store; the
+// editor packages are not needed to test a pure resolver.
+jest.mock( '@wordpress/block-editor', () => ( {
+	store: 'core/block-editor',
+} ) );
+jest.mock( '@wordpress/rich-text', () => ( {
+	RichTextData: class {},
+	create: jest.fn(),
+	insert: jest.fn(),
+	toHTMLString: jest.fn(),
+} ) );
+jest.mock( '@wordpress/data', () => ( { select: jest.fn() } ) );
+import { SelectionType } from '../../../../src/engines/yjs/crdt/crdt-user-selections';
+import type { ResolvedSelection } from '../../../../src/engines/yjs/crdt/types';
 
 const RESOLVED: ResolvedSelection = {
 	richTextOffset: 3,

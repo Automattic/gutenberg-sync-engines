@@ -33,14 +33,6 @@
  * (In the lifecycle script, `|| true` keeps a daemon failure — e.g. an
  * unbuilt subtree — from failing `wp-env start` itself; the diagnosis
  * still prints.)
- *
- * The serverless peer-relay test WebSocket provider this script used to
- * manage is only useful to client-merging engines; since the yjs-relay
- * engine was removed, both remaining engines are server-authoritative and
- * the relay demonstrates nothing. The e2e websocket suite manages that
- * fixture itself (tests/e2e/config/rtc-websocket-setup.ts); this script now
- * deactivates the fixture plugin in both modes so it never shadows the real
- * transport.
  */
 
 import { spawn, spawnSync } from 'node:child_process';
@@ -53,8 +45,6 @@ import process from 'node:process';
 import { parseArgs } from 'node:util';
 
 const REPO_ROOT = process.cwd();
-const TEST_PROVIDER_PLUGIN_SLUG =
-	'sync-engines-test-plugins/rtc-websocket-provider';
 const TRANSPORT_OPTION = 'gutenberg_sync_engines_transport';
 const ADVISORY_OPTION = 'gutenberg_sync_engines_advisory_channel';
 const DAEMON_CONTAINER_NAME = 'wp-sync-ws-daemon';
@@ -139,20 +129,12 @@ function runWpCli( wpArgs, { allowFailure = false, configFile = null } = {} ) {
 }
 
 /**
- * Turns real-time collaboration on. Since WordPress/gutenberg#80658 the
- * framework gates RTC on the `gutenberg-real-time-collaboration`
- * experiment rather than the old `wp_collaboration_enabled` option (which
- * Gutenberg now deletes on upgrade). Other experiments are left alone.
+ * Turns real-time collaboration on: the plugin's own site setting (the
+ * Settings > Collaboration checkbox, `wp collaboration enable`).
  */
-async function enableCollaborationExperiment( { configFile = null } = {} ) {
-	process.stdout.write( 'Enabling collaboration experiment... ' );
-	await runWpCli(
-		[
-			'eval',
-			"$experiments = get_option( 'gutenberg-experiments', array() ); $experiments['gutenberg-real-time-collaboration'] = true; update_option( 'gutenberg-experiments', $experiments );",
-		],
-		{ configFile }
-	);
+async function enableCollaboration( { configFile = null } = {} ) {
+	process.stdout.write( 'Enabling collaboration... ' );
+	await runWpCli( [ 'eval', "update_option( 'gutenberg_sync_engines_enabled', true );" ], { configFile } );
 	process.stdout.write( 'done\n' );
 }
 
@@ -383,16 +365,8 @@ async function runWebSocketsMode( mode ) {
 	await ensurePluginsReady();
 
 	if ( 'websockets' === mode ) {
-		process.stdout.write(
-			'Deactivating the e2e test provider plugin (if active)... '
-		);
-		await runWpCli( [ 'plugin', 'deactivate', TEST_PROVIDER_PLUGIN_SLUG ], {
-			allowFailure: true,
-		} );
-		process.stdout.write( 'done\n' );
-
 		process.stdout.write( 'Selecting the websocket transport... ' );
-		await enableCollaborationExperiment();
+		await enableCollaboration();
 		await runWpCli( [ 'option', 'update', TRANSPORT_OPTION, 'websocket' ] );
 		process.stdout.write( 'done\n' );
 	}
@@ -502,19 +476,11 @@ async function runWebSocketsMode( mode ) {
 }
 
 async function runHttpMode() {
-	process.stdout.write(
-		'Deactivating the e2e test provider plugin (if active)... '
-	);
-	await runWpCli( [ 'plugin', 'deactivate', TEST_PROVIDER_PLUGIN_SLUG ], {
-		allowFailure: true,
-	} );
-	process.stdout.write( 'done\n' );
-
 	process.stdout.write( 'Selecting the http-polling transport... ' );
 	await runWpCli( [ 'option', 'update', TRANSPORT_OPTION, 'http-polling' ] );
 	process.stdout.write( 'done\n' );
 
-	await enableCollaborationExperiment();
+	await enableCollaboration();
 
 	process.stdout.write( 'Stopping the websocket daemon (if running)... ' );
 	spawnSync( 'docker', [ 'rm', '-f', DAEMON_CONTAINER_NAME ], {
@@ -689,7 +655,7 @@ async function runDoctorMode() {
 		const options = await runWpCli(
 			[
 				'eval',
-				"echo gutenberg_is_experiment_enabled( 'gutenberg-real-time-collaboration' ) ? '1' : '';",
+				"echo gutenberg_sync_engines_is_enabled() ? '1' : '';",
 			],
 			{ configFile, allowFailure: true }
 		);

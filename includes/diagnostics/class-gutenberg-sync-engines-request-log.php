@@ -1158,7 +1158,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 				// Compaction is engine-owned here; the key stays for
 				// column compatibility with the community harness.
 				'compaction_threshold' => null,
-				'awareness_timeout_s'  => class_exists( 'WP_HTTP_Polling_Sync_Server' ) ? WP_HTTP_Polling_Sync_Server::AWARENESS_TIMEOUT : null,
+				'awareness_timeout_s'  => class_exists( 'WP_Sync_Engines_HTTP_Polling_Sync_Server' ) ? WP_Sync_Engines_HTTP_Polling_Sync_Server::AWARENESS_TIMEOUT : null,
 				'captured_at'          => time(),
 				// Additive keys (absent from the community harness): the
 				// engine/transport configuration measurements ran under.

@@ -5,8 +5,8 @@ import {
 	getEngineAdapters,
 	resetEngineAdaptersForTesting,
 	resolveEngineAdapter,
-} from '../engines';
-import { resetProviderCreatorsForTesting } from '../providers';
+} from '../../../src/sync/engines';
+import { resetProviderCreatorsForTesting } from '../../../src/sync/providers';
 
 // The framework ships NO engines; they come from a plugin via
 // `registerSyncEngine` (or the `sync.engines` filter). These tests register a
@@ -31,8 +31,7 @@ describe( 'sync engine adapters', () => {
 		removeFilter( 'sync.engines', STUB_HOOK );
 		resetEngineAdaptersForTesting();
 		resetProviderCreatorsForTesting();
-		delete window._wpCollaborationSync;
-		delete window.__experimentalEnableRealTimeCollaboration;
+		delete window._gutenbergSyncEnginesSync;
 	} );
 
 	describe( 'getEngineAdapters', () => {
@@ -65,12 +64,12 @@ describe( 'sync engine adapters', () => {
 		} );
 
 		it( 'returns null for a malformed announcement', () => {
-			window._wpCollaborationSync = { engine: STUB_SLUG };
+			window._gutenbergSyncEnginesSync = { engine: STUB_SLUG };
 			expect( getAnnouncedSync() ).toBeNull();
 		} );
 
 		it( 'normalizes a valid announcement', () => {
-			window._wpCollaborationSync = {
+			window._gutenbergSyncEnginesSync = {
 				engine: STUB_SLUG,
 				engineProtocol: 1,
 			};
@@ -79,6 +78,11 @@ describe( 'sync engine adapters', () => {
 				engineProtocol: 1,
 				transports: [],
 				transportProtocol: 1,
+				transportConfig: {},
+				userId: 0,
+				canUnfilteredHtml: false,
+				disabledPostTypes: [],
+				screen: null,
 			} );
 		} );
 	} );
@@ -90,7 +94,7 @@ describe( 'sync engine adapters', () => {
 
 		it( 'resolves the announced engine when registered at the right protocol', () => {
 			registerStubEngine();
-			window._wpCollaborationSync = {
+			window._gutenbergSyncEnginesSync = {
 				engine: STUB_SLUG,
 				engineProtocol: STUB_PROTOCOL,
 				transports: [ 'http-polling' ],
@@ -100,7 +104,7 @@ describe( 'sync engine adapters', () => {
 		} );
 
 		it( 'returns null when the announced engine is not registered', () => {
-			window._wpCollaborationSync = {
+			window._gutenbergSyncEnginesSync = {
 				engine: 'automerge',
 				engineProtocol: 1,
 				transports: [ 'http-polling' ],
@@ -111,7 +115,7 @@ describe( 'sync engine adapters', () => {
 
 		it( 'returns null on an engine protocol version mismatch', () => {
 			registerStubEngine();
-			window._wpCollaborationSync = {
+			window._gutenbergSyncEnginesSync = {
 				engine: STUB_SLUG,
 				engineProtocol: STUB_PROTOCOL + 1,
 				transports: [ 'http-polling' ],

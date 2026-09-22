@@ -1,5 +1,5 @@
 import { dispatch, select, subscribe } from '@wordpress/data';
-import { Y } from '@wordpress/sync';
+import { Y } from '../../sync';
 // @ts-expect-error `@wordpress/block-editor` does not expose type declarations for its entry point.
 import { store as blockEditorStore } from '@wordpress/block-editor';
 import { BaseAwarenessState, baseEqualityFieldChecks } from './base-awareness';
@@ -13,23 +13,25 @@ import {
 	AWARENESS_CURSOR_UPDATE_THROTTLE_IN_MS,
 	LOCAL_CURSOR_UPDATE_DEBOUNCE_IN_MS,
 } from './config';
-import { STORE_NAME as coreStore } from '../name';
+
+// The core-data store by name (see base-awareness.ts).
+const coreStore = 'core';
 import {
 	asHtmlStringIndex,
 	htmlIndexToRichTextOffset,
-} from '../utils/crdt-utils';
+} from '../../engines/yjs/crdt/crdt-utils';
 import {
 	areSelectionsStatesEqual,
 	getSelectionState,
 	SelectionType,
 	SelectionDirection,
-} from '../utils/crdt-user-selections';
+} from '../../engines/yjs/crdt/crdt-user-selections';
 import type {
 	ResolvedSelection,
 	SelectionState,
 	WPBlockSelection,
-} from '../types';
-import type { YBlocks } from '../utils/crdt-blocks';
+} from '../../engines/yjs/crdt/types';
+import type { YBlocks } from '../../engines/yjs/crdt/crdt-blocks';
 import type { EditorStoreBlock } from './block-lookup';
 import type {
 	DebugCollaboratorData,

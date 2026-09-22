@@ -1,11 +1,16 @@
+/**
+ * WordPress dependencies
+ */
 import { useSelect } from '@wordpress/data';
+import { useEffect, useState } from '@wordpress/element';
 import { __, sprintf } from '@wordpress/i18n';
-import { Button } from '@wordpress/components';
-import {
-	store as blockEditorStore,
-	privateApis as blockEditorPrivateApis,
-} from '@wordpress/block-editor';
-import { unlock } from '../../lock-unlock';
+import { Button, Popover } from '@wordpress/components';
+
+/**
+ * Internal dependencies
+ */
+import { useCanvasDocument } from '../use-canvas-document';
+import { blockEditorSelectors } from '../stores';
 import {
 	canRestoreItems,
 	groupByUnit,
@@ -14,22 +19,92 @@ import {
 	useReviewData,
 	useResolveReviewItems,
 } from './review-data';
+import type { ResolveReviewItems } from './review-data';
+import type { SyncReviewItem } from '../../sync';
 
-const { PrivateBlockPopover: BlockPopover } = unlock( blockEditorPrivateApis );
+type Placement = 'top-end' | 'top-start' | 'bottom-start';
+
+interface BlockPopoverProps {
+	/** The block to anchor to. */
+	clientId: string;
+	placement: Placement;
+	className: string;
+	children: React.ReactNode;
+}
+
+/**
+ * A popover anchored to a block's element in the canvas document. The
+ * public `Popover` stands in for the block editor's private block popover;
+ * it follows the block but does not step around the block toolbar.
+ *
+ * @param props           Props.
+ * @param props.clientId
+ * @param props.placement
+ * @param props.className
+ * @param props.children
+ */
+function BlockPopover( {
+	clientId,
+	placement,
+	className,
+	children,
+}: BlockPopoverProps ) {
+	const doc = useCanvasDocument();
+	const [ anchor, setAnchor ] = useState< Element | null >( null );
+
+	// The block element may arrive after the item does (a joiner's canvas
+	// still mounting), so look it up again whenever the canvas or the
+	// block list changes.
+	const blockOrderKey = useSelect(
+		( select ) =>
+			blockEditorSelectors( select )
+				.getClientIdsWithDescendants()
+				.join( ',' ),
+		[]
+	);
+	useEffect( () => {
+		setAnchor(
+			doc?.querySelector( `[data-block="${ clientId }"]` ) ?? null
+		);
+	}, [ doc, clientId, blockOrderKey ] );
+
+	if ( ! anchor ) {
+		return null;
+	}
+
+	return (
+		<Popover
+			anchor={ anchor }
+			placement={ placement }
+			focusOnMount={ false }
+			className={ className }
+			variant="unstyled"
+			animate={ false }
+		>
+			{ children }
+		</Popover>
+	);
+}
+
+interface BlockCardBodyProps {
+	/** Every review group targeting the block. */
+	groups: SyncReviewItem[][];
+	onResolve: ResolveReviewItems;
+}
 
 /**
  * The content of the inline pending-edit card: ONE merged task per block
  * (the prototype's merge-not-stack decision), no count chip, and the two
- * verbs — Adopt takes the set-aside edit, Reject discards it. Adopting a
+ * verbs: Adopt takes the set-aside edit, Reject discards it. Adopting a
  * requires-approval edit is reserved for users who may publish unfiltered
  * HTML. Position-independent so it can be unit-tested without the block
  * popover.
  *
- * @param {Object}   props
- * @param {Array}    props.groups    Every review group targeting the block.
- * @param {Function} props.onResolve ( items, resolution ) => void.
+ * @param props           Props.
+ * @param props.groups
+ * @param props.onResolve
  */
-export function BlockCardBody( { groups, onResolve } ) {
+export function BlockCardBody( { groups, onResolve }: BlockCardBodyProps ) {
 	const items = groups.flat();
 	const allLocal = items.every( ( item ) => item.isLocal );
 	const restorable = canRestoreItems( items );
@@ -94,37 +169,45 @@ export function BlockCardBody( { groups, onResolve } ) {
 	);
 }
 
-function BlockCard( { clientId, groups, onResolve, contentRef } ) {
+interface BlockCardProps extends BlockCardBodyProps {
+	clientId: string;
+}
+
+function BlockCard( { clientId, groups, onResolve }: BlockCardProps ) {
 	return (
 		<BlockPopover
 			clientId={ clientId }
 			placement="top-end"
-			focusOnMount={ false }
 			className="editor-collaboration-pending-card"
-			__unstableContentRef={ contentRef }
 		>
 			<BlockCardBody groups={ groups } onResolve={ onResolve } />
 		</BlockPopover>
 	);
 }
 
+interface InsertionCardBodyProps {
+	/** The parked insertion review item. */
+	item: SyncReviewItem;
+	onResolve: ResolveReviewItems;
+}
+
 /**
- * An inline card for a parked NEW-block proposal, anchored where the block
- * would land. It shows who proposed it and the proposed content as inert
- * text (NEVER live DOM — the point of the approval gate is that this markup
- * has not been trusted), with Approve/Discard. Approve is reserved for
- * users who may publish it; others see why and can only Discard.
- */
-/**
- * The content of an inline approval card (position-independent, so it can
- * be unit-tested without the block popover).
+ * The content of an inline approval card for a parked NEW-block proposal:
+ * who proposed it and the proposed content as inert text (NEVER live DOM:
+ * the point of the approval gate is that this markup has not been
+ * trusted), with Approve/Discard. Approve is reserved for users who may
+ * publish it; others see why and can only Discard. Position-independent so
+ * it can be unit-tested without the block popover.
  *
- * @param {Object}   props
- * @param {Object}   props.item      The parked insertion review item.
- * @param {Function} props.onResolve ( items, resolution ) => void.
+ * @param props           Props.
+ * @param props.item
+ * @param props.onResolve
  */
-export function InsertionCardBody( { item, onResolve } ) {
-	const { blockType, html } = item.proposedInsertion;
+export function InsertionCardBody( {
+	item,
+	onResolve,
+}: InsertionCardBodyProps ) {
+	const { blockType, html } = item.proposedInsertion ?? { html: '' };
 	const restorable = canRestoreItems( [ item ] );
 
 	return (
@@ -179,38 +262,49 @@ export function InsertionCardBody( { item, onResolve } ) {
 	);
 }
 
-function InsertionCard( { clientId, placement, item, onResolve, contentRef } ) {
+interface InsertionCardProps extends InsertionCardBodyProps {
+	clientId: string;
+	placement: Placement;
+}
+
+function InsertionCard( {
+	clientId,
+	placement,
+	item,
+	onResolve,
+}: InsertionCardProps ) {
 	return (
 		<BlockPopover
 			clientId={ clientId }
 			placement={ placement }
-			focusOnMount={ false }
 			className="editor-collaboration-insertion-card"
-			__unstableContentRef={ contentRef }
 		>
 			<InsertionCardBody item={ item } onResolve={ onResolve } />
 		</BlockPopover>
 	);
 }
 
+interface Insertion {
+	clientId: string;
+	placement: Placement;
+	item: SyncReviewItem;
+}
+
 /**
  * In-canvas review surface: an inline pending-edit card on every block
- * whose edits were set aside (ONE merged card per block — the primary
+ * whose edits were set aside (ONE merged card per block, the primary
  * resolution surface), plus an inline card for each parked new-block
  * proposal, anchored where the block would land. The document-sidebar
  * panel is a summary-only index over the same items; only conflicts whose
  * block or anchor no longer exists resolve there.
- *
- * @param {Object} props
- * @param {Object} props.contentRef Ref to the editor content element, for
- *                                  popover scroll coupling.
  */
-export default function CollaborationConflictMarkers( { contentRef } ) {
+export default function CollaborationConflictMarkers() {
 	const { postType, postId, items, clientIdByTarget, clientIdByIndex } =
 		useReviewData();
 	const onResolve = useResolveReviewItems( postType, postId );
 	const firstRootClientId = useSelect(
-		( select ) => select( blockEditorStore ).getBlockOrder()[ 0 ] ?? null,
+		( select ) =>
+			blockEditorSelectors( select ).getBlockOrder()[ 0 ] ?? null,
 		[]
 	);
 
@@ -218,26 +312,25 @@ export default function CollaborationConflictMarkers( { contentRef } ) {
 		return null;
 	}
 
-	// On-block conflicts: clientId → groups of items targeting it.
-	const groupsByClientId = new Map();
+	// On-block conflicts: clientId to groups of items targeting it.
+	const groupsByClientId = new Map< string, SyncReviewItem[][] >();
 	// Parked insertions get their own inline card, positioned relative to
 	// their anchor sibling (or the top of the canvas).
-	const insertions = [];
+	const insertions: Insertion[] = [];
 	for ( const group of groupByUnit( items ) ) {
 		const [ first ] = group;
 		if ( first.proposedInsertion ) {
-			const anchorId =
-				clientIdByTarget[ first.proposedInsertion.afterSiblingId ];
+			const afterSiblingId = first.proposedInsertion.afterSiblingId;
+			const anchorId = afterSiblingId
+				? clientIdByTarget[ afterSiblingId ]
+				: undefined;
 			if ( anchorId ) {
 				insertions.push( {
 					clientId: anchorId,
 					placement: 'bottom-start',
 					item: first,
 				} );
-			} else if (
-				! first.proposedInsertion.afterSiblingId &&
-				firstRootClientId
-			) {
+			} else if ( ! afterSiblingId && firstRootClientId ) {
 				// Insert-at-top with a non-empty canvas.
 				insertions.push( {
 					clientId: firstRootClientId,
@@ -255,10 +348,12 @@ export default function CollaborationConflictMarkers( { contentRef } ) {
 		if ( ! clientId ) {
 			continue;
 		}
-		if ( ! groupsByClientId.has( clientId ) ) {
-			groupsByClientId.set( clientId, [] );
+		const groups = groupsByClientId.get( clientId );
+		if ( groups ) {
+			groups.push( group );
+		} else {
+			groupsByClientId.set( clientId, [ group ] );
 		}
-		groupsByClientId.get( clientId ).push( group );
 	}
 
 	return (
@@ -270,7 +365,6 @@ export default function CollaborationConflictMarkers( { contentRef } ) {
 						clientId={ clientId }
 						groups={ groups }
 						onResolve={ onResolve }
-						contentRef={ contentRef }
 					/>
 				)
 			) }
@@ -281,7 +375,6 @@ export default function CollaborationConflictMarkers( { contentRef } ) {
 					placement={ insertion.placement }
 					item={ insertion.item }
 					onResolve={ onResolve }
-					contentRef={ contentRef }
 				/>
 			) ) }
 		</>

@@ -1,411 +1,309 @@
 <?php
 /**
- * Bootstraps collaborative editing.
+ * Collaboration bootstrap: the enable setting, storage and transport
+ * lookup, the storage post type, the REST routes, and the post list
+ * behavior while several people edit one post.
  *
- * @package gutenberg
+ * These functions used to live in Gutenberg's collaboration library. The
+ * plugin owns them now, under its own names, so they can never collide
+ * with a Gutenberg release that still ships the old experiment.
+ *
+ * @package GutenbergSyncEngines
  */
 
-require_once __DIR__ . '/class-wp-sync-config.php';
-if ( ! class_exists( 'WP_Sync_Post_Meta_Storage' ) ) {
-	require_once __DIR__ . '/interface-wp-sync-storage.php';
-	require_once __DIR__ . '/class-wp-sync-post-meta-storage.php';
-	require_once __DIR__ . '/interface-wp-sync-engine.php';
-	require_once __DIR__ . '/class-wp-sync-engine-registry.php';
-	require_once __DIR__ . '/transports/interface-wp-sync-transport.php';
-	require_once __DIR__ . '/transports/class-wp-sync-transport-registry.php';
-	// Engine and transport IMPLEMENTATIONS ship in a plugin (e.g. Gutenberg
-	// Sync Engines) and register through the wp_sync_engines /
-	// wp_sync_transports filters. The framework loads only the contracts and
-	// registries; without an engine plugin the registries stay empty and
-	// real-time collaboration degrades to the classic post lock.
-}
-require_once __DIR__ . '/class-wp-sync-save-server.php';
+/**
+ * The option that turns real-time collaboration on or off for the site.
+ *
+ * @since n.e.x.t
+ */
+const GUTENBERG_SYNC_ENGINES_ENABLED_OPTION = 'gutenberg_sync_engines_enabled';
 
-if ( ! function_exists( 'gutenberg_register_sync_storage_post_type' ) ) {
-	/**
-	 * Registers the custom post type for sync storage.
-	 */
-	function gutenberg_register_sync_storage_post_type() {
-		if ( ! wp_is_collaboration_enabled() ) {
-			return;
-		}
-
-		register_post_type(
-			'wp_sync_storage',
-			array(
-				'labels'             => array(
-					'name'          => __( 'Sync Updates', 'gutenberg' ),
-					'singular_name' => __( 'Sync Update', 'gutenberg' ),
-				),
-				'public'             => false,
-				'hierarchical'       => false,
-				'capabilities'       => array(
-					'read'                   => 'do_not_allow',
-					'read_private_posts'     => 'do_not_allow',
-					'create_posts'           => 'do_not_allow',
-					'publish_posts'          => 'do_not_allow',
-					'edit_posts'             => 'do_not_allow',
-					'edit_others_posts'      => 'do_not_allow',
-					'edit_published_posts'   => 'do_not_allow',
-					'delete_posts'           => 'do_not_allow',
-					'delete_others_posts'    => 'do_not_allow',
-					'delete_published_posts' => 'do_not_allow',
-				),
-				'map_meta_cap'       => false,
-				'publicly_queryable' => false,
-				'query_var'          => false,
-				'rewrite'            => false,
-				'show_in_menu'       => false,
-				'show_in_rest'       => false,
-				'show_ui'            => false,
-				'supports'           => array( 'custom-fields' ),
-			)
-		);
-	}
-	add_action( 'init', 'gutenberg_register_sync_storage_post_type' );
-}
-
-if ( ! function_exists( 'wp_get_collaboration_transport' ) ) {
-	/**
-	 * The single config value that selects the active collaboration
-	 * transport. One source of truth: the `WP_COLLABORATION_TRANSPORT`
-	 * constant, else the environment variable of the same name, else the
-	 * `wp_collaboration_transport` filter, defaulting to HTTP polling. The
-	 * value must be a registered transport slug; an unknown value falls back
-	 * to the default in the registry.
-	 *
-	 * @since 7.2.0
-	 *
-	 * @return string Configured transport slug.
-	 */
-	function wp_get_collaboration_transport(): string {
-		// Conventional default; only takes effect if a plugin registered a
-		// transport by this slug.
-		$transport = 'http-polling';
-		if ( defined( 'WP_COLLABORATION_TRANSPORT' ) && is_string( WP_COLLABORATION_TRANSPORT ) && '' !== WP_COLLABORATION_TRANSPORT ) {
-			$transport = WP_COLLABORATION_TRANSPORT;
-		} else {
-			$from_env = getenv( 'WP_COLLABORATION_TRANSPORT' );
-			if ( is_string( $from_env ) && '' !== $from_env ) {
-				$transport = $from_env;
-			}
-		}
-
-		/**
-		 * Filters the active collaboration transport slug.
-		 *
-		 * @since 7.2.0
-		 *
-		 * @param string $transport Transport slug.
-		 */
-		return (string) apply_filters( 'wp_collaboration_transport', $transport );
-	}
-}
-
-if ( ! function_exists( 'wp_get_sync_storage' ) ) {
-	/**
-	 * The room/update storage the collaboration stack reads and writes.
-	 *
-	 * Filterable so a plugin can substitute a different backend (an object
-	 * cache, Redis, a dedicated table, an external service) by returning
-	 * its own WP_Sync_Storage implementation. All framework and
-	 * engine-plugin access should obtain storage here rather than
-	 * instantiating WP_Sync_Post_Meta_Storage directly, so a substitution
-	 * applies everywhere at once. A substitute must uphold the storage
-	 * contract documented on the WP_Sync_Storage interface: per-room
-	 * cursors that only ever grow (and survive trims), a write
-	 * acknowledged to one request visible to the next on any server, and
-	 * a write-once engine lineage stamp.
-	 *
-	 * Built fresh per call, like the registries: the default storage keeps
-	 * per-request in-memory caches that must not outlive a request.
-	 *
-	 * @since 7.4.0
-	 *
-	 * @return WP_Sync_Storage Storage implementation.
-	 */
-	function wp_get_sync_storage(): WP_Sync_Storage {
-		/**
-		 * Filters the sync storage implementation for collaborative editing.
-		 *
-		 * Allows plugins to replace the default post meta storage with alternative
-		 * backends. One use case is the realtime-collaboration plugin,
-		 * which uses Presence API for awareness and a dedicated wp_collaboration
-		 * table for CRDT updates, eliminating cache side effects.
-		 *
-		 * This filter is unstable and may change as RTC explores fundamental changes
-		 * to how syncing works.
-		 *
-		 * @since Gutenberg 21.x
-		 *
-		 * @param WP_Sync_Storage $sync_storage Storage implementation. Must implement
-		 *                                      the WP_Sync_Storage interface.
-		 */
-		$storage = apply_filters( '__unstable_wp_sync_storage', new WP_Sync_Post_Meta_Storage() );
-
-		if ( ! $storage instanceof WP_Sync_Storage ) {
-			$storage = new WP_Sync_Post_Meta_Storage();
-		}
-
-		return $storage;
-	}
-}
-
-if ( ! function_exists( 'wp_get_collaboration_transport_registry' ) ) {
-	/**
-	 * Builds a transport registry over the default storage and engine
-	 * registry. Built fresh per call: the storage keeps per-request in-memory
-	 * caches (room cursors, storage post ids) that must not outlive a
-	 * request, so this is never memoized.
-	 *
-	 * @since 7.2.0
-	 *
-	 * @return WP_Sync_Transport_Registry Transport registry.
-	 */
-	function wp_get_collaboration_transport_registry(): WP_Sync_Transport_Registry {
-		$storage = wp_get_sync_storage();
-		$engines = new WP_Sync_Engine_Registry( $storage );
-		return new WP_Sync_Transport_Registry( $storage, $engines );
-	}
-}
-
-if ( ! function_exists( 'gutenberg_register_collaboration_rest_routes' ) ) {
-	/**
-	 * Registers REST API routes for collaborative editing.
-	 */
-	function gutenberg_register_collaboration_rest_routes(): void {
-		if ( ! wp_is_collaboration_enabled() ) {
-			return;
-		}
-
-		// Every registered transport's routes are reachable; the client uses
-		// the one the server announces as active.
-		wp_get_collaboration_transport_registry()->register_all_routes();
-
-		$sync_save_server = new WP_Sync_Save_Server();
-		$sync_save_server->register_routes();
-	}
-	add_action( 'rest_api_init', 'gutenberg_register_collaboration_rest_routes' );
-}
-
-if ( ! function_exists( 'wp_collaboration_register_meta' ) ) {
-	/**
-	 * Registers post meta for persisting CRDT documents.
-	 */
-	function gutenberg_rest_api_crdt_post_meta() {
-		if ( ! wp_is_collaboration_enabled() ) {
-			return;
-		}
-
-		// This string must match POST_META_KEY_FOR_CRDT_DOC_PERSISTENCE in @wordpress/core-data.
-		$persisted_crdt_post_meta_key = '_crdt_document';
-
-		register_meta(
-			'post',
-			$persisted_crdt_post_meta_key,
-			array(
-				'auth_callback'     => static function ( bool $_allowed, string $_meta_key, int $object_id, int $user_id ): bool {
-					return user_can( $user_id, 'edit_post', $object_id );
-				},
-				/*
-				 * Revisions must be disabled because we always want to preserve
-				 * the latest persisted CRDT document, even when a revision is restored.
-				 * This ensures that we can continue to apply updates to a shared document
-				 * and peers can simply merge the restored revision like any other incoming
-				 * update.
-				 *
-				 * If we want to persist CRDT documents alongside revisions in the
-				 * future, we should do so in a separate meta key.
-				 */
-				'revisions_enabled' => false,
-				'show_in_rest'      => array(
-					'schema' => array(
-						'type'    => 'string',
-						'context' => array( 'edit' ),
-					),
-				),
-				'single'            => true,
-				'type'              => 'string',
-			)
-		);
-	}
-	add_action( 'init', 'gutenberg_rest_api_crdt_post_meta' );
-}
-
-if ( ! function_exists( 'wp_is_collaboration_enabled' ) ) {
-	/**
-	 * Determines whether real-time collaboration is enabled.
-	 *
-	 * @since 7.0.0
-	 *
-	 * @return bool Whether real-time collaboration is enabled.
-	 */
-	function wp_is_collaboration_enabled() {
-		return gutenberg_is_experiment_enabled( 'gutenberg-real-time-collaboration' );
-	}
-}
-
-if ( ! function_exists( 'wp_is_post_type_collaboration_disabled' ) ) {
-	/**
-	 * Determines whether real-time collaboration is disabled for a post type.
-	 *
-	 * @since 7.1.0
-	 *
-	 * @param string $post_type Post type name.
-	 * @return bool Whether real-time collaboration is disabled for the post type.
-	 */
-	function wp_is_post_type_collaboration_disabled( $post_type ) {
-		if ( ! post_type_exists( $post_type ) ) {
-			return true;
-		}
-
-		/**
-		 * Filters whether real-time collaboration is disabled for a post type.
-		 *
-		 * @since 7.1.0
-		 *
-		 * @param bool   $disabled  Whether real-time collaboration is disabled for the post type.
-		 * @param string $post_type Post type name.
-		 */
-		return (bool) apply_filters( 'wp_is_post_type_collaboration_disabled', false, $post_type );
-	}
-}
-
-if ( ! function_exists( 'gutenberg_get_active_edit_lock_user' ) ) {
-	/**
-	 * Returns the user ID recorded in a fresh edit lock.
-	 *
-	 * Unlike wp_check_post_lock(), this includes locks owned by the current user.
-	 *
-	 * @since 7.1.0
-	 *
-	 * @param int $post_id Post ID.
-	 * @return int User ID from a fresh lock, or 0 if none exists.
-	 */
-	function gutenberg_get_active_edit_lock_user( $post_id ) {
-		$lock = get_post_meta( $post_id, '_edit_lock', true );
-		if ( ! $lock ) {
-			return 0;
-		}
-
-		$lock = explode( ':', $lock );
-		$time = (int) $lock[0];
-		$user = isset( $lock[1] ) ? (int) $lock[1] : (int) get_post_meta( $post_id, '_edit_last', true );
-
-		if ( ! $time || ! $user || ! get_userdata( $user ) ) {
-			return 0;
-		}
-
-		/** This filter is documented in wp-admin/includes/ajax-actions.php */
-		$time_window = apply_filters( 'wp_check_post_lock_window', 150 );
-
-		if ( $time > time() - $time_window ) {
-			return $user;
-		}
-
-		return 0;
-	}
+/**
+ * Whether real-time collaboration is turned on for this site.
+ *
+ * Reads the plugin's own setting (on by default; the Settings >
+ * Collaboration screen and `wp collaboration enable|disable` change it).
+ *
+ * @since n.e.x.t
+ *
+ * @return bool Whether collaboration is enabled.
+ */
+function gutenberg_sync_engines_is_enabled(): bool {
+	return (bool) get_option( GUTENBERG_SYNC_ENGINES_ENABLED_OPTION, true );
 }
 
 /**
- * Injects the post types for which real-time collaboration is disabled.
+ * Registers the enable setting so the REST settings endpoint and the
+ * settings screen can read and write it.
+ *
+ * @since n.e.x.t
+ *
+ * @return void
  */
-function gutenberg_inject_collaboration_disabled_post_types() {
-	if ( ! wp_is_collaboration_enabled() ) {
+function gutenberg_sync_engines_register_enabled_option(): void {
+	register_setting(
+		'gutenberg-sync-engines',
+		GUTENBERG_SYNC_ENGINES_ENABLED_OPTION,
+		array(
+			'type'              => 'boolean',
+			'description'       => __( 'Whether real-time collaboration is turned on.', 'gutenberg-sync-engines' ),
+			'sanitize_callback' => 'rest_sanitize_boolean',
+			'show_in_rest'      => true,
+			'default'           => true,
+		)
+	);
+}
+add_action( 'init', 'gutenberg_sync_engines_register_enabled_option' );
+
+/**
+ * Determines whether real-time collaboration is disabled for a post type.
+ *
+ * @since n.e.x.t
+ *
+ * @param string $post_type Post type name.
+ * @return bool Whether real-time collaboration is disabled for the post type.
+ */
+function gutenberg_sync_engines_is_post_type_disabled( $post_type ): bool {
+	if ( ! post_type_exists( $post_type ) ) {
+		return true;
+	}
+
+	/**
+	 * Filters whether real-time collaboration is disabled for a post type.
+	 *
+	 * @since n.e.x.t
+	 *
+	 * @param bool   $disabled  Whether real-time collaboration is disabled for the post type.
+	 * @param string $post_type Post type name.
+	 */
+	return (bool) apply_filters( 'wp_is_post_type_collaboration_disabled', false, $post_type ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Inherited filter name.
+}
+
+/**
+ * The room/update storage the collaboration stack reads and writes.
+ *
+ * Filterable so a plugin can substitute a different backend (an object
+ * cache, Redis, a dedicated table, an external service) by returning its
+ * own WP_Sync_Engines_Storage implementation. Every engine and transport
+ * obtains storage here, so a substitution applies everywhere at once. A
+ * substitute must uphold the contract documented on the interface:
+ * per-room cursors that only ever grow (and survive trims), a write
+ * acknowledged to one request visible to the next on any server, and a
+ * write-once engine lineage stamp.
+ *
+ * Built fresh per call, like the registries: the default storage keeps
+ * per-request in-memory caches that must not outlive a request.
+ *
+ * @since n.e.x.t
+ *
+ * @return WP_Sync_Engines_Storage Storage implementation.
+ */
+function gutenberg_sync_engines_get_storage(): WP_Sync_Engines_Storage {
+	/**
+	 * Filters the sync storage implementation for collaborative editing.
+	 *
+	 * The plugin itself substitutes its table storage here (see
+	 * Gutenberg_Sync_Engines_Plugin::filter_sync_storage()).
+	 *
+	 * @since n.e.x.t
+	 *
+	 * @param WP_Sync_Engines_Storage $storage Storage implementation.
+	 */
+	$storage = apply_filters( '__unstable_wp_sync_storage', new WP_Sync_Engines_Post_Meta_Storage() ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Inherited filter name.
+
+	if ( ! $storage instanceof WP_Sync_Engines_Storage ) {
+		$storage = new WP_Sync_Engines_Post_Meta_Storage();
+	}
+
+	return $storage;
+}
+
+/**
+ * The single config value that selects the active collaboration
+ * transport. One source of truth: the `WP_COLLABORATION_TRANSPORT`
+ * constant, else the environment variable of the same name, else the
+ * `wp_collaboration_transport` filter, defaulting to HTTP polling. The
+ * value must be a registered transport slug; an unknown value falls back
+ * to the default in the registry.
+ *
+ * @since n.e.x.t
+ *
+ * @return string Configured transport slug.
+ */
+function wp_get_collaboration_transport(): string { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound -- Inherited name.
+	$transport = 'http-polling';
+	if ( defined( 'WP_COLLABORATION_TRANSPORT' ) && is_string( WP_COLLABORATION_TRANSPORT ) && '' !== WP_COLLABORATION_TRANSPORT ) {
+		$transport = WP_COLLABORATION_TRANSPORT;
+	} else {
+		$from_env = getenv( 'WP_COLLABORATION_TRANSPORT' );
+		if ( is_string( $from_env ) && '' !== $from_env ) {
+			$transport = $from_env;
+		}
+	}
+
+	/**
+	 * Filters the active collaboration transport slug.
+	 *
+	 * @since n.e.x.t
+	 *
+	 * @param string $transport Transport slug.
+	 */
+	return (string) apply_filters( 'wp_collaboration_transport', $transport ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Inherited filter name.
+}
+
+/**
+ * Builds a transport registry over the default storage and engine
+ * registry. Built fresh per call: the storage keeps per-request in-memory
+ * caches (room cursors, storage post ids) that must not outlive a request,
+ * so this is never memoized.
+ *
+ * @since n.e.x.t
+ *
+ * @return WP_Sync_Transport_Registry Transport registry.
+ */
+function wp_get_collaboration_transport_registry(): WP_Sync_Transport_Registry { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound -- Inherited name.
+	$storage = gutenberg_sync_engines_get_storage();
+	$engines = new WP_Sync_Engine_Registry( $storage );
+	return new WP_Sync_Transport_Registry( $storage, $engines );
+}
+
+/**
+ * Registers the custom post type the post-meta storage keeps rooms in.
+ *
+ * @since n.e.x.t
+ *
+ * @return void
+ */
+function gutenberg_sync_engines_register_storage_post_type(): void {
+	if ( ! gutenberg_sync_engines_is_enabled() ) {
 		return;
 	}
 
-	$disabled_post_types = array_values(
-		array_filter(
-			get_post_types( array( 'show_in_rest' => true ) ),
-			'wp_is_post_type_collaboration_disabled'
+	register_post_type(
+		'wp_sync_storage', // phpcs:ignore WordPress.NamingConventions.ValidPostTypeSlug.ReservedPrefix -- Inherited post type slug; existing rows keep it.
+		array(
+			'labels'             => array(
+				'name'          => __( 'Sync Updates', 'gutenberg-sync-engines' ),
+				'singular_name' => __( 'Sync Update', 'gutenberg-sync-engines' ),
+			),
+			'public'             => false,
+			'hierarchical'       => false,
+			'capabilities'       => array(
+				'read'                   => 'do_not_allow',
+				'read_private_posts'     => 'do_not_allow',
+				'create_posts'           => 'do_not_allow',
+				'publish_posts'          => 'do_not_allow',
+				'edit_posts'             => 'do_not_allow',
+				'edit_others_posts'      => 'do_not_allow',
+				'edit_published_posts'   => 'do_not_allow',
+				'delete_posts'           => 'do_not_allow',
+				'delete_others_posts'    => 'do_not_allow',
+				'delete_published_posts' => 'do_not_allow',
+			),
+			'map_meta_cap'       => false,
+			'publicly_queryable' => false,
+			'query_var'          => false,
+			'rewrite'            => false,
+			'show_in_menu'       => false,
+			'show_in_rest'       => false,
+			'show_ui'            => false,
+			'supports'           => array( 'custom-fields' ),
 		)
 	);
-
-	/*
-	 * Engine/transport handshake. The client refuses to join sync rooms
-	 * whose engine (or protocol version) its adapter registry cannot
-	 * provide, or when no announced transport is supported — degrading to
-	 * the classic exclusive post lock instead of corrupting a session.
-	 * Per-room engine overrides (`wp_sync_engine_for_room`) are enforced
-	 * server-side by the 409 mismatch check; this announcement covers the
-	 * site default.
-	 */
-	$registry           = new WP_Sync_Engine_Registry( wp_get_sync_storage() );
-	$engine             = $registry->get_engine_for_room( '' );
-	$transport_registry = wp_get_collaboration_transport_registry();
-	$active_transport   = $transport_registry->get_transport( $transport_registry->get_active_slug() );
-	// With no engine plugin active, announce no engine and no transports;
-	// the client then has nothing to negotiate and falls back to the post
-	// lock (RTC disabled).
-	$sync               = array(
-		'engine'            => $engine ? $engine->get_slug() : '',
-		'engineProtocol'    => $engine ? $engine->get_protocol_version() : 0,
-		// Announced active FIRST; the client picks the first slug it can
-		// provide (see the single config value `wp_get_collaboration_transport`).
-		'transports'        => $transport_registry->get_announced_slugs(),
-		'transportProtocol' => $active_transport ? $active_transport->get_protocol_version() : 1,
-	);
-
-	wp_add_inline_script(
-		'wp-core-data',
-		'window._wpCollaborationDisabledPostTypes = ' . wp_json_encode( $disabled_post_types ) . ';' .
-		'window._wpCollaborationSync = ' . wp_json_encode( $sync ) . ';' .
-		// Informational half of the intent-log actor id; the server stamps
-		// the authoritative value from the authenticated request.
-		'window._wpCollaborationUserId = ' . wp_json_encode( get_current_user_id() ) . ';' .
-		/*
-		 * Transport-specific connection metadata (e.g. a WebSocket socket
-		 * URL) is supplied by the transport's plugin through this filter,
-		 * so the framework carries no transport-specific knowledge.
-		 */
-		'window._wpCollaborationTransportConfig = ' . wp_json_encode(
-			(object) apply_filters( 'wp_sync_transport_client_config', array(), $sync['transports'] )
-		) . ';' .
-		// UI hint only — restore/approval is enforced at ingest per the
-		// authoring user's capability regardless of what the client shows.
-		'window._wpCollaborationCanUnfilteredHtml = ' . wp_json_encode( current_user_can( 'unfiltered_html' ) ) . ';',
-		'after'
-	);
 }
-add_action( 'admin_init', 'gutenberg_inject_collaboration_disabled_post_types' );
+add_action( 'init', 'gutenberg_sync_engines_register_storage_post_type' );
+
+/**
+ * Registers the REST API routes of every registered transport. The client
+ * uses the one the server announces as active.
+ *
+ * @since n.e.x.t
+ *
+ * @return void
+ */
+function gutenberg_sync_engines_register_rest_routes(): void {
+	if ( ! gutenberg_sync_engines_is_enabled() ) {
+		return;
+	}
+
+	wp_get_collaboration_transport_registry()->register_all_routes();
+}
+add_action( 'rest_api_init', 'gutenberg_sync_engines_register_rest_routes' );
+
+/**
+ * Returns the user ID recorded in a fresh edit lock.
+ *
+ * Unlike wp_check_post_lock(), this includes locks owned by the current user.
+ *
+ * @since n.e.x.t
+ *
+ * @param int $post_id Post ID.
+ * @return int User ID from a fresh lock, or 0 if none exists.
+ */
+function gutenberg_sync_engines_get_active_edit_lock_user( $post_id ): int {
+	$lock = get_post_meta( $post_id, '_edit_lock', true );
+	if ( ! $lock ) {
+		return 0;
+	}
+
+	$lock = explode( ':', $lock );
+	$time = (int) $lock[0];
+	$user = isset( $lock[1] ) ? (int) $lock[1] : (int) get_post_meta( $post_id, '_edit_last', true );
+
+	if ( ! $time || ! $user || ! get_userdata( $user ) ) {
+		return 0;
+	}
+
+	/** This filter is documented in wp-admin/includes/ajax-actions.php */
+	$time_window = apply_filters( 'wp_check_post_lock_window', 150 ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core hook.
+
+	if ( $time > time() - $time_window ) {
+		return $user;
+	}
+
+	return 0;
+}
 
 /**
  * Modifies the post list UI and heartbeat responses for real-time collaboration.
  *
- * When RTC is enabled, hides the lock icon and user avatar, replaces the
- * user-specific lock text with "Currently being edited", changes the "Edit"
- * row action to "Join", and re-enables bulk-edit checkboxes that core
- * normally hides for locked posts (Quick Edit intentionally stays hidden,
- * as it is not collaboration-aware).
+ * When collaboration is enabled, hides the lock icon and user avatar,
+ * replaces the user-specific lock text with "Currently being edited",
+ * changes the "Edit" row action to "Join", and re-enables bulk-edit
+ * checkboxes that core normally hides for locked posts (Quick Edit
+ * intentionally stays hidden, as it is not collaboration-aware).
+ *
+ * @since n.e.x.t
  *
  * @global string $pagenow The filename of the current screen.
+ *
+ * @return void
  */
-function gutenberg_post_list_collaboration_ui() {
+function gutenberg_sync_engines_post_list_ui(): void {
 	global $pagenow;
 
-	if ( ! wp_is_collaboration_enabled() ) {
+	if ( ! gutenberg_sync_engines_is_enabled() ) {
 		return;
 	}
 
 	// Heartbeat filter applies globally (not just edit.php) since the
 	// heartbeat API can fire from any admin page.
-	add_filter( 'heartbeat_received', 'gutenberg_filter_locked_posts_heartbeat_for_rtc', 20, 2 );
+	add_filter( 'heartbeat_received', 'gutenberg_sync_engines_filter_locked_posts_heartbeat', 20, 2 );
 
 	// Register globally because Quick Edit submits `action=inline-save` through admin-ajax.php.
-	add_action( 'wp_ajax_inline-save', 'gutenberg_block_quick_edit_for_active_lock', 0 );
+	add_action( 'wp_ajax_inline-save', 'gutenberg_sync_engines_block_quick_edit_for_active_lock', 0 );
 
 	// CSS, JS, and row action overrides only apply on the posts list page.
 	if ( 'edit.php' !== $pagenow ) {
 		return;
 	}
 
-	add_action( 'admin_head', 'gutenberg_post_list_collaboration_styles' );
-	add_filter( 'gettext', 'gutenberg_filter_locked_post_text_for_rtc', 10, 3 );
-	add_filter( 'post_row_actions', 'gutenberg_post_list_collaboration_row_actions', 10, 2 );
-	add_filter( 'page_row_actions', 'gutenberg_post_list_collaboration_row_actions', 10, 2 );
+	add_action( 'admin_head', 'gutenberg_sync_engines_post_list_styles' );
+	add_filter( 'gettext', 'gutenberg_sync_engines_filter_locked_post_text', 10, 3 );
+	add_filter( 'post_row_actions', 'gutenberg_sync_engines_post_list_row_actions', 10, 2 );
+	add_filter( 'page_row_actions', 'gutenberg_sync_engines_post_list_row_actions', 10, 2 );
 }
-add_action( 'admin_init', 'gutenberg_post_list_collaboration_ui' );
+add_action( 'admin_init', 'gutenberg_sync_engines_post_list_ui' );
 
 /**
  * Removes user-specific details from post lock heartbeat responses and adds
@@ -415,14 +313,16 @@ add_action( 'admin_init', 'gutenberg_post_list_collaboration_ui' );
  * by the current user. This filter runs at priority 20 to replace those details
  * with generic text and add the current user's own locks.
  *
+ * @since n.e.x.t
+ *
  * @param array $response The heartbeat response.
  * @param array $data     The data sent by the client.
  * @return array Modified heartbeat response.
  */
-function gutenberg_filter_locked_posts_heartbeat_for_rtc( $response, $data = array() ) {
+function gutenberg_sync_engines_filter_locked_posts_heartbeat( $response, $data = array() ) {
 	if ( ! empty( $response['wp-check-locked-posts'] ) ) {
 		foreach ( $response['wp-check-locked-posts'] as $key => $lock_data ) {
-			$response['wp-check-locked-posts'][ $key ]['text'] = __( 'Currently being edited', 'gutenberg' );
+			$response['wp-check-locked-posts'][ $key ]['text'] = __( 'Currently being edited', 'gutenberg-sync-engines' );
 			unset( $response['wp-check-locked-posts'][ $key ]['avatar_src'] );
 			unset( $response['wp-check-locked-posts'][ $key ]['avatar_src_2x'] );
 		}
@@ -440,14 +340,14 @@ function gutenberg_filter_locked_posts_heartbeat_for_rtc( $response, $data = arr
 			}
 
 			$post = get_post( $post_id );
-			if ( ! $post || wp_is_post_type_collaboration_disabled( $post->post_type ) ) {
+			if ( ! $post || gutenberg_sync_engines_is_post_type_disabled( $post->post_type ) ) {
 				continue;
 			}
 
-			$lock_user = gutenberg_get_active_edit_lock_user( $post_id );
+			$lock_user = gutenberg_sync_engines_get_active_edit_lock_user( $post_id );
 			if ( $lock_user && get_current_user_id() === $lock_user ) {
 				$response['wp-check-locked-posts'][ $key ] = array(
-					'text' => __( 'Currently being edited', 'gutenberg' ),
+					'text' => __( 'Currently being edited', 'gutenberg-sync-engines' ),
 				);
 			}
 		}
@@ -456,58 +356,58 @@ function gutenberg_filter_locked_posts_heartbeat_for_rtc( $response, $data = arr
 	return $response;
 }
 
-if ( ! function_exists( 'gutenberg_block_quick_edit_for_active_lock' ) ) {
-	/**
-	 * Rejects Quick Edit while the current user holds a fresh edit lock.
-	 *
-	 * Core handles locks owned by other users but excludes the current user's
-	 * locks. Rejecting them prevents Quick Edit changes from diverging from the
-	 * editing session. The server check also covers post lists loaded before the
-	 * lock was created.
-	 *
-	 * @since 7.1.0
-	 */
-	function gutenberg_block_quick_edit_for_active_lock() {
-		check_ajax_referer( 'inlineeditnonce', '_inline_edit' );
+/**
+ * Rejects Quick Edit while the current user holds a fresh edit lock.
+ *
+ * Core handles locks owned by other users but excludes the current user's
+ * locks. Rejecting them prevents Quick Edit changes from diverging from the
+ * editing session. The server check also covers post lists loaded before the
+ * lock was created.
+ *
+ * @since n.e.x.t
+ *
+ * @return void
+ */
+function gutenberg_sync_engines_block_quick_edit_for_active_lock(): void {
+	check_ajax_referer( 'inlineeditnonce', '_inline_edit' );
 
-		$post_id = isset( $_POST['post_ID'] ) ? (int) $_POST['post_ID'] : 0;
-		if ( ! $post_id ) {
-			return;
-		}
-
-		$post = get_post( $post_id );
-		if ( ! $post || wp_is_post_type_collaboration_disabled( $post->post_type ) ) {
-			return;
-		}
-
-		$lock_user = gutenberg_get_active_edit_lock_user( $post_id );
-		if ( ! $lock_user ) {
-			/*
-			 * Core creates a lock during inline save. Prevent that specific write
-			 * so a later Quick Edit is not mistaken for an active editor session.
-			 */
-			add_filter(
-				'update_post_metadata',
-				static function ( $check, $object_id, $meta_key ) use ( $post_id ) {
-					if ( $post_id === (int) $object_id && '_edit_lock' === $meta_key ) {
-						return false;
-					}
-
-					return $check;
-				},
-				10,
-				3
-			);
-			return;
-		}
-
-		if ( get_current_user_id() !== $lock_user ) {
-			// Core handles locks owned by another user.
-			return;
-		}
-
-		wp_die( esc_html__( 'Quick Edit is disabled: You are currently editing this post in another tab or window.', 'gutenberg' ) );
+	$post_id = isset( $_POST['post_ID'] ) ? (int) $_POST['post_ID'] : 0;
+	if ( ! $post_id ) {
+		return;
 	}
+
+	$post = get_post( $post_id );
+	if ( ! $post || gutenberg_sync_engines_is_post_type_disabled( $post->post_type ) ) {
+		return;
+	}
+
+	$lock_user = gutenberg_sync_engines_get_active_edit_lock_user( $post_id );
+	if ( ! $lock_user ) {
+		/*
+		 * Core creates a lock during inline save. Prevent that specific write
+		 * so a later Quick Edit is not mistaken for an active editor session.
+		 */
+		add_filter(
+			'update_post_metadata',
+			static function ( $check, $object_id, $meta_key ) use ( $post_id ) {
+				if ( $post_id === (int) $object_id && '_edit_lock' === $meta_key ) {
+					return false;
+				}
+
+				return $check;
+			},
+			10,
+			3
+		);
+		return;
+	}
+
+	if ( get_current_user_id() !== $lock_user ) {
+		// Core handles locks owned by another user.
+		return;
+	}
+
+	wp_die( esc_html__( 'Quick Edit is disabled: You are currently editing this post in another tab or window.', 'gutenberg-sync-engines' ) );
 }
 
 /**
@@ -518,8 +418,12 @@ if ( ! function_exists( 'gutenberg_block_quick_edit_for_active_lock' ) ) {
  * collaborative editing means the post is not exclusively locked. It toggles
  * "Edit" / "Join" action link text using the `.wp-locked` class managed by
  * heartbeat.
+ *
+ * @since n.e.x.t
+ *
+ * @return void
  */
-function gutenberg_post_list_collaboration_styles() {
+function gutenberg_sync_engines_post_list_styles(): void {
 	?>
 	<style type="text/css">
 		/*
@@ -536,7 +440,7 @@ function gutenberg_post_list_collaboration_styles() {
 		}
 		/*
 		 * Re-enable bulk-edit checkboxes that core hides for locked posts,
-		 * since RTC allows collaborative editing.
+		 * since collaboration allows several people to edit at once.
 		 * Must use `tr.wp-locked` to match core's specificity in
 		 * list-tables.css and actually override its `display: none`.
 		 * Quick Edit intentionally stays hidden: it is not collaboration-aware,
@@ -549,8 +453,8 @@ function gutenberg_post_list_collaboration_styles() {
 		/*
 		 * Toggle "Edit" / "Join" action link text based on lock state.
 		 * The heartbeat adds/removes .wp-locked on locked rows. This
-		 * CSS only runs when RTC is enabled, so .wp-locked here always
-		 * means collaborative editing, not exclusive locking.
+		 * CSS only runs when collaboration is enabled, so .wp-locked here
+		 * always means collaborative editing, not exclusive locking.
 		 */
 		.join-action-text {
 			display: none;
@@ -574,14 +478,16 @@ function gutenberg_post_list_collaboration_styles() {
  * Using a gettext filter replaces it before it reaches the browser,
  * avoiding a flash of the original text.
  *
+ * @since n.e.x.t
+ *
  * @param string $translation Translated text.
  * @param string $text        Original text to translate.
  * @param string $domain      Text domain.
  * @return string Modified translation.
  */
-function gutenberg_filter_locked_post_text_for_rtc( $translation, $text, $domain ) {
+function gutenberg_sync_engines_filter_locked_post_text( $translation, $text, $domain ) {
 	if ( 'default' === $domain && '%s is currently editing' === $text ) {
-		return __( 'Currently being edited', 'gutenberg' );
+		return __( 'Currently being edited', 'gutenberg-sync-engines' );
 	}
 
 	return $translation;
@@ -595,16 +501,18 @@ function gutenberg_filter_locked_post_text_for_rtc( $translation, $text, $domain
  * the `.wp-locked` class managed by heartbeat. This updates the link text when
  * the lock state changes without requiring a page reload.
  *
+ * @since n.e.x.t
+ *
  * @param string[] $actions An array of row action links.
  * @param WP_Post  $post    The post object.
  * @return string[] Modified row action links.
  */
-function gutenberg_post_list_collaboration_row_actions( $actions, $post ) {
+function gutenberg_sync_engines_post_list_row_actions( $actions, $post ) {
 	if ( ! isset( $actions['edit'] ) ) {
 		return $actions;
 	}
 
-	if ( wp_is_post_type_collaboration_disabled( $post->post_type ) ) {
+	if ( gutenberg_sync_engines_is_post_type_disabled( $post->post_type ) ) {
 		return $actions;
 	}
 
@@ -622,7 +530,7 @@ function gutenberg_post_list_collaboration_row_actions( $actions, $post ) {
 	 *     .row-actions span   { font-size: 0;  }
 	 *     .row-actions span a { font-size: 13px; }
 	 * still reaches the visible label. CSS in
-	 * gutenberg_post_list_collaboration_styles() flips visibility on the
+	 * gutenberg_sync_engines_post_list_styles() flips visibility on the
 	 * outer spans based on the row's `wp-locked` class, which core's
 	 * inline-edit-post.js maintains in response to heartbeat ticks.
 	 */
@@ -634,61 +542,10 @@ function gutenberg_post_list_collaboration_row_actions( $actions, $post ) {
 		esc_attr( sprintf( __( 'Edit &#8220;%s&#8221;', 'default' ), $title ) ),
 		__( 'Edit', 'default' ),
 		/* translators: %s: Post title. */
-		esc_attr( sprintf( __( 'Join editing &#8220;%s&#8221;', 'gutenberg' ), $title ) ),
+		esc_attr( sprintf( __( 'Join editing &#8220;%s&#8221;', 'gutenberg-sync-engines' ), $title ) ),
 		/* translators: Action link text for a singular post in the post list. Can be any type of post. */
-		_x( 'Join', 'post list', 'gutenberg' )
+		_x( 'Join', 'post list', 'gutenberg-sync-engines' )
 	);
 
 	return $actions;
 }
-
-/**
- * Adds the autosave's CRDT snapshot to the block editor settings when
- * real-time collaboration is enabled.
- *
- * The snapshot describes the document state the autosave captured. The editor
- * verifies its own shared document against it, and suppresses the "there is a
- * more recent autosave" notice when the shared document already contains
- * everything the autosave holds.
- *
- * @param array                   $settings             Editor settings.
- * @param WP_Block_Editor_Context $block_editor_context The current block editor context.
- * @return array Filtered editor settings.
- */
-function gutenberg_add_autosave_details_to_editor_settings( $settings, $block_editor_context ) {
-	if ( ! isset( $settings['autosave'] ) || empty( $block_editor_context->post ) ) {
-		return $settings;
-	}
-
-	if ( ! wp_is_collaboration_enabled() ) {
-		return $settings;
-	}
-
-	$post = $block_editor_context->post;
-
-	if ( wp_is_post_type_collaboration_disabled( $post->post_type ) ) {
-		return $settings;
-	}
-
-	$autosave = wp_get_post_autosave( $post->ID );
-
-	if ( ! $autosave ) {
-		return $settings;
-	}
-
-	$snapshot = get_post_meta( $autosave->ID, Gutenberg_REST_Autosaves_Controller::CRDT_SNAPSHOT_META_KEY, true );
-
-	/*
-	 * Snapshots can be missing from a pre-collaboration autosave, classic editor autosave,
-	 * and other paths. The worst case is a "more recent autosave" notice when newer CRDT
-	 * content is already present in the shared document.
-	 */
-	if ( ! is_string( $snapshot ) || '' === $snapshot ) {
-		return $settings;
-	}
-
-	$settings['autosave']['crdtSnapshot'] = $snapshot;
-
-	return $settings;
-}
-add_filter( 'block_editor_settings_all', 'gutenberg_add_autosave_details_to_editor_settings', 10, 2 );

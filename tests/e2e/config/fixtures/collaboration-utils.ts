@@ -44,8 +44,7 @@ export const SECOND_USER: UserCredentials = {
 };
 
 const BASE_URL = process.env.WP_BASE_URL || 'http://localhost:8889';
-const USE_TEST_WS_PROVIDER = process.env.GUTENBERG_RTC_TEST_WS_PROVIDER === '1';
-const COLLABORATION_EXPERIMENT = 'gutenberg-real-time-collaboration';
+const COLLABORATION_SETTING = 'gutenberg_sync_engines_enabled';
 
 export default class CollaborationUtils {
 	private admin: Admin;
@@ -166,31 +165,6 @@ export default class CollaborationUtils {
 		const pages = this.allPages;
 		const resolvedTimeout = timeout ?? 10000 + pages.length * 2500;
 
-		if ( USE_TEST_WS_PROVIDER ) {
-			const roomName = await this.getCurrentPostRoomName(
-				this.primaryPage
-			);
-			await Promise.all(
-				pages.map( ( pg ) =>
-					this.waitForTestWebSocketAwarenessPeerCount(
-						pg,
-						pages.length,
-						resolvedTimeout,
-						roomName
-					)
-				)
-			);
-			await Promise.all(
-				pages.map( ( pg ) =>
-					this.waitForSyncCycle( pg, 3, {
-						timeout: resolvedTimeout,
-						room: roomName,
-					} )
-				)
-			);
-			return;
-		}
-
 		await Promise.all(
 			pages.map( ( pg ) =>
 				pg
@@ -205,42 +179,6 @@ export default class CollaborationUtils {
 				this.waitForSyncCycle( pg, 3, { timeout: resolvedTimeout } )
 			)
 		);
-	}
-
-	async waitForTestWebSocketAwarenessPeerCount(
-		page: Page,
-		expectedPeerCount: number,
-		timeout: number,
-		roomName: string
-	) {
-		await page.waitForFunction(
-			( { expected, room }: { expected: number; room: string } ) => {
-				const state = ( window as any ).__gutenbergTestWebSocketSync;
-				const matchingRoom = state?.rooms?.[ room ];
-
-				return (
-					matchingRoom?.status === 'connected' &&
-					matchingRoom?.awarenessCount >= expected
-				);
-			},
-			{ expected: expectedPeerCount, room: roomName },
-			{ timeout }
-		);
-	}
-
-	async getCurrentPostRoomName( page: Page ): Promise< string > {
-		const postId = await page.evaluate(
-			() =>
-				( window as any ).wp?.data
-					?.select( 'core/editor' )
-					?.getCurrentPostId?.()
-		);
-
-		if ( ! postId ) {
-			throw new Error( 'Current post ID is unavailable.' );
-		}
-
-		return `postType/post:${ postId }`;
 	}
 
 	/**
@@ -264,7 +202,7 @@ export default class CollaborationUtils {
 	 *
 	 * @param page                           The Playwright page to wait on.
 	 * @param [options]                      Optional settings.
-	 * @param [options.requireCollaboration] Whether to require __experimentalEnableRealTimeCollaboration (default true).
+	 * @param [options.requireCollaboration] Whether to require the server's collaboration announcement for the screen (default true).
 	 * @param [options.timeout]              Maximum wait time in ms (default 10000).
 	 */
 	async waitForEntityReady(
@@ -284,8 +222,8 @@ export default class CollaborationUtils {
 				}
 				if (
 					requireCollab &&
-					( window as any )
-						.__experimentalEnableRealTimeCollaboration !== true
+					( window as any )._gutenbergSyncEnginesSync?.screen
+						?.supported !== true
 				) {
 					return false;
 				}
@@ -324,8 +262,8 @@ export default class CollaborationUtils {
 					return false;
 				}
 				if (
-					( window as any )
-						.__experimentalEnableRealTimeCollaboration !== true
+					( window as any )._gutenbergSyncEnginesSync?.screen
+						?.supported !== true
 				) {
 					return false;
 				}
@@ -352,25 +290,9 @@ export default class CollaborationUtils {
 	}
 
 	/**
-	 * Read the _crdt_document meta value for the current post.
-	 *
-	 * @param page The Playwright page to evaluate on.
-	 */
-	async getCrdtDocument( page: Page ): Promise< string | null > {
-		return page.evaluate( async () => {
-			const postId = ( window as any ).wp.data
-				.select( 'core/editor' )
-				.getCurrentPostId();
-			const post = await ( window as any ).wp.apiFetch( {
-				path: `/wp/v2/posts/${ postId }?context=edit`,
-			} );
-			return post?.meta?._crdt_document ?? null;
-		} );
-	}
-
-	/**
-	 * Wait for the collaboration runtime to be ready on a page.
-	 * Checks that `window.__experimentalEnableRealTimeCollaboration` is true and wp.data is loaded.
+	 * Wait for the collaboration runtime to be ready on a page: the server
+	 * announced a supported screen (`window._gutenbergSyncEnginesSync`), the
+	 * plugin's host store registered, and wp.data is loaded.
 	 *
 	 * @param page              The Playwright page to wait on.
 	 * @param [options]         Optional settings.
@@ -382,10 +304,13 @@ export default class CollaborationUtils {
 	) {
 		await page.waitForFunction(
 			() =>
-				( window as any ).__experimentalEnableRealTimeCollaboration ===
-					true &&
+				( window as any )._gutenbergSyncEnginesSync?.screen
+					?.supported === true &&
 				window?.wp?.data &&
-				window?.wp?.blocks,
+				window?.wp?.blocks &&
+				!! ( window as any ).wp.data.select(
+					'gutenberg-sync-engines/host'
+				),
 			undefined,
 			{ timeout }
 		);
@@ -402,41 +327,22 @@ export default class CollaborationUtils {
 	 * @param cycles            Number of sync responses to wait for (default 3).
 	 * @param [options]         Optional settings.
 	 * @param [options.timeout] Maximum wait time per cycle in ms (default 10000).
-	 * @param options.room
+	 * @param [options.room]    Only count responses whose request names this room.
 	 */
 	async waitForSyncCycle(
 		page: Page,
 		cycles = 3,
 		{ timeout = 10000, room }: { timeout?: number; room?: string } = {}
 	) {
-		if ( USE_TEST_WS_PROVIDER ) {
-			// y-websocket distinguishes 'connected' (socket up) from 'synced'
-			// (sync step 2 applied). Waiting only on connected lets tests race
-			// past initial document load. Require both, on the exact target
-			// room, to rule out stale rooms from earlier navigations.
-			const targetRoom =
-				room ?? ( await this.getCurrentPostRoomName( page ) );
-			await page.waitForFunction(
-				( roomName: string ) => {
-					const state = ( window as any )
-						.__gutenbergTestWebSocketSync;
-					const matchingRoom = state?.rooms?.[ roomName ];
-					return (
-						matchingRoom?.status === 'connected' &&
-						matchingRoom?.synced === true
-					);
-				},
-				targetRoom,
-				{ timeout }
-			);
-			return;
-		}
-
 		for ( let i = 0; i < cycles; i++ ) {
 			await page.waitForResponse(
 				( response ) =>
 					response.url().includes( 'wp-sync' ) &&
-					response.status() === 200,
+					response.status() === 200 &&
+					( ! room ||
+						( response.request().postData() ?? '' ).includes(
+							room
+						) ),
 				{ timeout }
 			);
 		}
@@ -637,8 +543,7 @@ export default class CollaborationUtils {
 }
 
 /**
- * Set the real-time collaboration experiment without changing other
- * experiments.
+ * Turns real-time collaboration on or off: the plugin's own site setting.
  *
  * @param requestUtils An instance of RequestUtils for making HTTP requests.
  * @param enabled      Whether to enable or disable collaboration.
@@ -647,25 +552,9 @@ export async function setCollaboration(
 	requestUtils: RequestUtils,
 	enabled: boolean
 ): Promise< void > {
-	const settings = await requestUtils.rest< {
-		'gutenberg-experiments'?: Record< string, boolean >;
-	} >( {
-		path: '/wp/v2/settings',
-		method: 'GET',
-	} );
-	const experiments = {
-		...( settings[ 'gutenberg-experiments' ] || {} ),
-	};
-
-	if ( enabled ) {
-		experiments[ COLLABORATION_EXPERIMENT ] = true;
-	} else {
-		delete experiments[ COLLABORATION_EXPERIMENT ];
-	}
-
 	await requestUtils.rest( {
 		path: '/wp/v2/settings',
 		method: 'POST',
-		data: { 'gutenberg-experiments': experiments },
+		data: { [ COLLABORATION_SETTING ]: enabled },
 	} );
 }

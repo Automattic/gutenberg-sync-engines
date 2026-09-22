@@ -10,12 +10,17 @@ being useful for deciding what to do next, delete it.
 
 ## Where this project came from
 
-The plugin was split out of Gutenberg. Gutenberg keeps a generic shell
-for collaborative editing and ships no engines and no transports at
-all; every engine and transport lives here. Without this plugin active,
-collaborative editing is simply off and WordPress falls back to locking
-the post. That split is finished, and the copy of Gutenberg in
-`gutenberg/` is pinned to the version it was finished against.
+The plugin was split out of Gutenberg in two steps. First Gutenberg kept
+a generic shell for collaborative editing and shipped no engines and no
+transports; every engine and transport lived here. Then (September 2026)
+the shell moved here too: Gutenberg now ships no collaboration code at
+all, only one small hook in its data layer that lets a single sync
+manager follow entity records as they load, change and save. Everything
+else, the sync core, the storage, the presence and review screens, the
+post lock handling and the settings, lives in this plugin. Without this
+plugin active, collaborative editing is simply off and WordPress falls
+back to locking the post. The copy of Gutenberg in `gutenberg/` is
+pinned to a version that carries the hook and nothing more.
 
 Three engines were built so they could be compared under identical
 conditions, with the intention of eventually picking one. The public
@@ -26,6 +31,27 @@ rundown](https://collaborativeediting.wordpress.com/2026/08/21/sync-engines-rund
 
 Each of these was contested at the time. Knowing the reason saves you
 from undoing it by accident.
+
+**Gutenberg gets one hook, not a framework.** The first split left
+Gutenberg with a large engine-neutral shell that could not be sent
+upstream and had to be kept in step with the plugin. The second split
+replaced it with one registration point in core-data (the entity sync
+seam) and moved everything else here, with plugin-owned PHP names so
+that a Gutenberg release which still ships the old experiment cannot
+collide with the plugin. The cost is that the plugin now bundles its own
+Yjs and its own copy of the collaboration screens; the gain is that the
+Gutenberg change is small enough to be reviewed and to be reverted alone.
+
+**The post lock is suppressed on the server, and only where the server
+is sure.** Gutenberg used to hide the lock modal in the editor whenever
+collaboration was on. Now the plugin's PHP decides per screen whether
+collaboration can run (enabled, engine and transport announced, post
+type allowed, no legacy meta box) and only then marks the post unlocked
+in the editor settings and drops the lock error from the heartbeat. The
+second user never takes the lock. If collaboration fails after the page
+loaded (an engine the browser cannot provide, an oversized document),
+the plugin puts the lock modal back through the editor's own action, so
+"no sync and no lock" cannot happen.
 
 **de-rtc saves and syncs through the same path.** A person's edits go
 to the server through the ordinary autosave endpoint, not through the

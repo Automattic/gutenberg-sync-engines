@@ -1,12 +1,23 @@
-import { Y } from '@wordpress/sync';
+import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	jest,
+	test,
+} from '@jest/globals';
+import { Y } from '../../../../src/sync';
 import { resolveSelect } from '@wordpress/data';
 import {
 	BaseAwarenessState,
 	BaseAwareness,
 	baseEqualityFieldChecks,
-} from '../base-awareness';
-import { areCollaboratorInfosEqual } from '../utils';
-import type { BaseState, CollaboratorInfo } from '../types';
+} from '../../../../src/awareness/typed/base-awareness';
+import { areCollaboratorInfosEqual } from '../../../../src/awareness/typed/utils';
+import type {
+	BaseState,
+	CollaboratorInfo,
+} from '../../../../src/awareness/typed/types';
 
 // Mock WordPress data
 jest.mock( '@wordpress/data', () => ( {

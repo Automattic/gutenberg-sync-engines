@@ -1,12 +1,12 @@
 import { describe, expect, it } from '@jest/globals';
-import { Y } from '@wordpress/sync';
+import { Y } from '../../../../../src/sync';
 import {
 	asHtmlStringIndex,
 	asRichTextOffset,
 	getYTextByAttributeKey,
 	htmlIndexToRichTextOffset as typedHtmlIndexToRichTextOffset,
 	richTextOffsetToHtmlIndex as typedRichTextOffsetToHtmlIndex,
-} from '../crdt-utils';
+} from '../../../../../src/engines/yjs/crdt/crdt-utils';
 
 function htmlIndexToRichTextOffset( html: string, htmlIndex: number ) {
 	return typedHtmlIndexToRichTextOffset(

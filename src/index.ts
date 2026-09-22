@@ -1,46 +1,39 @@
 /**
- * Client entry: registers this plugin's sync ENGINES and TRANSPORTS into the
- * collaborative-editing framework shipped by Gutenberg (`@wordpress/sync`).
+ * Client entry: the whole real-time collaboration experience for the
+ * block editor, plugged into core-data through its entity sync seam.
  *
- * The framework exposes its registration surface through UNLOCKABLE PRIVATE
- * APIs. This plugin unlocks them with the shared consent string and adds:
- *   - engine adapters (intent-log, yjs-server) via
- *     `registerSyncEngine`
- *   - transport providers (http-polling, http-long-polling, websocket) via
- *     `registerSyncTransport`
+ * What runs here, in order:
+ *   1. the sync ENGINES (how concurrent edits merge) and TRANSPORTS (how
+ *      updates move) register with the plugin's own sync core;
+ *   2. the host bridge resolves the engine the server announced,
+ *      negotiates a transport, and registers ONE manager with core-data
+ *      (`registerEntitySyncManager`);
+ *   3. the collaboration UI (presence, cursors, conflict review, the
+ *      connection error modal, preferences) mounts;
+ *   4. slow awareness, when the site turned it on.
  *
- * With this plugin inactive the framework registers nothing, so a session
- * finds no engine/transport to negotiate and the editor falls back to the
- * classic post lock — real-time collaboration effectively disabled.
- *
- * NOTE: the moved engine adapters and providers under `engines/` and
- * `providers/` still import framework internals by relative path (their
- * origin inside `@wordpress/sync`). Those imports, and the exact shape of
- * the unlocked surface below, are the coordinated Gutenberg change tracked
- * in PORTING.md. `@wordpress/sync` is externalized to the `wp.sync` runtime
- * global at build time (dependency extraction), so this plugin ships no copy
- * of the framework.
+ * Third-party engine or transport plugins reuse this plugin's Yjs
+ * instance and registries through `window.gutenbergSyncEngines`.
  */
-
-/**
- * WordPress dependencies
- */
-// eslint-disable-next-line import/no-unresolved -- Provided at runtime as wp.sync.
-import { privateApis } from '@wordpress/sync';
 
 /**
  * Internal dependencies
  */
-import { unlock } from './lock-unlock';
+import {
+	registerSyncEngine,
+	registerSyncTransport,
+	Y,
+	YJS_VERSION,
+} from './sync';
 import { createIntentLogEngineAdapter } from './engines/intent-log-adapter';
 import { createYjsServerEngineAdapter } from './engines/yjs-server-adapter';
 import { createDeRtcEngineAdapter } from './engines/de-rtc-adapter';
 import { createHttpPollingProvider } from './providers/http-polling/http-polling-provider';
 import { createHttpLongPollingProvider } from './providers/http-long-polling/http-long-polling-provider';
 import { createWebSocketProvider } from './providers/websocket/websocket-provider';
+import { installHostBridge } from './host/entity-sync-manager';
+import { installUi } from './ui';
 import { bootstrapSlowAwareness } from './awareness';
-
-const { registerSyncEngine, registerSyncTransport } = unlock( privateApis );
 
 // Engines: how concurrent edits merge.
 registerSyncEngine( createIntentLogEngineAdapter() );
@@ -65,6 +58,29 @@ registerSyncTransport( {
 	create: createWebSocketProvider,
 } );
 
+// The extension surface for other plugins: the shared Yjs instance and the
+// two registries. Register before the bridge resolves the announced engine.
+window.gutenbergSyncEngines = {
+	Y,
+	YJS_VERSION,
+	registerSyncEngine,
+	registerSyncTransport,
+};
+
+installHostBridge();
+installUi();
+
 // Slow awareness (block presence on a slow cadence), when the site has
 // turned it on; see src/awareness/.
 bootstrapSlowAwareness();
+
+declare global {
+	interface Window {
+		gutenbergSyncEngines?: {
+			Y: typeof Y;
+			YJS_VERSION: string;
+			registerSyncEngine: typeof registerSyncEngine;
+			registerSyncTransport: typeof registerSyncTransport;
+		};
+	}
+}

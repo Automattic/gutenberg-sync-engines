@@ -40,7 +40,7 @@ import {
 	createIntentLogUndoManager,
 	type IntentLogUndoManager,
 } from './intent-log-undo';
-import { getProviderCreators } from '../framework';
+import { getAnnouncedSync, getProviderCreators } from '../sync';
 import type { EngineDocument } from './intent-log/engine-types';
 import type {
 	CollectionHandlers,
@@ -52,7 +52,7 @@ import type {
 	RecordHandlers,
 	SyncConfig,
 	SyncManager,
-} from '@wordpress/sync';
+} from '../sync';
 
 /*
  * The intent-log SyncManager: the engine adapter surface core-data drives,
@@ -985,11 +985,9 @@ export function createIntentLogManager( debug = false ): SyncManager {
 		}
 		return undoManager;
 	};
-	const userId =
-		Number(
-			( window as { _wpCollaborationUserId?: unknown } )
-				._wpCollaborationUserId
-		) || 0;
+	// Informational half of the actor id; the server stamps the
+	// authoritative value from the authenticated request.
+	const userId = getAnnouncedSync()?.userId ?? 0;
 
 	const log = ( message: string, context: object = {} ) => {
 		if ( debug ) {
@@ -2337,11 +2335,6 @@ export function createIntentLogManager( debug = false ): SyncManager {
 			}
 			session.resolveProposal( proposalId, 'restored' );
 		},
-
-		// The server materializes; there is no client-side persisted doc.
-		createPersistedCRDTDoc: async () => null,
-		getEntitySnapshot: () => undefined,
-		entityContainsSnapshot: () => false,
 
 		// Collaborative undo: inverse intents over the accepted log (see
 		// the module note and intent-log-undo.ts). Lazily created on the

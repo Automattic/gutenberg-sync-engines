@@ -2,7 +2,7 @@
 /**
  * WP_Sync_Transport interface
  *
- * @package gutenberg
+ * @package GutenbergSyncEngines
  */
 
 if ( ! interface_exists( 'WP_Sync_Transport' ) ) {

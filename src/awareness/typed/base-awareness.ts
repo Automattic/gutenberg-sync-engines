@@ -1,8 +1,11 @@
 import { resolveSelect } from '@wordpress/data';
 import { AwarenessState } from './awareness-state';
-import { STORE_NAME as coreStore } from '../name';
 import { generateCollaboratorInfo, areCollaboratorInfosEqual } from './utils';
-import type { User } from '../entity-types';
+import type { User } from '@wordpress/core-data';
+
+// The core-data store by name: importing the store object would pull the
+// whole package into modules that only need to read the current user.
+const coreStore = 'core';
 import type { BaseState } from './types';
 
 export abstract class BaseAwarenessState<

@@ -1,17 +1,20 @@
 import { usePrevious } from '@wordpress/compose';
 import { useEffect, useState, useCallback } from '@wordpress/element';
-import type { Y } from '@wordpress/sync';
-import { getSyncManager } from '../sync';
-import { usePostContentBlocks } from '../awareness/block-lookup';
-import { isCollaboratorInfo } from '../awareness/utils';
-import type { EditorStoreBlock } from '../awareness/block-lookup';
+import type { Y } from '../../sync';
+import { getActiveSyncManager } from '../../host/manager';
+import { usePostContentBlocks } from './block-lookup';
+import { isCollaboratorInfo } from './utils';
+import type { EditorStoreBlock } from './block-lookup';
 import type {
 	PostEditorAwarenessState as ActiveCollaborator,
 	PostSaveEvent,
 	YDocDebugData,
-} from '../awareness/types';
-import type { SelectionState, ResolvedSelection } from '../types';
-import type { PostEditorAwareness } from '../awareness/post-editor-awareness';
+} from './types';
+import type {
+	SelectionState,
+	ResolvedSelection,
+} from '../../engines/yjs/crdt/types';
+import type { PostEditorAwareness } from './post-editor-awareness';
 
 interface AwarenessState {
 	activeCollaborators: ActiveCollaborator[];
@@ -77,10 +80,11 @@ function usePostEditorAwarenessState(
 
 		const objectType = `postType/${ postType }`;
 		const objectId = postId.toString();
-		const awareness = getSyncManager()?.getAwareness< PostEditorAwareness >(
-			objectType,
-			objectId
-		);
+		const awareness =
+			getActiveSyncManager()?.getAwareness< PostEditorAwareness >(
+				objectType,
+				objectId
+			);
 
 		if ( ! awareness ) {
 			setState( defaultState );
@@ -187,10 +191,11 @@ function useLastPostSave(
 			return;
 		}
 
-		const awareness = getSyncManager()?.getAwareness< PostEditorAwareness >(
-			`postType/${ postType }`,
-			postId.toString()
-		);
+		const awareness =
+			getActiveSyncManager()?.getAwareness< PostEditorAwareness >(
+				`postType/${ postType }`,
+				postId.toString()
+			);
 
 		if ( ! awareness ) {
 			setLastSave( null );

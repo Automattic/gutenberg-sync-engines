@@ -1,8 +1,9 @@
+import { beforeAll, describe, expect, it, jest } from '@jest/globals';
 import {
 	getCursorPosition,
 	getNearestVisibleBlockAncestor,
 	getSelectionRects,
-} from '../cursor-dom-utils';
+} from '../../../../src/ui/collaborators-overlay/cursor-dom-utils';
 
 const OVERLAY_RECT = {
 	left: 0,

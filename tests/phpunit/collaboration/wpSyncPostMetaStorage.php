@@ -1,11 +1,11 @@
 <?php
 /**
- * Tests for the WP_Sync_Post_Meta_Storage class.
+ * Tests for the WP_Sync_Engines_Post_Meta_Storage class.
  *
  * Covers the storage implementation contract: cache bypass, data integrity,
  * malformed data handling, and race-condition safety.
  *
- * @package gutenberg
+ * @package GutenbergSyncEngines
  * @subpackage Collaboration
  *
  * @group collaboration
@@ -35,7 +35,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 	 * Resets the static room-to-storage-post cache.
 	 */
 	private function reset_storage_post_id_cache(): void {
-		$reflection = new ReflectionProperty( 'WP_Sync_Post_Meta_Storage', 'storage_post_ids' );
+		$reflection = new ReflectionProperty( 'WP_Sync_Engines_Post_Meta_Storage', 'storage_post_ids' );
 		if ( PHP_VERSION_ID < 80100 ) {
 			$reflection->setAccessible( true );
 		}
@@ -59,7 +59,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 					AND post_status = 'publish'
 					AND ( post_name = %s OR post_name LIKE %s )
 				ORDER BY ID ASC",
-				WP_Sync_Post_Meta_Storage::POST_TYPE,
+				WP_Sync_Engines_Post_Meta_Storage::POST_TYPE,
 				$room_hash,
 				$wpdb->esc_like( $room_hash . '-' ) . '%'
 			)
@@ -67,13 +67,10 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Skips tests that need Gutenberg's compatibility implementation.
+	 * Kept for the copied tests' call sites: the post-meta storage class is
+	 * always the plugin's own now, so there is nothing to skip.
 	 */
 	private function skip_if_sync_storage_class_is_provided_by_wordpress_core(): void {
-		$reflection = new ReflectionClass( 'WP_Sync_Post_Meta_Storage' );
-		if ( false === strpos( $reflection->getFileName(), '/wp-content/plugins/' ) ) {
-			$this->markTestSkipped( 'The active WP_Sync_Post_Meta_Storage class is provided by WordPress core, not Gutenberg.' );
-		}
 	}
 
 	/**
@@ -91,11 +88,11 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 	 * Adds a seed update to trigger storage post creation, then looks up
 	 * the resulting post ID.
 	 *
-	 * @param WP_Sync_Post_Meta_Storage $storage Storage instance.
+	 * @param WP_Sync_Engines_Post_Meta_Storage $storage Storage instance.
 	 * @param string                    $room    Room identifier.
 	 * @return int Storage post ID.
 	 */
-	private function create_storage_post( WP_Sync_Post_Meta_Storage $storage, string $room ): int {
+	private function create_storage_post( WP_Sync_Engines_Post_Meta_Storage $storage, string $room ): int {
 		$storage->add_update(
 			$room,
 			array(
@@ -146,7 +143,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 	 * @ticket 64916
 	 */
 	public function test_add_update_does_not_invalidate_post_meta_cache() {
-		$storage         = new WP_Sync_Post_Meta_Storage();
+		$storage         = new WP_Sync_Engines_Post_Meta_Storage();
 		$room            = $this->get_room();
 		$storage_post_id = $this->create_storage_post( $storage, $room );
 		$cached_before   = $this->prime_and_get_meta_cache( $storage_post_id );
@@ -174,7 +171,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 	 * @ticket 64916
 	 */
 	public function test_set_awareness_state_insert_does_not_invalidate_post_meta_cache() {
-		$storage         = new WP_Sync_Post_Meta_Storage();
+		$storage         = new WP_Sync_Engines_Post_Meta_Storage();
 		$room            = $this->get_room();
 		$storage_post_id = $this->create_storage_post( $storage, $room );
 		$cached_before   = $this->prime_and_get_meta_cache( $storage_post_id );
@@ -197,7 +194,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 	 * @ticket 64916
 	 */
 	public function test_set_awareness_state_update_does_not_invalidate_post_meta_cache() {
-		$storage         = new WP_Sync_Post_Meta_Storage();
+		$storage         = new WP_Sync_Engines_Post_Meta_Storage();
 		$room            = $this->get_room();
 		$storage_post_id = $this->create_storage_post( $storage, $room );
 
@@ -225,7 +222,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 	 * @ticket 64916
 	 */
 	public function test_remove_updates_before_cursor_does_not_invalidate_post_meta_cache() {
-		$storage         = new WP_Sync_Post_Meta_Storage();
+		$storage         = new WP_Sync_Engines_Post_Meta_Storage();
 		$room            = $this->get_room();
 		$storage_post_id = $this->create_storage_post( $storage, $room );
 
@@ -251,7 +248,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 	 * @ticket 64696
 	 */
 	public function test_add_update_does_not_update_posts_last_changed() {
-		$storage = new WP_Sync_Post_Meta_Storage();
+		$storage = new WP_Sync_Engines_Post_Meta_Storage();
 		$room    = $this->get_room();
 		$this->create_storage_post( $storage, $room );
 
@@ -278,7 +275,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 	 * @ticket 64696
 	 */
 	public function test_set_awareness_state_does_not_update_posts_last_changed() {
-		$storage = new WP_Sync_Post_Meta_Storage();
+		$storage = new WP_Sync_Engines_Post_Meta_Storage();
 		$room    = $this->get_room();
 		$this->create_storage_post( $storage, $room );
 
@@ -299,7 +296,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 	 * @ticket 64916
 	 */
 	public function test_set_awareness_state_update_does_not_update_posts_last_changed() {
-		$storage = new WP_Sync_Post_Meta_Storage();
+		$storage = new WP_Sync_Engines_Post_Meta_Storage();
 		$room    = $this->get_room();
 		$this->create_storage_post( $storage, $room );
 
@@ -331,7 +328,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 	 * @ticket 64916
 	 */
 	public function test_remove_updates_before_cursor_does_not_update_posts_last_changed() {
-		$storage = new WP_Sync_Post_Meta_Storage();
+		$storage = new WP_Sync_Engines_Post_Meta_Storage();
 		$room    = $this->get_room();
 		$this->create_storage_post( $storage, $room );
 
@@ -356,7 +353,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 	 * @ticket 64916
 	 */
 	public function test_get_awareness_state_does_not_prime_post_meta_cache() {
-		$storage         = new WP_Sync_Post_Meta_Storage();
+		$storage         = new WP_Sync_Engines_Post_Meta_Storage();
 		$room            = $this->get_room();
 		$storage_post_id = $this->create_storage_post( $storage, $room );
 
@@ -385,7 +382,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 	 * @ticket 64916
 	 */
 	public function test_get_updates_after_cursor_does_not_prime_post_meta_cache() {
-		$storage         = new WP_Sync_Post_Meta_Storage();
+		$storage         = new WP_Sync_Engines_Post_Meta_Storage();
 		$room            = $this->get_room();
 		$storage_post_id = $this->create_storage_post( $storage, $room );
 
@@ -411,7 +408,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 	public function test_get_updates_after_cursor_drops_malformed_json() {
 		global $wpdb;
 
-		$storage         = new WP_Sync_Post_Meta_Storage();
+		$storage         = new WP_Sync_Engines_Post_Meta_Storage();
 		$room            = $this->get_room();
 		$storage_post_id = $this->create_storage_post( $storage, $room );
 
@@ -431,7 +428,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 			$wpdb->postmeta,
 			array(
 				'post_id'    => $storage_post_id,
-				'meta_key'   => WP_Sync_Post_Meta_Storage::SYNC_UPDATE_META_KEY,
+				'meta_key'   => WP_Sync_Engines_Post_Meta_Storage::SYNC_UPDATE_META_KEY,
 				'meta_value' => '{invalid json',
 			),
 			array( '%d', '%s', '%s' )
@@ -455,7 +452,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 	public function test_duplicate_awareness_rows_coalesces_on_latest_row() {
 		global $wpdb;
 
-		$storage         = new WP_Sync_Post_Meta_Storage();
+		$storage         = new WP_Sync_Engines_Post_Meta_Storage();
 		$room            = $this->get_room();
 		$storage_post_id = $this->create_storage_post( $storage, $room );
 
@@ -464,7 +461,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 			$wpdb->postmeta,
 			array(
 				'post_id'    => $storage_post_id,
-				'meta_key'   => WP_Sync_Post_Meta_Storage::AWARENESS_META_KEY,
+				'meta_key'   => WP_Sync_Engines_Post_Meta_Storage::AWARENESS_META_KEY,
 				'meta_value' => wp_json_encode( array( 1 => array( 'name' => 'Stale' ) ) ),
 			),
 			array( '%d', '%s', '%s' )
@@ -474,7 +471,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 			$wpdb->postmeta,
 			array(
 				'post_id'    => $storage_post_id,
-				'meta_key'   => WP_Sync_Post_Meta_Storage::AWARENESS_META_KEY,
+				'meta_key'   => WP_Sync_Engines_Post_Meta_Storage::AWARENESS_META_KEY,
 				'meta_value' => wp_json_encode( array( 1 => array( 'name' => 'Latest' ) ) ),
 			),
 			array( '%d', '%s', '%s' )
@@ -499,7 +496,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 	public function test_cursor_does_not_skip_update_inserted_during_fetch_window() {
 		global $wpdb;
 
-		$storage         = new WP_Sync_Post_Meta_Storage();
+		$storage         = new WP_Sync_Engines_Post_Meta_Storage();
 		$room            = $this->get_room();
 		$storage_post_id = $this->create_storage_post( $storage, $room );
 
@@ -587,7 +584,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 					$this->wpdb->postmeta,
 					array(
 						'post_id'    => $this->storage_post_id,
-						'meta_key'   => WP_Sync_Post_Meta_Storage::SYNC_UPDATE_META_KEY,
+						'meta_key'   => WP_Sync_Engines_Post_Meta_Storage::SYNC_UPDATE_META_KEY,
 						'meta_value' => wp_json_encode( $this->injected_update ),
 					),
 					array( '%d', '%s', '%s' )
@@ -602,7 +599,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 				$targets_postmeta = false !== strpos( $query, $this->postmeta );
 				$targets_post_id  = 1 === preg_match( '/\bpost_id\s*=\s*' . (int) $this->storage_post_id . '\b/', $query );
 				$targets_meta_key = 1 === preg_match(
-					"/\bmeta_key\s*=\s*'" . preg_quote( WP_Sync_Post_Meta_Storage::SYNC_UPDATE_META_KEY, '/' ) . "'/",
+					"/\bmeta_key\s*=\s*'" . preg_quote( WP_Sync_Engines_Post_Meta_Storage::SYNC_UPDATE_META_KEY, '/' ) . "'/",
 					$query
 				);
 
@@ -635,7 +632,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 	public function test_compaction_does_not_delete_update_inserted_during_delete() {
 		global $wpdb;
 
-		$storage         = new WP_Sync_Post_Meta_Storage();
+		$storage         = new WP_Sync_Engines_Post_Meta_Storage();
 		$room            = $this->get_room();
 		$storage_post_id = $this->create_storage_post( $storage, $room );
 
@@ -698,7 +695,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 						$this->wpdb->postmeta,
 						array(
 							'post_id'    => $this->storage_post_id,
-							'meta_key'   => WP_Sync_Post_Meta_Storage::SYNC_UPDATE_META_KEY,
+							'meta_key'   => WP_Sync_Engines_Post_Meta_Storage::SYNC_UPDATE_META_KEY,
 							'meta_value' => wp_json_encode( $this->concurrent_update ),
 						),
 						array( '%d', '%s', '%s' )
@@ -748,7 +745,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 	public function test_first_access_race_does_not_split_room_storage() {
 		$this->skip_if_sync_storage_class_is_provided_by_wordpress_core();
 
-		$storage   = new WP_Sync_Post_Meta_Storage();
+		$storage   = new WP_Sync_Engines_Post_Meta_Storage();
 		$room      = $this->get_room() . ':first-access-race';
 		$room_hash = md5( $room );
 		$update    = array(
@@ -762,7 +759,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 			if (
 				$did_inject ||
 				! is_array( $data ) ||
-				( $data['post_type'] ?? null ) !== WP_Sync_Post_Meta_Storage::POST_TYPE ||
+				( $data['post_type'] ?? null ) !== WP_Sync_Engines_Post_Meta_Storage::POST_TYPE ||
 				( $data['post_name'] ?? null ) !== $room_hash
 			) {
 				return $data;
@@ -771,7 +768,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 			$did_inject       = true;
 			$injected_post_id = wp_insert_post(
 				array(
-					'post_type'   => WP_Sync_Post_Meta_Storage::POST_TYPE,
+					'post_type'   => WP_Sync_Engines_Post_Meta_Storage::POST_TYPE,
 					'post_status' => 'publish',
 					'post_title'  => 'Sync Storage',
 					'post_name'   => $room_hash,
@@ -801,7 +798,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 		);
 
 		$this->reset_storage_post_id_cache();
-		$fresh_storage = new WP_Sync_Post_Meta_Storage();
+		$fresh_storage = new WP_Sync_Engines_Post_Meta_Storage();
 		$updates       = $fresh_storage->get_updates_after_cursor( $room, 0 );
 
 		$this->assertContains(
@@ -816,13 +813,13 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 
 		$this->skip_if_sync_storage_class_is_provided_by_wordpress_core();
 
-		$storage   = new WP_Sync_Post_Meta_Storage();
+		$storage   = new WP_Sync_Engines_Post_Meta_Storage();
 		$room      = $this->get_room() . ':suffix-id-before-exact';
 		$room_hash = md5( $room );
 
 		$suffixed_post_id = wp_insert_post(
 			array(
-				'post_type'   => WP_Sync_Post_Meta_Storage::POST_TYPE,
+				'post_type'   => WP_Sync_Engines_Post_Meta_Storage::POST_TYPE,
 				'post_status' => 'publish',
 				'post_title'  => 'Sync Storage',
 				'post_name'   => $room_hash . '-2',
@@ -841,7 +838,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 				$wpdb->postmeta,
 				array(
 					'post_id'    => $suffixed_post_id,
-					'meta_key'   => WP_Sync_Post_Meta_Storage::SYNC_UPDATE_META_KEY,
+					'meta_key'   => WP_Sync_Engines_Post_Meta_Storage::SYNC_UPDATE_META_KEY,
 					'meta_value' => wp_json_encode( $suffixed_update ),
 				),
 				array( '%d', '%s', '%s' )
@@ -850,7 +847,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 
 		$exact_post_id = wp_insert_post(
 			array(
-				'post_type'   => WP_Sync_Post_Meta_Storage::POST_TYPE,
+				'post_type'   => WP_Sync_Engines_Post_Meta_Storage::POST_TYPE,
 				'post_status' => 'publish',
 				'post_title'  => 'Sync Storage',
 				'post_name'   => $room_hash,
@@ -872,7 +869,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 		$this->assertSame( $room_hash, $lineages[1]->post_name );
 
 		$this->reset_storage_post_id_cache();
-		$fresh_storage = new WP_Sync_Post_Meta_Storage();
+		$fresh_storage = new WP_Sync_Engines_Post_Meta_Storage();
 		$updates       = $fresh_storage->get_updates_after_cursor( $room, 0 );
 		$update_data   = wp_list_pluck( $updates, 'data' );
 
@@ -892,7 +889,7 @@ class Tests_Collaboration_WpSyncPostMetaStorage extends WP_UnitTestCase {
 				$wpdb->prepare(
 					"SELECT meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s LIMIT 1",
 					$suffixed_post_id,
-					WP_Sync_Post_Meta_Storage::SYNC_UPDATE_META_KEY
+					WP_Sync_Engines_Post_Meta_Storage::SYNC_UPDATE_META_KEY
 				)
 			),
 			'Existing duplicate updates must not be deleted by the smaller first-access fix.'

@@ -2,17 +2,17 @@
 
 Pluggable real-time collaboration **engines** and **transports** for Gutenberg.
 
-Gutenberg hosts the collaboration *framework*: the `WP_Sync_Engine` /
-`WP_Sync_Transport` / `WP_Sync_Storage` contracts, the two registries (server
-and client), room permission config, storage, the client `@wordpress/sync`
-package, and the editor/data-layer integration (including the conflict-review
-UI). This plugin supplies the *implementations* that register themselves via
-filters supplied by Gutenberg.
+The plugin provides the whole of real-time collaboration for the block
+editor: the engines, the transports, the sync core they plug into, the
+storage, the presence and conflict-review UI, the post lock handling and
+the settings. Gutenberg ships no collaboration code of its own. It offers
+one hook, a private API in its data layer that lets one sync manager
+follow entity records as they load, change and save. This plugin
+registers that manager.
 
-**Without this plugin active, real-time collaboration is effectively
-disabled.** The framework registers no engine or transport, so a session
-finds nothing to negotiate and the editor falls back to the classic
-exclusive post lock.
+**Without this plugin active, real-time collaboration is off** and the
+editor uses the classic exclusive post lock. The plugin has its own
+switch on Settings → Collaboration, on by default.
 
 ## What it provides
 
@@ -78,18 +78,20 @@ against what it has registered, and any mismatch degrades to a post lock
 rather than corruption. See Gutenberg's
 `prototypes/sync/ARCHITECTURE.md` for the full picture.
 
-The plugin registers via:
+Other plugins can add engines and transports through:
 
 - PHP: the `wp_sync_engines` and `wp_sync_transports` filters.
-- JS: `registerSyncEngine` / `registerSyncTransport`, unlocked from
-  `@wordpress/sync`'s private APIs.
+- JS: `window.gutenbergSyncEngines.registerSyncEngine` /
+  `registerSyncTransport`, using the shared Yjs instance at
+  `window.gutenbergSyncEngines.Y`.
 
 ## Development
 
-A modified copy of Gutenberg at runtime is vendored as a **git subtree** in
-`gutenberg/` and mounted by `.wp-env.json` so the local WordPress environment
-runs the exact Gutenberg the engines were built against. No separate checkout
-needed.
+A copy of Gutenberg (trunk plus the data-layer hook this plugin needs) is
+vendored as a **git subtree** in `gutenberg/`. The plugin loads it itself
+when no other Gutenberg is active, so the local WordPress environment and
+the release zip run the exact Gutenberg the plugin was built against. No
+separate checkout needed.
 
 ### Setup
 
@@ -114,7 +116,7 @@ npm run env stop          # Stop it
 ```bash
 npm run test:js           # Jest — engines/providers + frozen-core vectors
 npm run test:php          # PHPUnit in the wp-env tests container (loads the
-                          # Gutenberg subtree as the framework, then the plugin)
+                          # bundled Gutenberg, then the plugin)
 npm run test:e2e          # Playwright — two-browser collaboration against the
                           # running env (needs `npx playwright install chromium`)
 ```

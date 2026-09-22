@@ -145,9 +145,9 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 		 * Storage backend.
 		 *
 		 * @since 7.2.0
-		 * @var WP_Sync_Storage
+		 * @var WP_Sync_Engines_Storage
 		 */
-		private WP_Sync_Storage $storage;
+		private WP_Sync_Engines_Storage $storage;
 
 		/**
 		 * Per-request cache of room state, keyed by room.
@@ -172,9 +172,9 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 		 *
 		 * @since 7.2.0
 		 *
-		 * @param WP_Sync_Storage $storage Storage backend.
+		 * @param WP_Sync_Engines_Storage $storage Storage backend.
 		 */
-		public function __construct( WP_Sync_Storage $storage ) {
+		public function __construct( WP_Sync_Engines_Storage $storage ) {
 			$this->storage = $storage;
 		}
 
@@ -1443,7 +1443,7 @@ if ( ! class_exists( 'WP_Intent_Log_Engine' ) ) {
 		 * @return array|WP_Error Genesis document.
 		 */
 		private function initialize_room( string $room ) {
-			$parsed  = WP_Sync_Config::parse_room( $room );
+			$parsed  = WP_Sync_Engines_Config::parse_room( $room );
 			$genesis = array( 'root' => array() );
 
 			if ( null !== $parsed && 'postType' === $parsed['entity_kind'] && ! empty( $parsed['object_id'] ) ) {

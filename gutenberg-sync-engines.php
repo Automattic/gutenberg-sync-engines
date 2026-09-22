@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       Gutenberg Sync Engines
  * Plugin URI:        https://github.com/WordPress/gutenberg
- * Description:       Pluggable real-time collaboration engines and transports for the Gutenberg collaborative-editing framework. Without this plugin active, real-time collaboration is effectively disabled.
+ * Description:       Real-time collaboration for the block editor: the sync engines, transports, storage and editor integration, with a bundled Gutenberg.
  * Requires at least: 6.9
  * Requires PHP:      7.4
  * Version:           0.0.0
@@ -21,24 +21,20 @@ if ( ! defined( 'ABSPATH' ) ) {
 /*
  * The storage schema (table names + create/upgrade/drop) loads before
  * everything else, including the double-mount guard below: the activation
- * hook creates the tables, `uninstall.php` drops them, and neither needs
- * the collaboration framework. The file guards its own class declaration.
+ * hook creates the tables and `uninstall.php` drops them. The file guards
+ * its own class declaration.
  */
 require_once __DIR__ . '/includes/storage/class-wp-sync-table-schema.php';
 
 if ( ! function_exists( 'gutenberg_sync_engines_activate' ) ) {
 	/**
 	 * Sets a site up for collaboration when this plugin is activated:
-	 * creates the storage tables and turns the Gutenberg real-time
-	 * collaboration experiment on.
+	 * creates the storage tables and turns collaboration on.
 	 *
-	 * The framework gates real-time collaboration on the
-	 * `gutenberg-real-time-collaboration` experiment (the checkbox on the
-	 * Gutenberg → Experiments screen), and every fresh site starts with it
-	 * off. A site that installs this plugin wants collaboration, so
-	 * activation flips the experiment on — once, preserving every other
-	 * experiment. The checkbox stays live afterward: turning it off later
-	 * is honored until the plugin is activated again.
+	 * A site that installs this plugin wants collaboration, so activation
+	 * turns the plugin's own setting on. The Settings > Collaboration
+	 * checkbox stays live afterward: turning it off later is honored until
+	 * the plugin is activated again.
 	 *
 	 * The storage tables are per site and are created here (dbDelta, so a
 	 * re-activation is harmless). Deactivation leaves them and every
@@ -65,7 +61,7 @@ if ( ! function_exists( 'gutenberg_sync_engines_activate' ) ) {
 
 if ( ! function_exists( 'gutenberg_sync_engines_activate_site' ) ) {
 	/**
-	 * The per-site activation steps: storage tables, then the experiment.
+	 * The per-site activation steps: storage tables, then the setting.
 	 *
 	 * @since n.e.x.t
 	 *
@@ -73,7 +69,7 @@ if ( ! function_exists( 'gutenberg_sync_engines_activate_site' ) ) {
 	 */
 	function gutenberg_sync_engines_activate_site() {
 		WP_Sync_Table_Schema::install();
-		gutenberg_sync_engines_enable_collaboration_experiment();
+		update_option( 'gutenberg_sync_engines_enabled', true );
 	}
 }
 
@@ -81,7 +77,7 @@ if ( ! function_exists( 'gutenberg_sync_engines_initialize_site' ) ) {
 	/**
 	 * Sets up a site created on a network where this plugin is
 	 * network-active: the activation hook ran before the site existed, so
-	 * its tables and experiment are created here instead. A site on a
+	 * its tables and setting are created here instead. A site on a
 	 * network where the plugin is active per site gets them when it
 	 * activates the plugin itself.
 	 *
@@ -103,32 +99,10 @@ if ( ! function_exists( 'gutenberg_sync_engines_initialize_site' ) ) {
 	}
 }
 
-if ( ! function_exists( 'gutenberg_sync_engines_enable_collaboration_experiment' ) ) {
-	/**
-	 * Turns on the `gutenberg-real-time-collaboration` experiment for the
-	 * current site, leaving the other experiments as they are.
-	 *
-	 * @since n.e.x.t
-	 *
-	 * @return void
-	 */
-	function gutenberg_sync_engines_enable_collaboration_experiment() {
-		$experiments = get_option( 'gutenberg-experiments', array() );
-		if ( ! is_array( $experiments ) ) {
-			$experiments = array();
-		}
-		if ( ! empty( $experiments['gutenberg-real-time-collaboration'] ) ) {
-			return;
-		}
-		$experiments['gutenberg-real-time-collaboration'] = true;
-		update_option( 'gutenberg-experiments', $experiments );
-	}
-}
-
 /*
  * Registered BEFORE the double-mount guard below: a worktree's second copy
  * returns early from this file, and activating that copy should still turn
- * the experiment on.
+ * collaboration on.
  */
 register_activation_hook( __FILE__, 'gutenberg_sync_engines_activate' );
 
@@ -160,9 +134,10 @@ if ( is_multisite() ) {
 
 if ( ! function_exists( 'gutenberg_sync_engines_load_bundled_gutenberg' ) ) {
 	/**
-	 * Loads the bundled Gutenberg plugin (the collaborative-editing framework)
-	 * when no other copy of Gutenberg is present, so the release zip works on
-	 * any WordPress installation with nothing else installed.
+	 * Loads the bundled Gutenberg plugin (the editor this plugin was built
+	 * against, with the entity sync seam) when no other copy of Gutenberg
+	 * is present, so the release zip works on any WordPress installation
+	 * with nothing else installed.
 	 *
 	 * The standalone-Gutenberg check must read the active-plugins options, not
 	 * just look for loaded symbols: 'gutenberg-sync-engines/…' sorts BEFORE
@@ -204,6 +179,8 @@ if ( ! function_exists( 'gutenberg_sync_engines_load_bundled_gutenberg' ) ) {
 			return; // A standalone Gutenberg will load; defer to it.
 		}
 
+		// Lets the plugin tell a standalone Gutenberg from its bundled copy.
+		define( 'GUTENBERG_SYNC_ENGINES_BUNDLED_GUTENBERG', true );
 		require_once $entry;
 	}
 }
@@ -211,33 +188,10 @@ gutenberg_sync_engines_load_bundled_gutenberg();
 
 require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/class-gutenberg-sync-engines-plugin.php';
 
-if ( ! function_exists( 'gutenberg_sync_engines_storage' ) ) {
-	/**
-	 * The sync storage the plugin's engines, transports, and tools use.
-	 *
-	 * Prefers the framework's filterable factory (`wp_get_sync_storage`,
-	 * `__unstable_wp_sync_storage` filter — where this plugin substitutes
-	 * its table storage) so a drop-in storage backend applies everywhere
-	 * at once; falls back to the plugin's table storage directly on a
-	 * framework build that predates the factory. Only called from
-	 * framework-gated code paths.
-	 *
-	 * @since 0.4.0
-	 *
-	 * @return WP_Sync_Storage Storage implementation.
-	 */
-	function gutenberg_sync_engines_storage() {
-		return function_exists( 'wp_get_sync_storage' )
-			? wp_get_sync_storage()
-			: new WP_Sync_Table_Storage();
-	}
-}
-
 if ( ! function_exists( 'gutenberg_sync_engines_bootstrap' ) ) {
 	/**
-	 * Boots the plugin once all plugins are loaded, so the collaborative-editing
-	 * framework (shipped in Gutenberg / WordPress core) is already available to
-	 * feature-detect.
+	 * Boots the plugin once all plugins are loaded, after the bundled or
+	 * standalone Gutenberg.
 	 *
 	 * @since 0.1.0
 	 *

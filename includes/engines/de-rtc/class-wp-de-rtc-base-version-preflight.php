@@ -143,7 +143,7 @@ if ( ! class_exists( 'WP_De_RTC_Base_Version_Preflight' ) ) {
 				return $maybe_empty;
 			}
 			$post_id = isset( $postarr['ID'] ) ? (int) $postarr['ID'] : 0;
-			if ( $post_id <= 0 || ! interface_exists( 'WP_Sync_Storage' ) ) {
+			if ( $post_id <= 0 || ! interface_exists( 'WP_Sync_Engines_Storage' ) ) {
 				return $maybe_empty;
 			}
 
@@ -167,7 +167,7 @@ if ( ! class_exists( 'WP_De_RTC_Base_Version_Preflight' ) ) {
 				return true;
 			}
 
-			$engine  = new WP_De_RTC_Engine( gutenberg_sync_engines_storage() );
+			$engine  = new WP_De_RTC_Engine( gutenberg_sync_engines_get_storage() );
 			$content = null !== $raw
 				? (string) wp_unslash( $raw )
 				: (string) wp_unslash( $postarr['post_content'] ?? '' );

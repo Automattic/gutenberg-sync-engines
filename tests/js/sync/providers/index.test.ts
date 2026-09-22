@@ -5,8 +5,8 @@ import {
 	getProviderCreators,
 	resetProviderCreatorsForTesting,
 	type TransportRegistration,
-} from '../index';
-import type { ProviderCreator } from '../../types';
+} from '../../../../src/sync/providers/index';
+import type { ProviderCreator } from '../../../../src/sync/types';
 
 const FILTER_HOOK = 'test/providers';
 
@@ -15,8 +15,7 @@ describe( 'transport negotiation', () => {
 		removeFilter( 'sync.transports', FILTER_HOOK );
 		removeFilter( 'sync.providers', FILTER_HOOK );
 		resetProviderCreatorsForTesting();
-		delete window.__experimentalEnableRealTimeCollaboration;
-		delete window._wpCollaborationSync;
+		delete window._gutenbergSyncEnginesSync;
 	} );
 
 	const fakeTransport = (
@@ -44,7 +43,7 @@ describe( 'transport negotiation', () => {
 		addFilter( 'sync.transports', FILTER_HOOK, () => [ ws, poll ] );
 
 		// Server prefers websocket, offers polling as fallback.
-		window._wpCollaborationSync = {
+		window._gutenbergSyncEnginesSync = {
 			engine: 'intent-log',
 			engineProtocol: 1,
 			transports: [ 'websocket', 'http-polling' ],
@@ -61,7 +60,7 @@ describe( 'transport negotiation', () => {
 		// This client does NOT register websocket.
 		addFilter( 'sync.transports', FILTER_HOOK, () => [ poll ] );
 
-		window._wpCollaborationSync = {
+		window._gutenbergSyncEnginesSync = {
 			engine: 'intent-log',
 			engineProtocol: 1,
 			transports: [ 'websocket', 'http-polling' ],
@@ -76,7 +75,7 @@ describe( 'transport negotiation', () => {
 		const poll = fakeTransport( 'http-polling' );
 		addFilter( 'sync.transports', FILTER_HOOK, () => [ poll ] );
 
-		window._wpCollaborationSync = {
+		window._gutenbergSyncEnginesSync = {
 			engine: 'intent-log',
 			engineProtocol: 1,
 			transports: [ 'websocket' ],
@@ -90,7 +89,7 @@ describe( 'transport negotiation', () => {
 		const poll = fakeTransport( 'http-polling', 1 );
 		addFilter( 'sync.transports', FILTER_HOOK, () => [ poll ] );
 
-		window._wpCollaborationSync = {
+		window._gutenbergSyncEnginesSync = {
 			engine: 'intent-log',
 			engineProtocol: 1,
 			transports: [ 'http-polling' ],
@@ -103,7 +102,7 @@ describe( 'transport negotiation', () => {
 	it( 'declines to connect before the server announces (handshake required)', () => {
 		const poll = fakeTransport( 'http-polling' );
 		addFilter( 'sync.transports', FILTER_HOOK, () => [ poll ] );
-		// No _wpCollaborationSync announcement: the framework ships no default
+		// No _gutenbergSyncEnginesSync announcement: the framework ships no default
 		// transport, so there is nothing to negotiate.
 
 		expect( getDefaultProviderCreators() ).toEqual( [] );
@@ -115,7 +114,6 @@ describe( 'transport negotiation', () => {
 	} );
 
 	it( 'lets the sync.providers filter override the negotiated list', () => {
-		window.__experimentalEnableRealTimeCollaboration = true;
 		const creator = ( async () => ( {
 			destroy: () => {},
 			on: () => {},

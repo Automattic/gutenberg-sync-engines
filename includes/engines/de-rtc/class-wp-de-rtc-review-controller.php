@@ -77,7 +77,7 @@ if ( ! class_exists( 'WP_De_RTC_Review_Controller' ) ) {
 		public function resolve( WP_REST_Request $request ) {
 			$room = (string) $request['room'];
 
-			$storage = gutenberg_sync_engines_storage();
+			$storage = gutenberg_sync_engines_get_storage();
 			$lineage = $storage->get_room_engine( $room );
 			if ( null !== $lineage && WP_De_RTC_Engine::SLUG !== $lineage ) {
 				// The same fence the transport applies: a resolution from a

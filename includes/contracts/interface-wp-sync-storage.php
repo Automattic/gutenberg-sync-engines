@@ -1,16 +1,16 @@
 <?php
 /**
- * WP_Sync_Storage interface
+ * WP_Sync_Engines_Storage interface
  *
- * @package gutenberg
+ * @package GutenbergSyncEngines
  */
 
-if ( ! interface_exists( 'WP_Sync_Storage' ) ) {
+if ( ! interface_exists( 'WP_Sync_Engines_Storage' ) ) {
 
 	/**
 	 * Room/update storage for collaborative editing.
 	 *
-	 * Obtain an instance through `wp_get_sync_storage()`; the
+	 * Obtain an instance through `gutenberg_sync_engines_get_storage()`; the
 	 * `__unstable_wp_sync_storage` filter substitutes a different backend. Any
 	 * implementation must uphold this contract — engines rely on every
 	 * clause:
@@ -37,7 +37,7 @@ if ( ! interface_exists( 'WP_Sync_Storage' ) ) {
 	 * non-creating lineage read (`peek_room_engine`), and `reset_room`.
 	 * Substitute backends should implement these too.
 	 */
-	interface WP_Sync_Storage {
+	interface WP_Sync_Engines_Storage {
 		/**
 		 * Adds a sync update to a given room.
 		 *

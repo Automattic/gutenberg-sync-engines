@@ -1,12 +1,9 @@
-import clsx from 'clsx';
-import { colord, extend } from 'colord';
-import a11yPlugin from 'colord/plugins/a11y';
-extend( [ a11yPlugin ] );
-import { Icon as WCIcon } from '@wordpress/components';
+import { Icon as WCIcon, Tooltip } from '@wordpress/components';
 import { useMemo } from '@wordpress/element';
-import { Tooltip } from '@wordpress/ui';
 import type { AvatarProps } from './types';
 import { useImageLoadingStatus } from './use-image-loading-status';
+import { classNames as clsx } from '../../utils/class-names';
+import { isReadable } from '../../utils/contrast';
 
 // Runtime equivalents of @wordpress/base-styles tokens ($gray-900, $white).
 const GRAY_900 = '#1e1e1e';
@@ -44,11 +41,7 @@ function Avatar( {
 		: undefined;
 	const nameColor = useMemo(
 		() =>
-			borderColor &&
-			colord( borderColor ).isReadable( GRAY_900, {
-				level: 'AA',
-				size: 'normal',
-			} )
+			borderColor && isReadable( GRAY_900, borderColor )
 				? GRAY_900
 				: WHITE,
 		[ borderColor ]
@@ -103,12 +96,7 @@ function Avatar( {
 	);
 
 	if ( name && ( ! showBadge || label ) ) {
-		return (
-			<Tooltip.Root>
-				<Tooltip.Trigger render={ avatar } />
-				<Tooltip.Popup>{ name }</Tooltip.Popup>
-			</Tooltip.Root>
-		);
+		return <Tooltip text={ name }>{ avatar }</Tooltip>;
 	}
 
 	return avatar;

@@ -1,7 +1,7 @@
 /**
  * Internal dependencies
  */
-import { createSyncManager } from '../framework';
+import { createSyncManager } from '../sync';
 import {
 	createDeRtcEngine,
 	DE_RTC_ENGINE_PROTOCOL,

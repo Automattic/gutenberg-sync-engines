@@ -31,14 +31,13 @@ import { addFilter, removeFilter } from '@wordpress/hooks';
 import {
 	createSyncManager,
 	resetProviderCreatorsForTesting,
-} from '../../src/framework';
+} from '../../src/sync';
 
-// eslint-disable-next-line import/no-unresolved -- Resolved to the subtree.
 import type {
 	SyncEngine,
 	SyncReviewItem,
 	SyncReviewSource,
-} from '@wordpress/sync';
+} from '../../src/sync';
 
 const flushMicrotasks = () => Promise.resolve().then( () => {} );
 

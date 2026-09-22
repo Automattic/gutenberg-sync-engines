@@ -1,11 +1,11 @@
 <?php
 /**
- * WP_Sync_Config class
+ * WP_Sync_Engines_Config class
  *
- * @package gutenberg
+ * @package GutenbergSyncEngines
  */
 
-if ( ! class_exists( 'WP_Sync_Config' ) ) {
+if ( ! class_exists( 'WP_Sync_Engines_Config' ) ) {
 
 	/**
 	 * Configuration helpers for sync entities.
@@ -13,7 +13,7 @@ if ( ! class_exists( 'WP_Sync_Config' ) ) {
 	 * @since 7.1.0
 	 * @access private
 	 */
-	class WP_Sync_Config {
+	class WP_Sync_Engines_Config {
 		/**
 		 * Entity sync configuration.
 		 *
@@ -26,8 +26,7 @@ if ( ! class_exists( 'WP_Sync_Config' ) ) {
 		 */
 		const ENTITY_CONFIG = array(
 			'postType' => array(
-				'object_type'                   => 'post',
-				'supports_crdt_doc_persistence' => true,
+				'object_type' => 'post',
 			),
 		);
 
@@ -133,56 +132,7 @@ if ( ! class_exists( 'WP_Sync_Config' ) ) {
 		}
 
 		/**
-		 * Checks if a single entity room supports persisted CRDT documents.
-		 *
-		 * @since 7.1.0
-		 *
-		 * @param string      $entity_kind The entity kind.
-		 * @param string      $entity_name The entity name.
-		 * @param string|null $object_id   The entity ID.
-		 * @return bool True if the entity room supports persisted CRDT documents.
-		 */
-		public static function supports_crdt_doc_persistence( string $entity_kind, string $entity_name, ?string $object_id ): bool {
-			return null !== self::get_crdt_doc_persistence_post_id( $entity_kind, $entity_name, $object_id );
-		}
-
-		/**
-		 * Gets the post ID used to persist a CRDT document for an entity room.
-		 *
-		 * @since 7.1.0
-		 *
-		 * @param string      $entity_kind The entity kind.
-		 * @param string      $entity_name The entity name.
-		 * @param string|null $object_id   The entity ID.
-		 * @return int|null Post ID if persistence is supported, otherwise null.
-		 */
-		public static function get_crdt_doc_persistence_post_id( string $entity_kind, string $entity_name, ?string $object_id ): ?int {
-			if ( ! self::entity_kind_supports_crdt_doc_persistence( $entity_kind ) || ! is_string( $object_id ) || ! ctype_digit( $object_id ) ) {
-				return null;
-			}
-
-			$post_id = (int) $object_id;
-			if ( $post_id <= 0 || 'post' !== self::get_object_type( $entity_kind ) || get_post_type( $post_id ) !== $entity_name ) {
-				return null;
-			}
-
-			return $post_id;
-		}
-
-		/**
-		 * Checks if an entity kind supports persisted CRDT documents.
-		 *
-		 * @since 7.1.0
-		 *
-		 * @param string $entity_kind The entity kind.
-		 * @return bool True if the entity kind supports persisted CRDT documents.
-		 */
-		private static function entity_kind_supports_crdt_doc_persistence( string $entity_kind ): bool {
-			return true === ( self::ENTITY_CONFIG[ $entity_kind ]['supports_crdt_doc_persistence'] ?? false );
-		}
-
-		/**
-		 * Gets the object type used to persist CRDT documents for an entity kind.
+		 * Gets the object type of an entity kind.
 		 *
 		 * @since 7.1.0
 		 *

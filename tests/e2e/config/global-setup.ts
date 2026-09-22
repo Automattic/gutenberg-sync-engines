@@ -5,10 +5,7 @@
  * authenticates once and resets the site to a clean, predictable state. It
  * deliberately omits the monorepo-suite-specific steps (e.g. deactivating
  * Gutenberg's CSS-animation test plugin) that assume test plugins this
- * environment does not map. The RTC WebSocket provider setup is gated on
- * GUTENBERG_RTC_TEST_WS_PROVIDER (set by playwright.rtc-websocket.config.ts);
- * the default suite runs over the HTTP-polling transport and just deactivates
- * a stale provider activation.
+ * environment does not map.
  *
  * External dependencies
  */
@@ -20,11 +17,6 @@ import type { FullConfig } from '@playwright/test';
  */
 // eslint-disable-next-line import/no-unresolved -- Resolved via the plugin's own devDependency.
 import { RequestUtils } from '@wordpress/e2e-test-utils-playwright';
-
-/**
- * Internal dependencies
- */
-import { setupRtcWebSocketProvider } from './rtc-websocket-setup';
 
 async function globalSetup( config: FullConfig ) {
 	const { storageState, baseURL } = config.projects[ 0 ].use;
@@ -114,7 +106,6 @@ async function globalSetup( config: FullConfig ) {
 		requestUtils.deleteAllPages(),
 		requestUtils.deleteAllBlocks(),
 		requestUtils.resetPreferences(),
-		setupRtcWebSocketProvider( requestUtils ),
 	] );
 
 	await requestContext.dispose();

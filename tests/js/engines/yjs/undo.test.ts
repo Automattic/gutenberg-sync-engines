@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, jest } from '@jest/globals';
 /**
  * Internal dependencies
  */
-import { LOCAL_EDITOR_ORIGIN } from '../../../../src/framework';
+import { LOCAL_EDITOR_ORIGIN } from '../../../../src/sync';
 import { createUndoManager } from '../../../../src/engines/yjs/undo';
 
 describe( 'SyncUndoManager', () => {

@@ -1,3 +1,11 @@
+import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	jest,
+	test,
+} from '@jest/globals';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import {
 	useActiveCollaborators,
@@ -7,25 +15,25 @@ import {
 	useOnCollaboratorJoin,
 	useOnCollaboratorLeave,
 	useOnPostSave,
-} from '../use-post-editor-awareness-state';
-import { getSyncManager } from '../../sync';
-import { SelectionType } from '../../utils/crdt-user-selections';
+} from '../../../../src/awareness/typed/use-post-editor-awareness-state';
+import { getActiveSyncManager } from '../../../../src/host/manager';
+import { SelectionType } from '../../../../src/engines/yjs/crdt/crdt-user-selections';
 import type {
 	PostEditorAwarenessState,
 	YDocDebugData,
-} from '../../awareness/types';
-import type { SelectionCursor } from '../../types';
+} from '../../../../src/awareness/typed/types';
+import type { SelectionCursor } from '../../../../src/engines/yjs/crdt/types';
 
-// Mock the sync module
-jest.mock( '../../sync', () => ( {
-	getSyncManager: jest.fn(),
+// Mock the active manager accessor
+jest.mock( '../../../../src/host/manager', () => ( {
+	getActiveSyncManager: jest.fn(),
 } ) );
 
 const mockPostContentBlocks = [
 	{ clientId: 'block-1', name: 'core/paragraph', innerBlocks: [] },
 ];
 
-jest.mock( '../../awareness/block-lookup', () => ( {
+jest.mock( '../../../../src/awareness/typed/block-lookup', () => ( {
 	usePostContentBlocks: jest.fn( () => mockPostContentBlocks ),
 } ) );
 
@@ -130,7 +138,9 @@ describe( 'use-post-editor-awareness-state hooks', () => {
 			getAwareness: jest.fn().mockReturnValue( mockAwareness ),
 		};
 
-		( getSyncManager as jest.Mock ).mockReturnValue( mockSyncManager );
+		( getActiveSyncManager as jest.Mock ).mockReturnValue(
+			mockSyncManager
+		);
 	} );
 
 	afterEach( () => {
@@ -156,8 +166,8 @@ describe( 'use-post-editor-awareness-state hooks', () => {
 			expect( mockSyncManager.getAwareness ).not.toHaveBeenCalled();
 		} );
 
-		test( 'should return empty array when getSyncManager returns undefined', () => {
-			( getSyncManager as jest.Mock ).mockReturnValue( undefined );
+		test( 'should return empty array when getActiveSyncManager returns undefined', () => {
+			( getActiveSyncManager as jest.Mock ).mockReturnValue( undefined );
 
 			const { result } = renderHook( () =>
 				useActiveCollaborators( 123, 'post' )

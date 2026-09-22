@@ -1,12 +1,14 @@
+import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { renderHook } from '@testing-library/react';
 import { useDispatch, useSelect } from '@wordpress/data';
-import { useCollaboratorNotifications } from '../use-collaborator-notifications';
+import { useCollaboratorNotifications } from '../../../../src/ui/collaborators-presence/use-collaborator-notifications';
 
 // --- Mocks ---
 //
-// These mocks isolate the hook from `@wordpress/data`, the editor store, and
-// the core-data private APIs it unlocks, so tests can drive the join/leave/
-// save callbacks directly instead of simulating real awareness events.
+// These mocks isolate the hook from `@wordpress/data`, the editor and host
+// stores, and the awareness hooks it subscribes to, so tests can drive the
+// join/leave/save callbacks directly instead of simulating real awareness
+// events.
 
 jest.mock( '@wordpress/data', () => ( {
 	useSelect: jest.fn(),
@@ -17,10 +19,19 @@ jest.mock( '@wordpress/notices', () => ( { store: 'core/notices' } ) );
 
 jest.mock( '@wordpress/preferences', () => ( { store: 'core/preferences' } ) );
 
-// Avoids pulling in the full editor store (blocks, rich-text, etc.).
-jest.mock( '../../../store', () => ( { store: 'core/editor' } ) );
+// Avoids pulling in the full editor stores (blocks, rich-text, etc.).
+jest.mock( '@wordpress/editor', () => ( { store: 'core/editor' } ) );
+jest.mock( '@wordpress/block-editor', () => ( {
+	store: 'core/block-editor',
+} ) );
 
-jest.mock( '@wordpress/core-data', () => ( { privateApis: {} } ) );
+jest.mock( '../../../../src/host/store', () => ( {
+	store: 'gutenberg-sync-engines/host',
+} ) );
+
+jest.mock( '../../../../src/ui/preferences', () => ( {
+	PREFERENCES_SCOPE: 'gutenberg-sync-engines',
+} ) );
 
 // Captures the callbacks and postIds the hook registers with each of the
 // three core-data subscriptions it unlocks. Must be prefixed with `mock`
@@ -41,9 +52,9 @@ const mockRegistered: {
 	savePostId: undefined,
 };
 
-jest.mock( '../../../lock-unlock', () => ( {
-	unlock: jest.fn( ( value: unknown ) => ( {
-		...( value as object ),
+jest.mock(
+	'../../../../src/awareness/typed/use-post-editor-awareness-state',
+	() => ( {
 		useOnCollaboratorJoin: (
 			postId: unknown,
 			_t: unknown,
@@ -64,8 +75,8 @@ jest.mock( '../../../lock-unlock', () => ( {
 			mockRegistered.savePostId = postId;
 			mockRegistered.save = cb;
 		},
-	} ) ),
-} ) );
+	} )
+);
 
 // --- Fixtures ---
 
@@ -130,16 +141,20 @@ function mockSelect( storeKey: string ) {
 	if ( storeKey === 'core/preferences' ) {
 		return {
 			get: ( scope: string, name: string ) =>
-				scope === 'core' && name in state
+				scope === 'gutenberg-sync-engines' && name in state
 					? ( state as unknown as Record< string, boolean > )[ name ]
 					: undefined,
+		};
+	}
+	if ( storeKey === 'gutenberg-sync-engines/host' ) {
+		return {
+			isCollaborationEnabledForCurrentPost: () =>
+				state.isCollaborationEnabled,
 		};
 	}
 	return {
 		getCurrentPostAttribute: ( attr: string ) =>
 			attr === 'status' ? state.postStatus : undefined,
-		isCollaborationEnabledForCurrentPost: () =>
-			state.isCollaborationEnabled,
 	};
 }
 

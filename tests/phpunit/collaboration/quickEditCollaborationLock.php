@@ -2,7 +2,7 @@
 /**
  * Tests for Quick Edit blocking while a post has an active edit lock.
  *
- * @package gutenberg
+ * @package GutenbergSyncEngines
  * @subpackage Collaboration
  *
  * @group collaboration
@@ -49,12 +49,12 @@ class Tests_Collaboration_QuickEditCollaborationLock extends WP_UnitTestCase {
 	}
 
 	private function prime_inline_save_request() {
-		$_POST['post_ID']      = self::$post_id;
+		$_POST['post_ID']      = self::$post_id; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Staging a Quick Edit request.
 		$_POST['_inline_edit'] = wp_create_nonce( 'inlineeditnonce' );
 		// check_ajax_referer() reads the nonce from $_REQUEST; in a real
 		// request PHP populates it from $_POST, but not when assigning to
 		// superglobals directly in tests.
-		$_REQUEST['_inline_edit'] = $_POST['_inline_edit'];
+		$_REQUEST['_inline_edit'] = $_POST['_inline_edit']; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Staging a Quick Edit request.
 	}
 
 	public function test_deleted_user_lock_is_treated_as_inactive() {
@@ -62,7 +62,7 @@ class Tests_Collaboration_QuickEditCollaborationLock extends WP_UnitTestCase {
 		self::delete_user( $deleted_user_id );
 		$this->set_edit_lock( $deleted_user_id );
 
-		$this->assertSame( 0, gutenberg_get_active_edit_lock_user( self::$post_id ), 'A lock from a deleted user should be inactive.' );
+		$this->assertSame( 0, gutenberg_sync_engines_get_active_edit_lock_user( self::$post_id ), 'A lock from a deleted user should be inactive.' );
 	}
 
 	public function test_heartbeat_marks_only_fresh_own_locks() {
@@ -70,11 +70,11 @@ class Tests_Collaboration_QuickEditCollaborationLock extends WP_UnitTestCase {
 		$data = array( 'wp-check-locked-posts' => array( $key ) );
 
 		$this->set_edit_lock( self::$admin_id, 1000 );
-		$response = gutenberg_filter_locked_posts_heartbeat_for_rtc( array(), $data );
+		$response = gutenberg_sync_engines_filter_locked_posts_heartbeat( array(), $data );
 		$this->assertArrayNotHasKey( 'wp-check-locked-posts', $response, 'A stale own lock should not mark the row as locked.' );
 
 		$this->set_edit_lock( self::$admin_id );
-		$response = gutenberg_filter_locked_posts_heartbeat_for_rtc( array(), $data );
+		$response = gutenberg_sync_engines_filter_locked_posts_heartbeat( array(), $data );
 		$this->assertSame(
 			array( 'text' => 'Currently being edited' ),
 			$response['wp-check-locked-posts'][ $key ],
@@ -89,7 +89,7 @@ class Tests_Collaboration_QuickEditCollaborationLock extends WP_UnitTestCase {
 		$this->set_edit_lock( self::$admin_id );
 		add_filter( 'wp_is_post_type_collaboration_disabled', '__return_true' );
 
-		$response = gutenberg_filter_locked_posts_heartbeat_for_rtc( array(), $data );
+		$response = gutenberg_sync_engines_filter_locked_posts_heartbeat( array(), $data );
 
 		remove_filter( 'wp_is_post_type_collaboration_disabled', '__return_true' );
 		$this->assertArrayNotHasKey( 'wp-check-locked-posts', $response );
@@ -99,7 +99,7 @@ class Tests_Collaboration_QuickEditCollaborationLock extends WP_UnitTestCase {
 		$this->set_edit_lock( self::$editor_id );
 		$key = 'post-' . self::$post_id;
 
-		$response = gutenberg_filter_locked_posts_heartbeat_for_rtc(
+		$response = gutenberg_sync_engines_filter_locked_posts_heartbeat(
 			array(
 				'wp-check-locked-posts' => array(
 					$key => array(
@@ -119,15 +119,15 @@ class Tests_Collaboration_QuickEditCollaborationLock extends WP_UnitTestCase {
 	}
 
 	public function test_inline_save_guard_is_registered_on_core_quick_edit_ajax_hook() {
-		gutenberg_post_list_collaboration_ui();
+		gutenberg_sync_engines_post_list_ui();
 
 		$this->assertSame(
 			0,
-			has_action( 'wp_ajax_inline-save', 'gutenberg_block_quick_edit_for_active_lock' )
+			has_action( 'wp_ajax_inline-save', 'gutenberg_sync_engines_block_quick_edit_for_active_lock' )
 		);
 
-		remove_action( 'wp_ajax_inline-save', 'gutenberg_block_quick_edit_for_active_lock', 0 );
-		remove_filter( 'heartbeat_received', 'gutenberg_filter_locked_posts_heartbeat_for_rtc', 20 );
+		remove_action( 'wp_ajax_inline-save', 'gutenberg_sync_engines_block_quick_edit_for_active_lock', 0 );
+		remove_filter( 'heartbeat_received', 'gutenberg_sync_engines_filter_locked_posts_heartbeat', 20 );
 	}
 
 	public function test_inline_save_guard_rejects_save_for_own_fresh_lock() {
@@ -137,14 +137,14 @@ class Tests_Collaboration_QuickEditCollaborationLock extends WP_UnitTestCase {
 		$this->expectException( 'WPDieException' );
 		$this->expectExceptionMessage( 'Quick Edit is disabled: You are currently editing this post in another tab or window.' );
 
-		gutenberg_block_quick_edit_for_active_lock();
+		gutenberg_sync_engines_block_quick_edit_for_active_lock();
 	}
 
 	public function test_inline_save_guard_defers_other_users_lock_to_core() {
 		$this->set_edit_lock( self::$editor_id );
 		$this->prime_inline_save_request();
 
-		gutenberg_block_quick_edit_for_active_lock();
+		gutenberg_sync_engines_block_quick_edit_for_active_lock();
 
 		$this->assertSame( self::$editor_id, wp_check_post_lock( self::$post_id ), "Another user's lock should be left for Core to reject." );
 	}
@@ -154,7 +154,7 @@ class Tests_Collaboration_QuickEditCollaborationLock extends WP_UnitTestCase {
 		$this->prime_inline_save_request();
 		add_filter( 'wp_is_post_type_collaboration_disabled', '__return_true' );
 
-		gutenberg_block_quick_edit_for_active_lock();
+		gutenberg_sync_engines_block_quick_edit_for_active_lock();
 
 		remove_filter( 'wp_is_post_type_collaboration_disabled', '__return_true' );
 		$new_lock = ( time() + 1 ) . ':' . self::$editor_id;
@@ -165,7 +165,7 @@ class Tests_Collaboration_QuickEditCollaborationLock extends WP_UnitTestCase {
 	public function test_inline_save_guard_prevents_only_core_quick_edit_lock_creation() {
 		$this->prime_inline_save_request();
 
-		gutenberg_block_quick_edit_for_active_lock();
+		gutenberg_sync_engines_block_quick_edit_for_active_lock();
 
 		update_post_meta( self::$post_id, '_edit_last', self::$editor_id );
 		wp_set_post_lock( self::$post_id );

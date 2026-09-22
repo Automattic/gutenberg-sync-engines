@@ -7,14 +7,23 @@ import type { ConnectionError } from './errors';
 /* globalThis */
 declare global {
 	interface Window {
-		__experimentalEnableRealTimeCollaboration?: boolean;
-		_wpCollaborationUserId?: number;
-		_wpCollaborationWebSocketUrl?: string;
-		_wpCollaborationSync?: {
+		/** Printed by the plugin's PHP for editor screens. */
+		_gutenbergSyncEnginesSync?: {
 			engine?: string;
 			engineProtocol?: number;
 			transports?: string[];
 			transportProtocol?: number;
+			transportConfig?: Record< string, Record< string, unknown > >;
+			userId?: number;
+			canUnfilteredHtml?: boolean;
+			disabledPostTypes?: string[];
+			screen?: {
+				postType?: string | null;
+				postId?: number | null;
+				supported?: boolean;
+				reason?: string;
+				lockedBy?: { name?: string; avatar?: string } | null;
+			} | null;
 		};
 	}
 }
@@ -164,7 +173,7 @@ export interface SyncReviewItem {
 /**
  * The review surface an engine with an escalation lane exposes: the open
  * parked-conflict list per entity, a change subscription, and the two
- * resolution verbs. When a {@link SyncEngine} supplies one (its optional
+ * resolution verbs. When a sync engine supplies one (its optional
  * `review` member), the generic manager presents the items through the
  * record handlers (`onProposalsChange`/`onEscalation`) and delegates
  * `SyncManager.resolveProposal`/`restoreProposal` to it — so any composed
@@ -243,7 +252,6 @@ export interface RecordHandlers {
 	 */
 	onProposalsChange?: ( proposals: SyncReviewItem[] ) => void;
 	onStatusChange: OnStatusChangeCallback;
-	persistCRDTDoc: () => void;
 	refetchRecord: () => Promise< void >;
 	restoreUndoMeta: ( ydoc: Y.Doc, meta: Map< string, any > ) => void;
 	onUndoStackChange?: ( state: SyncUndoStackState ) => void;
@@ -262,12 +270,10 @@ export interface SyncConfig {
 		ydoc: Y.Doc,
 		editedRecord: ObjectData
 	) => ObjectData;
-	getPersistedCRDTDoc?: ( record: ObjectData ) => string | null;
 	shouldSync?: (
 		objectType: ObjectType,
 		objectId: ObjectID | null
 	) => boolean;
-	supportsPersistence?: boolean;
 	/**
 	 * Names a block type's rich-text attributes (backed by the block
 	 * registry). Engines with rich-text-coordinate capture (the intent log)
@@ -307,23 +313,10 @@ export interface SyncConfig {
 }
 
 export interface SyncManager {
-	createPersistedCRDTDoc: (
-		objectType: ObjectType,
-		objectId: ObjectID
-	) => Promise< string | null >;
 	getAwareness: < State extends Awareness >(
 		objectType: ObjectType,
 		objectId: ObjectID | null
 	) => State | undefined;
-	getEntitySnapshot: (
-		objectType: ObjectType,
-		objectId: ObjectID
-	) => string | undefined;
-	entityContainsSnapshot: (
-		objectType: ObjectType,
-		objectId: ObjectID,
-		encodedSnapshot: string
-	) => boolean;
 	load: (
 		syncConfig: SyncConfig,
 		objectType: ObjectType,

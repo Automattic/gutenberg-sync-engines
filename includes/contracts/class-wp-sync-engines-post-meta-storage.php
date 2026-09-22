@@ -1,11 +1,11 @@
 <?php
 /**
- * WP_Sync_Post_Meta_Storage class
+ * WP_Sync_Engines_Post_Meta_Storage class
  *
- * @package gutenberg
+ * @package GutenbergSyncEngines
  */
 
-if ( ! class_exists( 'WP_Sync_Post_Meta_Storage' ) ) {
+if ( ! class_exists( 'WP_Sync_Engines_Post_Meta_Storage' ) ) {
 
 	/**
 	 * Core class that provides an interface for storing and retrieving sync
@@ -17,7 +17,7 @@ if ( ! class_exists( 'WP_Sync_Post_Meta_Storage' ) ) {
 	 *
 	 * @access private
 	 */
-	class WP_Sync_Post_Meta_Storage implements WP_Sync_Storage {
+	class WP_Sync_Engines_Post_Meta_Storage implements WP_Sync_Engines_Storage {
 		/**
 		 * Post type for sync storage.
 		 *
@@ -336,7 +336,7 @@ if ( ! class_exists( 'WP_Sync_Post_Meta_Storage' ) ) {
 		 * Reads a per-room metadata value (JSON-decoded). Engine-level
 		 * bookkeeping (compaction checkpoints, trim floors) rides here; the
 		 * key is namespaced to avoid update-row and lineage keys. Not part
-		 * of the WP_Sync_Storage interface yet — engines feature-detect via
+		 * of the WP_Sync_Engines_Storage interface yet — engines feature-detect via
 		 * method_exists and degrade gracefully.
 		 *
 		 * @since 7.2.0

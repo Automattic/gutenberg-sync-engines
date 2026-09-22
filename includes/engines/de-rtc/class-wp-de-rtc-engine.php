@@ -158,7 +158,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * Sync storage backend.
 		 *
 		 * @since 0.3.0
-		 * @var WP_Sync_Storage
+		 * @var WP_Sync_Engines_Storage
 		 */
 		private $storage;
 
@@ -216,9 +216,9 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 *
 		 * @since 0.3.0
 		 *
-		 * @param WP_Sync_Storage $storage Storage backend.
+		 * @param WP_Sync_Engines_Storage $storage Storage backend.
 		 */
-		public function __construct( WP_Sync_Storage $storage ) {
+		public function __construct( WP_Sync_Engines_Storage $storage ) {
 			$this->storage = $storage;
 			if ( ! function_exists( 'wp_de_rtc_get_reason_codes' ) ) {
 				require_once __DIR__ . '/merge-core.php';
@@ -1921,7 +1921,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 		 * @return array Possibly-healed room state.
 		 */
 		private function maybe_heal_external_save( string $room, array $state ): array {
-			$parsed_room = class_exists( 'WP_Sync_Config' ) ? WP_Sync_Config::parse_room( $room ) : null;
+			$parsed_room = class_exists( 'WP_Sync_Engines_Config' ) ? WP_Sync_Engines_Config::parse_room( $room ) : null;
 			if ( null === $parsed_room || 'postType' !== $parsed_room['entity_kind'] || empty( $parsed_room['object_id'] ) ) {
 				return $state;
 			}
@@ -2254,7 +2254,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			}
 
 			$resolved    = null;
-			$parsed_room = class_exists( 'WP_Sync_Config' ) ? WP_Sync_Config::parse_room( $room ) : null;
+			$parsed_room = class_exists( 'WP_Sync_Engines_Config' ) ? WP_Sync_Engines_Config::parse_room( $room ) : null;
 			if ( null !== $parsed_room && 'postType' === $parsed_room['entity_kind'] && ! empty( $parsed_room['object_id'] ) ) {
 				$revisions = wp_get_post_revisions(
 					(int) $parsed_room['object_id'],
@@ -2324,7 +2324,7 @@ if ( ! class_exists( 'WP_De_RTC_Engine' ) && interface_exists( 'WP_Sync_Engine' 
 			$sync_meta  = array();
 			$properties = array();
 			$post_id    = 0;
-			$parsed     = class_exists( 'WP_Sync_Config' ) ? WP_Sync_Config::parse_room( $room ) : null;
+			$parsed     = class_exists( 'WP_Sync_Engines_Config' ) ? WP_Sync_Engines_Config::parse_room( $room ) : null;
 			if ( null !== $parsed && 'postType' === $parsed['entity_kind'] && ! empty( $parsed['object_id'] ) ) {
 				$post = get_post( (int) $parsed['object_id'] );
 				if ( $post instanceof WP_Post ) {

@@ -168,9 +168,9 @@ tests/fuzzer/
 Every test attaches `fuzz-run.json` — the full seeded action/fault/milestone
 trace — so a failure is diagnosable without re-running it.
 
-The spec reuses the subtree's collaboration fixtures
-(`gutenberg/test/e2e/specs/editor/collaboration/fixtures/`) and the
-plugin-local e2e global setup (auth, clean state, plugin activation
+The spec reuses the plugin's collaboration fixtures
+(`tests/e2e/config/collaboration-fixtures.ts` and
+`tests/e2e/config/fixtures/`) and the plugin-local e2e global setup (auth, clean state, plugin activation
 including the worktree duplicate-mount handling). Engine/transport are set
 *outside* the spec by the runner; the spec only reads `RTC_FUZZ_ENGINE` /
 `RTC_FUZZ_TRANSPORT` to record them and adapt fault injection.

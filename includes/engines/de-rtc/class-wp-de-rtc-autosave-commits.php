@@ -82,10 +82,10 @@ if ( ! class_exists( 'WP_De_RTC_Autosave_Commits' ) ) {
 			if ( ! current_user_can( 'edit_post', $post_id ) ) {
 				return new WP_Error( 'rest_cannot_edit', __( 'Sorry, you are not allowed to edit this post.', 'gutenberg' ), array( 'status' => rest_authorization_required_code() ) );
 			}
-			if ( ! function_exists( 'wp_is_collaboration_enabled' ) || ! wp_is_collaboration_enabled() ) {
+			if ( ! function_exists( 'gutenberg_sync_engines_is_enabled' ) || ! gutenberg_sync_engines_is_enabled() ) {
 				return new WP_Error( 'rest_sync_disabled', __( 'Collaboration is not enabled.', 'gutenberg' ), array( 'status' => 403 ) );
 			}
-			if ( ! interface_exists( 'WP_Sync_Storage' ) || ! class_exists( 'WP_De_RTC_Engine' ) ) {
+			if ( ! interface_exists( 'WP_Sync_Engines_Storage' ) || ! class_exists( 'WP_De_RTC_Engine' ) ) {
 				return $result;
 			}
 
@@ -102,7 +102,7 @@ if ( ! class_exists( 'WP_De_RTC_Autosave_Commits' ) ) {
 				);
 			}
 
-			$engine    = new WP_De_RTC_Engine( gutenberg_sync_engines_storage() );
+			$engine    = new WP_De_RTC_Engine( gutenberg_sync_engines_get_storage() );
 			$client_id = (int) $client_id;
 
 			// Rows appended by THIS commit come back in the response: mark

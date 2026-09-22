@@ -29,7 +29,7 @@ class Tests_Collaboration_WpWebSocketAdvisory extends WP_UnitTestCase {
 	private $storage;
 
 	/**
-	 * @var WP_HTTP_Polling_Sync_Server
+	 * @var WP_Sync_Engines_HTTP_Polling_Sync_Server
 	 */
 	private $sync;
 
@@ -61,7 +61,7 @@ class Tests_Collaboration_WpWebSocketAdvisory extends WP_UnitTestCase {
 		parent::set_up();
 		wp_set_current_user( self::$editor_id );
 		$this->storage     = new WP_Sync_Table_Storage();
-		$this->sync        = new WP_HTTP_Polling_Sync_Server( $this->storage );
+		$this->sync        = new WP_Sync_Engines_HTTP_Polling_Sync_Server( $this->storage );
 		$this->server      = new WP_WebSocket_Sync_Server( $this->sync, '127.0.0.1', 8798 );
 		$this->connections = array();
 	}

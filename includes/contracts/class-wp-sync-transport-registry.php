@@ -2,7 +2,7 @@
 /**
  * WP_Sync_Transport_Registry class
  *
- * @package gutenberg
+ * @package GutenbergSyncEngines
  */
 
 if ( ! class_exists( 'WP_Sync_Transport_Registry' ) ) {
@@ -34,11 +34,11 @@ if ( ! class_exists( 'WP_Sync_Transport_Registry' ) ) {
 		 *
 		 * @since 7.2.0
 		 *
-		 * @param WP_Sync_Storage         $storage Storage backend.
+		 * @param WP_Sync_Engines_Storage $storage Storage backend.
 		 * @param WP_Sync_Engine_Registry $engines Engine registry the
 		 *                                         transports drive rooms through.
 		 */
-		public function __construct( WP_Sync_Storage $storage, WP_Sync_Engine_Registry $engines ) {
+		public function __construct( WP_Sync_Engines_Storage $storage, WP_Sync_Engine_Registry $engines ) {
 			/**
 			 * Filters the registered sync transports.
 			 *
@@ -52,7 +52,7 @@ if ( ! class_exists( 'WP_Sync_Transport_Registry' ) ) {
 			 * @since 7.2.0
 			 *
 			 * @param WP_Sync_Transport[]     $transports Transports to register.
-			 * @param WP_Sync_Storage         $storage    Storage backend.
+			 * @param WP_Sync_Engines_Storage         $storage    Storage backend.
 			 * @param WP_Sync_Engine_Registry $engines    Engine registry.
 			 */
 			$extra = apply_filters( 'wp_sync_transports', array(), $storage, $engines );

@@ -10,7 +10,7 @@ import { test, expect } from '../config/collaboration-fixtures';
 import {
 	SECOND_USER,
 	type CollaborationUtils,
-} from '../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures/collaboration-utils';
+} from '../config/fixtures/collaboration-utils';
 
 /**
  * Two-client collaboration through the de-rtc sync engine: Distributed

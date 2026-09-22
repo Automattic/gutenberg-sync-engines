@@ -132,7 +132,7 @@ if ( ! class_exists( 'WP_Intent_Log_Base_Seq_Preflight' ) ) {
 				return $maybe_empty;
 			}
 			$post_id = isset( $postarr['ID'] ) ? (int) $postarr['ID'] : 0;
-			if ( $post_id <= 0 || ! interface_exists( 'WP_Sync_Storage' ) ) {
+			if ( $post_id <= 0 || ! interface_exists( 'WP_Sync_Engines_Storage' ) ) {
 				return $maybe_empty;
 			}
 
@@ -151,7 +151,7 @@ if ( ! class_exists( 'WP_Intent_Log_Base_Seq_Preflight' ) ) {
 				return true;
 			}
 
-			$engine   = new WP_Intent_Log_Engine( gutenberg_sync_engines_storage() );
+			$engine   = new WP_Intent_Log_Engine( gutenberg_sync_engines_get_storage() );
 			$base_seq = (int) $postarr['intent_log_base_seq'];
 			$base_doc = $engine->document_at( $room, $base_seq );
 			if ( null === $base_doc ) {
@@ -240,7 +240,7 @@ if ( ! class_exists( 'WP_Intent_Log_Base_Seq_Preflight' ) ) {
 		 * @return string|null Engine slug, or null.
 		 */
 		private static function room_engine( string $room ): ?string {
-			$storage = gutenberg_sync_engines_storage();
+			$storage = gutenberg_sync_engines_get_storage();
 			if ( ! method_exists( $storage, 'peek_room_engine' ) ) {
 				// A storage without a non-creating read gives no safe way
 				// to look; treat the room as absent rather than create it.

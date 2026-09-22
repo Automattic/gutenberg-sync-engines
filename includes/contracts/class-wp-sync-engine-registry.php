@@ -2,7 +2,7 @@
 /**
  * WP_Sync_Engine_Registry class
  *
- * @package gutenberg
+ * @package GutenbergSyncEngines
  */
 
 if ( ! class_exists( 'WP_Sync_Engine_Registry' ) ) {
@@ -45,9 +45,9 @@ if ( ! class_exists( 'WP_Sync_Engine_Registry' ) ) {
 		 *
 		 * @since 7.2.0
 		 *
-		 * @param WP_Sync_Storage $storage Storage backend engines should use.
+		 * @param WP_Sync_Engines_Storage $storage Storage backend engines should use.
 		 */
-		public function __construct( WP_Sync_Storage $storage ) {
+		public function __construct( WP_Sync_Engines_Storage $storage ) {
 			/**
 			 * Filters the registered sync engines.
 			 *
@@ -62,7 +62,7 @@ if ( ! class_exists( 'WP_Sync_Engine_Registry' ) ) {
 			 * @since 7.2.0
 			 *
 			 * @param WP_Sync_Engine[] $engines Engines to register.
-			 * @param WP_Sync_Storage  $storage Storage backend engines should use.
+			 * @param WP_Sync_Engines_Storage  $storage Storage backend engines should use.
 			 */
 			$extra_engines = apply_filters( 'wp_sync_engines', array(), $storage );
 			if ( is_array( $extra_engines ) ) {

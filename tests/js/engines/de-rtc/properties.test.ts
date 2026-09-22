@@ -20,8 +20,7 @@ import {
 	unflattenProperties,
 } from '../../../../src/engines/de-rtc/doc-bridge';
 import { CRDT_RECORD_MAP_KEY } from '../../../../src/engines/yjs/constants';
-// eslint-disable-next-line import/no-unresolved -- Provided at runtime as wp.sync.
-import type { SyncConfig } from '@wordpress/sync';
+import type { SyncConfig } from '../../../../src/sync';
 
 // Same opaque-JSON block stand-in as the engine tests.
 jest.mock( '@wordpress/blocks', () => ( {

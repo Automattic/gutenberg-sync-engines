@@ -12,6 +12,32 @@ release, which the release script generates from the commit history.
 
 ### Changed
 
+-   Real-time collaboration no longer depends on Gutenberg's experiment.
+    The plugin has its own switch: the "Real-time collaboration" checkbox
+    on Settings → Collaboration (option `gutenberg_sync_engines_enabled`,
+    on by default and turned on at activation), also available as
+    `wp collaboration enable` and `wp collaboration disable`. The
+    bundled Gutenberg ships without collaboration code; the plugin now
+    owns the server side (contracts, storage, the editor announcement
+    `window._gutenbergSyncEnginesSync`, and the post lock handling) under
+    its own PHP names: `WP_Sync_Engines_Storage`,
+    `WP_Sync_Engines_Post_Meta_Storage`, `WP_Sync_Engines_Config`,
+    `gutenberg_sync_engines_get_storage()`,
+    `gutenberg_sync_engines_is_enabled()` and
+    `gutenberg_sync_engines_is_post_type_disabled()`. Filter names, REST
+    routes, options and WP-CLI commands are unchanged. The old
+    `window._wpCollaboration*` globals are no longer printed.
+-   The client no longer uses Gutenberg's `@wordpress/sync` package or the
+    `wp.sync` script. The plugin bundles the sync core and Yjs itself and
+    plugs into the editor through core-data's entity sync seam. Code that
+    registers an engine or a transport, or that needs the shared Yjs
+    instance, now reads `window.gutenbergSyncEngines` (`Y`,
+    `registerSyncEngine`, `registerSyncTransport`) instead of `wp.sync`.
+    The collaboration UI (presence avatars, cursors, the conflict review
+    panel, the connection error modal and the four collaboration
+    preferences, now under the plugin's own preferences scope) ships in
+    the plugin.
+
 -   The DE-RTC commit cadence now defaults to 10 seconds, the
     Distributed Editing operating point, instead of committing on every
     settle; set it to 0 on Settings → Collaboration for the old

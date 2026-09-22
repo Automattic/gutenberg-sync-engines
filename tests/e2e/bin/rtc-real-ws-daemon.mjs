@@ -142,7 +142,7 @@ function removeContainers( names ) {
 /**
  * Restores the pre-suite transport selection recorded in STATE_FILE and
  * removes the daemon container. Idempotent; a missing state file means
- * a completed (or never-started) run — nothing to do.
+ * a completed (or never-started) run, so there is nothing to do.
  */
 function restoreFromStateFile() {
 	let state = null;
@@ -188,20 +188,14 @@ console.log(
 );
 
 /*
- * Turn real-time collaboration on before starting the daemon. Playwright
- * starts webServers BEFORE global setup, so the suite's own
- * setCollaboration has not run yet — and `wp collaboration sync-server`
- * refuses to start when collaboration is off. Since
- * WordPress/gutenberg#80658 that means the
- * `gutenberg-real-time-collaboration` experiment; other experiments are
- * left alone. Global setup enables it again, harmlessly.
+ * The daemon refuses to start when collaboration is off, so turn the
+ * plugin's setting on. Playwright starts webServers BEFORE global setup,
+ * so the suite's own setCollaboration has not run yet. Global setup
+ * enables it again, harmlessly.
  */
-wpCli( [
-	'eval',
-	"$experiments = get_option( 'gutenberg-experiments', array() ); $experiments['gutenberg-real-time-collaboration'] = true; update_option( 'gutenberg-experiments', $experiments );",
-] );
+wpCli( [ 'eval', "update_option( 'gutenberg_sync_engines_enabled', true );" ] );
 // eslint-disable-next-line no-console
-console.log( '[rtc-real-ws-daemon] collaboration experiment enabled' );
+console.log( '[rtc-real-ws-daemon] collaboration enabled' );
 
 let restored = false;
 function restore() {

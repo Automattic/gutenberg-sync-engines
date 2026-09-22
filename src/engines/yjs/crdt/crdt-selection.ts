@@ -2,7 +2,7 @@ import { dispatch, select } from '@wordpress/data';
 // @ts-expect-error No exported types.
 import { store as blockEditorStore } from '@wordpress/block-editor';
 import { isUnmodifiedBlock } from '@wordpress/blocks';
-import { type CRDTDoc, Y } from '@wordpress/sync';
+import { type CRDTDoc, Y } from '../../../sync';
 import {
 	createBlockSelectionHistory,
 	YSelectionType,
@@ -15,7 +15,7 @@ import {
 	findBlockByClientIdInDoc,
 	htmlIndexToRichTextOffset,
 } from './crdt-utils';
-import type { WPBlockSelection, WPSelection } from '../types';
+import type { WPBlockSelection, WPSelection } from './types';
 
 // WeakMap to store BlockSelectionHistory instances per Y.Doc
 const selectionHistoryMap = new WeakMap< CRDTDoc, BlockSelectionHistory >();

@@ -37,7 +37,7 @@
  * dedupe. The stand-down below is intent-log's alone.
  *
  * IN-SESSION STAND-DOWN: while the intent-log engine is ANNOUNCED
- * (window._wpCollaborationSync.engine), only the genesis pass runs here.
+ * (window._gutenbergSyncEnginesSync.engine), only the genesis pass runs here.
  * The capture bridge mints identity for blocks created during a live
  * session and pushes the document's id back into the editor; minting here
  * too raced that push (the stamper's block-editor write landed before the
@@ -194,7 +194,7 @@
 		// bridge; only the genesis pass runs here.
 		if (
 			! useGenesis &&
-			'intent-log' === window._wpCollaborationSync?.engine
+			'intent-log' === window._gutenbergSyncEnginesSync?.engine
 		) {
 			return;
 		}

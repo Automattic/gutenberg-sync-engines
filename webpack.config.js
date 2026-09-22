@@ -4,22 +4,17 @@
 const defaultConfig = require( '@wordpress/scripts/config/webpack.config' );
 
 /**
- * The plugin ships a single client bundle that registers its engine adapters
- * and transport providers with the framework (`@wordpress/sync`) at load time.
- *
- * `@wordpress/sync` and Yjs are provided at runtime by WordPress as `wp.sync`
- * (and `wp.sync.Y`); they must NOT be bundled, so that this plugin consumes the
- * SAME Yjs instance as the framework (see https://github.com/yjs/yjs/issues/438)
- * and unlocks the same private-API registry.
+ * The plugin ships a single client bundle: the sync core (formerly
+ * Gutenberg's `@wordpress/sync`), Yjs, the engines, the transports, the
+ * presence and review UI, and the bridge into core-data's entity sync
+ * seam. Yjs is bundled here on purpose: this is the one Yjs instance on
+ * the page, exposed as `window.gutenbergSyncEngines.Y` for third-party
+ * engine or transport plugins (https://github.com/yjs/yjs/issues/438).
+ * The `@wordpress/*` packages stay externals, provided by WordPress.
  */
 module.exports = {
 	...defaultConfig,
 	entry: {
 		'sync-engines': './src/index.ts',
-	},
-	externals: {
-		...defaultConfig.externals,
-		'@wordpress/sync': 'wp.sync',
-		yjs: 'wp.sync.Y',
 	},
 };

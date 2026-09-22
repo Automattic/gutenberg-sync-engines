@@ -141,11 +141,6 @@ export function getProviderCreators(): ProviderCreator[] {
 		return providerCreators;
 	}
 
-	// Check if real-time collaboration is enabled.
-	if ( ! window.__experimentalEnableRealTimeCollaboration ) {
-		return [];
-	}
-
 	/**
 	 * Filter the available provider creators. The default is the negotiated
 	 * transport; plugins (and tests) may replace the list outright.

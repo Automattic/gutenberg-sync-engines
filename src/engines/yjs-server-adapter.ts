@@ -1,7 +1,7 @@
 /**
  * Internal dependencies
  */
-import { createSyncManager } from '../framework';
+import { createSyncManager } from '../sync';
 import {
 	YJS_SERVER_ENGINE_SLUG,
 	YJS_SERVER_ENGINE_PROTOCOL,

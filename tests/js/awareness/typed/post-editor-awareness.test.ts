@@ -1,14 +1,24 @@
-import { Y } from '@wordpress/sync';
+import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	jest,
+	test,
+} from '@jest/globals';
+import { Y, CRDT_RECORD_MAP_KEY } from '../../../../src/sync';
 import { dispatch, select, subscribe, resolveSelect } from '@wordpress/data';
-import { PostEditorAwareness } from '../post-editor-awareness';
-import { SelectionType } from '../../utils/crdt-user-selections';
+import { PostEditorAwareness } from '../../../../src/awareness/typed/post-editor-awareness';
+import { SelectionType } from '../../../../src/engines/yjs/crdt/crdt-user-selections';
 import type {
 	SelectionNone,
 	SelectionCursor,
 	SelectionWholeBlock,
-} from '../../types';
-import { CRDT_RECORD_MAP_KEY } from '../../sync';
-import type { CollaboratorInfo, PostEditorState } from '../types';
+} from '../../../../src/engines/yjs/crdt/types';
+import type {
+	CollaboratorInfo,
+	PostEditorState,
+} from '../../../../src/awareness/typed/types';
 
 // Mock WordPress dependencies
 jest.mock( '@wordpress/data', () => ( {

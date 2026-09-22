@@ -52,11 +52,9 @@ export interface EngineEntity {
 	createSession: () => EngineSessionCodec;
 
 	/**
-	 * Seeds the document from the persisted record (initializing it when there
-	 * is nothing persisted). `persist` requests that the (re)initialized
-	 * document be persisted with the entity.
+	 * Seeds the document from the record the editor loaded.
 	 */
-	hydrate: ( record: ObjectData, persist: () => void ) => void;
+	hydrate: ( record: ObjectData ) => void;
 
 	/** Folds local editor changes into the document. */
 	applyLocalChanges: (
@@ -70,15 +68,6 @@ export interface EngineEntity {
 	 * the given edited record (drives `editRecord`).
 	 */
 	getEditorChanges: ( editedRecord: ObjectData ) => Partial< ObjectData >;
-
-	/** Encodes a content-free snapshot of the current document. */
-	encodeSnapshot: () => string;
-
-	/** Whether the document contains everything the encoded snapshot describes. */
-	containsSnapshot: ( encoded: string ) => boolean;
-
-	/** Serializes the document for persistence with the entity. */
-	serialize: () => string;
 
 	/**
 	 * Attaches remote-change / peer-save observation. Called once, after the

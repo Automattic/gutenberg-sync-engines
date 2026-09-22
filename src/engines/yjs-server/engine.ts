@@ -6,13 +6,12 @@ import * as Y from 'yjs';
 /**
  * WordPress dependencies
  */
-// eslint-disable-next-line import/no-unresolved -- Provided at runtime as wp.sync.
 import type {
 	EngineCollection,
 	EngineEntity,
 	ObjectData,
 	SyncEngine,
-} from '@wordpress/sync';
+} from '../../sync';
 
 /**
  * Internal dependencies
@@ -27,8 +26,7 @@ import {
 	CRDT_STATE_MAP_SAVED_AT_KEY as SAVED_AT_KEY,
 	CRDT_STATE_MAP_VERSION_KEY as VERSION_KEY,
 } from '../yjs/constants';
-import { createYjsDoc, markEntityAsSaved, serializeCrdtDoc } from '../yjs/doc';
-import { docContainsSnapshot, encodeDocSnapshot } from '../yjs/snapshot';
+import { createYjsDoc, markEntityAsSaved } from '../yjs/doc';
 import { createUndoManager } from '../yjs/undo';
 import { registerAwareness } from '../../awareness/registry';
 import {
@@ -212,13 +210,6 @@ export function createYjsServerEngine(): SyncEngine {
 					docMayStillMatchRecord = false;
 					return changes;
 				},
-
-				encodeSnapshot: () => encodeDocSnapshot( ydoc ),
-
-				containsSnapshot: ( encoded ) =>
-					docContainsSnapshot( ydoc, encoded ),
-
-				serialize: () => serializeCrdtDoc( ydoc ),
 
 				observe( observers ) {
 					onRecordUpdate = ( _events, transaction ) => {

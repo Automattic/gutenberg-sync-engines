@@ -78,7 +78,7 @@ import { chromium } from '@playwright/test';
 
 import {
 	BASE,
-	COLLABORATION_EXPERIMENT,
+	COLLABORATION_SETTING,
 	attachCounters,
 	canvasOf,
 	configureSettings,
@@ -829,14 +829,9 @@ async function main() {
 			);
 		}
 		if ( false === experimentWasOn && rest ) {
-			const current = await rest.get( '/wp/v2/settings' );
-			const experiments = {
-				...( current.data?.[ 'gutenberg-experiments' ] || {} ),
-			};
-			delete experiments[ COLLABORATION_EXPERIMENT ];
 			await rest
 				.post( '/wp/v2/settings', {
-					body: { 'gutenberg-experiments': experiments },
+					body: { [ COLLABORATION_SETTING ]: false },
 				} )
 				.catch( () => null );
 		}
@@ -903,7 +898,7 @@ async function main() {
 		}
 
 		// Choose the engine/transport up front (recording what to restore
-		// at the end), and whether the collaboration experiment was on.
+		// at the end), and whether collaboration was on.
 		originalSettings = await configureSettings(
 			adminPage,
 			ENGINE,
@@ -912,11 +907,7 @@ async function main() {
 		lastActive = originalSettings.active;
 		const engine = originalSettings.active.engine;
 		const settingsBefore = await rest.get( '/wp/v2/settings' );
-		experimentWasOn = Boolean(
-			settingsBefore.data?.[ 'gutenberg-experiments' ]?.[
-				COLLABORATION_EXPERIMENT
-			]
-		);
+		experimentWasOn = Boolean( settingsBefore.data?.[ COLLABORATION_SETTING ] );
 		originalPoll = Number(
 			settingsBefore.data?.[ POLLING_INTERVAL_SETTING ] ?? 0
 		);

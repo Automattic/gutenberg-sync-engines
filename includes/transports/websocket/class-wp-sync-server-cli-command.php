@@ -49,7 +49,7 @@ if ( ! class_exists( 'WP_Sync_Server_CLI_Command' ) && defined( 'WP_CLI' ) && WP
 		 * @param array $assoc_args Associative arguments.
 		 */
 		public function sync_server( $args, $assoc_args ) {
-			if ( ! function_exists( 'wp_is_collaboration_enabled' ) || ! wp_is_collaboration_enabled() ) {
+			if ( ! function_exists( 'gutenberg_sync_engines_is_enabled' ) || ! gutenberg_sync_engines_is_enabled() ) {
 				WP_CLI::error( 'Real-time collaboration is not enabled on this site (enable the Gutenberg real-time collaboration experiment).' );
 			}
 
@@ -60,8 +60,8 @@ if ( ! class_exists( 'WP_Sync_Server_CLI_Command' ) && defined( 'WP_CLI' ) && WP
 				WP_CLI::error( 'Invalid port.' );
 			}
 
-			$storage = gutenberg_sync_engines_storage();
-			$sync    = new WP_HTTP_Polling_Sync_Server( $storage );
+			$storage = gutenberg_sync_engines_get_storage();
+			$sync    = new WP_Sync_Engines_HTTP_Polling_Sync_Server( $storage );
 			$server  = new WP_WebSocket_Sync_Server( $sync, $host, $port );
 
 			WP_CLI::log( 'Starting experimental collaboration WebSocket sync server. Press Ctrl+C to stop.' );

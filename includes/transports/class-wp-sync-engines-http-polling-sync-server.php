@@ -1,11 +1,11 @@
 <?php
 /**
- * WP_HTTP_Polling_Sync_Server class
+ * WP_Sync_Engines_HTTP_Polling_Sync_Server class
  *
  * @package GutenbergSyncEngines
  */
 
-if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
+if ( ! class_exists( 'WP_Sync_Engines_HTTP_Polling_Sync_Server' ) ) {
 
 	/**
 	 * HTTP short-polling transport for collaborative editing.
@@ -26,7 +26,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 	 * @since 7.0.0
 	 * @access private
 	 */
-	class WP_HTTP_Polling_Sync_Server implements WP_Sync_Transport {
+	class WP_Sync_Engines_HTTP_Polling_Sync_Server implements WP_Sync_Transport {
 		/**
 		 * Transport slug (matches the client transport registration).
 		 *
@@ -108,9 +108,9 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 * Storage backend for sync updates.
 		 *
 		 * @since 7.0.0
-		 * @var WP_Sync_Storage
+		 * @var WP_Sync_Engines_Storage
 		 */
-		protected WP_Sync_Storage $storage;
+		protected WP_Sync_Engines_Storage $storage;
 
 		/**
 		 * Engine registry used to resolve the engine for each room.
@@ -125,14 +125,14 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 *
 		 * @since 7.0.0
 		 *
-		 * @param WP_Sync_Storage                               $storage  Storage backend for sync updates.
+		 * @param WP_Sync_Engines_Storage                       $storage  Storage backend for sync updates.
 		 * @param WP_Sync_Engine_Registry|null                  $engines  Engine registry. Defaults to a
 		 *                                                                registry over the given storage.
 		 * @param Gutenberg_Sync_Engines_Advisory_Presence|null $presence Presence lane deciding room
 		 *                                                                lifetime. Defaults to the
 		 *                                                                plugin's when available.
 		 */
-		public function __construct( WP_Sync_Storage $storage, ?WP_Sync_Engine_Registry $engines = null, ?Gutenberg_Sync_Engines_Advisory_Presence $presence = null ) {
+		public function __construct( WP_Sync_Engines_Storage $storage, ?WP_Sync_Engine_Registry $engines = null, ?Gutenberg_Sync_Engines_Advisory_Presence $presence = null ) {
 			if ( null === $presence && class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 				$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
 			}
@@ -340,8 +340,8 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 					}
 				}
 
-				$parsed_room = WP_Sync_Config::parse_room( $room );
-				if ( null === $parsed_room || ! WP_Sync_Config::can_user_sync_entity_type( $parsed_room['entity_kind'], $parsed_room['entity_name'], $parsed_room['object_id'] ) ) {
+				$parsed_room = WP_Sync_Engines_Config::parse_room( $room );
+				if ( null === $parsed_room || ! WP_Sync_Engines_Config::can_user_sync_entity_type( $parsed_room['entity_kind'], $parsed_room['entity_name'], $parsed_room['object_id'] ) ) {
 					$forbidden_rooms[] = $room;
 				}
 			}
@@ -511,7 +511,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 * The room's generation token, minted on the first read after the
 		 * room's first row is written and stable until the room is reset.
 		 *
-		 * A reset (`WP_Sync_Storage::reset_room()`) deletes every row and
+		 * A reset (`WP_Sync_Engines_Storage::reset_room()`) deletes every row and
 		 * every room-meta key, so the next read finds no token and mints a
 		 * fresh one — and a client that bootstrapped under the old token
 		 * knows its rows and cursor are gone. The token is derived from the
@@ -571,7 +571,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 				}
 			}
 
-			if ( $this->storage instanceof WP_Sync_Post_Meta_Storage ) {
+			if ( $this->storage instanceof WP_Sync_Engines_Post_Meta_Storage ) {
 				global $wpdb;
 
 				// phpcs:disable WordPress.DB.DirectDatabaseQuery -- Read-only lookups against the storage post; the storage class exposes no first-row accessor and its own accessors bypass the meta cache the same way.
@@ -579,7 +579,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 					$wpdb->prepare(
 						"SELECT ID FROM {$wpdb->posts} WHERE post_name = %s AND post_type = %s ORDER BY ID ASC LIMIT 1",
 						md5( $room ),
-						WP_Sync_Post_Meta_Storage::POST_TYPE
+						WP_Sync_Engines_Post_Meta_Storage::POST_TYPE
 					)
 				);
 				if ( $post_id > 0 ) {
@@ -587,7 +587,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 						$wpdb->prepare(
 							"SELECT MIN(meta_id) FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s",
 							$post_id,
-							WP_Sync_Post_Meta_Storage::SYNC_UPDATE_META_KEY
+							WP_Sync_Engines_Post_Meta_Storage::SYNC_UPDATE_META_KEY
 						)
 					);
 					// phpcs:enable WordPress.DB.DirectDatabaseQuery
@@ -617,9 +617,9 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 *
 		 * @since 7.2.0
 		 *
-		 * @return WP_Sync_Storage Storage backend.
+		 * @return WP_Sync_Engines_Storage Storage backend.
 		 */
-		public function get_storage(): WP_Sync_Storage {
+		public function get_storage(): WP_Sync_Engines_Storage {
 			return $this->storage;
 		}
 
@@ -634,8 +634,8 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 * @return bool Whether the current user may sync the room.
 		 */
 		public function can_user_sync_room( string $room ): bool {
-			$parsed = WP_Sync_Config::parse_room( $room );
-			return null !== $parsed && WP_Sync_Config::can_user_sync_entity_type(
+			$parsed = WP_Sync_Engines_Config::parse_room( $room );
+			return null !== $parsed && WP_Sync_Engines_Config::can_user_sync_entity_type(
 				$parsed['entity_kind'],
 				$parsed['entity_name'],
 				$parsed['object_id']
@@ -788,7 +788,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 				return false;
 			}
 
-			$parsed = WP_Sync_Config::parse_room( $room );
+			$parsed = WP_Sync_Engines_Config::parse_room( $room );
 			if ( null !== $parsed && 'postType' === $parsed['entity_kind'] && ! empty( $parsed['object_id'] ) ) {
 				return false;
 			}

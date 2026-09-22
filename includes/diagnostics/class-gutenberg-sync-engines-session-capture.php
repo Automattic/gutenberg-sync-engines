@@ -324,8 +324,8 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Session_Capture' ) ) {
 				'base_title'   => '',
 				'base_content' => '',
 			);
-			if ( '' !== $room_filter && class_exists( 'WP_Sync_Config' ) ) {
-				$parsed = WP_Sync_Config::parse_room( $room_filter );
+			if ( '' !== $room_filter && class_exists( 'WP_Sync_Engines_Config' ) ) {
+				$parsed = WP_Sync_Engines_Config::parse_room( $room_filter );
 				if ( is_array( $parsed ) && 'postType' === ( $parsed['entity_kind'] ?? '' ) && ! empty( $parsed['object_id'] ) ) {
 					$post = get_post( (int) $parsed['object_id'] );
 					if ( $post instanceof WP_Post ) {

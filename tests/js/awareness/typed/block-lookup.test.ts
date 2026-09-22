@@ -1,12 +1,13 @@
-import { Y } from '@wordpress/sync';
+import { describe, expect, it, jest } from '@jest/globals';
+import { Y } from '../../../../src/sync';
 import { renderHook } from '@testing-library/react';
 import {
 	getBlockPathInYdoc,
 	getContainingBlockYMap,
 	resolveBlockClientIdByPath,
 	usePostContentBlocks,
-} from '../block-lookup';
-import type { EditorStoreBlock } from '../block-lookup';
+} from '../../../../src/awareness/typed/block-lookup';
+import type { EditorStoreBlock } from '../../../../src/awareness/typed/block-lookup';
 
 type MockBlock = EditorStoreBlock & {
 	name: string;
@@ -22,7 +23,7 @@ function mockFlattenBlocks( blocks: MockBlock[] ): MockBlock[] {
 	] );
 }
 
-jest.mock( '../../lock-unlock', () => ( {
+jest.mock( '../../../../src/host/unlock', () => ( {
 	unlock: ( obj: any ) => obj,
 } ) );
 

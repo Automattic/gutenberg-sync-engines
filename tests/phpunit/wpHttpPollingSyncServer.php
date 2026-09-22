@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests for the WP_HTTP_Polling_Sync_Server REST endpoint.
+ * Tests for the WP_Sync_Engines_HTTP_Polling_Sync_Server REST endpoint.
  *
  * @package gutenberg
  * @subpackage Collaboration
@@ -27,10 +27,10 @@ class Tests_Collaboration_WpHttpPollingSyncServer extends WP_Test_REST_Controlle
 	 * timing this dances around.
 	 *
 	 * @param WP_Sync_Engine[] $engines Engines to register.
-	 * @param WP_Sync_Storage  $storage Storage backend.
+	 * @param WP_Sync_Engines_Storage  $storage Storage backend.
 	 * @return WP_Sync_Engine[] Engines including the fixture.
 	 */
-	public static function register_fixture_engine( array $engines, WP_Sync_Storage $storage ): array {
+	public static function register_fixture_engine( array $engines, WP_Sync_Engines_Storage $storage ): array {
 		$engines[] = new Test_Opaque_Relay_Engine( $storage );
 		return $engines;
 	}
@@ -519,7 +519,7 @@ class Tests_Collaboration_WpHttpPollingSyncServer extends WP_Test_REST_Controlle
 		wp_set_current_user( self::$editor_id );
 
 		$rooms = array();
-		for ( $i = 0; $i < WP_HTTP_Polling_Sync_Server::MAX_ROOMS_PER_REQUEST + 1; $i++ ) {
+		for ( $i = 0; $i < WP_Sync_Engines_HTTP_Polling_Sync_Server::MAX_ROOMS_PER_REQUEST + 1; $i++ ) {
 			$rooms[] = $this->build_room( 'root/site', $i + 1 );
 		}
 
@@ -536,7 +536,7 @@ class Tests_Collaboration_WpHttpPollingSyncServer extends WP_Test_REST_Controlle
 	public function test_sync_rejects_update_data_exceeding_max_length(): void {
 		wp_set_current_user( self::$editor_id );
 
-		$oversized_data = str_repeat( 'a', WP_HTTP_Polling_Sync_Server::MAX_UPDATE_DATA_SIZE + 1 );
+		$oversized_data = str_repeat( 'a', WP_Sync_Engines_HTTP_Polling_Sync_Server::MAX_UPDATE_DATA_SIZE + 1 );
 
 		$request = new WP_REST_Request( 'POST', '/wp-sync/v1/updates' );
 		$request->set_body_params(
@@ -583,7 +583,7 @@ class Tests_Collaboration_WpHttpPollingSyncServer extends WP_Test_REST_Controlle
 		);
 
 		// Set an oversized raw body to trigger the route-level validate_callback.
-		$request->set_body( str_repeat( 'x', WP_HTTP_Polling_Sync_Server::MAX_BODY_SIZE + 1 ) );
+		$request->set_body( str_repeat( 'x', WP_Sync_Engines_HTTP_Polling_Sync_Server::MAX_BODY_SIZE + 1 ) );
 
 		$response = rest_get_server()->dispatch( $request );
 		$this->assertErrorResponse( 'rest_sync_body_too_large', $response, 413 );
@@ -758,13 +758,13 @@ class Tests_Collaboration_WpHttpPollingSyncServer extends WP_Test_REST_Controlle
 	}
 
 	public function test_awareness_timestamps_round_up_to_the_bucket() {
-		$this->assertSame( 100, WP_HTTP_Polling_Sync_Server::awareness_timestamp( 100 ) );
-		$this->assertSame( 110, WP_HTTP_Polling_Sync_Server::awareness_timestamp( 101 ) );
-		$this->assertSame( 110, WP_HTTP_Polling_Sync_Server::awareness_timestamp( 110 ) );
+		$this->assertSame( 100, WP_Sync_Engines_HTTP_Polling_Sync_Server::awareness_timestamp( 100 ) );
+		$this->assertSame( 110, WP_Sync_Engines_HTTP_Polling_Sync_Server::awareness_timestamp( 101 ) );
+		$this->assertSame( 110, WP_Sync_Engines_HTTP_Polling_Sync_Server::awareness_timestamp( 110 ) );
 
 		$exact = static fn() => 1;
 		add_filter( 'wp_sync_awareness_timestamp_granularity', $exact );
-		$this->assertSame( 101, WP_HTTP_Polling_Sync_Server::awareness_timestamp( 101 ) );
+		$this->assertSame( 101, WP_Sync_Engines_HTTP_Polling_Sync_Server::awareness_timestamp( 101 ) );
 		remove_filter( 'wp_sync_awareness_timestamp_granularity', $exact );
 	}
 
@@ -1386,7 +1386,7 @@ class Tests_Collaboration_WpHttpPollingSyncServer extends WP_Test_REST_Controlle
 
 		// Reset the room (rows, lineage, room meta): the next write mints a
 		// new token, so a client holding the old one learns of the restart.
-		$storage = wp_get_sync_storage();
+		$storage = gutenberg_sync_engines_get_storage();
 		$this->assertTrue( $storage->reset_room( $room ) );
 		$after = $this->dispatch_sync( array( $this->build_room( $room, 1, (int) $first['end_cursor'], array(), $update ) ) )->get_data()['rooms'][0];
 		$this->assertArrayHasKey( 'generation', $after );
@@ -1424,7 +1424,7 @@ class Tests_Collaboration_WpHttpPollingSyncServer extends WP_Test_REST_Controlle
 		// gone stale.
 		$first = $this->dispatch_sync( array( $this->build_room( $room, 1, 0, array(), $update ) ) )->get_data()['rooms'][0];
 		$this->assertNotEmpty( $first['generation'] );
-		$storage = gutenberg_sync_engines_storage();
+		$storage = gutenberg_sync_engines_get_storage();
 		$storage->set_awareness_state(
 			$room,
 			array_map(

@@ -1,11 +1,18 @@
-import { Y } from '@wordpress/sync';
+import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	jest,
+	test,
+} from '@jest/globals';
+import { Y, CRDT_RECORD_MAP_KEY } from '../../../../../src/sync';
 import { select } from '@wordpress/data';
 import {
 	areSelectionsStatesEqual,
 	getSelectionState,
 	SelectionType,
-} from '../crdt-user-selections';
-import { CRDT_RECORD_MAP_KEY } from '../../sync';
+} from '../../../../../src/engines/yjs/crdt/crdt-user-selections';
 jest.mock( '@wordpress/data', () => ( {
 	select: jest.fn(),
 	// Needed because @wordpress/rich-text initialises its store at import time.
@@ -26,7 +33,7 @@ import type {
 	SelectionWholeBlock,
 	SelectionState,
 	WPBlockSelection,
-} from '../../types';
+} from '../../../../../src/engines/yjs/crdt/types';
 
 // Shared Y.Doc and Y.Map for creating Y.Text instances
 const yDoc = new Y.Doc();

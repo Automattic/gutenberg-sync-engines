@@ -95,7 +95,7 @@ class Test_WP_WebSocket_Sync_Transport extends WP_UnitTestCase {
 		// engine seam), NOT a Yjs-specific core — the whole point of the
 		// port. Constructing it must not fatal.
 		$storage = new WP_Sync_Table_Storage();
-		$sync    = new WP_HTTP_Polling_Sync_Server( $storage );
+		$sync    = new WP_Sync_Engines_HTTP_Polling_Sync_Server( $storage );
 		$server  = new WP_WebSocket_Sync_Server( $sync, '127.0.0.1', 8799 );
 		$this->assertInstanceOf( 'WP_WebSocket_Sync_Server', $server );
 	}
@@ -108,7 +108,7 @@ class Test_WP_WebSocket_Sync_Transport extends WP_UnitTestCase {
 	 */
 	private function validate( array $room_request ) {
 		$storage = new WP_Sync_Table_Storage();
-		$sync    = new WP_HTTP_Polling_Sync_Server( $storage );
+		$sync    = new WP_Sync_Engines_HTTP_Polling_Sync_Server( $storage );
 		$server  = new WP_WebSocket_Sync_Server( $sync, '127.0.0.1', 8799 );
 		$method  = new ReflectionMethod( WP_WebSocket_Sync_Server::class, 'validate_room_request' );
 		$method->setAccessible( true );
@@ -184,7 +184,7 @@ class Test_WP_WebSocket_Sync_Transport extends WP_UnitTestCase {
 		$room    = 'postType/post:' . $post_id;
 
 		$storage = new WP_Sync_Table_Storage();
-		$sync    = new WP_HTTP_Polling_Sync_Server( $storage );
+		$sync    = new WP_Sync_Engines_HTTP_Polling_Sync_Server( $storage );
 
 		// Establish the room under the resolved (default) engine first.
 		$bootstrap = $sync->process_room_request(
@@ -246,7 +246,7 @@ class Test_WP_WebSocket_Sync_Transport extends WP_UnitTestCase {
 			$this->assertIsArray( $validated );
 
 			$storage = new WP_Sync_Table_Storage();
-			$sync    = new WP_HTTP_Polling_Sync_Server( $storage );
+			$sync    = new WP_Sync_Engines_HTTP_Polling_Sync_Server( $storage );
 			$result  = $sync->process_room_request( $validated );
 
 			// Healed, not fenced: the room reset and re-genesised under
@@ -288,7 +288,7 @@ class Test_WP_WebSocket_Sync_Transport extends WP_UnitTestCase {
 			);
 			$this->assertIsArray( $validated );
 
-			$sync   = new WP_HTTP_Polling_Sync_Server( new WP_Sync_Table_Storage() );
+			$sync   = new WP_Sync_Engines_HTTP_Polling_Sync_Server( new WP_Sync_Table_Storage() );
 			$result = $sync->process_room_request( $validated );
 
 			$this->assertWPError( $result );
@@ -328,7 +328,7 @@ class Test_WP_WebSocket_Sync_Transport extends WP_UnitTestCase {
 			);
 			$this->assertIsArray( $validated );
 
-			$sync   = new WP_HTTP_Polling_Sync_Server( new WP_Sync_Table_Storage() );
+			$sync   = new WP_Sync_Engines_HTTP_Polling_Sync_Server( new WP_Sync_Table_Storage() );
 			$result = $sync->process_room_request( $validated );
 
 			$this->assertWPError( $result );

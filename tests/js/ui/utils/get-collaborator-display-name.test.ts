@@ -1,4 +1,5 @@
-import { getCollaboratorDisplayName } from '../get-collaborator-display-name';
+import { describe, expect, jest, test } from '@jest/globals';
+import { getCollaboratorDisplayName } from '../../../../src/ui/utils/get-collaborator-display-name';
 
 jest.mock( '@wordpress/i18n', () => ( {
 	...jest.requireActual( '@wordpress/i18n' ),

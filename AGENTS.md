@@ -16,16 +16,25 @@ Operational guide for working in this repo. Read this first.
 
 ## What this is
 
-`gutenberg-sync-engines` is a WordPress plugin that supplies the pluggable
-**engines** (how concurrent edits merge) and **transports** (how updates move)
-for Gutenberg's real-time collaboration (RTC) **framework**. The framework
-itself lives in Gutenberg core (`@wordpress/sync` client + the
-`lib/experimental/collaboration/` server): it is a generic, engine-neutral
-substrate — a `createSyncManager` shell, two registries (engines + transports)
-with client/server negotiation, the `SyncEngine` SPI, and a shared `Y` export
-(`wp.sync.Y`). **Without this plugin active, RTC is disabled** — the framework
-registers no engine or transport, so a session finds nothing to negotiate and
-the editor falls back to the classic exclusive post lock.
+`gutenberg-sync-engines` is a WordPress plugin that provides the WHOLE of
+real-time collaboration (RTC) for the block editor: the pluggable
+**engines** (how concurrent edits merge), the **transports** (how updates
+move), the sync core they plug into, the storage, the presence and
+conflict-review UI, the post-lock handling, and the settings. Gutenberg
+itself ships no collaboration code any more. It offers ONE hook, a private
+core-data API called the **entity sync seam** (`registerEntitySyncManager` /
+`getEntitySyncManager` in `packages/core-data/src/entity-sync.ts`): a single
+registered manager hears about entity records as they load, are edited,
+saved and deleted, and can substitute the editor's undo. This plugin
+registers that manager (`src/host/`). **Without this plugin active, RTC is
+off** and the editor uses the classic exclusive post lock.
+
+The sync core (`src/sync/`, formerly Gutenberg's `@wordpress/sync`
+package) is an engine-neutral shell: `createSyncManager`, two registries
+(engines + transports) with client/server negotiation, the `SyncEngine`
+SPI, and the shared Yjs instance. Third-party engine or transport plugins
+reach it through `window.gutenbergSyncEngines` (`Y`, `registerSyncEngine`,
+`registerSyncTransport`); there is no `wp.sync` any more.
 
 This plugin provides:
 
@@ -41,7 +50,7 @@ This plugin provides:
   the wordpress-develop `add/distributed-editing` branch and announces
   each accepted version; genuine conflicts escalate instead of silently
   merging).
-  The framework's conventional default engine
+  The conventional default engine
   (`WP_Sync_Engine_Registry::DEFAULT_ENGINE`) is **intent-log** — that's
   what runs when the `wp_sync_engine` option is unset. Registration order
   only matters when a CONFIGURED slug isn't registered (misconfiguration
@@ -89,8 +98,9 @@ This plugin provides:
   "Unsaved changes" setting (default: an empty room is reset to the
   saved post; the room's generation token tells clients to start over).
   Reasoning and the switch: `docs/plan/room-lifetime.md`.
-- **Storage:** `WP_Sync_Table_Storage`, substituted for the framework's
-  post-meta default through the `__unstable_wp_sync_storage` filter. Rooms
+- **Storage:** `WP_Sync_Table_Storage`, substituted for the plugin's own
+  post-meta default (`WP_Sync_Engines_Post_Meta_Storage`) through the
+  `__unstable_wp_sync_storage` filter. Rooms
   live in two plugin-owned tables, `{$prefix}sync_updates` (the update log;
   the row id is the cursor) and `{$prefix}sync_room_meta` (lineage,
   awareness, engine bookkeeping — one row per room and key), so no
@@ -120,14 +130,30 @@ This plugin provides:
   be created the filter leaves the post-meta default in place and an
   admin notice says so.
 
-It registers through the framework's extension points: PHP `wp_sync_engines` /
-`wp_sync_transports` filters; JS `registerSyncEngine` / `registerSyncTransport`
-(via `@wordpress/sync`'s unlockable private APIs). The active engine/transport
-are chosen on the **Settings → Collaboration** screen (`wp_sync_engine` option +
-the `WP_COLLABORATION_TRANSPORT` config value).
+Engines and transports register through the plugin's own extension points:
+PHP `wp_sync_engines` / `wp_sync_transports` filters (the contracts live in
+`includes/contracts/`); JS `registerSyncEngine` / `registerSyncTransport`
+(`src/sync/`, also on `window.gutenbergSyncEngines`). The active
+engine/transport are chosen on the **Settings → Collaboration** screen
+(`wp_sync_engine` option + the `WP_COLLABORATION_TRANSPORT` config value),
+and the whole feature has its own switch there, the "Real-time
+collaboration" checkbox (`gutenberg_sync_engines_enabled`, on by default,
+`wp collaboration enable|disable`; `gutenberg_sync_engines_is_enabled()` is
+the gate everywhere).
 
-The framework/plugin split is complete: the framework ships **neither** engines
-**nor** transports; both come solely from here.
+The plugin's PHP takes plugin-owned names for everything it took over
+from Gutenberg, so it can never collide with a Gutenberg release that
+still ships the old experiment: `WP_Sync_Engines_Storage` (interface),
+`WP_Sync_Engines_Post_Meta_Storage`, `WP_Sync_Engines_Config`,
+`WP_Sync_Engines_HTTP_Polling_Sync_Server`,
+`WP_Sync_Engines_REST_Autosaves_Controller`,
+`gutenberg_sync_engines_get_storage()`,
+`gutenberg_sync_engines_is_post_type_disabled()` (the filter
+`wp_is_post_type_collaboration_disabled` keeps its name), and the
+`gutenberg_sync_engines_*` lock / list-table / meta-box helpers in
+`includes/collaboration/`. Names that only ever existed here
+(`WP_Sync_Engine`, `WP_Sync_Transport`, the two registries, the filters,
+the `wp-sync/v1` routes, the options, the CLI) are unchanged.
 
 ## Repo layout
 
@@ -137,7 +163,7 @@ The framework/plugin split is complete: the framework ships **neither** engines
   `storage/` (the room storage tables: `class-wp-sync-table-schema.php`
   — names, definition, create/upgrade/drop, loaded by the plugin entry
   ahead of the activation hook; `class-wp-sync-table-storage.php` — the
-  `WP_Sync_Storage` implementation and the ONLY reader/writer of the
+  `WP_Sync_Engines_Storage` implementation and the ONLY reader/writer of the
   tables, diagnostics helpers included; the `wp collaboration storage`
   CLI), and `lib/`:
   - `engines/de-rtc/merge-core.php` — the DE-RTC merge core, ported
@@ -203,8 +229,52 @@ The framework/plugin split is complete: the framework ships **neither** engines
   - `lib/automerge-php-loader.php` — lazy PSR-4 loader shim +
     `gutenberg_sync_engines_automerge_php_is_supported()` (PHP ≥ 8.2 +
     mbstring gate).
-- `src/` — client JS/TS (webpack entry `src/index.ts` → `build/sync-engines.js`,
-  externalizes `@wordpress/sync`→`wp.sync` and `yjs`→`wp.sync.Y`):
+- `includes/contracts/` — the engine / transport / storage interfaces, the
+  two registries, the room config and the post-meta storage (the PHP
+  half of what used to be Gutenberg's collaboration library);
+  `includes/collaboration/` — the enable option, the editor
+  announcement (`announcement.php` prints
+  `window._gutenbergSyncEnginesSync`: engine, transports, transport
+  config, user id, `canUnfilteredHtml`, disabled post types, and a
+  per-screen verdict `screen: { postType, postId, supported, reason,
+  lockedBy }` from the `block_editor_settings_all` filter, AFTER meta
+  boxes registered), the post-lock suppression (`post-lock.php`: marks
+  the post unlocked in the editor settings and strips the heartbeat's
+  `lock_error` while the screen is supported; the second user never
+  takes the lock), the list-table / Quick Edit / meta-box compat
+  filters, and the autosave controller override.
+- `src/` — client JS/TS (webpack entry `src/index.ts` → `build/sync-engines.js`
+  plus `build/sync-engines.css` and `build/style-sync-engines.css`; Yjs,
+  `y-protocols`, `lib0` and the sync core are BUNDLED, the `@wordpress/*`
+  packages stay externals):
+  - `sync/` — the sync core (the former `@wordpress/sync` package, moved
+    here verbatim minus its private-API wrapper and the CRDT persistence
+    and snapshot members nothing needs any more): `manager.ts`
+    (`createSyncManager`), `engines.ts` (the engine registry and
+    `getAnnouncedSync()`, which reads the PHP announcement), `providers/`
+    (the transport registry and negotiation), the `SyncEngine` SPI, the
+    Quill delta port.
+  - `host/` — the bridge into core-data: `unlock.ts` (the private-API
+    consent, claimed as `@wordpress/core-data`), `store.ts` (the
+    `gutenberg-sync-engines/host` data store: connection status per
+    entity, the review list, the "supported" flag, and
+    `isCollaborationEnabledForCurrentPost`), `sync-config.ts` (the
+    per-entity sync configuration that used to be built in core-data's
+    `entities.js`), `manager.ts` (the active manager accessor), and
+    `entity-sync-manager.ts` (`installHostBridge()`: resolves the
+    announced engine, negotiates a transport, registers ONE seam manager,
+    wraps the seam handlers with status, review notices and undo
+    selection metadata, and stands down — unload everything, hand undo
+    back, put the lock modal back through the editor's own
+    `updatePostLock` — when the page stops supporting collaboration).
+  - `ui/` — the collaboration UI that used to live in the editor
+    package: presence avatars (a `PinnedItems` fill in the header),
+    canvas carets and selections (portaled into the editor iframe),
+    join/leave/save notices, the connection error modal, the conflict
+    review panel (a `PluginDocumentSettingPanel`) and its canvas cards,
+    and the four collaboration preferences under the
+    `gutenberg-sync-engines` preferences scope. `installUi()` mounts all
+    of it as one `@wordpress/plugins` plugin.
   - `engines/intent-log/` — the **frozen cross-language core** (byte-matched
     against its PHP twin + JSON vectors). Excluded from prettier (eslint
     runs with relaxed rules), but TYPE-CHECKED: the modules are plain
@@ -233,7 +303,8 @@ The framework/plugin split is complete: the framework ships **neither** engines
   - `engines/yjs/` — the shared Yjs client modules (CRDT doc schema,
     snapshot helpers, `undo.ts`, vendored `y-utilities/` — the latter ignored
     by eslint), inherited from the retired yjs-relay engine and used by
-    yjs-server.
+    yjs-server; `engines/yjs/crdt/` — the CRDT document utilities and
+    selection types that used to be core-data's `utils/crdt*.ts`.
   - `providers/{http-polling,http-long-polling,websocket}/` — transports.
   - `awareness/` — SLOW AWARENESS (`docs/awareness-high-latency.md`),
     on when the "Awareness interval" setting is above 0: each tab
@@ -245,21 +316,24 @@ The framework/plugin split is complete: the framework ships **neither** engines
     `editor.BlockListBlock` filter plus a badge layer drawn into the
     canvas document). `registry.ts` installs the field's equality check
     on EVERY awareness instance the engines create, in every mode: a
-    peer can carry the field at any time and core-data throws on an
-    unknown field. Jest: `tests/js/awareness/`.
-  - `framework.ts` — unlocks `@wordpress/sync` private APIs once and re-exports
-    the framework runtime the adapters use.
+    peer can carry the field at any time and the typed awareness throws
+    on an unknown field. Jest: `tests/js/awareness/`. `awareness/typed/`
+    is the TYPED awareness (per-user presence state, cursor positions,
+    the post editor awareness class and the hooks the UI reads), moved
+    from core-data.
 - `gutenberg/` — a **pinned, squashed git subtree of Gutenberg** (source only;
-  see below). The BUNDLED runtime framework: the plugin entry loads
+  see below). The BUNDLED editor: the plugin entry loads
   `gutenberg/gutenberg.php` itself whenever no standalone Gutenberg is
-  active (wp-env no longer mounts it as a separate plugin).
+  active (wp-env no longer mounts it as a separate plugin). Since the
+  RTC removal it is upstream trunk plus the two pending upstream
+  changes (the entity sync seam, and the removal of the experiment).
 - `tests/` — ALL tests, fixtures, and test tooling: `tests/phpunit/` (PHPUnit,
   boots via `tests/bootstrap.php`), `tests/js/` (Jest unit tests + setup files,
   mirroring `src/`; `tests/js/engines/intent-log/` is the frozen core's
   harness), `tests/e2e/` (Playwright specs + config; `specs/http-only/` and
-  `specs/websocket-only/` are the transport-specific suites relocated from the
-  framework, `plugins/` holds the test WebSocket provider fixture plugin,
-  `bin/` the y-websocket sync-server daemon + the `rtc:ws`/`rtc:http` dev
+  `specs/websocket-only/` are the transport-specific suites, `config/fixtures/`
+  the collaboration fixtures (two-user sessions, `setCollaboration`),
+  `plugins/` the fixture plugins, `bin/` the `rtc:ws`/`rtc:http` dev
   switcher for the real websocket transport; see Testing),
   `tests/benchmarks/` (the BENCHMARKS behind one command, `npm run
   bench` — by default the HOST COST REPORT in `tests/benchmarks/host/`,
@@ -304,9 +378,10 @@ The framework/plugin split is complete: the framework ships **neither** engines
 
 ## The `gutenberg/` subtree
 
-The plugin needs the exact Gutenberg framework it was built against, so a
-Gutenberg checkout is vendored as a **squashed git subtree** pinned to a
-specific framework commit. The plugin entry **loads it directly**
+The plugin needs a Gutenberg that carries the entity sync seam and ships
+no collaboration of its own, so a Gutenberg checkout is vendored as a
+**squashed git subtree** pinned to a specific commit. The plugin entry
+**loads it directly**
 (`gutenberg/gutenberg.php`) whenever no standalone Gutenberg plugin is
 active — the same bundled-loading path the release zip uses; neither wp-env
 config mounts the subtree as its own plugin anymore. A standalone Gutenberg,
@@ -317,11 +392,17 @@ when active, always wins (the loader defers; the
 its `node_modules/` and `build/` are gitignored (by Gutenberg's own nested
 `.gitignore`) and must be generated locally (see Setup).
 
-Bump the pin with a squashed subtree pull from the framework checkout:
+Bump the pin with a squashed subtree pull from a Gutenberg checkout:
 
 ```bash
-git subtree pull --prefix gutenberg <path-to-gutenberg-framework-checkout> <branch> --squash
+git subtree pull --prefix gutenberg <path-to-gutenberg-checkout> <branch> --squash
 ```
+
+Until the seam ships in a Gutenberg release, the branch to pull is one
+that carries it (upstream trunk plus the seam and the removal). Once a
+released Gutenberg the plugin can require carries the seam, the subtree
+can go (the plan's P4); on a site WITHOUT Gutenberg that also needs a
+WordPress core release whose core-data carries it.
 
 After a bump, re-run `cd gutenberg && npm install && npm run build`. A subtree
 `npm run build` may touch a tracked snapshot (e.g. readable-js-assets); revert
@@ -336,7 +417,7 @@ npm run build             # This plugin's client bundle → build/sync-engines.j
 
 # Build the vendored Gutenberg once (source-only in git). Heavy (~1-2 min build,
 # plus a large npm install). Required for wp-env to serve working editor assets
-# AND for Jest/typecheck, which resolve @wordpress/sync + yjs from the subtree.
+# AND for Jest/typecheck, which resolve the @wordpress/* packages from the subtree.
 # --ignore-scripts skips Gutenberg's `prepare` hook (`husky install`), which
 # errors out inside a subtree (no .git at the subtree root; husky 7.0.0 has no
 # HUSKY=0 skip). The lifecycle scripts it also skips (icons library, blocks
@@ -413,10 +494,19 @@ Never run `test:php` while an e2e run is in flight against the same env:
 PHPUnit wipes the tests-env database, killing every in-flight spec
 (auth and plugin activation vanish mid-run). Serialize the suites.
 
-`test:js` and `npm run typecheck` resolve `@wordpress/sync`/`yjs` from the
-**built subtree** (see Setup); `WP_SYNC_FRAMEWORK_ROOT=<framework-checkout>`
-points Jest at a live framework checkout instead when co-developing (tsconfig
-paths stay pinned to the subtree).
+`test:js` and `npm run typecheck` resolve the `@wordpress/*` packages (and,
+under Jest, React and the testing library) from the **built subtree** (see
+Setup), so the plugin and the editor share one copy of every stateful
+package; `WP_SYNC_FRAMEWORK_ROOT=<gutenberg-checkout>` points Jest at a
+live checkout instead when co-developing (tsconfig paths stay pinned to
+the subtree). Jest transforms a short list of ES-module-only packages the
+subtree's built code requires (`transformIgnorePatterns` in
+`jest.config.js`: uuid, diff, marked, parsel-js); a new "Unexpected token
+'export'" from under `gutenberg/node_modules` means another one joined
+that list. The suites that came over from core-data and the editor
+(`tests/js/awareness/typed/`, `tests/js/engines/yjs/crdt/`,
+`tests/js/ui/`) were written under Gutenberg's looser TypeScript config;
+Jest runs them, `tsconfig.json` excludes them from the type check.
 
 `test:php` and `test:e2e` need the running TESTS env (`npm run env:tests
 start`) with the subtree built; both target `.wp-env.tests.json` (test:php
@@ -433,8 +523,7 @@ global-setup REST call dying with
 
 All suites are green at head; CI (`.github/workflows/ci.yml`) is the
 source of truth for exact test counts — it certifies every suite
-(including `composer lint`, the websocket e2e lane, and the subtree's
-collaboration-review-panel component Jest) on pushes to `main` and
+(including `composer lint` and the websocket e2e lane) on pushes to `main` and
 PRs. The v1 integration tree passed the full default e2e suite three
 consecutive times with retries disabled; the old login
 flake is closed by the plugin-local hardened fixtures
@@ -448,7 +537,7 @@ conformance suites run separately:
 y-php (`composer --working-dir=includes/lib/y-php test`) and
 automerge-php (`php includes/lib/automerge-php/tests/run.php`).
 
-The transport-specific e2e suites live here (relocated from the framework):
+The transport-specific e2e suites:
 `tests/e2e/specs/http-only/` runs in the default suite; `tests/e2e/specs/
 websocket-only/` runs only under `test:e2e:websocket`, which since the
 V1 A3 rework runs against the plugin's REAL websocket transport:
@@ -464,13 +553,13 @@ secret; `collaboration-websocket-advisory-relay.spec.ts` activates
 the `tests/e2e/plugins/advisory-relay-access-token.php` fixture (same
 secret, socket URL aimed at the relay) for its duration, so the
 relay lane never touches the daemon's auth path.
-(The old y-websocket PEER-relay fixture lane — the test WS provider
-plugin plus `rtc-test-ws-sync-server.mjs` — only demonstrated
-client-merging engines and none remains; the fixture files are kept
-for reference but no suite uses them.) `.wp-env.json` maps
-`tests/e2e/plugins` (that fixture) and
-`gutenberg/packages/e2e-tests/plugins` (framework fixtures like
-sync-connection-error-filter) as plugin dirs. `@y/websocket-server` is pinned
+(The old y-websocket PEER-relay fixture lane only demonstrated
+client-merging engines; its fixture plugin is gone.) `.wp-env.json` maps
+`tests/e2e/plugins` (the fixture plugins, including
+`sync-connection-error-filter` and `meta-box-rtc-compatible`, which
+came over from Gutenberg's e2e fixtures) and
+`gutenberg/packages/e2e-tests/plugins` (Gutenberg's own fixtures) as
+plugin dirs. `@y/websocket-server` is pinned
 EXACTLY to 0.1.1 — 0.1.5 switched to the yjs-14 (`@y/y`) family and its daemon
 crashes (`store.getClock is not a function`) when a 13.x client connects.
 `npm run rtc:ws` is the one-command start for the REAL websocket transport
@@ -594,44 +683,42 @@ they exist so a failure is observable without re-instrumenting:
 - **PHPUnit version:** composer pins `phpunit/phpunit:^9.6`. WordPress's test
   bootstrap calls `parseTestMethodAnnotations()`, removed in PHPUnit 10; letting
   `yoast/phpunit-polyfills` pull 10 makes every PHP test error.
-- **PHP test bootstrap** (`tests/bootstrap.php`) loads the framework before the
-  plugin: it resolves the framework plugin from `WP_SYNC_FRAMEWORK_PLUGIN`
-  (env/const) else defaults to the subtree's wp-env path
-  (`WP_PLUGIN_DIR/gutenberg/gutenberg.php`). Otherwise `WP_Sync_Post_Meta_Storage
-  not found`.
-- **e2e uses the subtree's collaboration fixtures**, so it must load a single
-  `@playwright/test`. The subtree's `npm install` re-creates its own (identical)
-  copy → Playwright "two instances" error. `pretest:e2e` rimrafs the subtree's
-  copy so fixtures resolve up to this plugin's. The runner is `playwright test`
-  **directly** — NOT `wp-scripts test-e2e` (v30's is the jest+puppeteer runner).
+- **PHP test bootstrap** (`tests/bootstrap.php`) loads the bundled Gutenberg
+  before the plugin (the editor packages and `gutenberg_is_experiment_enabled`
+  come from it) and turns `gutenberg_sync_engines_enabled` on for the whole
+  suite; it never touches `gutenberg-experiments`.
+- **e2e must load a single `@playwright/test`.** The subtree's `npm install`
+  re-creates its own (identical) copy → Playwright "two instances" error.
+  `pretest:e2e` rimrafs the subtree's copy. The collaboration fixtures are
+  plugin-local now (`tests/e2e/config/fixtures/`). The runner is
+  `playwright test` **directly** — NOT `wp-scripts test-e2e` (v30's is the
+  jest+puppeteer runner).
 - **e2e global setup is plugin-local** (`tests/e2e/config/global-setup.ts`): auth,
   clean state, and — critically — activating `gutenberg-sync-engines` (by file
   path, worktree-safe), because wp-env leaves mapped plugins INACTIVE on the
-  *tests* site. Without that, collaboration never turns on
-  (`_wpCollaborationEnabled` stays false) and sessions time out. The framework
-  itself needs no activation — the plugin loads its bundled Gutenberg — but the
-  setup DOES deactivate a stale `gutenberg-stub` activation left by an aborted
-  precedence-spec run (an active stub blocks the bundled framework). We deliberately
-  do NOT reuse the subtree's global-setup (it deactivates a Gutenberg test
-  plugin this env doesn't need touched). Ours also runs the WS-provider setup
-  (`tests/e2e/config/rtc-websocket-setup.ts`), gated on
-  `GUTENBERG_RTC_TEST_WS_PROVIDER`.
-- **Collaboration gate:** `wp_is_collaboration_enabled()`, which since
-  WordPress/gutenberg#80658 is just the Gutenberg experiment
-  `gutenberg-real-time-collaboration`. The old `wp_collaboration_enabled`
-  option and the Settings → Writing checkbox are GONE (Gutenberg deletes the
-  option on upgrade), and the client flag is
-  `window.__experimentalEnableRealTimeCollaboration`, not
-  `window._wpCollaborationEnabled`. Tests flip the experiment through
-  `gutenberg-experiments` in `POST /wp/v2/settings` (the fixture's
-  `setCollaboration`) and set `wp_sync_engine` the same way; the CLI tools
-  (`rtc-dev.mjs`, the fuzzer) flip it with a `wp eval` on that option. All of
-  it only works with the plugins active. ACTIVATING this plugin turns the
-  experiment on (`gutenberg_sync_engines_activate`, the entry file's
-  activation hook, per site on a network-wide activation); it does not pin
-  it, so turning the experiment off afterward still works — the e2e
-  fixture's `setCollaboration( false )` teardown and the host benchmark's
-  restore depend on that.
+  *tests* site. Without that, collaboration never turns on (no
+  announcement is printed) and sessions time out. Gutenberg itself needs
+  no activation — the plugin loads its bundled Gutenberg — but the setup
+  DOES deactivate a stale `gutenberg-stub` activation left by an aborted
+  precedence-spec run (an active stub blocks the bundled Gutenberg). We
+  deliberately do NOT reuse the subtree's global-setup (it deactivates a
+  Gutenberg test plugin this env doesn't need touched).
+- **Collaboration gate:** `gutenberg_sync_engines_is_enabled()`, the
+  plugin's own option `gutenberg_sync_engines_enabled` (registered with
+  `show_in_rest`). Tests flip it through `POST /wp/v2/settings` (the
+  fixture's `setCollaboration`) and set `wp_sync_engine` the same way; the
+  CLI tools (`rtc-dev.mjs`, the fuzzer, the host benchmark) flip it with
+  `wp option`. ACTIVATING this plugin turns the option on
+  (`gutenberg_sync_engines_activate`, per site on a network-wide
+  activation), and a one-time upgrade routine turns the OLD Gutenberg
+  experiment `gutenberg-real-time-collaboration` off if the plugin had
+  set it. A standalone Gutenberg that still ships that experiment must
+  keep it off beside this plugin (two managers would compete for the
+  seam; the bridge registers nothing and warns, and the settings screen
+  says so). On the client, `getAnnouncedSync()` returning null means
+  collaboration is off for the page; `screen.supported` false means the
+  server decided this screen cannot collaborate (`screen.reason` says
+  why) and left the post lock in force.
 - **Subtree build layout** (Gutenberg 23.x): built package JS lands at
   `gutenberg/build/scripts/<pkg>/`, not `gutenberg/build/<pkg>/`.
 - **Engine switches vs room lineage:** rooms are stamped with the engine
@@ -745,9 +832,9 @@ applies.
   own accepted canonical rows, proposed as ordinary new changes).
 - **Conflict review is cross-engine**: intent-log through its bespoke
   manager; de-rtc parks escalations as durable `parked` rows and
-  presents them through the framework review panel via
-  `src/engines/review-manager-decorator.ts` (the plumbing any
-  createSyncManager-composed engine can reuse); yjs-server has NO review
+  presents them through the review panel (`src/ui/collaboration-review-panel/`,
+  fed by the `review` source any createSyncManager-composed engine can
+  supply); yjs-server has NO review
   lane by design (CRDT merge detects no conflicts to park).
 - **Shared genesis property seed**: all three engines seed
   `WP_Sync_Post_Genesis_Props::for_post()` (REST-shaped scalars,
@@ -889,8 +976,8 @@ applies.
 
 ## Deep history
 
-The backstory of the multi-month RTC effort (framework/plugin split, engine
-SPI, transports, benchmarks, the subtree/e2e work) lives in this repo:
+The backstory of the multi-month RTC effort (the split out of Gutenberg,
+the engine SPI, transports, benchmarks, the subtree/e2e work) lives in this repo:
 `docs/plan/history.md` records where the project came from, the decisions
 that shape the code today, and what has already been tried and failed;
 `docs/architecture-decisions.md` records the load-bearing early decisions

@@ -1,15 +1,6 @@
-import {
-	privateApis as coreDataPrivateApis,
-	type CoreDataPrivateApis,
-	type PostEditorAwarenessState as ActiveCollaborator,
-	type SelectionEndpoint,
-} from '@wordpress/core-data';
-// @ts-expect-error - No type declarations available for @wordpress/block-editor
-// prettier-ignore
-import { privateApis as blockEditorPrivateApis } from '@wordpress/block-editor';
 import { useEffect, useRef, useState } from '@wordpress/element';
-import { unlock } from '../../lock-unlock';
-import { getAvatarBorderColor } from '../collab-sidebar/utils';
+import { getAvatarBorderColor } from '../utils/avatar-border-color';
+import { isElementVisible } from '../utils/dom';
 import { getAvatarUrl } from './get-avatar-url';
 import {
 	useDebouncedRecompute,
@@ -21,15 +12,14 @@ import {
 } from './cursor-dom-utils';
 import { resolveTargetElement } from './compute-selection';
 import { resolveStartPosition } from './resolve-start-position';
-import { getCollaboratorDisplayName } from '../../utils/get-collaborator-display-name';
-
-const { useActiveCollaborators, useResolvedSelection } =
-	unlock( coreDataPrivateApis );
-const { isElementVisible } = unlock( blockEditorPrivateApis );
-const { SelectionType } = unlock( coreDataPrivateApis ) as Pick<
-	CoreDataPrivateApis,
-	'SelectionType'
->;
+import { getCollaboratorDisplayName } from '../utils/get-collaborator-display-name';
+import {
+	useActiveCollaborators,
+	useResolvedSelection,
+} from '../../awareness/typed/use-post-editor-awareness-state';
+import { SelectionType } from '../../engines/yjs/crdt/crdt-user-selections';
+import type { SelectionEndpoint } from '../../engines/yjs/crdt/types';
+import type { PostEditorAwarenessState as ActiveCollaborator } from '../../awareness/typed/types';
 
 export interface BlockHighlightData {
 	blockId: string;

@@ -1,10 +1,8 @@
 /**
- * Plugin-local collaboration fixtures: the subtree's fixture wiring
- * (user setup, collaboration toggle, teardown) around a hardened
- * CollaborationUtils. The one override closes a full-suite-load flake
- * in the subtree fixture's login flow; the root-cause fix belongs
- * upstream in Gutenberg (human-owned), so the subtree stays pristine
- * and the specs import this module instead.
+ * The collaboration fixtures: user setup, the collaboration toggle and
+ * teardown around a hardened CollaborationUtils (the one override closes
+ * a full-suite-load flake in the utils' login flow). The utils themselves
+ * live in ./fixtures, where they moved from Gutenberg's e2e suite.
  */
 
 /**
@@ -20,7 +18,7 @@ export { expect } from '@wordpress/e2e-test-utils-playwright';
 import CollaborationUtils, {
 	SECOND_USER,
 	setCollaboration,
-} from '../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures/collaboration-utils';
+} from './fixtures/collaboration-utils';
 
 /**
  * Diagnostic CPU throttle (issue #37): the burst-timing failures only fire
@@ -125,10 +123,11 @@ async function stopCpuProfile(
 /**
  * Waits until a page's sync traffic has been quiet for a moment (no
  * request to the sync endpoint for QUIET_MS, checked for up to MAX_MS).
+ * Exported for the fuzzer, whose discovery wait mirrors the one below.
  *
  * @param page The page to watch.
  */
-async function waitForSyncQuiet( page: Page ): Promise< void > {
+export async function waitForSyncQuiet( page: Page ): Promise< void > {
 	const QUIET_MS = 1500;
 	const MAX_MS = 10000;
 	let lastRequestAt = Date.now();

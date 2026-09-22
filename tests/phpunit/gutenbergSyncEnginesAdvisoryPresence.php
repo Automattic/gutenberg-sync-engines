@@ -41,7 +41,7 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 
 		// The storage caches room => storage post id across requests; the
 		// per-test transaction rollback removes the post but not the cache.
-		$reflection = new ReflectionProperty( 'WP_Sync_Post_Meta_Storage', 'storage_post_ids' );
+		$reflection = new ReflectionProperty( 'WP_Sync_Engines_Post_Meta_Storage', 'storage_post_ids' );
 		if ( PHP_VERSION_ID < 80100 ) {
 			$reflection->setAccessible( true );
 		}
@@ -345,7 +345,7 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 	public function test_company_is_also_seen_through_live_sync_awareness() {
 		// A tab without the presence lane (an older bundle) that still
 		// polls shows up in the room's awareness; that counts as company.
-		$storage = gutenberg_sync_engines_storage();
+		$storage = gutenberg_sync_engines_get_storage();
 		$storage->set_awareness_state(
 			$this->room(),
 			array(
@@ -563,7 +563,7 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 	}
 
 	public function test_answer_reports_the_room_head_cursor_once_rows_exist() {
-		$storage = gutenberg_sync_engines_storage();
+		$storage = gutenberg_sync_engines_get_storage();
 		$storage->add_update( $this->room(), 'a' );
 		$storage->add_update( $this->room(), 'b' );
 		// The newest row's id, read the way the transports' cursor is
@@ -584,7 +584,7 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 	/**
 	 * Seeds the room with one stored row so it has something to lose.
 	 */
-	private function seed_room_row( WP_Sync_Storage $storage ): void {
+	private function seed_room_row( WP_Sync_Engines_Storage $storage ): void {
 		$storage->add_update(
 			$this->room(),
 			array(
@@ -596,13 +596,13 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 		$this->assertNotEmpty( $storage->get_updates_after_cursor( $this->room(), 0 ) );
 	}
 
-	private function room_is_empty( WP_Sync_Storage $storage ): bool {
+	private function room_is_empty( WP_Sync_Engines_Storage $storage ): bool {
 		return array() === $storage->get_updates_after_cursor( $this->room(), 0 )
 			&& null === $storage->peek_room_engine( $this->room() );
 	}
 
 	public function test_leaving_as_the_last_tab_resets_the_room() {
-		$storage  = new WP_Sync_Post_Meta_Storage();
+		$storage  = new WP_Sync_Engines_Post_Meta_Storage();
 		$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
 		$this->seed_room_row( $storage );
 		$presence->answer_probe(
@@ -626,7 +626,7 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 	}
 
 	public function test_leaving_while_another_tab_stays_keeps_the_room() {
-		$storage  = new WP_Sync_Post_Meta_Storage();
+		$storage  = new WP_Sync_Engines_Post_Meta_Storage();
 		$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
 		$this->seed_room_row( $storage );
 		$presence->answer_probe(
@@ -647,7 +647,7 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 	}
 
 	public function test_leaving_while_a_live_sync_session_remains_keeps_the_room() {
-		$storage  = new WP_Sync_Post_Meta_Storage();
+		$storage  = new WP_Sync_Engines_Post_Meta_Storage();
 		$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
 		$this->seed_room_row( $storage );
 		$storage->set_awareness_state(
@@ -677,7 +677,7 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 	}
 
 	public function test_a_new_tabs_first_sync_request_resets_an_abandoned_room() {
-		$storage  = new WP_Sync_Post_Meta_Storage();
+		$storage  = new WP_Sync_Engines_Post_Meta_Storage();
 		$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
 		$this->seed_room_row( $storage );
 
@@ -688,7 +688,7 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 	}
 
 	public function test_the_same_tabs_later_requests_never_reset() {
-		$storage  = new WP_Sync_Post_Meta_Storage();
+		$storage  = new WP_Sync_Engines_Post_Meta_Storage();
 		$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
 
 		$presence->note_sync_request( $this->room(), 'tab-a', 1 );
@@ -710,7 +710,7 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 	}
 
 	public function test_a_join_with_someone_present_keeps_the_room() {
-		$storage  = new WP_Sync_Post_Meta_Storage();
+		$storage  = new WP_Sync_Engines_Post_Meta_Storage();
 		$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
 		$this->seed_room_row( $storage );
 		$presence->answer_probe(
@@ -725,7 +725,7 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 	}
 
 	public function test_collection_rooms_are_never_reset() {
-		$storage  = new WP_Sync_Post_Meta_Storage();
+		$storage  = new WP_Sync_Engines_Post_Meta_Storage();
 		$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
 		$room     = 'taxonomy/category';
 		$storage->add_update(
@@ -742,7 +742,7 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 	}
 
 	public function test_the_keep_policy_and_the_filter_both_keep_empty_rooms() {
-		$storage  = new WP_Sync_Post_Meta_Storage();
+		$storage  = new WP_Sync_Engines_Post_Meta_Storage();
 		$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
 		$this->seed_room_row( $storage );
 
@@ -769,7 +769,7 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 	}
 
 	public function test_a_never_written_room_is_not_created_by_a_reset() {
-		$storage  = new WP_Sync_Post_Meta_Storage();
+		$storage  = new WP_Sync_Engines_Post_Meta_Storage();
 		$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
 		$this->assertFalse( $presence->note_sync_request( $this->room(), 'tab-new', 1 ) );
 		$this->assertSame(
@@ -786,7 +786,7 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 	}
 
 	public function test_leave_route_reports_the_reset() {
-		$storage  = new WP_Sync_Post_Meta_Storage();
+		$storage  = new WP_Sync_Engines_Post_Meta_Storage();
 		$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
 		$this->seed_room_row( $storage );
 		$presence->answer_probe(
@@ -813,7 +813,7 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 			)
 		);
 		$room     = 'postType/post:' . $post_id;
-		$storage  = new WP_Sync_Post_Meta_Storage();
+		$storage  = new WP_Sync_Engines_Post_Meta_Storage();
 		$presence = new Gutenberg_Sync_Engines_Advisory_Presence( $storage );
 		$engine   = new WP_De_RTC_Engine( $storage );
 		add_action( 'gutenberg_sync_engines_room_reset', array( 'WP_De_RTC_Engine', 'forget_room_state' ) );
@@ -872,7 +872,7 @@ class Tests_Collaboration_GutenbergSyncEnginesAdvisoryPresence extends WP_UnitTe
 	}
 
 	public function test_presence_reads_never_create_a_room_in_the_plugins_tables() {
-		$storage = gutenberg_sync_engines_storage();
+		$storage = gutenberg_sync_engines_get_storage();
 		$this->assertInstanceOf( 'WP_Sync_Table_Storage', $storage );
 		// Two tabs meet through the heartbeat alone (tokens and mail live
 		// outside the sync storage); the room itself stays unwritten.

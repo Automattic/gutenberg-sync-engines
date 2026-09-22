@@ -2,7 +2,7 @@
 /**
  * Tests for collaborative editing post list row actions.
  *
- * @package gutenberg
+ * @package GutenbergSyncEngines
  * @subpackage Collaboration
  *
  * @group collaboration
@@ -45,7 +45,7 @@ class Tests_Collaboration_PostListCollaborationRowActions extends WP_UnitTestCas
 			'edit' => '<a href="#">Edit</a>',
 		);
 
-		$filtered_actions = gutenberg_post_list_collaboration_row_actions( $actions, $post );
+		$filtered_actions = gutenberg_sync_engines_post_list_row_actions( $actions, $post );
 
 		$this->assertStringContainsString( 'edit-action-text', $filtered_actions['edit'] );
 		$this->assertStringContainsString( 'join-action-text', $filtered_actions['edit'] );
@@ -62,7 +62,7 @@ class Tests_Collaboration_PostListCollaborationRowActions extends WP_UnitTestCas
 
 		$this->assertSame(
 			$actions,
-			gutenberg_post_list_collaboration_row_actions( $actions, $post )
+			gutenberg_sync_engines_post_list_row_actions( $actions, $post )
 		);
 	}
 

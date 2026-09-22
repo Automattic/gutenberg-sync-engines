@@ -1,27 +1,46 @@
+/**
+ * WordPress dependencies
+ */
 import { __, sprintf } from '@wordpress/i18n';
 import { Button } from '@wordpress/components';
+
+/**
+ * Internal dependencies
+ */
 import { canRestoreItems, REASON_LABELS } from './review-data';
+import type { ResolveReviewItems } from './review-data';
+import type { SyncReviewItem } from '../../sync';
+
+interface ReviewGroupProps {
+	/** The group's review items. */
+	items: SyncReviewItem[];
+	onResolve: ResolveReviewItems;
+	/** Jump to the conflicted block. */
+	onNavigate?: () => void;
+	/** Render without resolution verbs. */
+	summaryOnly?: boolean;
+}
 
 /**
  * One conflict group (a unit of edits set aside together): attribution,
  * reason, and the lost content. Resolution verbs are Adopt (take the set-
- * aside edit) and Reject (discard it) — the pending-edit vocabulary. When
+ * aside edit) and Reject (discard it), the pending-edit vocabulary. When
  * `onNavigate` is given, the attribution becomes a link to the conflicted
  * block. With `summaryOnly` the group renders no verbs: it is an index
  * entry, and resolution happens at the inline block card.
  *
- * @param {Object}   props
- * @param {Array}    props.items         The group's review items.
- * @param {Function} props.onResolve     ( items, resolution ) => void.
- * @param {Function} [props.onNavigate]  Jump to the conflicted block.
- * @param {boolean}  [props.summaryOnly] Render without resolution verbs.
+ * @param props             Props.
+ * @param props.items
+ * @param props.onResolve
+ * @param props.onNavigate
+ * @param props.summaryOnly
  */
 export default function ReviewGroup( {
 	items,
 	onResolve,
 	onNavigate,
 	summaryOnly,
-} ) {
+}: ReviewGroupProps ) {
 	const [ first ] = items;
 	const attribution = first.isLocal
 		? __( 'One of your edits was set aside.' )

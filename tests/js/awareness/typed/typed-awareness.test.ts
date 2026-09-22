@@ -1,7 +1,7 @@
 import { describe, expect, test, beforeEach, afterEach } from '@jest/globals';
-import { Y } from '@wordpress/sync';
-import { TypedAwareness } from '../typed-awareness';
-import type { EnhancedState } from '../types';
+import { Y } from '../../../../src/sync';
+import { TypedAwareness } from '../../../../src/awareness/typed/typed-awareness';
+import type { EnhancedState } from '../../../../src/awareness/typed/types';
 
 interface TestState {
 	name: string;

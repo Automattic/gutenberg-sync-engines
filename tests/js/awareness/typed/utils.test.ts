@@ -1,10 +1,18 @@
 import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	jest,
+	test,
+} from '@jest/globals';
+import {
 	areCollaboratorInfosEqual,
 	generateCollaboratorInfo,
 	isCollaboratorInfo,
-} from '../utils';
-import type { CollaboratorInfo } from '../types';
-import type { User } from '../../entity-types';
+} from '../../../../src/awareness/typed/utils';
+import type { CollaboratorInfo } from '../../../../src/awareness/typed/types';
+import type { User } from '@wordpress/core-data';
 
 // Mock window.navigator.userAgent
 const mockUserAgent = ( userAgent: string ) => {

@@ -1,12 +1,19 @@
-import { Y } from '@wordpress/sync';
+import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	jest,
+	test,
+} from '@jest/globals';
+import { Y, CRDT_RECORD_MAP_KEY } from '../../../../../src/sync';
 import {
 	createBlockSelectionHistory,
 	YSelectionType,
 	type YRelativeSelection,
 	type BlockSelectionHistory,
-} from '../block-selection-history';
-import { CRDT_RECORD_MAP_KEY } from '../../sync';
-import type { WPSelection } from '../../types';
+} from '../../../../../src/engines/yjs/crdt/block-selection-history';
+import type { WPSelection } from '../../../../../src/engines/yjs/crdt/types';
 
 /**
  * Helper function to create a simple Y.Doc with blocks for testing

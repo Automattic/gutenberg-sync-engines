@@ -1,11 +1,11 @@
-import { Y } from '@wordpress/sync';
+import { Y } from '../../../sync';
 import {
 	asRichTextOffset,
 	findBlockByClientIdInDoc,
 	getYTextByAttributeKey,
 	richTextOffsetToHtmlIndex,
 } from './crdt-utils';
-import type { WPBlockSelection, WPSelection } from '../types';
+import type { WPBlockSelection, WPSelection } from './types';
 
 // Default size for selection history (not including current selection)
 const SELECTION_HISTORY_DEFAULT_SIZE = 5;

@@ -68,7 +68,7 @@ class Tests_Collaboration_WpWebSocketRoomScan extends WP_UnitTestCase {
 		update_option( 'wp_sync_engine', WP_De_RTC_Engine::SLUG );
 		try {
 			$storage = new WP_Sync_Table_Storage();
-			$sync    = new WP_HTTP_Polling_Sync_Server( $storage );
+			$sync    = new WP_Sync_Engines_HTTP_Polling_Sync_Server( $storage );
 			$server  = new WP_WebSocket_Sync_Server( $sync, '127.0.0.1', 8799 );
 
 			// The subscriber joined and read genesis (its daemon-tracked

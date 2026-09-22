@@ -1,4 +1,4 @@
-import type { CollaboratorInfo } from '@wordpress/core-data';
+import type { CollaboratorInfo } from '../../awareness/typed/types';
 import { __ } from '@wordpress/i18n';
 
 /**

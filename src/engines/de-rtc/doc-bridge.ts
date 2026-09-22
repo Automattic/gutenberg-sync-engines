@@ -11,8 +11,7 @@ import * as Y from 'yjs';
 // content byte-consistent with WordPress saves.
 // eslint-disable-next-line import/no-unresolved, @wordpress/no-unsafe-wp-apis -- Provided at runtime as wp.blocks.
 import { parse, __unstableSerializeAndClean } from '@wordpress/blocks';
-// eslint-disable-next-line import/no-unresolved -- Provided at runtime as wp.sync.
-import type { SyncConfig } from '@wordpress/sync';
+import type { SyncConfig } from '../../sync';
 
 /**
  * Internal dependencies

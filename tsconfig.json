@@ -5,28 +5,17 @@
     "moduleResolution": "node",
     "baseUrl": ".",
     "paths": {
-      "@wordpress/sync": [
-        "./gutenberg/packages/sync/src"
+      "@wordpress/block-editor": [
+        "./gutenberg/node_modules/@wordpress/block-editor/build-types"
       ],
-      "@wordpress/blocks": [
-        "./gutenberg/node_modules/@wordpress/blocks/build-types"
+      "@wordpress/editor": [
+        "./gutenberg/node_modules/@wordpress/editor/build-types"
       ],
-      "@wordpress/block-serialization-default-parser": [
-        "./gutenberg/node_modules/@wordpress/block-serialization-default-parser"
-      ],
-      "@wordpress/data": [
-        "./gutenberg/node_modules/@wordpress/data/build-types"
-      ],
-      "yjs": [
-        "./gutenberg/node_modules/yjs"
-      ],
-      "y-protocols/*": [
-        "./gutenberg/node_modules/y-protocols/*"
-      ],
-      "lib0/*": [
-        "./gutenberg/node_modules/lib0/*"
+      "@wordpress/*": [
+        "./gutenberg/node_modules/@wordpress/*"
       ]
     },
+    "preserveSymlinks": true,
     "jsx": "react-jsx",
     "strict": true,
     "noEmit": true,
@@ -51,6 +40,12 @@
     // Node-only harness modules beside the specs (simulator,
     // genesis-sync-id) ARE checked, via checkJs and their JSDoc.
     "tests/js/**/*.test.js",
-    "tests/js/jest-setup*.js"
+    "tests/js/jest-setup*.js",
+    // The suites that came over from Gutenberg's core-data and editor
+    // packages were written under their looser TypeScript config (Jest
+    // globals, untyped mocks). Jest runs them; the type check skips them.
+    "tests/js/awareness/typed/**",
+    "tests/js/engines/yjs/crdt/**",
+    "tests/js/ui/**"
   ]
 }

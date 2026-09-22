@@ -24,7 +24,7 @@ import {
 	ANNOUNCE_POLL_MIN_GAP_MS,
 	FAST_DISCOVERY_WINDOW_MS,
 } from './config';
-import { ConnectionError, ConnectionErrorCode } from '../../framework';
+import { ConnectionError, ConnectionErrorCode } from '../../sync';
 import {
 	advisoryCoversClients,
 	getChannelPresence,
@@ -58,7 +58,7 @@ import {
 	setSyncClientId,
 } from '../advisory/signaling';
 import { registerSaveFlush } from './save-flush';
-import type { ConnectionStatus, EngineSessionCodec } from '@wordpress/sync';
+import type { ConnectionStatus, EngineSessionCodec } from '../../sync';
 import type { TransportSessionCodec } from '../session-extensions';
 import {
 	installSyncDebug,

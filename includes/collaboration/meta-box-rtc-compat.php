@@ -7,7 +7,7 @@
  * $callback_args parameter of add_meta_box(). Users can also add this
  * flag to third-party meta boxes via the filter_block_editor_meta_boxes hook.
  *
- * @package gutenberg
+ * @package GutenbergSyncEngines
  */
 
 /**
@@ -17,15 +17,20 @@
  * Hooks into filter_block_editor_meta_boxes at a late priority so that it
  * runs after any developer filters that add the flag to third-party meta boxes.
  *
+ * @since n.e.x.t
+ *
  * @global WP_Screen $current_screen WordPress current screen object.
  *
  * @param array $wp_meta_boxes Global meta box state.
  * @return array Unmodified meta box state.
  */
-function gutenberg_inject_rtc_compatible_meta_boxes( $wp_meta_boxes ) {
+function gutenberg_sync_engines_inject_rtc_compatible_meta_boxes( $wp_meta_boxes ) {
 	global $current_screen;
+	static $injected = false;
 
-	if ( ! $current_screen || ! wp_is_collaboration_enabled() ) {
+	// The plugin applies this filter once more, on a copy, to decide the
+	// screen verdict before core renders the boxes; inject only once.
+	if ( $injected || ! $current_screen || ! gutenberg_sync_engines_is_enabled() ) {
 		return $wp_meta_boxes;
 	}
 
@@ -61,6 +66,8 @@ function gutenberg_inject_rtc_compatible_meta_boxes( $wp_meta_boxes ) {
 		}
 	}
 
+	$injected = true;
+
 	if ( ! empty( $meta_boxes_per_location ) ) {
 		// Meta boxes are registered during admin_head, which fires after
 		// admin_enqueue_scripts where the editor instance is created. This
@@ -79,10 +86,10 @@ function gutenberg_inject_rtc_compatible_meta_boxes( $wp_meta_boxes ) {
 		// needs to be manually printed. This mirrors the same fallback
 		// used by WordPress core for setAvailableMetaBoxesPerLocation.
 		if ( wp_script_is( 'wp-edit-post', 'done' ) ) {
-			printf( "<script>\n%s\n</script>\n", trim( $script ) );
+			printf( "<script>\n%s\n</script>\n", trim( $script ) ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Built from wp_json_encode() output.
 		}
 	}
 
 	return $wp_meta_boxes;
 }
-add_filter( 'filter_block_editor_meta_boxes', 'gutenberg_inject_rtc_compatible_meta_boxes', 100 );
+add_filter( 'filter_block_editor_meta_boxes', 'gutenberg_sync_engines_inject_rtc_compatible_meta_boxes', 100 );

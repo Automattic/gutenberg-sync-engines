@@ -56,10 +56,10 @@ if ( ! class_exists( 'WP_WebSocket_Sync_Transport' ) ) {
 		 *
 		 * @since 7.2.0
 		 *
-		 * @param WP_Sync_Storage         $storage Storage backend (unused here).
+		 * @param WP_Sync_Engines_Storage $storage Storage backend (unused here).
 		 * @param WP_Sync_Engine_Registry $engines Engine registry (unused here).
 		 */
-		public function __construct( WP_Sync_Storage $storage, WP_Sync_Engine_Registry $engines ) {
+		public function __construct( WP_Sync_Engines_Storage $storage, WP_Sync_Engine_Registry $engines ) {
 			unset( $storage, $engines );
 			$this->token_controller = new WP_WebSocket_Token_Controller();
 		}

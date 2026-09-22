@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
-import Delta from '../Delta';
+import Delta from '../../../../src/sync/quill-delta/Delta';
 
 describe( 'Delta.diffWithCursor', () => {
 	describe( 'insertions', () => {

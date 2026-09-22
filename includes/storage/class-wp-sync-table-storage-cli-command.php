@@ -55,7 +55,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage_CLI_Command' ) && defined( 'WP_CLI' 
 				}
 			}
 
-			$active = function_exists( 'wp_get_sync_storage' ) ? get_class( wp_get_sync_storage() ) : '(collaboration framework not loaded)';
+			$active = function_exists( 'gutenberg_sync_engines_get_storage' ) ? get_class( gutenberg_sync_engines_get_storage() ) : '(collaboration framework not loaded)';
 
 			$items = array(
 				array(

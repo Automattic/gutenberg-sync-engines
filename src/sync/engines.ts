@@ -8,7 +8,7 @@ import type { SyncManager } from './types';
  * become entity changes. Transports own the MOVEMENT of updates and are
  * registered separately (see providers/).
  *
- * The server announces which engine a site speaks (window._wpCollaborationSync,
+ * The server announces which engine a site speaks (window._gutenbergSyncEnginesSync,
  * enforced per-request with 409 rest_sync_engine_mismatch); the client looks
  * the announced slug up here and refuses to join when it cannot provide it.
  * Swapping engines is therefore a server-side configuration change — clients
@@ -36,13 +36,32 @@ export interface SyncEngineAdapter {
 }
 
 /**
- * The sync configuration announced by the server, if any.
+ * What the server prints for the editor page (`window._gutenbergSyncEnginesSync`):
+ * the engine and transports to negotiate, plus the facts the client needs
+ * about the user and the screen.
  */
+export interface AnnouncedSyncScreen {
+	postType: string | null;
+	postId: number | null;
+	/** The server's verdict: this screen can run collaboration. */
+	supported: boolean;
+	/** Why not, when `supported` is false (empty otherwise). */
+	reason: string;
+	/** Another user holding the post lock, if any. */
+	lockedBy: { name: string; avatar: string } | null;
+}
+
 export interface AnnouncedSync {
 	engine: string;
 	engineProtocol: number;
 	transports: string[];
 	transportProtocol: number;
+	/** Per-transport client settings, keyed by transport slug. */
+	transportConfig: Record< string, Record< string, unknown > >;
+	userId: number;
+	canUnfilteredHtml: boolean;
+	disabledPostTypes: string[];
+	screen: AnnouncedSyncScreen | null;
 }
 
 /*
@@ -141,7 +160,7 @@ export function getEngineAdapters(): Record< string, SyncEngineAdapter > {
  * @return Announced configuration, or null.
  */
 export function getAnnouncedSync(): AnnouncedSync | null {
-	const announced = window._wpCollaborationSync;
+	const announced = globalThis.window?._gutenbergSyncEnginesSync;
 	if (
 		! announced ||
 		'string' !== typeof announced.engine ||
@@ -149,6 +168,8 @@ export function getAnnouncedSync(): AnnouncedSync | null {
 	) {
 		return null;
 	}
+
+	const screen = announced.screen;
 
 	return {
 		engine: announced.engine,
@@ -160,6 +181,46 @@ export function getAnnouncedSync(): AnnouncedSync | null {
 			'number' === typeof announced.transportProtocol
 				? announced.transportProtocol
 				: 1,
+		transportConfig:
+			announced.transportConfig &&
+			'object' === typeof announced.transportConfig
+				? announced.transportConfig
+				: {},
+		userId: 'number' === typeof announced.userId ? announced.userId : 0,
+		canUnfilteredHtml: true === announced.canUnfilteredHtml,
+		disabledPostTypes: Array.isArray( announced.disabledPostTypes )
+			? announced.disabledPostTypes
+			: [],
+		screen:
+			screen && 'object' === typeof screen
+				? {
+						postType:
+							'string' === typeof screen.postType
+								? screen.postType
+								: null,
+						postId:
+							'number' === typeof screen.postId
+								? screen.postId
+								: null,
+						supported: true === screen.supported,
+						reason:
+							'string' === typeof screen.reason
+								? screen.reason
+								: '',
+						lockedBy:
+							screen.lockedBy &&
+							'object' === typeof screen.lockedBy
+								? {
+										name: String(
+											screen.lockedBy.name ?? ''
+										),
+										avatar: String(
+											screen.lockedBy.avatar ?? ''
+										),
+								  }
+								: null,
+				  }
+				: null,
 	};
 }
 

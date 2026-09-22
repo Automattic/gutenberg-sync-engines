@@ -1,6 +1,6 @@
-import type { Y } from '@wordpress/sync';
-import type { SelectionState } from '../types';
-import type { User } from '../entity-types';
+import type { Y } from '../../sync';
+import type { SelectionState } from '../../engines/yjs/crdt/types';
+import type { User } from '@wordpress/core-data';
 
 export type CollaboratorInfo = {
 	// This exclusively represents a WordPress user ID. Fallback collaborators

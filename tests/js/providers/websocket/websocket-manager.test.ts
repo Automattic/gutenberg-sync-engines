@@ -15,7 +15,7 @@ import {
 	websocketManager,
 	resetWebSocketManagerForTesting,
 } from '../../../../src/providers/websocket/websocket-manager';
-import type { EngineSessionCodec } from '@wordpress/sync';
+import type { EngineSessionCodec } from '../../../../src/sync';
 
 jest.mock( '@wordpress/api-fetch' );
 
@@ -99,11 +99,7 @@ describe( 'websocket manager', () => {
 	afterEach( () => {
 		resetWebSocketManagerForTesting();
 		FakeWebSocket.instances = [];
-		delete (
-			window as Window & {
-				_wpCollaborationTransportConfig?: unknown;
-			}
-		 )._wpCollaborationTransportConfig;
+		delete window._gutenbergSyncEnginesSync;
 		( apiFetch as unknown as jest.Mock ).mockReset();
 		mockPolling.registerRoom.mockClear();
 		mockPolling.releaseRoom.mockClear();
@@ -115,12 +111,14 @@ describe( 'websocket manager', () => {
 	} );
 
 	const setup = () => {
-		(
-			window as Window & {
-				_wpCollaborationTransportConfig?: unknown;
-			}
-		 )._wpCollaborationTransportConfig = {
-			websocket: { url: 'ws://localhost:8787' },
+		window._gutenbergSyncEnginesSync = {
+			engine: 'test',
+			engineProtocol: 1,
+			transports: [ 'websocket' ],
+			transportProtocol: 1,
+			transportConfig: {
+				websocket: { url: 'ws://localhost:8787' },
+			},
 		};
 		( window as unknown as { WebSocket: unknown } ).WebSocket =
 			FakeWebSocket as unknown;

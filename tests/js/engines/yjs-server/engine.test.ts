@@ -15,8 +15,7 @@ import {
 	CRDT_STATE_MAP_KEY,
 	CRDT_STATE_MAP_VERSION_KEY as VERSION_KEY,
 } from '../../../../src/engines/yjs/constants';
-// eslint-disable-next-line import/no-unresolved -- Provided at runtime as wp.sync.
-import type { SyncConfig } from '@wordpress/sync';
+import type { SyncConfig } from '../../../../src/sync';
 
 /**
  * A minimal sync config: changes are applied as record-map keys, and editor
@@ -70,18 +69,16 @@ describe( 'createYjsServerEngine › createEntity', () => {
 
 	it( 'does NOT seed the document from the loaded record on hydrate', () => {
 		const entity = makeEntity();
-		const persist = jest.fn();
 
-		entity.hydrate( { title: 'Loaded from REST' } as any, persist );
+		entity.hydrate( { title: 'Loaded from REST' } as any );
 
-		// No seeding, no persistence request: the server owns genesis.
+		// No seeding: the server owns genesis.
 		expect( syncConfig.applyChangesToCRDTDoc ).not.toHaveBeenCalled();
-		expect( persist ).not.toHaveBeenCalled();
 	} );
 
 	it( 'reports no editor changes before the server snapshot arrives', () => {
 		const entity = makeEntity();
-		entity.hydrate( {} as any, jest.fn() );
+		entity.hydrate( {} as any );
 
 		// An empty pre-bootstrap doc must never be dispatched into the
 		// editor (it would read as a mass deletion).
@@ -93,7 +90,7 @@ describe( 'createYjsServerEngine › createEntity', () => {
 
 	it( 'buffers pre-bootstrap local changes and merges them once the snapshot lands', () => {
 		const entity = makeEntity();
-		entity.hydrate( {} as any, jest.fn() );
+		entity.hydrate( {} as any );
 		const session = entity.createSession();
 
 		// Typed before the first poll answered:
@@ -114,7 +111,7 @@ describe( 'createYjsServerEngine › createEntity', () => {
 
 	it( 'applies local changes immediately once bootstrapped', () => {
 		const entity = makeEntity();
-		entity.hydrate( {} as any, jest.fn() );
+		entity.hydrate( {} as any );
 		entity.createSession().receiveUpdate( genesisRow() );
 
 		entity.applyLocalChanges( { subtitle: 'Live edit' } as any, 'editor', {
@@ -129,7 +126,7 @@ describe( 'createYjsServerEngine › createEntity', () => {
 
 	it( 'surfaces remote changes through observers after bootstrap', () => {
 		const entity = makeEntity();
-		entity.hydrate( {} as any, jest.fn() );
+		entity.hydrate( {} as any );
 		const session = entity.createSession();
 
 		const onRemoteChange = jest.fn();
@@ -149,7 +146,7 @@ describe( 'createYjsServerEngine › createEntity', () => {
 
 		function makeBootstrappedEntity() {
 			const entity = makeEntity();
-			entity.hydrate( {} as any, jest.fn() );
+			entity.hydrate( {} as any );
 			entity.createSession().receiveUpdate( genesisRow() );
 			return entity;
 		}

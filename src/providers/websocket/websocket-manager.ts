@@ -11,8 +11,12 @@ import type {
 	ConnectionStatus,
 	EngineSessionCodec,
 	EngineUpdate,
-} from '@wordpress/sync';
-import { ConnectionError, ConnectionErrorCode } from '../../framework';
+} from '../../sync';
+import {
+	ConnectionError,
+	ConnectionErrorCode,
+	getAnnouncedSync,
+} from '../../sync';
 import type { TransportSessionCodec } from '../session-extensions';
 import {
 	installSyncDebug,
@@ -128,16 +132,11 @@ async function fetchToken(): Promise< string > {
  * @return {string} Socket URL.
  */
 function socketUrl(): string {
-	// Announced through the framework's `wp_sync_transport_client_config`
-	// filter (hooked by this plugin's PHP half).
-	const transportConfig = (
-		window as Window & {
-			_wpCollaborationTransportConfig?: {
-				websocket?: { url?: string };
-			};
-		}
-	 )._wpCollaborationTransportConfig;
-	const base = transportConfig?.websocket?.url;
+	// Announced through the `wp_sync_transport_client_config` filter (the
+	// plugin's PHP half supplies the socket URL).
+	const websocketConfig = getAnnouncedSync()?.transportConfig?.websocket;
+	const base =
+		'string' === typeof websocketConfig?.url ? websocketConfig.url : '';
 	if ( ! base ) {
 		throw new Error( 'WebSocket URL is not configured' );
 	}

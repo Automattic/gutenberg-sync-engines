@@ -20,7 +20,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 	 * `{$prefix}sync_room_meta`, one per (room, key), so every write is a
 	 * single-row insert or upsert and nothing touches post caches.
 	 *
-	 * The contract on the WP_Sync_Storage interface holds clause by clause:
+	 * The contract on the WP_Sync_Engines_Storage interface holds clause by clause:
 	 *
 	 * - Cursors only ever grow and are never reused: AUTO_INCREMENT ids,
 	 *   which survive `remove_updates_before_cursor()` trims.
@@ -68,12 +68,12 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 	 * behind `get_cursor()`/`get_update_count()` are refreshed ONLY by
 	 * `get_updates_after_cursor()`, exactly like the post-meta default
 	 * (engines rely on that: never gate anything on them before a read).
-	 * Instances are built fresh per call by `wp_get_sync_storage()`; the
+	 * Instances are built fresh per call by `gutenberg_sync_engines_get_storage()`; the
 	 * class keeps no static state.
 	 *
 	 * @since n.e.x.t
 	 */
-	class WP_Sync_Table_Storage implements WP_Sync_Storage {
+	class WP_Sync_Table_Storage implements WP_Sync_Engines_Storage {
 		/**
 		 * Room-meta key holding the engine lineage stamp. Reserved keys
 		 * start with an underscore; engine keys never do.
@@ -93,7 +93,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 
 		/**
 		 * Room-meta key holding the polling transport's room generation
-		 * token (`WP_HTTP_Polling_Sync_Server::GENERATION_META_KEY`). Named
+		 * token (`WP_Sync_Engines_HTTP_Polling_Sync_Server::GENERATION_META_KEY`). Named
 		 * here because it is one of the two write-once keys the storage may
 		 * serve from the object cache.
 		 *
@@ -650,7 +650,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		/*
 		 * ------------------------------------------------------------------
 		 * Read-only helpers for diagnostics (the rooms CLI, the room-size
-		 * probe). Not part of the WP_Sync_Storage contract; they keep every
+		 * probe). Not part of the WP_Sync_Engines_Storage contract; they keep every
 		 * query against the tables inside this class.
 		 * ------------------------------------------------------------------
 		 */

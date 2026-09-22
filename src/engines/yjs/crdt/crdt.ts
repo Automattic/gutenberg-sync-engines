@@ -1,5 +1,6 @@
 import fastDeepEqual from 'fast-deep-equal/es6/index.js';
 import {
+	// eslint-disable-next-line @wordpress/no-unsafe-wp-apis -- The exact serializer core-data uses for post content.
 	__unstableSerializeAndClean,
 	parse,
 	type Block as WPBlock,
@@ -11,8 +12,8 @@ import {
 	type ObjectType,
 	type SyncConfig,
 	Y,
-} from '@wordpress/sync';
-import { BaseAwareness } from '../awareness/base-awareness';
+} from '../../../sync';
+import { BaseAwareness } from '../../../awareness/typed/base-awareness';
 import {
 	type Block,
 	deserializeBlockAttributes,
@@ -22,9 +23,12 @@ import {
 	type YBlock,
 	type YBlocks,
 } from './crdt-blocks';
-import { type Post } from '../entity-types/post';
-import { CRDT_DOC_META_PERSISTENCE_KEY, CRDT_RECORD_MAP_KEY } from '../sync';
-import type { WPSelection } from '../types';
+import type { Post } from '@wordpress/core-data';
+import {
+	CRDT_DOC_META_PERSISTENCE_KEY,
+	CRDT_RECORD_MAP_KEY,
+} from '../../../sync';
+import type { WPSelection } from './types';
 import {
 	getSelectionHistory,
 	getShiftedSelection,
@@ -135,7 +139,7 @@ export function applyPostChangesToCRDTDoc(
 			return;
 		}
 
-		const newValue = changes[ key ];
+		const newValue = Reflect.get( changes, key );
 
 		// Cannot serialize function values, so cannot sync them. `content` is
 		// often passed as a lazy serializer by `useEntityBlockEditor`; the
@@ -379,7 +383,8 @@ export function getPostChangesFromCRDTDoc(
 				return false;
 			}
 
-			const currentValue = editedRecord[ key ];
+			// eslint-disable-next-line @wordpress/no-unused-vars-before-return -- Every branch below reads it.
+			const currentValue = Reflect.get( editedRecord, key );
 
 			switch ( key ) {
 				case 'blocks': {

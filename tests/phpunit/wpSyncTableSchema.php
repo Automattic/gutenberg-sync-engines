@@ -124,10 +124,10 @@ class Tests_Collaboration_WpSyncTableSchema extends WP_UnitTestCase {
 	public function test_the_storage_filter_falls_back_to_post_meta_while_the_tables_are_unusable() {
 		update_option( WP_Sync_Table_Schema::DB_VERSION_OPTION, 0 );
 
-		$this->assertInstanceOf( 'WP_Sync_Post_Meta_Storage', wp_get_sync_storage() );
+		$this->assertInstanceOf( 'WP_Sync_Engines_Post_Meta_Storage', gutenberg_sync_engines_get_storage() );
 
 		update_option( WP_Sync_Table_Schema::DB_VERSION_OPTION, WP_Sync_Table_Schema::DB_VERSION );
-		$this->assertInstanceOf( 'WP_Sync_Table_Storage', wp_get_sync_storage() );
+		$this->assertInstanceOf( 'WP_Sync_Table_Storage', gutenberg_sync_engines_get_storage() );
 	}
 
 	public function test_delete_all_rows_empties_every_room_but_keeps_the_tables() {

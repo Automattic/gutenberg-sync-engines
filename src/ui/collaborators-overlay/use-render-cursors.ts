@@ -1,16 +1,8 @@
-import { privateApis as coreDataPrivateApis } from '@wordpress/core-data';
-import type {
-	CoreDataPrivateApis,
-	ResolvedSelection,
-	SelectionEndpoint,
-	PostEditorAwarenessState as ActiveCollaborator,
-} from '@wordpress/core-data';
 import { useSelect } from '@wordpress/data';
 import { useEffect, useState } from '@wordpress/element';
 import { store as preferencesStore } from '@wordpress/preferences';
-import { unlock } from '../../lock-unlock';
 import { getAvatarUrl } from './get-avatar-url';
-import { getAvatarBorderColor } from '../collab-sidebar/utils';
+import { getAvatarBorderColor } from '../utils/avatar-border-color';
 import { computeSelectionVisual } from './compute-selection';
 import {
 	useDebouncedRecompute,
@@ -18,14 +10,18 @@ import {
 } from './use-debounced-recompute';
 import { blockContainerOf } from './cursor-dom-utils';
 import type { SelectionRect } from './cursor-dom-utils';
-import { getCollaboratorDisplayName } from '../../utils/get-collaborator-display-name';
-
-const { useActiveCollaborators, useResolvedSelection } =
-	unlock( coreDataPrivateApis );
-const { SelectionType } = unlock( coreDataPrivateApis ) as Pick<
-	CoreDataPrivateApis,
-	'SelectionType'
->;
+import { getCollaboratorDisplayName } from '../utils/get-collaborator-display-name';
+import { PREFERENCES_SCOPE } from '../preferences';
+import {
+	useActiveCollaborators,
+	useResolvedSelection,
+} from '../../awareness/typed/use-post-editor-awareness-state';
+import { SelectionType } from '../../engines/yjs/crdt/crdt-user-selections';
+import type {
+	ResolvedSelection,
+	SelectionEndpoint,
+} from '../../engines/yjs/crdt/types';
+import type { PostEditorAwarenessState as ActiveCollaborator } from '../../awareness/typed/types';
 
 export type { SelectionRect };
 
@@ -75,7 +71,10 @@ export function useRenderCursors(
 
 	const showOwnCursor = useSelect(
 		( select ) =>
-			select( preferencesStore ).get( 'core', 'showCollaborationCursor' ),
+			select( preferencesStore ).get(
+				PREFERENCES_SCOPE,
+				'showCollaborationCursor'
+			),
 		[]
 	);
 

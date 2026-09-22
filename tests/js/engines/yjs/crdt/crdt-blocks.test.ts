@@ -1,4 +1,4 @@
-import { Y } from '@wordpress/sync';
+import { Y } from '../../../../../src/sync';
 import {
 	describe,
 	expect,
@@ -100,10 +100,16 @@ import {
 	type YBlock,
 	type YBlocks,
 	type YBlockAttributes,
-} from '../crdt-blocks';
-import { getCachedRichTextData, createRichTextDataCache } from '../crdt-text';
-import { asHtmlStringIndex, asRichTextOffset } from '../crdt-utils';
-import { type WPBlockSelection } from '../../types';
+} from '../../../../../src/engines/yjs/crdt/crdt-blocks';
+import {
+	getCachedRichTextData,
+	createRichTextDataCache,
+} from '../../../../../src/engines/yjs/crdt/crdt-text';
+import {
+	asHtmlStringIndex,
+	asRichTextOffset,
+} from '../../../../../src/engines/yjs/crdt/crdt-utils';
+import { type WPBlockSelection } from '../../../../../src/engines/yjs/crdt/types';
 
 function createCursorSelection( offset: number ): WPBlockSelection {
 	return {

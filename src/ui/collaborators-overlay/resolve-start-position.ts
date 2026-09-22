@@ -1,15 +1,8 @@
-import {
-	privateApis as coreDataPrivateApis,
-	type CoreDataPrivateApis,
-	type ResolvedSelection,
-	type SelectionState,
-} from '@wordpress/core-data';
-import { unlock } from '../../lock-unlock';
-
-const { SelectionType } = unlock( coreDataPrivateApis ) as Pick<
-	CoreDataPrivateApis,
-	'SelectionType'
->;
+import { SelectionType } from '../../engines/yjs/crdt/crdt-user-selections';
+import type {
+	ResolvedSelection,
+	SelectionState,
+} from '../../engines/yjs/crdt/types';
 
 /**
  * Reduce any awareness selection shape down to a single resolvable

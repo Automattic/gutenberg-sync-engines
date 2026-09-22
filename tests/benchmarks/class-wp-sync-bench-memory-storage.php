@@ -1,6 +1,6 @@
 <?php
 /**
- * In-memory WP_Sync_Storage for the sync-engine benchmark.
+ * In-memory WP_Sync_Engines_Storage for the sync-engine benchmark.
  *
  * The production engines are benchmarked THROUGH THE REAL SEAM
  * (handle_updates / get_updates_since); only storage is swapped for an
@@ -24,7 +24,7 @@ if ( ! class_exists( 'WP_Sync_Bench_Memory_Storage' ) ) {
 	/**
 	 * Fast in-memory storage backend for benchmarking.
 	 */
-	class WP_Sync_Bench_Memory_Storage implements WP_Sync_Storage {
+	class WP_Sync_Bench_Memory_Storage implements WP_Sync_Engines_Storage {
 		/**
 		 * Per-room ordered updates: marker => JSON string (stored the way the
 		 * postmeta store persists them, so byte accounting matches the wire).

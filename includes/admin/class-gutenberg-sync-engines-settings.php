@@ -632,6 +632,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			// One untitled section: the field labels are the headings.
 			add_settings_section( 'gutenberg_sync_engines_main', '', '__return_null', self::PAGE );
 			$fields = array(
+				array( GUTENBERG_SYNC_ENGINES_ENABLED_OPTION, __( 'Real-time collaboration', 'gutenberg-sync-engines' ), 'render_enabled_field' ),
 				array( 'wp_sync_engine', __( 'Sync engine', 'gutenberg-sync-engines' ), 'render_engine_field' ),
 				array( self::DE_RTC_COMMIT_INTERVAL_OPTION, __( 'DE-RTC commit cadence', 'gutenberg-sync-engines' ), 'render_commit_interval_field' ),
 				array( self::DELIVERY_FIELD, __( 'Transport', 'gutenberg-sync-engines' ), 'render_delivery_field' ),
@@ -645,6 +646,23 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			foreach ( $fields as list( $id, $label, $renderer ) ) {
 				add_settings_field( $id, $label, array( $this, $renderer ), self::PAGE, 'gutenberg_sync_engines_main' );
 			}
+		}
+
+		/**
+		 * Renders the on/off checkbox for real-time collaboration.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return void
+		 */
+		public function render_enabled_field(): void {
+			printf(
+				'<label><input type="checkbox" name="%1$s" value="1" %2$s /> %3$s</label><p class="description">%4$s</p>',
+				esc_attr( GUTENBERG_SYNC_ENGINES_ENABLED_OPTION ),
+				checked( gutenberg_sync_engines_is_enabled(), true, false ),
+				esc_html__( 'Let several people edit the same post at the same time.', 'gutenberg-sync-engines' ),
+				esc_html__( 'When this is off, the editor uses the classic post lock: one person edits a post at a time.', 'gutenberg-sync-engines' )
+			);
 		}
 
 		/**
@@ -1139,27 +1157,34 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			echo '<div class="wrap">';
 			echo '<h1>' . esc_html( get_admin_page_title() ) . '</h1>';
 
-			/*
-			 * Nothing on this screen does anything while real-time
-			 * collaboration is off, and since WordPress/gutenberg#80658 it is
-			 * off by default and lives behind a Gutenberg experiment rather
-			 * than a Settings → Writing checkbox. Say so, and link there,
-			 * instead of leaving an engine picker that quietly has no effect.
-			 */
-			$collaboration_enabled = ! function_exists( 'wp_is_collaboration_enabled' ) || wp_is_collaboration_enabled();
+			// Nothing else on this screen does anything while collaboration
+			// is off. Say so instead of leaving an engine picker that quietly
+			// has no effect.
+			$collaboration_enabled = gutenberg_sync_engines_is_enabled();
 			if ( ! $collaboration_enabled ) {
+				printf(
+					'<div class="notice notice-warning"><p>%1$s</p></div>',
+					esc_html__( 'Real-time collaboration is turned off, so the settings below have no effect until you turn it on.', 'gutenberg-sync-engines' )
+				);
+			}
+
+			/*
+			 * A standalone Gutenberg (this plugin's bundled copy was not
+			 * loaded) that still ships the old experiment would register a
+			 * second collaboration manager next to this plugin's, and the two
+			 * would compete for the same posts. Ask for the experiment to be
+			 * turned off.
+			 */
+			if ( self::standalone_gutenberg_experiment_is_on() ) {
 				printf(
 					'<div class="notice notice-warning"><p>%1$s</p></div>',
 					wp_kses(
 						sprintf(
 							/* translators: %s: link to the Gutenberg experiments screen. */
-							__( 'Real-time collaboration is turned off, so these settings have no effect yet. Enable the <strong>Real-time collaboration</strong> experiment on the %s screen.', 'gutenberg-sync-engines' ),
+							__( 'The Gutenberg plugin has its own real-time collaboration experiment turned on. Turn it off on the %s screen so it does not compete with this plugin.', 'gutenberg-sync-engines' ),
 							'<a href="' . esc_url( admin_url( 'admin.php?page=gutenberg-experiments' ) ) . '">' . esc_html__( 'Gutenberg experiments', 'gutenberg-sync-engines' ) . '</a>'
 						),
-						array(
-							'strong' => array(),
-							'a'      => array( 'href' => array() ),
-						)
+						array( 'a' => array( 'href' => array() ) )
 					)
 				);
 			}
@@ -1171,6 +1196,26 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			echo '</form>';
 			$this->render_test_script( $collaboration_enabled );
 			echo '</div>';
+		}
+
+		/**
+		 * Whether a standalone Gutenberg is active with its old real-time
+		 * collaboration experiment turned on.
+		 *
+		 * The bundled Gutenberg has no such experiment (and sets the
+		 * GUTENBERG_SYNC_ENGINES_BUNDLED_GUTENBERG constant when it loads),
+		 * so a true here means the site runs its own Gutenberg plugin and it
+		 * predates the removal.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return bool Whether the experiment is on in a standalone Gutenberg.
+		 */
+		public static function standalone_gutenberg_experiment_is_on(): bool {
+			if ( ! function_exists( 'gutenberg_is_experiment_enabled' ) || defined( 'GUTENBERG_SYNC_ENGINES_BUNDLED_GUTENBERG' ) ) {
+				return false;
+			}
+			return gutenberg_is_experiment_enabled( 'gutenberg-real-time-collaboration' );
 		}
 
 		/**

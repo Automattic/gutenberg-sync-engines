@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests for the plugin's table storage: the WP_Sync_Storage contract
+ * Tests for the plugin's table storage: the WP_Sync_Engines_Storage contract
  * (cursors, ordering, lineage, awareness) plus the optional capabilities
  * engines feature-detect (room meta, non-creating reads, reset), all
  * against the real tables.
@@ -19,8 +19,8 @@ class Tests_Collaboration_WpSyncTableStorage extends WP_UnitTestCase {
 	}
 
 	public function test_the_plugin_substitutes_table_storage_for_the_framework_default() {
-		$this->assertInstanceOf( 'WP_Sync_Table_Storage', wp_get_sync_storage() );
-		$this->assertInstanceOf( 'WP_Sync_Table_Storage', gutenberg_sync_engines_storage() );
+		$this->assertInstanceOf( 'WP_Sync_Table_Storage', gutenberg_sync_engines_get_storage() );
+		$this->assertInstanceOf( 'WP_Sync_Table_Storage', gutenberg_sync_engines_get_storage() );
 	}
 
 	public function test_a_storage_another_plugin_substituted_is_respected() {
@@ -29,7 +29,7 @@ class Tests_Collaboration_WpSyncTableStorage extends WP_UnitTestCase {
 			return $other;
 		};
 		add_filter( '__unstable_wp_sync_storage', $early, 5 );
-		$resolved = wp_get_sync_storage();
+		$resolved = gutenberg_sync_engines_get_storage();
 		remove_filter( '__unstable_wp_sync_storage', $early, 5 );
 
 		$this->assertSame( $other, $resolved );
@@ -488,7 +488,7 @@ class Tests_Collaboration_WpSyncTableStorage extends WP_UnitTestCase {
 /**
  * A stand-in "other plugin" storage for the substitution test.
  */
-class WP_Sync_Bench_Memory_Storage_Stub implements WP_Sync_Storage {
+class WP_Sync_Bench_Memory_Storage_Stub implements WP_Sync_Engines_Storage {
 	public function add_update( string $room, $update ): bool {
 		return true;
 	}

@@ -1,5 +1,27 @@
 import { render, screen } from '@testing-library/react';
-import { InsertionCardBody } from '../markers';
+import { InsertionCardBody } from '../../../../src/ui/collaboration-review-panel/markers';
+
+// The components package cannot load under this Jest setup (an ESM
+// dependency); a plain button carries what these tests need.
+jest.mock( '@wordpress/components', () => ( {
+	Button: ( { children, onClick, label, ...props } ) => (
+		<button
+			type="button"
+			onClick={ onClick }
+			aria-label={ label }
+			data-variant={ props.variant }
+		>
+			{ children }
+		</button>
+	),
+	Popover: ( { children } ) => <div>{ children }</div>,
+} ) );
+// The editor stores pull in the components package too; the tests only
+// need the store names.
+jest.mock( '@wordpress/editor', () => ( { store: 'core/editor' } ) );
+jest.mock( '@wordpress/block-editor', () => ( {
+	store: 'core/block-editor',
+} ) );
 
 const insertionItem = () => ( {
 	id: 'ins-1',
@@ -17,7 +39,7 @@ const insertionItem = () => ( {
 
 describe( 'InsertionCardBody', () => {
 	afterEach( () => {
-		delete window._wpCollaborationCanUnfilteredHtml;
+		delete window._gutenbergSyncEnginesSync;
 	} );
 
 	it( 'previews the proposed markup as inert text, never live DOM', () => {
@@ -30,11 +52,15 @@ describe( 'InsertionCardBody', () => {
 		// Finding the literal tag as TEXT proves it was not parsed into a
 		// live element — an innerHTML'd script would not have a matching
 		// text node.
-		expect( screen.getByText( '<script>alert(1)</script>' ) ).toBeVisible();
+		expect( screen.getByText( '<script>alert(1)</script>' ) ).toBeTruthy();
 	} );
 
 	it( 'gates Approve on the unfiltered_html capability; Discard is universal', () => {
-		window._wpCollaborationCanUnfilteredHtml = false;
+		window._gutenbergSyncEnginesSync = {
+			engine: 'intent-log',
+			engineProtocol: 1,
+			canUnfilteredHtml: false,
+		};
 		const { rerender } = render(
 			<InsertionCardBody
 				item={ insertionItem() }
@@ -43,12 +69,16 @@ describe( 'InsertionCardBody', () => {
 		);
 		expect(
 			screen.queryByRole( 'button', { name: 'Approve' } )
-		).not.toBeInTheDocument();
+		).toBeNull();
 		expect(
 			screen.getByRole( 'button', { name: 'Discard' } )
-		).toBeVisible();
+		).toBeTruthy();
 
-		window._wpCollaborationCanUnfilteredHtml = true;
+		window._gutenbergSyncEnginesSync = {
+			engine: 'intent-log',
+			engineProtocol: 1,
+			canUnfilteredHtml: true,
+		};
 		rerender(
 			<InsertionCardBody
 				item={ insertionItem() }
@@ -57,6 +87,6 @@ describe( 'InsertionCardBody', () => {
 		);
 		expect(
 			screen.getByRole( 'button', { name: 'Approve' } )
-		).toBeVisible();
+		).toBeTruthy();
 	} );
 } );

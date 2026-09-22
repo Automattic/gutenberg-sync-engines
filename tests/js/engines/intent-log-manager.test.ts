@@ -67,7 +67,7 @@ import {
 	resetEngineAdaptersForTesting,
 	resolveEngineAdapter,
 	resetProviderCreatorsForTesting,
-} from '../../../src/framework';
+} from '../../../src/sync';
 import {
 	createDocument,
 	getBlock,
@@ -85,7 +85,7 @@ import type {
 	EngineUpdate,
 	ProviderCreator,
 	RecordHandlers,
-} from '@wordpress/sync';
+} from '../../../src/sync';
 
 /**
  * A capturing fake transport provider: records the codec it received and
@@ -124,7 +124,6 @@ function makeHandlers(): RecordHandlers & { edits: unknown[] } {
 		getEditedRecord:
 			( async () => ( {} ) ) as RecordHandlers[ 'getEditedRecord' ],
 		onStatusChange: jest.fn() as RecordHandlers[ 'onStatusChange' ],
-		persistCRDTDoc: jest.fn() as RecordHandlers[ 'persistCRDTDoc' ],
 		refetchRecord: ( async () => {} ) as RecordHandlers[ 'refetchRecord' ],
 		restoreUndoMeta: jest.fn() as RecordHandlers[ 'restoreUndoMeta' ],
 	};
@@ -161,13 +160,11 @@ describe( 'intent-log manager', () => {
 		removeFilter( FILTER, HOOK );
 		resetEngineAdaptersForTesting();
 		resetProviderCreatorsForTesting();
-		delete window.__experimentalEnableRealTimeCollaboration;
-		delete window._wpCollaborationSync;
+		delete window._gutenbergSyncEnginesSync;
 	} );
 
 	async function loadManagedEntity( record: Record< string, unknown > = {} ) {
 		const transport = makeFakeTransport();
-		window.__experimentalEnableRealTimeCollaboration = true;
 		addFilter( FILTER, HOOK, () => [ transport.creator ] );
 
 		const manager = createIntentLogManager();
@@ -184,7 +181,7 @@ describe( 'intent-log manager', () => {
 
 	it( 'registers via registerSyncEngine and resolves from the announcement', () => {
 		registerSyncEngine( createIntentLogEngineAdapter() );
-		window._wpCollaborationSync = {
+		window._gutenbergSyncEnginesSync = {
 			engine: INTENT_LOG_ENGINE_SLUG,
 			engineProtocol: INTENT_LOG_ENGINE_PROTOCOL,
 			transports: [ 'http-polling' ],
@@ -2028,7 +2025,6 @@ describe( 'intent-log manager', () => {
 
 	async function loadManagedCollection() {
 		const transport = makeFakeTransport();
-		window.__experimentalEnableRealTimeCollaboration = true;
 		addFilter( FILTER, HOOK, () => [ transport.creator ] );
 
 		const manager = createIntentLogManager();
@@ -2492,7 +2488,6 @@ describe( 'intent-log manager', () => {
 
 	it( 'attr-lane blocks (core/html) never author a wire-inexpressible undefined set_attr', async () => {
 		const transport = makeFakeTransport();
-		window.__experimentalEnableRealTimeCollaboration = true;
 		addFilter( FILTER, HOOK, () => [ transport.creator ] );
 		const manager = createIntentLogManager();
 		const handlers = makeHandlers();
@@ -2586,7 +2581,6 @@ describe( 'intent-log manager', () => {
 
 	it( 'raw-content blocks (core/html) sync through the content field in both directions', async () => {
 		const transport = makeFakeTransport();
-		window.__experimentalEnableRealTimeCollaboration = true;
 		addFilter( FILTER, HOOK, () => [ transport.creator ] );
 		const manager = createIntentLogManager();
 		const handlers = makeHandlers();
@@ -2683,7 +2677,6 @@ describe( 'intent-log manager', () => {
 
 	it( 'classic (core/freeform) blocks hydrate to a raw content attribute', async () => {
 		const transport = makeFakeTransport();
-		window.__experimentalEnableRealTimeCollaboration = true;
 		addFilter( FILTER, HOOK, () => [ transport.creator ] );
 		const manager = createIntentLogManager();
 		const handlers = makeHandlers();
@@ -2938,13 +2931,11 @@ describe( 'intent-log manager awareness', () => {
 		removeFilter( FILTER, HOOK );
 		resetEngineAdaptersForTesting();
 		resetProviderCreatorsForTesting();
-		delete window.__experimentalEnableRealTimeCollaboration;
-		delete window._wpCollaborationSync;
+		delete window._gutenbergSyncEnginesSync;
 	} );
 
 	it( 'constructs the syncConfig awareness over a stub doc and bridges it to the wire', async () => {
 		const transport = makeFakeTransport();
-		window.__experimentalEnableRealTimeCollaboration = true;
 		addFilter( FILTER, HOOK, () => [ transport.creator ] );
 
 		const created: Awareness[] = [];

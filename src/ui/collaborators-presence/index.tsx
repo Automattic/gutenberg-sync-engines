@@ -1,21 +1,17 @@
 import { Button } from '@wordpress/components';
 import { useMemo, useState } from '@wordpress/element';
-import {
-	privateApis,
-	type PostEditorAwarenessState,
-} from '@wordpress/core-data';
 import { __, sprintf } from '@wordpress/i18n';
 import Avatar from './avatar';
 import AvatarGroup from './avatar-group';
 import { CollaboratorsList } from './list';
-import { unlock } from '../../lock-unlock';
 import { getAvatarUrl } from '../collaborators-overlay/get-avatar-url';
-import { getAvatarBorderColor } from '../collab-sidebar/utils';
+import { getAvatarBorderColor } from '../utils/avatar-border-color';
 import { createCursorRegistry } from '../collaborators-overlay/cursor-registry';
 import { CollaboratorsOverlay } from '../collaborators-overlay';
-import { getCollaboratorDisplayName } from '../../utils/get-collaborator-display-name';
-
-const { useActiveCollaborators } = unlock( privateApis );
+import { getCollaboratorDisplayName } from '../utils/get-collaborator-display-name';
+import { useActiveCollaborators } from '../../awareness/typed/use-post-editor-awareness-state';
+import type { PostEditorAwarenessState } from '../../awareness/typed/types';
+import './styles/collaborators-presence.scss';
 
 interface CollaboratorsPresenceProps {
 	postId: number | null;
@@ -34,10 +30,8 @@ export function CollaboratorsPresence( {
 	postId,
 	postType,
 }: CollaboratorsPresenceProps ) {
-	const activeCollaborators = useActiveCollaborators(
-		postId,
-		postType
-	) as PostEditorAwarenessState[];
+	const activeCollaborators: PostEditorAwarenessState[] =
+		useActiveCollaborators( postId, postType );
 
 	const otherActiveCollaborators = activeCollaborators.filter(
 		( c ) => ! c.isMe

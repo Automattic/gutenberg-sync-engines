@@ -11,15 +11,14 @@ import type { HistoryRecord } from '@wordpress/undo-manager';
 /**
  * Internal dependencies
  */
-import { LOCAL_EDITOR_ORIGIN } from '../../framework';
+import { LOCAL_EDITOR_ORIGIN } from '../../sync';
 import { YMultiDocUndoManager } from './y-utilities/y-multidoc-undomanager';
 import type {
 	ObjectData,
 	RecordHandlers,
 	SyncUndoManager,
 	SyncUndoStackState,
-	// eslint-disable-next-line import/no-unresolved -- Provided at runtime as wp.sync.
-} from '@wordpress/sync';
+} from '../../sync';
 
 type UndoMetaHandlers = Pick<
 	RecordHandlers,

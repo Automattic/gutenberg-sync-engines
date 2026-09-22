@@ -22,7 +22,7 @@ class Tests_Collaboration_WpSyncTransportRegistry extends WP_UnitTestCase {
 		$registry = $this->registry();
 
 		$this->assertInstanceOf(
-			'WP_HTTP_Polling_Sync_Server',
+			'WP_Sync_Engines_HTTP_Polling_Sync_Server',
 			$registry->get_transport( 'http-polling' )
 		);
 		$this->assertSame( 'http-polling', $registry->get_active_slug() );

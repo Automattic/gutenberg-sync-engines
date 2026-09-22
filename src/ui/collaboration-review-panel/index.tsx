@@ -1,7 +1,12 @@
+/**
+ * WordPress dependencies
+ */
 import { useDispatch } from '@wordpress/data';
 import { __, _n, sprintf } from '@wordpress/i18n';
-import { PanelBody } from '@wordpress/components';
-import { store as blockEditorStore } from '@wordpress/block-editor';
+
+/**
+ * Internal dependencies
+ */
 import ReviewGroup from './review-group';
 import {
 	groupByUnit,
@@ -9,40 +14,45 @@ import {
 	useReviewData,
 	useResolveReviewItems,
 } from './review-data';
+import { blockEditorActions } from '../stores';
+import './style.scss';
 
 /**
  * A summary-only index of edits that were set aside for review after a
  * sync conflict (open proposals). Resolution happens at the inline block
- * card in the canvas — an anchored conflict here is a link that navigates
+ * card in the canvas: an anchored conflict here is a link that navigates
  * to its block. Only conflicts whose block no longer exists carry their
  * Adopt/Reject verbs in the panel, since they have no card to resolve at.
+ *
+ * Rendered inside the plugin's document settings panel, so this is the
+ * panel's body only.
  */
 export default function CollaborationReviewPanel() {
 	const { postType, postId, items, clientIdByTarget, clientIdByIndex } =
 		useReviewData();
 	const onResolve = useResolveReviewItems( postType, postId );
-	const { selectBlock, flashBlock } = useDispatch( blockEditorStore );
+	const { selectBlock, flashBlock } = blockEditorActions( useDispatch );
 
 	if ( ! items.length ) {
-		return null;
+		return (
+			<p className="editor-collaboration-review-panel__description">
+				{ __( 'No edits are waiting for review.' ) }
+			</p>
+		);
 	}
 
 	const groups = groupByUnit( items );
 
 	return (
-		<PanelBody
-			title={ sprintf(
-				/* translators: %d: number of conflicting edits awaiting review. */
-				__( 'Collaboration conflicts (%d)' ),
-				items.length
-			) }
-			className="editor-collaboration-review-panel"
-			initialOpen
-		>
+		<div className="editor-collaboration-review-panel__body">
 			<p className="editor-collaboration-review-panel__description">
-				{ _n(
-					'This edit conflicted with a collaborator’s changes and was set aside. Review it at its block.',
-					'These edits conflicted with collaborators’ changes and were set aside. Review them at their blocks.',
+				{ sprintf(
+					/* translators: %d: number of conflicting edits awaiting review. */
+					_n(
+						'%d edit conflicted with a collaborator’s changes and was set aside. Review it at its block.',
+						'%d edits conflicted with collaborators’ changes and were set aside. Review them at their blocks.',
+						items.length
+					),
 					items.length
 				) }
 			</p>
@@ -70,6 +80,6 @@ export default function CollaborationReviewPanel() {
 					/>
 				);
 			} ) }
-		</PanelBody>
+		</div>
 	);
 }

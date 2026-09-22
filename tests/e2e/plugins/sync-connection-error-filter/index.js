@@ -10,15 +10,11 @@
 	const { __ } = wp.i18n;
 	const { registerPlugin } = wp.plugins;
 
-	const { unlock } =
-		wp.privateApis.__dangerousOptInToUnstableAPIsOnlyForCoreModules(
-			'I acknowledge private features are not for use in themes or plugins and doing so will break in the next version of WordPress.',
-			'@wordpress/core-data'
-		);
-
 	function CustomConnectionLimitModal() {
+		// The plugin's host store carries the connection status.
 		const connectionStatus = useSelect( function ( select ) {
-			return unlock( select( 'core' ) ).getSyncConnectionStatus() || null;
+			const host = select( 'gutenberg-sync-engines/host' );
+			return ( host && host.getSyncConnectionStatus() ) || null;
 		}, [] );
 
 		const error =

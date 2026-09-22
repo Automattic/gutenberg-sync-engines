@@ -162,9 +162,9 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		 * Storage backend.
 		 *
 		 * @since 0.2.0
-		 * @var WP_Sync_Storage
+		 * @var WP_Sync_Engines_Storage
 		 */
-		private WP_Sync_Storage $storage;
+		private WP_Sync_Engines_Storage $storage;
 
 		/**
 		 * Per-request cache of loaded room documents, keyed by room:
@@ -190,9 +190,9 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 		 *
 		 * @since 0.2.0
 		 *
-		 * @param WP_Sync_Storage $storage Storage backend.
+		 * @param WP_Sync_Engines_Storage $storage Storage backend.
 		 */
-		public function __construct( WP_Sync_Storage $storage ) {
+		public function __construct( WP_Sync_Engines_Storage $storage ) {
 			$this->storage = $storage;
 			require_once dirname( __DIR__, 2 ) . '/lib/y-php-loader.php';
 			gutenberg_sync_engines_load_y_php();
@@ -1135,7 +1135,7 @@ if ( ! class_exists( 'WP_Yjs_Server_Engine' ) ) {
 			$doc->clientID = self::GENESIS_CLIENT_ID;
 
 			$post     = null;
-			$parsed   = WP_Sync_Config::parse_room( $room );
+			$parsed   = WP_Sync_Engines_Config::parse_room( $room );
 			$wrappers = array();
 			if ( null !== $parsed && 'postType' === $parsed['entity_kind'] && ! empty( $parsed['object_id'] ) ) {
 				$post = get_post( (int) $parsed['object_id'] );

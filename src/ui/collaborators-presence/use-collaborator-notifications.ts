@@ -2,18 +2,20 @@ import { useDispatch, useSelect } from '@wordpress/data';
 import { useCallback } from '@wordpress/element';
 import { __, sprintf } from '@wordpress/i18n';
 import { store as noticesStore } from '@wordpress/notices';
-import {
-	privateApis,
-	type PostEditorAwarenessState,
-	type PostSaveEvent,
-} from '@wordpress/core-data';
 import { store as preferencesStore } from '@wordpress/preferences';
-import { unlock } from '../../lock-unlock';
-import { store as editorStore } from '../../store';
-import { getCollaboratorDisplayName } from '../../utils/get-collaborator-display-name';
-
-const { useOnCollaboratorJoin, useOnCollaboratorLeave, useOnPostSave } =
-	unlock( privateApis );
+import { store as hostStore } from '../../host/store';
+import { editorSelectors } from '../stores';
+import { PREFERENCES_SCOPE } from '../preferences';
+import { getCollaboratorDisplayName } from '../utils/get-collaborator-display-name';
+import {
+	useOnCollaboratorJoin,
+	useOnCollaboratorLeave,
+	useOnPostSave,
+} from '../../awareness/typed/use-post-editor-awareness-state';
+import type {
+	PostEditorAwarenessState,
+	PostSaveEvent,
+} from '../../awareness/typed/types';
 
 /**
  * Notice IDs for each notification type. Using stable IDs prevents duplicate
@@ -69,13 +71,11 @@ export function useCollaboratorNotifications(
 		showLeaveNotifications,
 		showPostSaveNotifications,
 	} = useSelect( ( select ) => {
-		const {
-			getCurrentPostAttribute,
-			isCollaborationEnabledForCurrentPost,
-		} = unlock( select( editorStore ) );
+		const { getCurrentPostAttribute } = editorSelectors( select );
+		const { isCollaborationEnabledForCurrentPost } = select( hostStore );
 		// Notification preferences default to enabled when unset.
 		const getNotificationPreference = ( name: string ) =>
-			select( preferencesStore ).get( 'core', name ) ?? true;
+			select( preferencesStore ).get( PREFERENCES_SCOPE, name ) ?? true;
 		return {
 			postStatus: getCurrentPostAttribute( 'status' ) as
 				| string

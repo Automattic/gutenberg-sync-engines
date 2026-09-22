@@ -7,13 +7,12 @@ import * as Y from 'yjs';
  * WordPress dependencies
  */
 import apiFetch from '@wordpress/api-fetch';
-// eslint-disable-next-line import/no-unresolved -- Provided at runtime as wp.sync.
 import type {
 	EngineCollection,
 	EngineEntity,
 	SyncEngine,
 	SyncReviewSource,
-} from '@wordpress/sync';
+} from '../../sync';
 
 /**
  * Internal dependencies
@@ -24,8 +23,7 @@ import type {
  * is a serialized-block string, never a CRDT.
  */
 import { CRDT_RECORD_MAP_KEY } from '../yjs/constants';
-import { createYjsDoc, serializeCrdtDoc } from '../yjs/doc';
-import { docContainsSnapshot, encodeDocSnapshot } from '../yjs/snapshot';
+import { createYjsDoc } from '../yjs/doc';
 import { createDeRtcAuthorship, type DeRtcBlockAuthorship } from './authorship';
 import {
 	createDeRtcRevertUndoManager,
@@ -578,13 +576,6 @@ export function createDeRtcEngine(): SyncEngine & {
 					bridge.isBootstrapped()
 						? syncConfig.getChangesFromCRDTDoc( ydoc, editedRecord )
 						: {},
-
-				encodeSnapshot: () => encodeDocSnapshot( ydoc ),
-
-				containsSnapshot: ( encoded ) =>
-					docContainsSnapshot( ydoc, encoded ),
-
-				serialize: () => serializeCrdtDoc( ydoc ),
 
 				observe( observers ) {
 					onRecordUpdate = ( _events, transaction ) => {

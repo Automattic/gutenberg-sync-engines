@@ -153,14 +153,14 @@ if ( ! class_exists( 'WP_WebSocket_Token_Controller' ) ) {
 		 * @return bool Whether the user may sync it.
 		 */
 		private function can_sync_post_room( string $room ): bool {
-			if ( strlen( $room ) > 200 || ! class_exists( 'WP_Sync_Config' ) ) {
+			if ( strlen( $room ) > 200 || ! class_exists( 'WP_Sync_Engines_Config' ) ) {
 				return false;
 			}
-			$parsed = WP_Sync_Config::parse_room( $room );
+			$parsed = WP_Sync_Engines_Config::parse_room( $room );
 			if ( null === $parsed || 'postType' !== $parsed['entity_kind'] || null === $parsed['object_id'] ) {
 				return false;
 			}
-			return WP_Sync_Config::can_user_sync_entity_type( $parsed['entity_kind'], $parsed['entity_name'], $parsed['object_id'] );
+			return WP_Sync_Engines_Config::can_user_sync_entity_type( $parsed['entity_kind'], $parsed['entity_name'], $parsed['object_id'] );
 		}
 
 		/**

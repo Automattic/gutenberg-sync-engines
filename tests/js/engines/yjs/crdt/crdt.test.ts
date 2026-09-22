@@ -1,4 +1,4 @@
-import { Y } from '@wordpress/sync';
+import { Y, CRDT_RECORD_MAP_KEY } from '../../../../../src/sync';
 import { describe, expect, it, jest, beforeEach } from '@jest/globals';
 /**
  * Mock getBlockTypes so CRDT merging can identify rich-text attributes.
@@ -48,7 +48,6 @@ jest.mock( '@wordpress/blocks', () => {
 } );
 import { parse } from '@wordpress/blocks';
 import { RichTextData } from '@wordpress/rich-text';
-import { CRDT_RECORD_MAP_KEY } from '../../sync';
 import {
 	applyPostChangesToCRDTDoc,
 	defaultCollectionSyncConfig,
@@ -57,11 +56,20 @@ import {
 	POST_META_KEY_FOR_CRDT_DOC_PERSISTENCE,
 	type PostChanges,
 	type YPostRecord,
-} from '../crdt';
-import type { Block, YBlock, YBlockRecord, YBlocks } from '../crdt-blocks';
-import { updateSelectionHistory } from '../crdt-selection';
-import { createYMap, getRootMap, type YMapWrap } from '../crdt-utils';
-import type { Post } from '../../entity-types';
+} from '../../../../../src/engines/yjs/crdt/crdt';
+import type {
+	Block,
+	YBlock,
+	YBlockRecord,
+	YBlocks,
+} from '../../../../../src/engines/yjs/crdt/crdt-blocks';
+import { updateSelectionHistory } from '../../../../../src/engines/yjs/crdt/crdt-selection';
+import {
+	createYMap,
+	getRootMap,
+	type YMapWrap,
+} from '../../../../../src/engines/yjs/crdt/crdt-utils';
+import type { Post } from '@wordpress/core-data';
 
 // Default synced properties matching the base set built in entities.js,
 // plus 'categories' and 'tags' as example taxonomy rest_base values.

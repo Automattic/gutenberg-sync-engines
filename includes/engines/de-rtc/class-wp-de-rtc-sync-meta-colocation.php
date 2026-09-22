@@ -105,7 +105,7 @@ if ( ! class_exists( 'WP_De_RTC_Sync_Meta_Colocation' ) ) {
 				$post_id <= 0 ||
 				'' === $post_type ||
 				'revision' === $post_type ||
-				( class_exists( 'WP_Sync_Post_Meta_Storage' ) && WP_Sync_Post_Meta_Storage::POST_TYPE === $post_type ) ||
+				( class_exists( 'WP_Sync_Engines_Post_Meta_Storage' ) && WP_Sync_Engines_Post_Meta_Storage::POST_TYPE === $post_type ) ||
 				! function_exists( 'wp_de_rtc_format_sync_meta' )
 			) {
 				return $data;
@@ -160,7 +160,7 @@ if ( ! class_exists( 'WP_De_RTC_Sync_Meta_Colocation' ) ) {
 		public static function room_doc_state( string $room ): ?array {
 			global $wpdb;
 
-			$storage = gutenberg_sync_engines_storage();
+			$storage = gutenberg_sync_engines_get_storage();
 			if (
 				! method_exists( $storage, 'peek_room_engine' )
 				|| 'de-rtc' !== $storage->peek_room_engine( $room )

@@ -6,7 +6,7 @@ import {
 	beforeEach,
 	afterEach,
 } from '@jest/globals';
-import { logPerformanceTiming, passThru } from '../performance';
+import { logPerformanceTiming, passThru } from '../../../src/sync/performance';
 
 describe( 'performance utilities', () => {
 	describe( 'logPerformanceTiming', () => {

@@ -6,9 +6,12 @@ import {
 	beforeEach,
 	afterEach,
 } from '@jest/globals';
-import { Y } from '@wordpress/sync';
-import { AwarenessState } from '../awareness-state';
-import type { EnhancedState, EqualityFieldCheck } from '../types';
+import { Y } from '../../../../src/sync';
+import { AwarenessState } from '../../../../src/awareness/typed/awareness-state';
+import type {
+	EnhancedState,
+	EqualityFieldCheck,
+} from '../../../../src/awareness/typed/types';
 
 interface TestState {
 	name: string;

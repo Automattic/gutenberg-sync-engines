@@ -1,8 +1,7 @@
 import { select } from '@wordpress/data';
-import { Y } from '@wordpress/sync';
+import { Y, CRDT_RECORD_MAP_KEY } from '../../../sync';
 // @ts-expect-error `@wordpress/block-editor` does not expose type declarations for its entry point.
 import { store as blockEditorStore } from '@wordpress/block-editor';
-import { CRDT_RECORD_MAP_KEY } from '../sync';
 import type { YPostRecord } from './crdt';
 import type { YBlock, YBlocks } from './crdt-blocks';
 import {
@@ -22,7 +21,7 @@ import type {
 	SelectionWholeBlock,
 	CursorPosition,
 	SelectionEndpoint,
-} from '../types';
+} from './types';
 
 /**
  * The type of selection.
@@ -267,7 +266,7 @@ export function getBlockPathForLocalClientId(
 			return null;
 		}
 		path.unshift( index );
-		const parent = getBlockRootClientId( current );
+		const parent: string | undefined = getBlockRootClientId( current );
 		if ( ! parent ) {
 			break;
 		}

@@ -1,8 +1,7 @@
-import { Y } from '@wordpress/sync';
+import { Y, CRDT_RECORD_MAP_KEY } from '../../../sync';
 import { create, insert, toHTMLString } from '@wordpress/rich-text';
 import type { YBlock, YBlocks } from './crdt-blocks';
 import type { YPostRecord } from './crdt';
-import { CRDT_RECORD_MAP_KEY } from '../sync';
 
 /**
  * A YMapRecord represents the shape of the data stored in a Y.Map.

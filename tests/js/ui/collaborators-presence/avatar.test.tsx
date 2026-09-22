@@ -1,21 +1,58 @@
+import { describe, expect, it } from '@jest/globals';
 import { render, screen, fireEvent } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-import { Tooltip } from '@wordpress/ui';
-import Avatar from '..';
+import type { ReactElement, ReactNode } from 'react';
+import Avatar from '../../../../src/ui/collaborators-presence/avatar';
+
+// The components package cannot load under this Jest setup (an ESM
+// dependency). The tooltip mock keeps the contract the avatar relies on:
+// the tooltip text shows only while the child is hovered.
+jest.mock( '@wordpress/components', () => {
+	const { createElement, cloneElement, useState } =
+		jest.requireActual< typeof import('@wordpress/element') >(
+			'@wordpress/element'
+		);
+	const Tooltip = ( {
+		text,
+		children,
+	}: {
+		text: string;
+		children: ReactElement;
+	} ) => {
+		const [ open, setOpen ] = useState( false );
+		return createElement(
+			'span',
+			{ 'data-tooltip-open': open ? 'true' : 'false' },
+			cloneElement( children, {
+				onMouseEnter: () => setOpen( true ),
+				onMouseLeave: () => setOpen( false ),
+			} ),
+			open ? createElement( 'div', { role: 'tooltip' }, text ) : null
+		);
+	};
+	return {
+		Icon: ( { icon }: { icon: ReactNode } ) => icon ?? null,
+		Tooltip,
+	};
+} );
 
 /**
- * Wraps the avatar in a `Tooltip.Provider` with `delay={ 0 }` and
- * `closeDelay={ 0 }` so hover-based tooltip-presence assertions don't have to
- * wait for the real-world open/close delay.
+ * Hovers an element the way a pointer would, for the tooltip mock.
+ *
+ * @param element The element to hover.
+ */
+async function hover( element: Element ): Promise< void > {
+	fireEvent.mouseEnter( element );
+	await Promise.resolve();
+}
+
+/**
+ * Renders an avatar. The tooltip is mocked above, so no provider or delay
+ * settings are needed.
  *
  * @param ui The avatar element (or anything else) to render.
  */
 function renderAvatar( ui: React.ReactElement ): ReturnType< typeof render > {
-	return render(
-		<Tooltip.Provider delay={ 0 } closeDelay={ 0 }>
-			{ ui }
-		</Tooltip.Provider>
-	);
+	return render( ui );
 }
 
 /**
@@ -28,22 +65,22 @@ describe( 'Avatar', () => {
 	it( 'should render with default props', () => {
 		render( <Avatar data-testid="avatar" /> );
 		const avatar = screen.getByTestId( 'avatar' );
-		expect( avatar ).toBeInTheDocument();
+		expect( avatar ).toBeTruthy();
 		expect( avatar.tagName ).toBe( 'DIV' );
-		expect( avatar ).toHaveClass( 'editor-avatar' );
+		expect( avatar.classList.contains( 'editor-avatar' ) ).toBe( true );
 	} );
 
 	it( 'should set the accessible name from the name prop', () => {
 		render( <Avatar name="Jane Doe" /> );
 		const avatar = screen.getByRole( 'img', { name: 'Jane Doe' } );
-		expect( avatar ).toBeInTheDocument();
+		expect( avatar ).toBeTruthy();
 	} );
 
 	it( 'should not set role or aria-label without a name', () => {
 		render( <Avatar data-testid="avatar" /> );
 		const avatar = screen.getByTestId( 'avatar' );
-		expect( avatar ).not.toHaveAttribute( 'role' );
-		expect( avatar ).not.toHaveAttribute( 'aria-label' );
+		expect( avatar.hasAttribute( 'role' ) ).toBe( false );
+		expect( avatar.hasAttribute( 'aria-label' ) ).toBe( false );
 	} );
 
 	it( 'should render an img element when src is provided', () => {
@@ -57,8 +94,7 @@ describe( 'Avatar', () => {
 		// The <img> should be in the DOM (hidden until loaded).
 		const img = screen.getByAltText( '' );
 		expect( img.tagName ).toBe( 'IMG' );
-		expect( img ).toHaveAttribute(
-			'src',
+		expect( img.getAttribute( 'src' ) ).toBe(
 			'https://example.com/avatar.jpg'
 		);
 	} );
@@ -73,29 +109,31 @@ describe( 'Avatar', () => {
 		);
 		const avatar = screen.getByTestId( 'avatar' );
 		// Before load fires, has-src should not be set.
-		expect( avatar ).not.toHaveClass( 'has-src' );
+		expect( avatar.classList.contains( 'has-src' ) ).toBe( false );
 
 		// Simulate image load.
 		fireEvent.load( screen.getByAltText( '' ) );
-		expect( avatar ).toHaveClass( 'has-src' );
+		expect( avatar.classList.contains( 'has-src' ) ).toBe( true );
 	} );
 
 	it( 'should apply is-small class for small size', () => {
 		render( <Avatar data-testid="avatar" size="small" /> );
 		const avatar = screen.getByTestId( 'avatar' );
-		expect( avatar ).toHaveClass( 'is-small' );
+		expect( avatar.classList.contains( 'is-small' ) ).toBe( true );
 	} );
 
 	it( 'should not apply is-small class for default size', () => {
 		render( <Avatar data-testid="avatar" /> );
 		const avatar = screen.getByTestId( 'avatar' );
-		expect( avatar ).not.toHaveClass( 'is-small' );
+		expect( avatar.classList.contains( 'is-small' ) ).toBe( false );
 	} );
 
 	it( 'should apply border color when provided', () => {
 		render( <Avatar data-testid="avatar" borderColor="#3858e9" /> );
 		const avatar = screen.getByTestId( 'avatar' );
-		expect( avatar ).toHaveClass( 'has-avatar-border-color' );
+		expect( avatar.classList.contains( 'has-avatar-border-color' ) ).toBe(
+			true
+		);
 		expect(
 			avatar.style.getPropertyValue( '--editor-avatar-outline-color' )
 		).toBe( '#3858e9' );
@@ -112,20 +150,20 @@ describe( 'Avatar', () => {
 	it( 'should not have has-src class when src is not provided', () => {
 		render( <Avatar data-testid="avatar" /> );
 		const avatar = screen.getByTestId( 'avatar' );
-		expect( avatar ).not.toHaveClass( 'has-src' );
+		expect( avatar.classList.contains( 'has-src' ) ).toBe( false );
 	} );
 
 	it( 'should combine custom className with default class', () => {
 		render( <Avatar data-testid="avatar" className="custom" /> );
 		const avatar = screen.getByTestId( 'avatar' );
-		expect( avatar ).toHaveClass( 'editor-avatar' );
-		expect( avatar ).toHaveClass( 'custom' );
+		expect( avatar.classList.contains( 'editor-avatar' ) ).toBe( true );
+		expect( avatar.classList.contains( 'custom' ) ).toBe( true );
 	} );
 
 	it( 'should pass through additional HTML attributes', () => {
 		render( <Avatar data-testid="avatar" data-custom="value" /> );
 		const avatar = screen.getByTestId( 'avatar' );
-		expect( avatar ).toHaveAttribute( 'data-custom', 'value' );
+		expect( avatar.getAttribute( 'data-custom' ) ).toBe( 'value' );
 	} );
 
 	it( 'should merge style prop with custom properties', () => {
@@ -137,7 +175,7 @@ describe( 'Avatar', () => {
 			/>
 		);
 		const avatar = screen.getByTestId( 'avatar' );
-		expect( avatar ).toHaveStyle( { left: '10px' } );
+		expect( avatar.style ).toMatchObject( { left: '10px' } );
 		expect(
 			avatar.style.getPropertyValue( '--editor-avatar-outline-color' )
 		).toBe( '#3858e9' );
@@ -147,8 +185,8 @@ describe( 'Avatar', () => {
 		it( 'should not show badge by default', () => {
 			render( <Avatar data-testid="avatar" name="Zoraya" /> );
 			const avatar = screen.getByTestId( 'avatar' );
-			expect( avatar ).not.toHaveClass( 'is-badge' );
-			expect( screen.queryByText( 'Zoraya' ) ).not.toBeInTheDocument();
+			expect( avatar.classList.contains( 'is-badge' ) ).toBe( false );
+			expect( screen.queryByText( 'Zoraya' ) ).toBeNull();
 		} );
 
 		it( 'should render name span with badge variant', () => {
@@ -156,8 +194,8 @@ describe( 'Avatar', () => {
 				<Avatar data-testid="avatar" name="Zoraya" variant="badge" />
 			);
 			const avatar = screen.getByTestId( 'avatar' );
-			expect( avatar ).toHaveClass( 'is-badge' );
-			expect( screen.getByText( 'Zoraya' ) ).toBeInTheDocument();
+			expect( avatar.classList.contains( 'is-badge' ) ).toBe( true );
+			expect( screen.getByText( 'Zoraya' ) ).toBeTruthy();
 		} );
 
 		it( 'should render name span with borderColor too', () => {
@@ -170,43 +208,42 @@ describe( 'Avatar', () => {
 				/>
 			);
 			const avatar = screen.getByTestId( 'avatar' );
-			expect( avatar ).toHaveClass( 'is-badge' );
-			expect( screen.getByText( 'Zoraya' ) ).toBeInTheDocument();
+			expect( avatar.classList.contains( 'is-badge' ) ).toBe( true );
+			expect( screen.getByText( 'Zoraya' ) ).toBeTruthy();
 		} );
 
 		it( 'should not show badge when name is missing', () => {
 			render( <Avatar data-testid="avatar" variant="badge" /> );
 			const avatar = screen.getByTestId( 'avatar' );
-			expect( avatar ).not.toHaveClass( 'is-badge' );
+			expect( avatar.classList.contains( 'is-badge' ) ).toBe( false );
 		} );
 
 		it( 'should still set aria-label even when badge is visible', () => {
 			render( <Avatar name="Zoraya" variant="badge" /> );
 			const avatar = screen.getByRole( 'img', { name: 'Zoraya' } );
-			expect( avatar ).toBeInTheDocument();
+			expect( avatar ).toBeTruthy();
 		} );
 	} );
 
 	describe( 'label', () => {
 		it( 'should show label text instead of name in the badge', () => {
 			render( <Avatar name="Jane Doe" label="You" variant="badge" /> );
-			expect( screen.getByText( 'You' ) ).toBeInTheDocument();
-			expect( screen.queryByText( 'Jane Doe' ) ).not.toBeInTheDocument();
+			expect( screen.getByText( 'You' ) ).toBeTruthy();
+			expect( screen.queryByText( 'Jane Doe' ) ).toBeNull();
 		} );
 
 		it( 'should keep aria-label as name when label is provided', () => {
 			render( <Avatar name="Jane Doe" label="You" variant="badge" /> );
 			const avatar = screen.getByRole( 'img', { name: 'Jane Doe' } );
-			expect( avatar ).toBeInTheDocument();
+			expect( avatar ).toBeTruthy();
 		} );
 
 		it( 'should wrap in tooltip when label differs from name', async () => {
-			const user = userEvent.setup();
 			renderAvatar(
 				<Avatar name="Jane Doe" label="You" variant="badge" />
 			);
-			await user.hover( screen.getByRole( 'img', { name: 'Jane Doe' } ) );
-			expect( await screen.findByText( 'Jane Doe' ) ).toBeVisible();
+			await hover( screen.getByRole( 'img', { name: 'Jane Doe' } ) );
+			expect( await screen.findByText( 'Jane Doe' ) ).toBeTruthy();
 		} );
 	} );
 
@@ -214,13 +251,13 @@ describe( 'Avatar', () => {
 		it( 'should apply is-dimmed class when dimmed', () => {
 			render( <Avatar data-testid="avatar" dimmed /> );
 			const avatar = screen.getByTestId( 'avatar' );
-			expect( avatar ).toHaveClass( 'is-dimmed' );
+			expect( avatar.classList.contains( 'is-dimmed' ) ).toBe( true );
 		} );
 
 		it( 'should not apply is-dimmed class by default', () => {
 			render( <Avatar data-testid="avatar" /> );
 			const avatar = screen.getByTestId( 'avatar' );
-			expect( avatar ).not.toHaveClass( 'is-dimmed' );
+			expect( avatar.classList.contains( 'is-dimmed' ) ).toBe( false );
 		} );
 
 		it( 'should render statusIndicator when dimmed', () => {
@@ -231,7 +268,7 @@ describe( 'Avatar', () => {
 					statusIndicator={ <span>icon</span> }
 				/>
 			);
-			expect( screen.getByText( 'icon' ) ).toBeInTheDocument();
+			expect( screen.getByText( 'icon' ) ).toBeTruthy();
 		} );
 
 		it( 'should not render statusIndicator when not dimmed', () => {
@@ -241,7 +278,7 @@ describe( 'Avatar', () => {
 					statusIndicator={ <span>icon</span> }
 				/>
 			);
-			expect( screen.queryByText( 'icon' ) ).not.toBeInTheDocument();
+			expect( screen.queryByText( 'icon' ) ).toBeNull();
 		} );
 
 		it( 'should apply has-src class when dimmed after image loads', () => {
@@ -254,30 +291,30 @@ describe( 'Avatar', () => {
 			);
 			fireEvent.load( screen.getByAltText( '' ) );
 			const avatar = screen.getByTestId( 'avatar' );
-			expect( avatar ).toHaveClass( 'has-src' );
-			expect( avatar ).toHaveClass( 'is-dimmed' );
+			expect( avatar.classList.contains( 'has-src' ) ).toBe( true );
+			expect( avatar.classList.contains( 'is-dimmed' ) ).toBe( true );
 		} );
 	} );
 
 	describe( 'initials', () => {
 		it( 'should show initials when no src is provided', () => {
 			render( <Avatar name="Tanner Robinson" /> );
-			expect( screen.getByText( 'TR' ) ).toBeInTheDocument();
+			expect( screen.getByText( 'TR' ) ).toBeTruthy();
 		} );
 
 		it( 'should show single initial for single-word name', () => {
 			render( <Avatar name="Zoraya" /> );
-			expect( screen.getByText( 'Z' ) ).toBeInTheDocument();
+			expect( screen.getByText( 'Z' ) ).toBeTruthy();
 		} );
 
 		it( 'should limit initials to two characters', () => {
 			render( <Avatar name="Jane Marie Doe" /> );
-			expect( screen.getByText( 'JM' ) ).toBeInTheDocument();
+			expect( screen.getByText( 'JM' ) ).toBeTruthy();
 		} );
 
 		it( 'should uppercase initials', () => {
 			render( <Avatar name="jane doe" /> );
-			expect( screen.getByText( 'JD' ) ).toBeInTheDocument();
+			expect( screen.getByText( 'JD' ) ).toBeTruthy();
 		} );
 
 		it( 'should not show initials after image loads', () => {
@@ -288,14 +325,14 @@ describe( 'Avatar', () => {
 				/>
 			);
 			fireEvent.load( screen.getByAltText( '' ) );
-			expect( screen.queryByText( 'TR' ) ).not.toBeInTheDocument();
+			expect( screen.queryByText( 'TR' ) ).toBeNull();
 		} );
 
 		it( 'should not render initials when name is not provided', () => {
 			render( <Avatar data-testid="avatar" /> );
 			const avatar = screen.getByTestId( 'avatar' );
 			// Without a name, the image span should be empty (no initials).
-			expect( avatar ).not.toHaveTextContent( /.+/ );
+			expect( avatar.textContent ).toBe( '' );
 		} );
 	} );
 
@@ -309,7 +346,9 @@ describe( 'Avatar', () => {
 				/>
 			);
 			fireEvent.load( screen.getByAltText( '' ) );
-			expect( screen.getByTestId( 'avatar' ) ).toHaveClass( 'has-src' );
+			expect(
+				screen.getByTestId( 'avatar' ).classList.contains( 'has-src' )
+			).toBe( true );
 
 			rerender(
 				<Avatar
@@ -319,10 +358,10 @@ describe( 'Avatar', () => {
 				/>
 			);
 			// New src should reset to loading — initials visible again.
-			expect( screen.getByTestId( 'avatar' ) ).not.toHaveClass(
-				'has-src'
-			);
-			expect( screen.getByText( 'JD' ) ).toBeInTheDocument();
+			expect(
+				screen.getByTestId( 'avatar' ).classList.contains( 'has-src' )
+			).toBe( false );
+			expect( screen.getByText( 'JD' ) ).toBeTruthy();
 		} );
 
 		it( 'should show initials while image is loading', () => {
@@ -335,8 +374,8 @@ describe( 'Avatar', () => {
 			);
 			const avatar = screen.getByTestId( 'avatar' );
 			// Before load event, initials should show.
-			expect( avatar ).not.toHaveClass( 'has-src' );
-			expect( screen.getByText( 'JD' ) ).toBeInTheDocument();
+			expect( avatar.classList.contains( 'has-src' ) ).toBe( false );
+			expect( screen.getByText( 'JD' ) ).toBeTruthy();
 		} );
 
 		it( 'should show image after successful load', () => {
@@ -351,8 +390,8 @@ describe( 'Avatar', () => {
 			fireEvent.load( screen.getByAltText( '' ) );
 
 			const avatar = screen.getByTestId( 'avatar' );
-			expect( avatar ).toHaveClass( 'has-src' );
-			expect( screen.queryByText( 'JD' ) ).not.toBeInTheDocument();
+			expect( avatar.classList.contains( 'has-src' ) ).toBe( true );
+			expect( screen.queryByText( 'JD' ) ).toBeNull();
 		} );
 
 		it( 'should fall back to initials when image fails to load', () => {
@@ -367,47 +406,43 @@ describe( 'Avatar', () => {
 			fireEvent.error( screen.getByAltText( '' ) );
 
 			const avatar = screen.getByTestId( 'avatar' );
-			expect( avatar ).not.toHaveClass( 'has-src' );
-			expect( screen.getByText( 'JD' ) ).toBeInTheDocument();
+			expect( avatar.classList.contains( 'has-src' ) ).toBe( false );
+			expect( screen.getByText( 'JD' ) ).toBeTruthy();
 		} );
 
 		it( 'should not render img element when no src is provided', () => {
 			render( <Avatar data-testid="avatar" name="Jane Doe" /> );
-			expect( screen.queryByAltText( '' ) ).not.toBeInTheDocument();
+			expect( screen.queryByAltText( '' ) ).toBeNull();
 		} );
 	} );
 
 	describe( 'tooltip', () => {
 		it( 'should wrap in tooltip when name is provided without badge', async () => {
-			const user = userEvent.setup();
 			renderAvatar( <Avatar name="Jane Doe" /> );
-			await user.hover( screen.getByRole( 'img', { name: 'Jane Doe' } ) );
-			expect( await screen.findByText( 'Jane Doe' ) ).toBeVisible();
+			await hover( screen.getByRole( 'img', { name: 'Jane Doe' } ) );
+			expect( await screen.findByText( 'Jane Doe' ) ).toBeTruthy();
 		} );
 
 		it( 'should not wrap in tooltip for badge without label', async () => {
-			const user = userEvent.setup();
 			renderAvatar( <Avatar name="Jane Doe" variant="badge" /> );
 			// Before hovering: the single "Jane Doe" occurrence is the
 			// badge text — that's what the next assertion is allowed to
 			// match. Hovering should not add a second occurrence.
 			expect( screen.getAllByText( 'Jane Doe' ) ).toHaveLength( 1 );
-			await user.hover( screen.getByRole( 'img', { name: 'Jane Doe' } ) );
+			await hover( screen.getByRole( 'img', { name: 'Jane Doe' } ) );
 			expect( screen.getAllByText( 'Jane Doe' ) ).toHaveLength( 1 );
 		} );
 
 		it( 'should not wrap in tooltip when name is not provided', async () => {
-			const user = userEvent.setup();
 			renderAvatar( <Avatar data-testid="avatar" /> );
 			const avatar = screen.getByTestId( 'avatar' );
 			const bodyTextBefore = document.body.textContent;
-			await user.hover( avatar );
-			// No name → no `Tooltip.Root` wrapper at all, so hovering
+			await hover( avatar );
+			// No name → no tooltip wrapper at all, so hovering
 			// cannot reveal any additional text content anywhere in the
 			// document (no popup mounts). Strict equality is what we
 			// want here — a substring `toHaveTextContent` would still
 			// pass if the popup added text.
-			// eslint-disable-next-line jest-dom/prefer-to-have-text-content -- intentional, see comment above.
 			expect( document.body.textContent ).toBe( bodyTextBefore );
 		} );
 	} );

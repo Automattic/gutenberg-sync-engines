@@ -6,13 +6,12 @@ import { Awareness } from 'y-protocols/awareness';
 /**
  * Internal dependencies
  */
-// eslint-disable-next-line import/no-unresolved -- Provided at runtime as wp.sync.
 import type {
 	EngineDisposition,
 	EngineLocalUpdateListener,
 	EngineSessionCodec,
 	EngineUpdate,
-} from '@wordpress/sync';
+} from '../../sync';
 import { applyServerAwarenessStates } from '../awareness-sync';
 import { announceLocalWrite } from '../../providers/advisory/announce';
 import type { TransportSessionExtensions } from '../../providers/session-extensions';
