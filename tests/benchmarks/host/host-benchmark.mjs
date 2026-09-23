@@ -16,7 +16,7 @@
  *
  *   1. BASELINE — the plugin is deactivated (every active copy, via the
  *      REST plugins endpoint) and `windows` people edit the same draft
- *      IN SERIES: person i types their part for `edit-seconds`, saves,
+ *      IN SERIES: person i completes their `edit-seconds` script, saves,
  *      and leaves, then the next person takes a turn; after the last
  *      turn the tab sits idle for `idle-seconds`. This is the workflow
  *      the plugin replaces — the post lock forces turn-taking — and
@@ -27,7 +27,7 @@
  *      draft simultaneously (each typing into its own paragraph, one
  *      save at the end) on that engine and the chosen transport.
  *
- * Every request each window makes is counted client-side (requests,
+ * Setup is excluded from phase rates. Every request is counted client-side (requests,
  * bytes). Server-side, EVERY request from the windows is tagged with
  * the community harness's headers, and the whole-request measurement
  * mu-plugin (tests/benchmarks/host/mu-bench-log.php — this repo's
@@ -36,11 +36,11 @@
  * memory, concurrency. Because the mu-plugin works with the plugin
  * DEACTIVATED, the baseline phase gets real server-side numbers too,
  * so CPU, worker share, and memory are true baseline/sync/delta
- * comparisons — not sync-requests-only. Without the mu-plugin the
- * server columns fall back to the plugin's own sync requests and the
- * baseline server column reads "—".
+ * comparisons. Without the mu-plugin, or with SSE / WebSocket traffic,
+ * server totals are unavailable. Raw request rows remain in the JSON;
+ * they do not fully account for streams or persistent socket processes.
  *
- * Table rows: requests per minute, network traffic, server CPU per
+ * Table rows: HTTP requests and socket frames per minute, payload bytes, PHP CPU per
  * minute, the share of one PHP worker held, options-cache
  * invalidations, database queries, database disk I/O, and (editing)
  * peak PHP memory per request. Caveats and how to read each metric
@@ -60,7 +60,7 @@
  *               cache=redis, table needs cache=none)
  *   windows=    people per phase: collaborator windows, and the same
  *               number of one-after-the-other baseline turns (default 2)
- *   edit-seconds=      editing seconds per person (default 120, min 30)
+ *   edit-seconds=      script duration per person (default 120, min 30; slow runs take longer)
  *   idle-seconds=      idle seconds per phase (default 120; 0 skips)
  *   polling-interval=  override the HTTP short-polling interval for the
  *                      run, in seconds 0-25 (0 = the plugin's defaults;
@@ -101,6 +101,13 @@ import {
 	waitForSyncTraffic,
 } from '../transport/lib.mjs';
 
+import {
+	attachAllTrafficCounters,
+	editingScript,
+	matchesDocument,
+	serverCoverageLimits,
+} from './measurement.mjs';
+
 const opts = parseCliOptions();
 
 const HELP = `node tests/benchmarks/host/host-benchmark.mjs [key=value …]
@@ -118,7 +125,7 @@ const HELP = `node tests/benchmarks/host/host-benchmark.mjs [key=value …]
               (cache needs cache=redis, table needs cache=none)
   windows=    people per phase: collaborator windows, and the same
               number of one-after-the-other baseline turns (default 2)
-  edit-seconds=      editing seconds per person (default 120, min 30)
+  edit-seconds=      script duration per person (default 120, min 30; slow runs take longer)
   idle-seconds=      idle seconds per phase (default 120; 0 skips)
   polling-interval=  override the HTTP short-polling interval for the
                      run, in seconds 0-25 (0 = the plugin's defaults;
@@ -143,6 +150,8 @@ if ( opts.help || opts.h ) {
 const KNOWN_ARGS = [
 	'engine',
 	'transport',
+	'cache',
+	'wake',
 	'windows',
 	'edit-seconds',
 	'idle-seconds',
@@ -176,7 +185,7 @@ if ( ENGINE.includes( ',' ) ) {
 const TRANSPORT = String( opts.transport ?? 'current' );
 const CACHE = String( opts.cache ?? 'current' );
 const WAKE = String( opts.wake ?? 'auto' );
-const WINDOWS = Math.max( 1, Number( opts.windows ?? 2 ) );
+const WINDOWS = Number( opts.windows ?? 2 );
 const EDIT_SECONDS = Number( opts[ 'edit-seconds' ] ?? 120 );
 const IDLE_SECONDS = Number( opts[ 'idle-seconds' ] ?? 120 );
 const POLL_OVERRIDE =
@@ -203,54 +212,6 @@ const METRICS = opts.metrics
 	: ALL_METRICS;
 
 const POLLING_INTERVAL_SETTING = 'gutenberg_sync_engines_polling_interval';
-
-/**
- * Deterministic jitter (the soak's convention — reruns pace the same).
- *
- * @param {number} step Monotonic counter.
- * @param {number} min  Minimum value.
- * @param {number} max  Maximum value.
- * @return {number} Value in [min, max].
- */
-const jitter = ( step, min, max ) =>
-	min +
-	( ( ( step * 2654435761 ) % 4294967296 ) / 4294967296 ) * ( max - min );
-
-/**
- * Counts EVERY HTTP request a page makes (any route), unlike lib.mjs's
- * attachCounters, which counts sync traffic only. The baseline phase
- * has no sync traffic at all, so the host comparison needs the whole
- * wire. Counters are cumulative; phases diff snapshot() results.
- *
- * @param {import('@playwright/test').Page} page          Target page.
- * @param {Function}                        streamedBytes Current SSE byte count.
- * @return {Object} Counter handle with a snapshot() method.
- */
-function attachAllTrafficCounters( page, streamedBytes = () => 0 ) {
-	const c = { requests: 0, requestBytes: 0, responseBytes: 0 };
-	page.on( 'request', ( request ) => {
-		c.requests += 1;
-		c.requestBytes += request.postDataBuffer()?.length ?? 0;
-	} );
-	page.on( 'response', async ( response ) => {
-		if (
-			decodeURIComponent( response.url() ).includes( '/wp-sync/v1/sse' )
-		) {
-			return;
-		}
-		try {
-			c.responseBytes += ( await response.body() ).length;
-		} catch {
-			// Body unavailable (navigation, abort): skip its bytes.
-		}
-	} );
-	return {
-		snapshot: () => ( {
-			...c,
-			responseBytes: c.responseBytes + streamedBytes(),
-		} ),
-	};
-}
 
 /**
  * Tags EVERY same-site request from a MEASURED page with the community
@@ -295,42 +256,95 @@ async function installGlobalTagging( context, tag, measured ) {
 }
 
 /**
- * One window's editing driver: think briefly, type a burst into its own
- * anchor paragraph, repeat until the deadline.
+ * Run a fixed script. A slow browser takes longer; it does not do less work.
  *
- * @param {Object} win      Window record { page, canvas, index }.
- * @param {number} deadline Epoch ms to stop at.
- * @param {Object} stats    Mutable { tokensTyped, bursts } tally.
+ * @param {Object} win   Window record.
+ * @param {number} start Phase start time.
+ * @return {Promise<number>} Completed token count.
  */
-async function editingDriver( win, deadline, stats ) {
-	let step = win.index * 97 + 1;
-	while ( Date.now() < deadline ) {
-		const thinkMs = jitter( step++, 2000, 6000 );
+async function editingDriver( win, start ) {
+	const script = editingScript( win.index, EDIT_SECONDS * 1000 );
+	for ( const token of script ) {
 		await win.page.waitForTimeout(
-			Math.min( thinkMs, Math.max( 0, deadline - Date.now() ) )
+			Math.max( 0, start + token.at - Date.now() )
 		);
-		if ( Date.now() >= deadline ) {
-			return;
-		}
-		const burst = Math.round( jitter( step++, 4, 9 ) );
 		const paragraph = win.canvas
 			.locator( '[data-type="core/paragraph"]', {
 				hasText: `hostw${ win.index }anchor`,
 			} )
 			.first();
-		try {
-			await paragraph.click( { timeout: 5000 } );
-			await win.page.keyboard.press( 'End' );
-			for ( let i = 0; i < burst && Date.now() < deadline; i++ ) {
-				await win.page.keyboard.insertText(
-					` w${ win.index }t${ stats.tokensTyped++ }x`
-				);
-				await win.page.waitForTimeout( jitter( step++, 250, 550 ) );
-			}
-			stats.bursts += 1;
-		} catch {
-			stats.burstErrors = ( stats.burstErrors ?? 0 ) + 1;
+		await paragraph.click( { timeout: 5000 } );
+		// End is only the end of a visual line on some platforms. Select
+		// the paragraph's actual text end so wrapping cannot reorder tokens.
+		await paragraph.evaluate( ( block ) => {
+			const element = block.matches( '[contenteditable="true"]' )
+				? block
+				: block.querySelector( '[contenteditable="true"]' );
+			const range = element.ownerDocument.createRange();
+			range.selectNodeContents( element );
+			range.collapse( false );
+			const selection = element.ownerDocument.defaultView.getSelection();
+			selection.removeAllRanges();
+			selection.addRange( range );
+		} );
+		await win.page.keyboard.insertText( token.text );
+	}
+	await win.page.waitForTimeout(
+		Math.max( 0, start + EDIT_SECONDS * 1000 - Date.now() )
+	);
+	return script.length;
+}
+
+/**
+ * Expected fixture after this many serial authors, or all concurrent authors.
+ *
+ * @param {number} authors Completed authors.
+ * @return {Array<string>} Expected paragraphs.
+ */
+function expectedDocument( authors ) {
+	return Array.from(
+		{ length: WINDOWS },
+		( _, index ) =>
+			`hostw${ index }anchor` +
+			( index < authors
+				? editingScript( index, EDIT_SECONDS * 1000 )
+						.map( ( token ) => token.text )
+						.join( '' )
+				: '' )
+	);
+}
+
+/**
+ * Require all editors to hold the complete intended document before saving.
+ *
+ * @param {Array<Object>} wins     Editor windows.
+ * @param {Array<string>} expected Expected paragraphs.
+ */
+async function verifyEditors( wins, expected ) {
+	const deadline = Date.now() + 90000;
+	while ( true ) {
+		const contents = await Promise.all(
+			wins.map( ( win ) =>
+				win.page.evaluate( () =>
+					window.wp.data
+						.select( 'core/editor' )
+						.getEditedPostContent()
+				)
+			)
+		);
+		if (
+			contents.every( ( content ) =>
+				matchesDocument( content, expected )
+			)
+		) {
+			return;
 		}
+		if ( Date.now() >= deadline ) {
+			throw new Error(
+				'Editors did not reach the expected document; no cost comparison will be reported.'
+			);
+		}
+		await wins[ 0 ].page.waitForTimeout( 250 );
 	}
 }
 
@@ -417,10 +431,7 @@ async function openEditorWindow( context, measured, postId, index ) {
 	measured.add( page );
 	page.on( 'close', () => measured.delete( page ) );
 	const sync = attachCounters( page );
-	const all = attachAllTrafficCounters(
-		page,
-		() => sync.snapshot().sseBytesReceived
-	);
+	const all = attachAllTrafficCounters( page, () => sync.snapshot() );
 	await sync.ready;
 	await page.goto(
 		`${ BASE }/wp-admin/post.php?post=${ postId }&action=edit`
@@ -429,7 +440,7 @@ async function openEditorWindow( context, measured, postId, index ) {
 	await page.waitForFunction( () =>
 		window.wp?.data?.select( 'core/editor' )?.getCurrentPostId()
 	);
-	const win = { page, index, all, sync, canvas: null };
+	const win = { page, postId, index, all, sync, canvas: null };
 	win.canvas = await canvasOf( page );
 	return win;
 }
@@ -499,28 +510,38 @@ async function saveViaEditor( page ) {
  *
  * @param {Object[]}      wins       Window records.
  * @param {Object}        tag        Mutable { scenario, approach } labels.
+ * @param {Object}        rest       Administrative REST client.
+ * @param {Array<string>} expected   Expected complete document.
  * @param {boolean}       withIdle   Run the idle span after editing.
  * @param {Function|null} sampleDbIo Database I/O counter sampler.
  * @return {Promise<Object>} Per-window counter deltas and durations.
  */
-async function measurePhase( wins, tag, withIdle = true, sampleDbIo = null ) {
+async function measurePhase(
+	wins,
+	tag,
+	rest,
+	expected,
+	withIdle = true,
+	sampleDbIo = null
+) {
 	// Let the just-loaded pages settle so page-load assets and session
 	// setup stay out of the rates.
 	await wins[ 0 ].page.waitForTimeout( 3000 );
 
 	const ioStart = sampleDbIo ? await sampleDbIo() : null;
 	tag.scenario = 'host-editing';
-	const editStats = wins.map( () => ( { tokensTyped: 0, bursts: 0 } ) );
 	const editStart = Date.now();
 	const startAll = wins.map( ( win ) => win.all.snapshot() );
 	const startSync = wins.map( ( win ) => win.sync.snapshot() );
-	const deadline = editStart + EDIT_SECONDS * 1000;
-	await Promise.all(
-		wins.map( ( win, position ) =>
-			editingDriver( win, deadline, editStats[ position ] )
-		)
+	const tokensTyped = await Promise.all(
+		wins.map( ( win ) => editingDriver( win, editStart ) )
 	);
-	const saveOk = await saveViaEditor( wins[ 0 ].page );
+	await verifyEditors( wins, expected );
+	if ( ! ( await saveViaEditor( wins[ 0 ].page ) ) ) {
+		throw new Error(
+			'The editing phase failed to save; no cost comparison will be reported.'
+		);
+	}
 	const editMs = Date.now() - editStart;
 	const editAll = wins.map( ( win ) => win.all.snapshot() );
 	const editSync = wins.map( ( win ) => win.sync.snapshot() );
@@ -537,6 +558,21 @@ async function measurePhase( wins, tag, withIdle = true, sampleDbIo = null ) {
 	const ioIdle = sampleDbIo ? await sampleDbIo() : null;
 	tag.scenario = 'setup';
 
+	// Verify outside the measurement windows: this administrative REST
+	// request must not inflate elapsed editing time or database I/O.
+	await verifyEditors( wins, expected );
+	const saved = await rest.get(
+		`/wp/v2/posts/${ wins[ 0 ].postId }?context=edit`
+	);
+	if (
+		saved.status !== 200 ||
+		! matchesDocument( saved.data?.content?.raw, expected )
+	) {
+		throw new Error(
+			'Saved content does not match the intended document; no cost comparison will be reported.'
+		);
+	}
+
 	const span = ( before, after ) => {
 		const delta = {};
 		for ( const key of Object.keys( before ) ) {
@@ -547,16 +583,15 @@ async function measurePhase( wins, tag, withIdle = true, sampleDbIo = null ) {
 	return {
 		editMs,
 		idleMs,
-		saveOk,
+		saveOk: true,
+		contentVerified: true,
 		dbIo: {
 			editing: diffDbIo( ioStart, ioEdit ),
 			idle: withIdle ? diffDbIo( ioEdit, ioIdle ) : null,
 		},
 		perWindow: wins.map( ( win, index ) => ( {
 			window: index,
-			tokensTyped: editStats[ index ].tokensTyped,
-			bursts: editStats[ index ].bursts,
-			burstErrors: editStats[ index ].burstErrors ?? 0,
+			tokensTyped: tokensTyped[ index ],
 			editing: {
 				all: span( startAll[ index ], editAll[ index ] ),
 				sync: span( startSync[ index ], editSync[ index ] ),
@@ -657,13 +692,18 @@ function serverRates( agg, ms, persons ) {
  * both phases produce the same final document, so "what did producing
  * this document cost" is directly comparable.
  *
- * @param {Object} phase    The engine's measurePhase result.
- * @param {Object} baseline Serial baseline { sessions, editMs, idleMs }.
- * @param {Array}  rows     All server rows (may be empty).
- * @param {string} engine   Engine slug (the approach label).
+ * @param {Object}        phase          The engine's measurePhase result.
+ * @param {Object}        baseline       Serial baseline { sessions, editMs, idleMs }.
+ * @param {Array}         rows           All server rows (may be empty).
+ * @param {string}        engine         Engine slug (the approach label).
+ * @param {Array<string>} coverageLimits Reasons server totals are unavailable.
  * @return {Object} { spans, job } for the report.
  */
-function summarize( phase, baseline, rows, engine ) {
+function summarize( phase, baseline, rows, engine, coverageLimits ) {
+	// Preserve raw rows, but never present partial measurements as totals.
+	if ( coverageLimits.length ) {
+		rows = [];
+	}
 	const lastSession = baseline.sessions[ baseline.sessions.length - 1 ];
 	const baseTotal = ( spanKey, counter ) =>
 		'editing' === spanKey
@@ -716,11 +756,13 @@ function summarize( phase, baseline, rows, engine ) {
 		spans[ spanKey ] = {
 			client: {
 				requestsPerMinute: rate( 'requests' ),
+				wsFramesPerMinute: rate( 'wsFrames' ),
 				kbPerMinute:
 					( rate( 'requestBytes' ) + rate( 'responseBytes' ) ) / 1024,
 			},
 			baseClient: {
 				requestsPerMinute: baseRate( 'requests' ),
+				wsFramesPerMinute: baseRate( 'wsFrames' ),
 				kbPerMinute:
 					( baseRate( 'requestBytes' ) +
 						baseRate( 'responseBytes' ) ) /
@@ -774,6 +816,16 @@ function summarize( phase, baseline, rows, engine ) {
 }
 
 async function main() {
+	if (
+		! Number.isInteger( WINDOWS ) ||
+		WINDOWS < 1 ||
+		! Number.isFinite( IDLE_SECONDS ) ||
+		IDLE_SECONDS < 0
+	) {
+		throw new Error(
+			'windows must be a positive integer and idle-seconds must be non-negative'
+		);
+	}
 	if ( ! Number.isFinite( EDIT_SECONDS ) || EDIT_SECONDS < 30 ) {
 		throw new Error( 'edit-seconds must be at least 30' );
 	}
@@ -798,7 +850,7 @@ async function main() {
 	// restore below runs through — so signals are handled here instead.
 	// The object cache and the SSE wait are site-wide: set them before
 	// any window opens (the baseline phase runs under them too).
-	const hostCache = configureHostCache( { cache: CACHE, wake: WAKE } );
+	let hostCache = null;
 	const browser = await chromium.launch( {
 		headless: ! HEADED,
 		handleSIGINT: false,
@@ -874,6 +926,13 @@ async function main() {
 				} )
 				.catch( () => null );
 		}
+		try {
+			restoreHostCache( hostCache );
+		} catch ( error ) {
+			console.warn(
+				`WARNING: failed to restore the object cache: ${ error }`
+			);
+		}
 		await browser.close().catch( () => null );
 	};
 	const onSignal = ( signal ) => {
@@ -884,6 +943,7 @@ async function main() {
 	process.once( 'SIGTERM', () => onSignal( 'SIGTERM' ) );
 
 	try {
+		hostCache = configureHostCache( { cache: CACHE, wake: WAKE } );
 		adminPage = await login( context );
 		rest = await makeRestClient( adminPage );
 		if ( ! rest ) {
@@ -1047,6 +1107,8 @@ async function main() {
 			const session = await measurePhase(
 				[ win ],
 				tag,
+				rest,
+				expectedDocument( person + 1 ),
 				isLast,
 				sampleDbIo
 			);
@@ -1054,13 +1116,6 @@ async function main() {
 			if ( session.perWindow[ 0 ].editing.sync.requests > 0 ) {
 				throw new Error(
 					'a baseline step made sync requests — the plugin was still active, so the comparison is meaningless'
-				);
-			}
-			if ( ! session.saveOk ) {
-				throw new Error(
-					`baseline step ${
-						person + 1
-					} failed to save — the next step would edit a stale document, breaking the parity the comparison depends on`
 				);
 			}
 			baselineSessions.push( session );
@@ -1098,27 +1153,44 @@ async function main() {
 			await waitForSyncTraffic( win.page, win.sync, String( index ) );
 			wins.push( win );
 		}
-		const observed = observeTransport( wins[ 0 ].sync );
-		if (
-			'current' !== TRANSPORT &&
-			observed !== originalSettings.active.transport
-		) {
-			throw new Error(
-				`requested transport "${ originalSettings.active.transport }" but the session negotiated "${ observed }"`
-			);
+		// Polling carries the initial join even when SSE is selected. Wait
+		// for the selected receive transport after all peers have joined.
+		// A solo SSE editor may correctly remain quiet without a stream.
+		let observed = observeTransport( wins[ 0 ].sync );
+		const selectedTransport = originalSettings.active.transport;
+		if ( ! ( WINDOWS === 1 && selectedTransport === 'sse' ) ) {
+			const deadline = Date.now() + 45000;
+			while (
+				wins.some(
+					( win ) =>
+						observeTransport( win.sync ) !== selectedTransport
+				)
+			) {
+				if ( Date.now() >= deadline ) {
+					throw new Error(
+						`selected transport "${ selectedTransport }" did not become active in every editor`
+					);
+				}
+				await wins[ 0 ].page.waitForTimeout( 250 );
+			}
+			observed = observeTransport( wins[ 0 ].sync );
 		}
 
-		const phase = await measurePhase( wins, tag, true, sampleDbIo );
-		if ( ! phase.saveOk ) {
-			console.warn(
-				`WARNING: the sync phase's end-of-editing save failed — job totals still comparable, but the save cost is missing from the sync side`
-			);
-		}
+		const phase = await measurePhase(
+			wins,
+			tag,
+			rest,
+			expectedDocument( WINDOWS ),
+			true,
+			sampleDbIo
+		);
+		observed = observeTransport( wins[ 0 ].sync );
 		for ( const win of wins ) {
 			const edited = phase.perWindow[ win.index ].editing.sync;
 			if (
 				0 === edited.dataRequests &&
-				0 === edited.wsFramesSent + edited.wsFramesReceived
+				0 === edited.sseBytesReceived &&
+				0 === edited.wsSyncFramesSent + edited.wsSyncFramesReceived
 			) {
 				throw new Error(
 					`sync window ${ win.index } made no sync data traffic while editing — dead session, numbers unusable`
@@ -1154,7 +1226,27 @@ async function main() {
 			( row ) => 'baseline' === row.approach
 		);
 
+		const coverageLimits = serverCoverageLimits( {
+			muMeasurement: muPresent,
+			transport: wins.some(
+				( win ) => win.sync.snapshot().sseStreams > 0
+			)
+				? 'sse'
+				: observed,
+			sockets: wins.some( ( win ) => {
+				const counters = win.sync.snapshot();
+				return counters.wsFramesSent + counters.wsFramesReceived > 0;
+			} ),
+		} );
+
 		const report = {
+			schemaVersion: 2,
+			measurement: {
+				contentVerified: true,
+				serverCoverageLimits: coverageLimits,
+				traffic:
+					'HTTP body, SSE, and WebSocket payload bytes; excludes headers, protocol overhead, compression effects, and WebRTC.',
+			},
 			environment: {
 				date: new Date().toISOString(),
 				baseUrl: BASE,
@@ -1165,6 +1257,9 @@ async function main() {
 				server: serverEnv,
 				cache: CACHE,
 				wake: WAKE,
+				delivery: originalSettings.active.delivery,
+				transportRequested: selectedTransport,
+				pollingIntervalSeconds: POLL_OVERRIDE ?? originalPoll,
 			},
 			baseline: { postId: baselinePost, detail: baseline },
 			engine: {
@@ -1173,7 +1268,13 @@ async function main() {
 				sseWait: observeSseWait( wins[ 0 ].sync ),
 				postId: post,
 				roomSize,
-				...summarize( phase, baseline, serverRows, engine ),
+				...summarize(
+					phase,
+					baseline,
+					serverRows,
+					engine,
+					coverageLimits
+				),
 				detail: phase,
 			},
 			serverRows,
@@ -1187,11 +1288,6 @@ async function main() {
 		}
 	} finally {
 		await cleanup();
-		try {
-			restoreHostCache( hostCache );
-		} catch ( error ) {
-			console.warn( `WARNING: failed to restore the object cache: ${ error }` );
-		}
 	}
 }
 
@@ -1269,21 +1365,28 @@ function printReport( report ) {
 		};
 		push(
 			'requests',
-			'requests/min',
+			'HTTP requests/min',
 			span.baseClient.requestsPerMinute,
 			span.client.requestsPerMinute,
 			1
 		);
 		push(
 			'traffic',
-			'network KB/min',
+			'payload KiB/min',
 			span.baseClient.kbPerMinute,
 			span.client.kbPerMinute,
 			1
 		);
 		push(
+			'requests',
+			'WebSocket frames/min',
+			span.baseClient.wsFramesPerMinute,
+			span.client.wsFramesPerMinute,
+			1
+		);
+		push(
 			'cpu',
-			'server CPU ms/min',
+			'PHP CPU ms/min',
 			span.baseServer?.cpuMsPerMinute ?? null,
 			span.server?.cpuMsPerMinute ?? null,
 			1
@@ -1334,7 +1437,7 @@ function printReport( report ) {
 			const base = span.baseServer;
 			const sync = span.server;
 			rows.push( [
-				'peak PHP memory MB/request',
+				'peak PHP memory MiB/request',
 				base ? fmt( base.peakMemoryMaxMb, 1 ) : '—',
 				sync ? fmt( sync.peakMemoryMaxMb, 1 ) : '—',
 				base && sync
@@ -1362,12 +1465,19 @@ function printReport( report ) {
 	// Stats: single-value results that fit no table. (The whole-job
 	// totals stay in the JSON report as engine.job.)
 	console.log( '' );
+	console.log(
+		'content: every editor and saved post verified against the same fixed script'
+	);
+	console.log( `traffic: ${ report.measurement.traffic }` );
+	for ( const reason of report.measurement.serverCoverageLimits ) {
+		console.log( `server totals unavailable: ${ reason }` );
+	}
 	console.log( 'stats:' );
 	if ( entry.roomSize ) {
 		console.log(
-			`  room storage: ${ entry.roomSize.rows } rows, ${ Math.round(
-				entry.roomSize.bytes / 1024
-			) } KB`
+			`  logical room storage: ${
+				entry.roomSize.rows
+			} rows, ${ Math.round( entry.roomSize.bytes / 1024 ) } KiB`
 		);
 	}
 	const editShare = entry.spans.editing.server?.workerShare;
@@ -1375,7 +1485,7 @@ function printReport( report ) {
 		console.log(
 			`  derived capacity: ~${ Math.floor(
 				1 / editShare
-			) } concurrent editors per PHP worker`
+			) } editors per PHP worker (estimate without queueing or spare capacity; not a tested limit)`
 		);
 	}
 
