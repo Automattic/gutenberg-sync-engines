@@ -151,8 +151,10 @@ stream "does not work" on a host where polling does:
   comment keeps idle-timeout counters from firing on quiet streams.
 - **Worker pools.** Size the PHP worker pool for one held worker per open
   editor tab on top of ordinary traffic. Tabs that are alone on a post
-  close their stream, so the count is the number of tabs that have
-  company.
+  close their stream, and so do tabs nobody is looking at (a hidden
+  browser tab polls every twenty-five seconds instead, like short
+  polling, and reopens its stream the moment it is visible again), so
+  the count is the number of visible tabs that have company.
 
 When a stream cannot be opened at all (the request fails or is refused),
 the browser falls back to short polling and retries the stream with a
@@ -250,7 +252,11 @@ SSE after five seconds, and each further failure in a row doubles that
 wait, up to one minute. A tab alone in its room
 closes its stream once the discovery window after load passes, exactly as the
 other HTTP transports go quiet, so an idle solo tab holds no PHP worker; the
-heartbeat's company report reopens it. Every twenty seconds the stream
+heartbeat's company report reopens it. A hidden tab holds no stream either:
+when the tab goes into the background it drops the stream and receives over
+ordinary requests every twenty-five seconds, the cadence short polling uses
+for a hidden tab, and it reopens the stream at once when it is visible
+again. A hidden tab that is also alone goes quiet like any other. Every twenty seconds the stream
 refreshes presence only for a client still
 listed in the room, using its current state. It does not recreate an entry
 removed by a leave or room reset. Five-second heartbeat comments reset the

@@ -585,6 +585,9 @@ function nextScheduledDelay(): number | null {
 	// Short polling proper, including SSE while no stream can be opened:
 	// receiving then runs on the base transport, with its cadence rules
 	// and its advisory channel (switched back on by the failed exchange).
+	// A hidden SSE tab lands here too, with the channel still off (no
+	// mesh to rebuild on every tab switch), so it takes the background
+	// cadence below.
 	if ( advisoryCoversEveryone() ) {
 		return null;
 	}
@@ -921,11 +924,17 @@ let sseSettleUntil = 0;
 
 /**
  * Whether receiving is on the stream (or about to be, once the room set
- * settles): SSE is selected and the exchange is willing to open one. When
- * it is not (a stream failed recently), receiving is short polling.
+ * settles): SSE is selected, the tab is visible, and the exchange is
+ * willing to open one. When it is not, receiving is short polling: after
+ * a failed stream (the exchange refuses to open one for a while), and
+ * while the tab is hidden — a stream holds a PHP worker for its whole
+ * length, renewed for as long as the tab lives, and nobody is looking at
+ * a hidden tab, so it polls at the background cadence like short polling
+ * and the stream reopens the moment the tab is visible again
+ * (handleVisibilityChange polls at once).
  */
 function sseStreaming(): boolean {
-	return sseMode && sseExchange.available;
+	return sseMode && isActiveBrowser && sseExchange.available;
 }
 
 /**
@@ -1038,6 +1047,17 @@ function handleVisibilityChange() {
 	isActiveBrowser = document.visibilityState === 'visible';
 
 	if ( ! isActiveBrowser ) {
+		if ( sseMode ) {
+			/*
+			 * A hidden tab holds no stream (sseStreaming). Drop it the
+			 * way pagehide does: through the park signal, so the exchange
+			 * in flight sees a deliberate abort (no failure backoff, no
+			 * "will retry" error logged) and the loop goes on over
+			 * ordinary requests at the background cadence (sseDelay).
+			 */
+			abortParkedStream();
+			sseExchange.close();
+		}
 		/*
 		 * Going hidden while alone with held work: a hidden tab's heartbeat
 		 * slows to two minutes, too slow to answer a joiner, so put the

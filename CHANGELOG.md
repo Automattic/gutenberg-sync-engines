@@ -18,7 +18,8 @@ release, which the release script generates from the commit history.
     Pub/Sub notices when `WP_SYNC_SSE_REDIS_URL` is set or a Redis object
     cache is in use, and otherwise by checking a per-room version number
     every half second (in the object cache when there is one, else in the
-    room-meta table). Local Redis starts and is removed through wp-env
+    room-meta table). A tab that is alone, or hidden behind another tab,
+    holds no stream. Local Redis starts and is removed through wp-env
     lifecycle hooks. Needs a proxy that passes streams through; see
     `docs/transports.md`.
 -   Awareness gained a drop-in backend seam, the third after the lock and
