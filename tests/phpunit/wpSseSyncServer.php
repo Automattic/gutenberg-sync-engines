@@ -227,6 +227,18 @@ class Tests_Collaboration_WpSseSyncServer extends WP_Test_REST_TestCase {
 		$this->assertNotEmpty( $initial['rooms'][0]['updates'] );
 	}
 
+	public function test_names_the_wait_a_stream_got() {
+		$this->server->handle_request( $this->request() );
+		$this->assertSame( 'redis', $this->server->wait_kind() );
+
+		add_filter( 'wp_sync_sse_redis_url', '__return_empty_string' );
+		$this->server->redis = null;
+		$this->server->handle_request( $this->request() );
+		$this->assertSame( 'version-table', $this->server->wait_kind() );
+		$this->server->versions_supported = false;
+		$this->assertSame( 'reads', $this->server->wait_kind() );
+	}
+
 	public function test_a_configured_but_unreachable_redis_falls_back_to_storage_checks() {
 		add_filter( 'wp_sync_sse_redis_url', static fn() => 'redis://127.0.0.1:1' );
 		$this->server->redis = null;

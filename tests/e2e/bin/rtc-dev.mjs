@@ -3,7 +3,13 @@
 /**
  * Local RTC transport switcher.
  *
- * Three modes, selected by --mode=<websockets|daemon|http>:
+ * Modes, selected by --mode=<websockets|daemon|http|doctor|cache>:
+ *
+ *   cache: --on copies the Redis Object Cache drop-in in (a persistent
+ *   object cache on the env's sync-redis container, through the plugin's
+ *   bundled Predis client — no PHP extension), --off removes it; --tests
+ *   targets the tests env. With the drop-in on, the SSE transport detects
+ *   Redis by itself and the room storage keeps presence in the cache.
  *
  *   websockets: one-command start for the real websocket transport. Ensures
  *   wp-env is running, points the site at the websocket transport, and runs
@@ -64,6 +70,9 @@ const { values: CLI } = parseArgs( {
 		mode: { type: 'string', default: 'websockets' },
 		port: { type: 'string' },
 		detach: { type: 'boolean', default: false },
+		on: { type: 'boolean', default: false },
+		off: { type: 'boolean', default: false },
+		tests: { type: 'boolean', default: false },
 	},
 } );
 
@@ -79,9 +88,11 @@ const PORT = Number.isNaN( WS_PORT ) ? DEFAULT_PORT : WS_PORT;
 
 function parseMode() {
 	const mode = CLI.mode;
-	if ( ! [ 'websockets', 'daemon', 'http', 'doctor' ].includes( mode ) ) {
+	if (
+		! [ 'websockets', 'daemon', 'http', 'doctor', 'cache' ].includes( mode )
+	) {
 		throw new Error(
-			`Unknown --mode=${ mode }. Expected "websockets", "daemon", "http", or "doctor".`
+			`Unknown --mode=${ mode }. Expected "websockets", "daemon", "http", "doctor", or "cache".`
 		);
 	}
 	return mode;
@@ -144,6 +155,60 @@ function runWpCli( wpArgs, { allowFailure = false, configFile = null } = {} ) {
  * experiment rather than the old `wp_collaboration_enabled` option (which
  * Gutenberg now deletes on upgrade). Other experiments are left alone.
  */
+/**
+ * Whether the site runs a persistent object cache (the drop-in loaded).
+ *
+ * @param {Object}      options            Options.
+ * @param {string|null} options.configFile wp-env config (null: dev).
+ * @return {Promise<boolean|null>} True/false, or null when wp-cli failed.
+ */
+async function hasPersistentObjectCache( { configFile = null } = {} ) {
+	const out = await runWpCli(
+		[ 'eval', 'echo (int) wp_using_ext_object_cache();' ],
+		{ configFile, allowFailure: true }
+	);
+	return undefined === out ? null : '1' === out.trim();
+}
+
+/**
+ * cache mode: put the Redis Object Cache drop-in in or take it out.
+ */
+async function cacheMode() {
+	if ( CLI.on === CLI.off ) {
+		throw new Error( '--mode=cache needs exactly one of --on or --off.' );
+	}
+	const configFile = CLI.tests ? '.wp-env.tests.json' : null;
+	const label = CLI.tests ? 'tests env' : 'dev env';
+	if ( CLI.on ) {
+		// The plugin ships the drop-in; wp redis enable copies it in.
+		await runWpCli( [ 'plugin', 'activate', 'redis-cache' ], {
+			configFile,
+			allowFailure: true,
+		} );
+	}
+	await runWpCli( [ 'redis', CLI.on ? 'enable' : 'disable' ], {
+		configFile,
+		allowFailure: true,
+	} );
+	const state = await hasPersistentObjectCache( { configFile } );
+	if ( state !== CLI.on ) {
+		throw new Error(
+			`${ label }: the drop-in is ${
+				state ? 'still on' : 'not on'
+			} after wp redis ${
+				CLI.on ? 'enable' : 'disable'
+			} — is the redis-cache plugin installed (listed in the wp-env config) and Redis running (npm run doctor)?`
+		);
+	}
+	process.stdout.write(
+		`${ label }: Redis object cache drop-in ${
+			CLI.on
+				? 'ON — a persistent object cache on sync-redis; the SSE transport now detects Redis by itself'
+				: 'OFF — no persistent object cache'
+		}.\n`
+	);
+}
+
 async function enableCollaborationExperiment( { configFile = null } = {} ) {
 	process.stdout.write( 'Enabling collaboration experiment... ' );
 	await runWpCli(
@@ -747,6 +812,21 @@ async function runDoctorMode() {
 			);
 		}
 
+		const persistentCache = await hasPersistentObjectCache( {
+			configFile,
+		} );
+		if ( null !== persistentCache ) {
+			info(
+				persistentCache
+					? `object cache: Redis drop-in ON (persistent cache on sync-redis; SSE wakes on Redis notices; npm run cache:${
+							configFile ? 'tests:' : ''
+					  }off removes it)`
+					: `object cache: none (npm run cache:${
+							configFile ? 'tests:' : ''
+					  }on puts the Redis drop-in in)`
+			);
+		}
+
 		if ( configFile && 8889 !== sitePort ) {
 			// This checkout's tests env is NOT on the default port; if some
 			// other project's env answers there, Playwright's webServer check
@@ -801,6 +881,10 @@ async function main() {
 	const mode = parseMode();
 	if ( 'doctor' === mode ) {
 		await runDoctorMode();
+		return;
+	}
+	if ( 'cache' === mode ) {
+		await cacheMode();
 		return;
 	}
 	if ( 'http' === mode ) {

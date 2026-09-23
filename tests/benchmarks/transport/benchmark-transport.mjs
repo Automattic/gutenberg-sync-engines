@@ -25,6 +25,14 @@
  *   transport=  http-polling | sse | websocket | current
  *               Switched via the Settings → Collaboration screen and
  *               restored afterwards. Default: current (no switch).
+ *   cache=      none | redis | current: the persistent object cache the
+ *               site runs for the run (redis = the Redis Object Cache
+ *               drop-in on the env's Redis; this checkout's wp-env sites
+ *               only; restored afterwards). Default: current.
+ *   wake=       auto | redis | cache | table: what an SSE stream sleeps
+ *               on (auto = whatever the site has, Redis when detectable;
+ *               cache needs cache=redis, table needs cache=none). The
+ *               report records the wait the streams actually got.
  *   engine=     intent-log | yjs-server | current (default: current)
  *   trials=     measured token round-trips (default 30)
  *   warmup=     unmeasured leading trials (default 3)
@@ -68,6 +76,7 @@ import {
 	attachCounters,
 	canvasOf,
 	collectServerSide,
+	configureHostCache,
 	configureSettings,
 	diffCounters,
 	dismissWelcomeGuide,
@@ -77,9 +86,11 @@ import {
 	kb,
 	login,
 	makeRestClient,
+	observeSseWait,
 	observeTransport,
 	parseCliOptions,
 	percentile,
+	restoreHostCache,
 	restoreSettings,
 	runBaseline,
 	waitForSyncTraffic,
@@ -89,6 +100,8 @@ const opts = parseCliOptions();
 
 const TRANSPORT = String( opts.transport ?? 'current' );
 const ENGINE = String( opts.engine ?? 'current' );
+const CACHE = String( opts.cache ?? 'current' );
+const WAKE = String( opts.wake ?? 'auto' );
 const TRIALS = Number( opts.trials ?? 30 );
 const WARMUP = Number( opts.warmup ?? 3 );
 const IDLE_SECONDS = Number( opts.idle ?? 30 );
@@ -100,6 +113,8 @@ async function main() {
 	if ( ! Number.isFinite( TRIALS ) || TRIALS < 1 ) {
 		throw new Error( 'trials must be a positive number' );
 	}
+	// Site-wide, so before any window opens.
+	const hostCache = configureHostCache( { cache: CACHE, wake: WAKE } );
 	const browser = await chromium.launch( { headless: ! HEADED } );
 	let settings = null;
 	let pageA = null;
@@ -559,6 +574,9 @@ async function main() {
 				engine: settings.active.engine,
 				transportRequested: settings.active.transport,
 				transportObserved: observedTransport,
+				cache: CACHE,
+				wake: WAKE,
+				sseWaitObserved: observeSseWait( countersA ),
 				trials: TRIALS,
 				warmup: WARMUP,
 				idleSeconds: IDLE_SECONDS,
@@ -655,6 +673,11 @@ async function main() {
 			'\n  screenshots: bench-fail-a.png / bench-fail-b.png';
 		throw error;
 	} finally {
+		try {
+			restoreHostCache( hostCache );
+		} catch ( error ) {
+			console.warn( `WARNING: failed to restore the object cache: ${ error }` );
+		}
 		const changedSettings =
 			settings &&
 			( settings.previous.engine !== settings.active.engine ||

@@ -7,6 +7,16 @@
  * the tools, not the library.
  */
 
+/**
+ * External dependencies
+ */
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 export const BASE = process.env.WP_BASE_URL ?? 'http://localhost:8889';
 export const USER = process.env.WP_USERNAME ?? 'admin';
 export const PASS = process.env.WP_PASSWORD ?? 'password';
@@ -58,6 +68,9 @@ export function attachCounters( page ) {
 		sseRequests: 0,
 		sseStreams: 0,
 		sseBytesReceived: 0,
+		// What the last stream slept on, from the X-WP-Sync-SSE-Wait
+		// response header: redis | version-cache | version-table | reads.
+		sseWait: null,
 		wsFramesSent: 0,
 		wsFramesReceived: 0,
 		wsBytesSent: 0,
@@ -138,6 +151,13 @@ export function attachCounters( page ) {
 					) {
 						streams.add( requestId );
 						c.sseStreams++;
+						for ( const [ name, value ] of Object.entries(
+							response.headers ?? {}
+						) ) {
+							if ( 'x-wp-sync-sse-wait' === name.toLowerCase() ) {
+								c.sseWait = value;
+							}
+						}
 					}
 				}
 			);
@@ -664,6 +684,235 @@ export async function waitForSyncTraffic( page, counters, label ) {
 		}
 		await page.waitForTimeout( 250 );
 	}
+}
+
+/**
+ * What the SSE streams a counter set saw slept on, from the response
+ * header the transport sends: redis, version-cache, version-table, reads,
+ * or 'none' when no stream was seen.
+ *
+ * @param {Object} counters Counter handle.
+ * @return {string} Observed wait kind.
+ */
+export function observeSseWait( counters ) {
+	return counters.snapshot().sseWait ?? 'none';
+}
+
+const REPO_ROOT = path.resolve(
+	path.dirname( fileURLToPath( import.meta.url ) ),
+	'../../..'
+);
+const SSE_WAKE_OPTION = 'gutenberg_sync_engines_bench_sse_wake';
+
+/**
+ * The wp-env work directory of one of this checkout's configs, mirroring
+ * wp-env's own naming (legacy md5 dir, then descriptive dir, then a
+ * compose-file scan), or null when that env was never started.
+ *
+ * @param {string} configBasename `.wp-env.json` or `.wp-env.tests.json`.
+ * @return {string|null} Work directory.
+ */
+function wpEnvWorkDirectory( configBasename ) {
+	const home =
+		process.env.WP_ENV_HOME ||
+		path.join( os.homedir(), existsSync( '/snap' ) ? 'wp-env' : '.wp-env' );
+	const configFilePath = path.join( REPO_ROOT, configBasename );
+	const hash = createHash( 'md5' ).update( configFilePath ).digest( 'hex' );
+	const legacy = path.join( home, hash );
+	if ( existsSync( legacy ) ) {
+		return legacy;
+	}
+	const variant = '.wp-env.tests.json' === configBasename ? '-tests' : '';
+	const descriptive = path.join(
+		home,
+		`wp-env-${ path.basename( REPO_ROOT ) }${ variant }-${ hash.slice(
+			0,
+			8
+		) }`
+	);
+	if ( existsSync( descriptive ) ) {
+		return descriptive;
+	}
+	const needle = `${ REPO_ROOT }:`;
+	try {
+		for ( const entry of readdirSync( home ) ) {
+			const composeFile = path.join( home, entry, 'docker-compose.yml' );
+			try {
+				const compose = readFileSync( composeFile, 'utf8' );
+				if (
+					compose.includes( needle ) &&
+					compose.includes( configBasename )
+				) {
+					return path.join( home, entry );
+				}
+			} catch {
+				// Not a work directory; keep scanning.
+			}
+		}
+	} catch {
+		// No wp-env home yet.
+	}
+	return null;
+}
+
+/**
+ * Which of this checkout's wp-env configs serves BASE, by port, or null
+ * when BASE is not one of this checkout's wp-env sites.
+ *
+ * @param {string} base Site URL.
+ * @return {string|null} Config basename.
+ */
+export function wpEnvConfigForBase( base = BASE ) {
+	const port = Number( new URL( base ).port || 80 );
+	for ( const config of [ '.wp-env.json', '.wp-env.tests.json' ] ) {
+		const dir = wpEnvWorkDirectory( config );
+		if ( ! dir ) {
+			continue;
+		}
+		try {
+			const match = readFileSync(
+				path.join( dir, 'docker-compose.yml' ),
+				'utf8'
+			).match( /\$\{WP_ENV(?:_TESTS)?_PORT:-(\d+)\}:80/ );
+			if ( match && Number( match[ 1 ] ) === port ) {
+				return config;
+			}
+		} catch {
+			// Not started.
+		}
+	}
+	return null;
+}
+
+/**
+ * Runs a wp-cli command in the env that serves BASE.
+ *
+ * @param {string}   config     wp-env config basename.
+ * @param {string[]} wpArgs     Arguments after `wp`.
+ * @param {Object}   options    Options.
+ * @param {boolean}  options.allowFailure Return null instead of throwing.
+ * @return {string|null} Trimmed stdout.
+ */
+export function wpCli( config, wpArgs, { allowFailure = false } = {} ) {
+	try {
+		return execFileSync(
+			'npx',
+			[
+				'wp-env',
+				...( '.wp-env.json' === config ? [] : [ '--config', config ] ),
+				'run',
+				'cli',
+				'wp',
+				...wpArgs,
+			],
+			{ cwd: REPO_ROOT, encoding: 'utf8', stdio: [ 'ignore', 'pipe', 'pipe' ] }
+		).trim();
+	} catch ( error ) {
+		if ( allowFailure ) {
+			return null;
+		}
+		throw new Error(
+			`wp ${ wpArgs.join( ' ' ) } failed: ${ error.stderr || error.message }`
+		);
+	}
+}
+
+/**
+ * The persistent object cache the site runs: 'redis' when the Redis
+ * Object Cache drop-in is loaded, else 'none'.
+ *
+ * @param {string} config wp-env config basename.
+ * @return {string} 'redis' | 'none'.
+ */
+function currentHostCache( config ) {
+	return '1' ===
+		wpCli( config, [ 'eval', 'echo (int) wp_using_ext_object_cache();' ] )
+		? 'redis'
+		: 'none';
+}
+
+/**
+ * Puts the site into the requested host-cache arrangement for a run and
+ * returns what to restore. `cache` is the persistent object cache: none,
+ * redis (the Redis Object Cache drop-in, on the env's Redis), or current
+ * (leave alone). `wake` pins what an SSE stream sleeps on: auto (whatever
+ * the site has: Redis when detectable), redis, cache (the version counter
+ * in the object cache; needs cache=redis), or table (the counter in the
+ * room-meta table; needs cache=none). Only a wp-env site of this checkout
+ * can be switched (the drop-in goes in through wp-cli); on any other site
+ * both must stay at their defaults.
+ *
+ * @param {Object} wanted       Arrangement.
+ * @param {string} wanted.cache none | redis | current.
+ * @param {string} wanted.wake  auto | redis | cache | table.
+ * @return {Object|null} State for restoreHostCache(), or null when nothing changed.
+ */
+export function configureHostCache( { cache = 'current', wake = 'auto' } ) {
+	if ( ! [ 'none', 'redis', 'current' ].includes( cache ) ) {
+		throw new Error( `cache= must be none, redis, or current (got ${ cache })` );
+	}
+	if ( ! [ 'auto', 'redis', 'cache', 'table' ].includes( wake ) ) {
+		throw new Error( `wake= must be auto, redis, cache, or table (got ${ wake })` );
+	}
+	if ( 'cache' === wake && 'redis' !== cache ) {
+		throw new Error( 'wake=cache measures the version counter in the object cache: it needs cache=redis' );
+	}
+	if ( 'table' === wake && 'none' !== cache ) {
+		throw new Error( 'wake=table measures the version counter in the room-meta table: it needs cache=none' );
+	}
+	if ( 'current' === cache && 'auto' === wake ) {
+		return null;
+	}
+	const config = wpEnvConfigForBase();
+	if ( ! config ) {
+		throw new Error(
+			`cache=/wake= switch the site through wp-cli, which works only for this checkout's wp-env sites; ${ BASE } is not one`
+		);
+	}
+	const previous = {
+		cache: currentHostCache( config ),
+		wake: wpCli( config, [ 'option', 'get', SSE_WAKE_OPTION ], { allowFailure: true } ) || 'auto',
+	};
+	if ( 'current' !== cache && cache !== previous.cache ) {
+		setHostCache( config, cache );
+	}
+	setSseWake( config, wake );
+	return { config, previous };
+}
+
+/**
+ * Puts the site back the way configureHostCache() found it.
+ *
+ * @param {Object|null} state What configureHostCache() returned.
+ */
+export function restoreHostCache( state ) {
+	if ( ! state ) {
+		return;
+	}
+	setSseWake( state.config, state.previous.wake );
+	if ( currentHostCache( state.config ) !== state.previous.cache ) {
+		setHostCache( state.config, state.previous.cache );
+	}
+}
+
+function setHostCache( config, cache ) {
+	if ( 'redis' === cache ) {
+		wpCli( config, [ 'plugin', 'activate', 'redis-cache' ], { allowFailure: true } );
+	}
+	wpCli( config, [ 'redis', 'redis' === cache ? 'enable' : 'disable' ], { allowFailure: true } );
+	if ( currentHostCache( config ) !== cache ) {
+		throw new Error(
+			`could not turn the Redis object cache drop-in ${ 'redis' === cache ? 'on' : 'off' } (is the redis-cache plugin installed and Redis running? npm run doctor)`
+		);
+	}
+}
+
+function setSseWake( config, wake ) {
+	if ( 'auto' === wake ) {
+		wpCli( config, [ 'option', 'delete', SSE_WAKE_OPTION ], { allowFailure: true } );
+		return;
+	}
+	wpCli( config, [ 'option', 'update', SSE_WAKE_OPTION, wake ] );
 }
 
 /**

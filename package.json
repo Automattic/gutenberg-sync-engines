@@ -33,6 +33,10 @@
   "scripts": {
     "bench": "node tests/benchmarks/bench.mjs",
     "build": "wp-scripts build",
+    "cache:off": "node ./tests/e2e/bin/rtc-dev.mjs --mode=cache --off",
+    "cache:on": "node ./tests/e2e/bin/rtc-dev.mjs --mode=cache --on",
+    "cache:tests:off": "node ./tests/e2e/bin/rtc-dev.mjs --mode=cache --off --tests",
+    "cache:tests:on": "node ./tests/e2e/bin/rtc-dev.mjs --mode=cache --on --tests",
     "doctor": "node ./tests/e2e/bin/rtc-dev.mjs --mode=doctor",
     "env": "wp-env",
     "env:stop": "npm run redis:stop && wp-env stop",

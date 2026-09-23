@@ -382,6 +382,13 @@ npm run env:tests start   # TESTS env (.wp-env.tests.json): same mounts,
                           # http://localhost:8889, Redis lifecycle hooks only. This is
                           # what test:php / test:e2e / CI target.
 npm run env:stop          # Stops Redis + WordPress (env:tests:stop for tests)
+npm run cache:on          # Puts the Redis Object Cache drop-in in (a persistent
+                          # object cache on sync-redis; the SSE transport then
+                          # detects Redis by itself). cache:off removes it;
+                          # cache:tests:on/off for the tests env. Both configs
+                          # install the plugin (bundled Predis client, no PHP
+                          # extension) but leave the drop-in OUT, so the suites
+                          # run without a persistent cache.
 ```
 
 `autoPort` is on, so when a port is busy wp-env picks a free one and prints
@@ -562,7 +569,8 @@ they exist so a failure is observable without re-instrumenting:
   actually loaded (`wp collaboration` commands registered), current
   engine/transport options, the foreign-wp-env-on-:8889 trap, and
   websocket daemon health. Exits non-zero on real problems, each with its
-  fix. First stop when anything smells environmental — uniform timeouts
+  fix. It also reports whether each env runs the Redis object cache
+  drop-in. First stop when anything smells environmental — uniform timeouts
   across all engines are an environment failure, not an engine bug.
 - **Browser wire inspector** — `window.wpSync` (`src/debug/inspector.ts`),
   on every editor page. `wpSync.enable()` (persists per profile), then

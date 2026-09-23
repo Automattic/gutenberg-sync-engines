@@ -176,6 +176,28 @@ which already identifies the checkout and config. Shell variables `REDIS_PROJECT
 and `REDIS_NAME` reuse that name for the network and Redis container. Set
 `GSE_WP_ENV_CONFIG=.wp-env.tests.json` for the tests config; the default is dev.
 
+Both configs also install the Redis Object Cache plugin and point it at the
+same container (`WP_REDIS_HOST`, with its bundled Predis client so no PHP
+extension is needed), but leave its drop-in OUT: the test suites run
+without a persistent object cache, as most of PHPUnit assumes. `npm run
+cache:on` (dev) or `npm run cache:tests:on` (tests) copies the drop-in in,
+which gives the site a persistent object cache on Redis and lets the SSE
+transport detect Redis by itself; `cache:off` / `cache:tests:off` takes it
+out again, and `npm run doctor` reports the state per environment. With the
+drop-in on, the whole site's options and posts go through Redis too, so
+measurements taken that way describe a Redis-backed host, not just the
+transport.
+
+The transport and host benchmarks switch this for a run: `cache=none|redis`
+picks the persistent object cache and `wake=auto|redis|cache|table` pins
+what an SSE stream sleeps on (`cache` needs `cache=redis`, `table` needs
+`cache=none`; `auto` is whatever the site has, Redis when detectable).
+Both are restored afterwards, both work only for this checkout's wp-env
+sites (the switch goes through wp-cli), and the report records the wait
+the streams actually got, read from the `X-WP-Sync-SSE-Wait` header every
+stream response carries: `redis`, `version-cache`, `version-table`, or
+`reads`.
+
 Use `npm run env:stop` or `npm run env:tests:stop` to stop Redis and WordPress.
 This wp-env version has no stop lifecycle hook: plain `wp-env stop` (including
 `npm run env stop`) does not stop Redis. Redis uses Docker's `--rm`, so stopping

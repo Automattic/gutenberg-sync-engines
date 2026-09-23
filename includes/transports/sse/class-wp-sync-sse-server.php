@@ -156,6 +156,25 @@ class WP_Sync_SSE_Server extends WP_HTTP_Polling_Sync_Server {
 	}
 
 	/**
+	 * What this request's stream sleeps on, for the response header the
+	 * benchmarks read: `redis` (a Pub/Sub notice), `version-cache` or
+	 * `version-table` (the room version counters, in the object cache or
+	 * the room-meta table), or `reads` (a storage without counters, read
+	 * per room).
+	 *
+	 * @return string The wait kind.
+	 */
+	public function wait_kind(): string {
+		if ( $this->subscriber instanceof WP_Sync_Redis ) {
+			return 'redis';
+		}
+		if ( ! $this->storage_has_versions() ) {
+			return 'reads';
+		}
+		return wp_using_ext_object_cache() ? 'version-cache' : 'version-table';
+	}
+
+	/**
 	 * Whether the active storage keeps per-room version counters.
 	 *
 	 * @return bool True for the plugin's table storage.
@@ -237,6 +256,7 @@ class WP_Sync_SSE_Server extends WP_HTTP_Polling_Sync_Server {
 		$server->send_header( 'Content-Type', 'text/event-stream; charset=UTF-8' );
 		$server->send_header( 'Cache-Control', 'no-cache, no-store, no-transform' );
 		$server->send_header( 'X-Accel-Buffering', 'no' );
+		$server->send_header( 'X-WP-Sync-SSE-Wait', $this->wait_kind() );
 		// Disable PHP buffering; the host must also allow proxy streaming.
 		while ( ob_get_level() > 0 ) {
 			if ( ! ob_end_flush() ) {
