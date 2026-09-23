@@ -209,7 +209,7 @@ export function stopAdvisoryChannel(): void {
 
 /**
  * The active transport's switch. A transport that delivers its own wake
- * signal (long polling's held request) turns the channel off while it is
+ * signal (SSE's open stream) turns the channel off while it is
  * connected; the request is honored only while the transport says it is
  * connected, and turning it back on reconnects.
  *

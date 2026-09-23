@@ -92,6 +92,25 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		const AWARENESS_KEY = '_awareness';
 
 		/**
+		 * Room-meta key of the room's version counter: bumped after every
+		 * successful write so a waiting reader can ask "did anything change?"
+		 * with one lookup. With a persistent object cache it lives only
+		 * there (an atomic increment), never in a row.
+		 *
+		 * @since n.e.x.t
+		 * @var string
+		 */
+		const VERSION_KEY = '_version';
+
+		/**
+		 * How long an untouched version counter stays in the object cache.
+		 *
+		 * @since n.e.x.t
+		 * @var int
+		 */
+		const VERSION_CACHE_TTL = MONTH_IN_SECONDS;
+
+		/**
 		 * Room-meta key holding the polling transport's room generation
 		 * token (`WP_HTTP_Polling_Sync_Server::GENERATION_META_KEY`). Named
 		 * here because it is one of the two write-once keys the storage may
@@ -147,6 +166,120 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		}
 
 		/**
+		 * Notify transports only after a successful write: bump the room's
+		 * version counter, then fire the action.
+		 *
+		 * @since n.e.x.t
+		 * @param string $room   Changed room.
+		 * @param bool   $stored Write result.
+		 * @param bool   $bump   Whether to bump the version counter (a reset
+		 *                       that just deleted the row leaves its absence
+		 *                       as the signal).
+		 * @return bool Unchanged write result.
+		 */
+		private function notify_change( string $room, bool $stored, bool $bump = true ): bool {
+			if ( $stored ) {
+				if ( $bump ) {
+					$this->bump_room_version( $room );
+				}
+				/**
+				 * Fires after room data changes. Subscribers must treat this as
+				 * a wake hint and read durable state after the writer finishes.
+				 *
+				 * @since n.e.x.t
+				 * @param string $room Room name.
+				 */
+				do_action( 'gutenberg_sync_engines_room_changed', $room );
+			}
+			return $stored;
+		}
+
+		/**
+		 * Bumps the room's version counter with an atomic increment: Redis
+		 * and Memcached increment in place, and the row update is one
+		 * statement, so two writers can never lose each other's bump. That
+		 * atomicity is the guarantee: a reader compares the value with the
+		 * snapshot it took before its last read, and a lost bump could let
+		 * a reader whose snapshot fell between two bumps sleep through the
+		 * second write until its catch-up read.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @global wpdb $wpdb WordPress database abstraction object.
+		 *
+		 * @param string $room Room identifier.
+		 */
+		private function bump_room_version( string $room ): void {
+			global $wpdb;
+
+			if ( ! $this->is_storable_room( $room ) ) {
+				return;
+			}
+			if ( wp_using_ext_object_cache() ) {
+				$key = $this->cache_key( $room, self::VERSION_KEY );
+				wp_cache_add( $key, 0, WP_Sync_Table_Schema::CACHE_GROUP, self::VERSION_CACHE_TTL );
+				wp_cache_incr( $key, 1, WP_Sync_Table_Schema::CACHE_GROUP );
+				return;
+			}
+			$last_update_id = $wpdb->insert_id;
+			$wpdb->query(
+				$wpdb->prepare(
+					"INSERT INTO {$wpdb->sync_room_meta} ( room, meta_key, meta_value ) VALUES ( %s, %s, '1' ) ON DUPLICATE KEY UPDATE meta_value = meta_value + 1",
+					$room,
+					self::VERSION_KEY
+				)
+			);
+			$wpdb->insert_id = $last_update_id; // See the class docblock.
+		}
+
+		/**
+		 * The version counters of several rooms in one lookup, for a reader
+		 * waiting on "did anything change?". Not part of the WP_Sync_Storage
+		 * contract; the SSE stream uses it when this storage is active.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @global wpdb $wpdb WordPress database abstraction object.
+		 *
+		 * @param string[] $rooms Room identifiers.
+		 * @return array<string, string|null> Room => counter, null when the
+		 *                                    room has never been written (or
+		 *                                    was reset).
+		 */
+		public function get_room_versions( array $rooms ): array {
+			global $wpdb;
+
+			$rooms    = array_values( array_filter( array_unique( $rooms ), array( $this, 'is_storable_room' ) ) );
+			$versions = array_fill_keys( $rooms, null );
+			if ( empty( $rooms ) ) {
+				return $versions;
+			}
+			if ( wp_using_ext_object_cache() ) {
+				$keys = array();
+				foreach ( $rooms as $room ) {
+					$keys[ $room ] = $this->cache_key( $room, self::VERSION_KEY );
+				}
+				$found = wp_cache_get_multiple( array_values( $keys ), WP_Sync_Table_Schema::CACHE_GROUP );
+				foreach ( $keys as $room => $key ) {
+					if ( isset( $found[ $key ] ) && false !== $found[ $key ] ) {
+						$versions[ $room ] = (string) $found[ $key ];
+					}
+				}
+				return $versions;
+			}
+			$placeholders = implode( ', ', array_fill( 0, count( $rooms ), '%s' ) );
+			$rows         = $wpdb->get_results(
+				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- The placeholders are generated.
+				$wpdb->prepare( "SELECT room, meta_value FROM {$wpdb->sync_room_meta} WHERE meta_key = %s AND room IN ( {$placeholders} )", array_merge( array( self::VERSION_KEY ), $rooms ) ),
+				ARRAY_A
+			);
+			foreach ( (array) $rows as $row ) {
+				$versions[ $row['room'] ] = (string) $row['meta_value'];
+			}
+			return $versions;
+		}
+
+		/**
 		 * Whether a room identifier fits the `room` column. Longer rooms
 		 * cannot be stored (MySQL would truncate or reject them), so every
 		 * write refuses them and every read treats them as empty.
@@ -181,7 +314,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 				return false;
 			}
 
-			return (bool) $wpdb->insert(
+			$stored = (bool) $wpdb->insert(
 				$wpdb->sync_updates,
 				array(
 					'room'        => $room,
@@ -190,6 +323,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 				),
 				array( '%s', '%s', '%s' )
 			);
+			return $this->notify_change( $room, $stored );
 		}
 
 		/**
@@ -234,15 +368,16 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 				if ( ! $this->is_storable_room( $room ) ) {
 					return false;
 				}
-				return (bool) wp_cache_set(
+				$stored = (bool) wp_cache_set(
 					$this->cache_key( $room, self::AWARENESS_KEY ),
 					array_values( $awareness ),
 					WP_Sync_Table_Schema::CACHE_GROUP,
 					self::AWARENESS_CACHE_TTL
 				);
+				return $this->notify_change( $room, $stored );
 			}
 
-			return $this->upsert_meta( $room, self::AWARENESS_KEY, (string) wp_json_encode( $awareness ) );
+			return $this->notify_change( $room, $this->upsert_meta( $room, self::AWARENESS_KEY, (string) wp_json_encode( $awareness ) ) );
 		}
 
 		/**
@@ -547,7 +682,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 				// Written once per room lifetime; the next read re-primes.
 				wp_cache_delete( $this->cache_key( $room, $key ), WP_Sync_Table_Schema::CACHE_GROUP );
 			}
-			return $this->upsert_meta( $room, $key, (string) wp_json_encode( $value ) );
+			return $this->notify_change( $room, $this->upsert_meta( $room, $key, (string) wp_json_encode( $value ) ) );
 		}
 
 		/**
@@ -581,7 +716,9 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 			$updates = $wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->sync_updates} WHERE room = %s", $room ) );
 			$meta    = $wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->sync_room_meta} WHERE room = %s", $room ) );
 
-			return false !== $updates && false !== $meta;
+			// The version row went with the meta: its absence is the change a
+			// reader sees. A cached counter is kept and bumped instead.
+			return $this->notify_change( $room, false !== $updates && false !== $meta, (bool) wp_using_ext_object_cache() );
 		}
 
 		/**
@@ -869,7 +1006,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 
 		/**
 		 * Every engine-level meta value of a room, decoded, keyed by meta
-		 * key. The reserved lineage and awareness rows are left out.
+		 * key. The reserved lineage, awareness, and version rows are left out.
 		 *
 		 * @since 0.0.1
 		 *
@@ -887,10 +1024,11 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 
 			$rows = $wpdb->get_results(
 				$wpdb->prepare(
-					"SELECT meta_key, meta_value FROM {$wpdb->sync_room_meta} WHERE room = %s AND meta_key NOT IN ( %s, %s ) ORDER BY meta_key ASC",
+					"SELECT meta_key, meta_value FROM {$wpdb->sync_room_meta} WHERE room = %s AND meta_key NOT IN ( %s, %s, %s ) ORDER BY meta_key ASC",
 					$room,
 					self::ENGINE_KEY,
-					self::AWARENESS_KEY
+					self::AWARENESS_KEY,
+					self::VERSION_KEY
 				)
 			);
 

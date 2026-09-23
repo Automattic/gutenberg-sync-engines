@@ -45,9 +45,9 @@ third-party engine) on the server.
   `config.ts` (intervals, limits, retry schedules), `types.ts` (wire types),
   `utils.ts` (queues, API helpers).
 
-The http-long-polling transport reuses this entire client (and subclasses the
-server), re-pointing the route at `/wp-sync/v1/long-poll` and holding empty
-responses open server-side.
+The sse transport reuses this entire client (and subclasses the server):
+`providers/sse` swaps the receive half for one long-lived stream response per
+tab (`SseExchange`) and keeps sends on `/wp-sync/v1/updates`.
 
 ## Polling cadence
 

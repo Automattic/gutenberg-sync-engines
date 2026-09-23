@@ -38,7 +38,7 @@ module.exports = {
 	// adding a project babel config) keeps this scoped to Jest and leaves the
 	// webpack build's babel untouched.
 	transform: {
-		'\\.[jt]sx?$': [
+		'\\.(?:mjs|[jt]sx?)$': [
 			require.resolve( 'babel-jest' ),
 			{
 				presets: [

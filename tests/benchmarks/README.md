@@ -517,6 +517,17 @@ npm run bench -- --certify=10        # invariant sweep: 10 seeds x engines x
                                      # sessions — certifies "no edit is ever
                                      # silently dropped" at scale; CI runs
                                      # --certify=3 on every push/PR
+npm run bench -- --transport=sse --cache=redis --wake=cache
+                                     # the host report on a Redis-backed
+                                     # site (the Redis Object Cache drop-in
+                                     # goes in for the run and comes out
+                                     # after), with SSE streams pinned to
+                                     # the version counter in the cache;
+                                     # --cache=none --wake=table is the
+                                     # no-cache host, --wake=auto lets a
+                                     # detected Redis wake the streams.
+                                     # The report records the wait the
+                                     # streams actually got.
 ```
 
 Multi-process concurrency measurement is OPT-IN behind one flag:

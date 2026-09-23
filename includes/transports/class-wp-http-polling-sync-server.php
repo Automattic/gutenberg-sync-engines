@@ -213,7 +213,7 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 
 		/**
 		 * The shared route argument schema (the `rooms[]` payload). Extracted
-		 * so transport variants — e.g. the long-poll route — validate an
+		 * so transport variants — e.g. the SSE stream route — validate an
 		 * identical request shape.
 		 *
 		 * @since 7.2.0

@@ -5,9 +5,7 @@
     "moduleResolution": "node",
     "baseUrl": ".",
     "paths": {
-      "@wordpress/sync": [
-        "./gutenberg/packages/sync/src"
-      ],
+      "@wordpress/sync": [ "./gutenberg/packages/sync/src" ],
       "@wordpress/blocks": [
         "./gutenberg/node_modules/@wordpress/blocks/build-types"
       ],
@@ -17,15 +15,9 @@
       "@wordpress/data": [
         "./gutenberg/node_modules/@wordpress/data/build-types"
       ],
-      "yjs": [
-        "./gutenberg/node_modules/yjs"
-      ],
-      "y-protocols/*": [
-        "./gutenberg/node_modules/y-protocols/*"
-      ],
-      "lib0/*": [
-        "./gutenberg/node_modules/lib0/*"
-      ]
+      "yjs": [ "./gutenberg/node_modules/yjs" ],
+      "y-protocols/*": [ "./gutenberg/node_modules/y-protocols/*" ],
+      "lib0/*": [ "./gutenberg/node_modules/lib0/*" ]
     },
     "jsx": "react-jsx",
     "strict": true,
@@ -35,14 +27,9 @@
     "forceConsistentCasingInFileNames": true,
     "allowJs": true,
     "checkJs": true,
-    "types": [
-      "@wordpress/element"
-    ]
+    "types": [ "@wordpress/element" ]
   },
-  "include": [
-    "src/**/*",
-    "tests/js/**/*"
-  ],
+  "include": [ "src/**/*", "tests/js/**/*" ],
   "exclude": [
     "node_modules",
     "build",

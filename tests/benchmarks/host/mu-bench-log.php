@@ -22,6 +22,14 @@ if (
 	return;
 }
 
+// Benchmark wait pin (wake=cache|table on the host and transport
+// benchmarks): keep the SSE transport off Redis for every request, so the
+// version checks are what gets measured even while the Redis object cache
+// drop-in makes Redis detectable. One autoloaded option read.
+if ( in_array( get_option( 'gutenberg_sync_engines_bench_sse_wake', '' ), array( 'cache', 'table' ), true ) ) {
+	add_filter( 'wp_sync_sse_redis_url', '__return_empty_string' );
+}
+
 // Untagged requests: one server-var read, nothing else.
 // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only measurement tag on a diagnostics-only lane.
 if ( '1' !== ( $_SERVER['HTTP_X_RTC_TEST'] ?? '' ) && '1' !== ( $_GET['_rtctest'] ?? '' ) ) {

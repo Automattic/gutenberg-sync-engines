@@ -14,7 +14,7 @@ Start here if you want to:
   typing, same-paragraph conflicts, machine writes, deep lag…) traced
   through all three engines.
 - **Compare transports** → [transports.md](transports.md) — polling vs
-  long-polling vs websocket, and the websocket operational notes.
+  server-sent events vs websocket, and the operational notes for both.
 - **Understand de-rtc's relationship to its upstream design** →
   [de-rtc-fidelity.md](de-rtc-fidelity.md) — the audit of our port
   against the Distributed Editing vision.

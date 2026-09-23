@@ -87,8 +87,15 @@ Suites (--suite=; default: host):
                              yjs-server | de-rtc | current; default: the
                              site's current engine — comparing engines
                              is what --suite=engines is for)
-               --transport=  http-polling | http-long-polling | websocket
+               --transport=  http-polling | sse | websocket
                              (default: the site's current transport)
+               --cache=      none | redis | current: the persistent object
+                             cache for the run (redis = the Redis Object
+                             Cache drop-in on the env's Redis; wp-env
+                             sites only; restored after)
+               --wake=       auto | redis | cache | table: what an SSE
+                             stream sleeps on (cache needs --cache=redis,
+                             table needs --cache=none)
                --windows=    collaborator windows per engine phase
                              (default 2)
                --edit-seconds=      editing seconds per person (default

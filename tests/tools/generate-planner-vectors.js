@@ -360,6 +360,6 @@ process.stdout.write(
 			cases: CASES,
 		},
 		null,
-		'\t'
+		2
 	) + '\n'
 );

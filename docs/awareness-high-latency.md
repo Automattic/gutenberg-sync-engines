@@ -43,11 +43,11 @@ The value can travel two ways, chosen by "Awareness channel":
 
 - **Sync transport** (default). The value is one more field on the
   framework's awareness state (`gseBlock`), so it travels with the same
-  requests as content under polling, long polling, and WebSocket alike.
+  requests as content under polling, SSE, and WebSocket alike.
   No server change. Under short polling the advisory channel carries
   the value straight to every peer it can reach, within a moment, the
   same way it carries who is present; peers it cannot reach get it on
-  their next timer poll. Under long polling the held request is
+  their next timer poll. Under SSE the parked stream exchange is
   reissued with the new value. Under WebSocket it goes out with the
   transport's periodic awareness message, every 10 seconds.
 - **WordPress Heartbeat.** The value travels on WordPress's admin

@@ -6,6 +6,7 @@ import { applyFilters } from '@wordpress/hooks';
 /**
  * Internal dependencies
  */
+import { SseExchange } from '../sse/sse-exchange';
 import {
 	DEFAULT_CLIENT_LIMIT_PER_ROOM,
 	ERROR_RETRY_DELAYS_SOLO_MS,
@@ -425,9 +426,10 @@ let syncRequestBodySizeLimit = MAX_SYNC_REQUEST_BODY_SIZE_IN_BYTES;
  * - No signaling lane on this page (a screen with no per-post room, or
  *   the channel disabled site-wide): the always-on cadence, unchanged.
  *
- * Long polling keeps its own re-issue cadence and turns the channel off
- * while its held request is connected; the alone rule still applies to
- * it (a held request for a lone editor pins a PHP worker for nothing).
+ * SSE keeps its own re-issue cadence (the next exchange right behind
+ * each stream event) and turns the channel off while its stream is up;
+ * the alone rule still applies to it (a held stream for a lone editor
+ * pins a PHP worker for nothing).
  */
 let hasBootstrapped = false;
 let pollAgainRequested = false;
@@ -569,12 +571,16 @@ function advisoryCoversEveryone(): boolean {
  */
 function nextScheduledDelay(): number | null {
 	if ( hasBootstrapped && isAlone() ) {
-		return Date.now() < fastDiscoveryUntil ? POLLING_INTERVAL_IN_MS : null;
+		// Alone: the discovery window, then quiet. Under SSE quiet means no
+		// held stream either (scheduleNext closes it); the heartbeat's
+		// company report reopens it, as it restarts any HTTP transport.
+		if ( Date.now() >= fastDiscoveryUntil ) {
+			return null;
+		}
+		return sseMode ? sseDelay() : POLLING_INTERVAL_IN_MS;
 	}
-	if ( longPollMode ) {
-		return isActiveBrowser
-			? LONG_POLL_REISSUE_MS
-			: POLLING_INTERVAL_BACKGROUND_TAB_IN_MS;
+	if ( sseMode ) {
+		return sseDelay();
 	}
 	if ( advisoryCoversEveryone() ) {
 		return null;
@@ -613,6 +619,10 @@ function scheduleNext( delay: number | null ): void {
 	if ( null === delay ) {
 		isPolling = false;
 		pollingTimeoutId = null;
+		if ( sseMode ) {
+			// A quiet loop holds no PHP worker: drop the receive stream.
+			sseExchange.close();
+		}
 		return;
 	}
 	pollingTimeoutId = setTimeout( poll, delay );
@@ -655,6 +665,9 @@ function reschedule(): void {
 		const delay = boundedByQueuedWork( nextScheduledDelay() );
 		if ( null === delay ) {
 			isPolling = false;
+			if ( sseMode ) {
+				sseExchange.close();
+			}
 			return;
 		}
 		pollingTimeoutId = setTimeout( poll, delay );
@@ -671,8 +684,8 @@ function reschedule(): void {
  * loop is quiet (alone), a request is in flight with nothing scheduled
  * behind it (alone, mid-poll), or the pending timer is the slow safety
  * cadence (every peer on the channel). A scheduled timer at the normal
- * cadence, or a long-poll re-issue, needs no help. A parked long poll is
- * woken either way: local work must not wait out the hold.
+ * cadence, or a stream re-issue, needs no help. A parked stream is
+ * woken either way: local work must not wait for the next event.
  *
  * @param held Whether the work sits in a held queue (alone, holdable
  *             codec), which waits for company or a flush instead.
@@ -680,20 +693,21 @@ function reschedule(): void {
 function wakeForLocalWork( held = false ): void {
 	const needsWake =
 		! held &&
-		( longPollMode
+		( sseMode
 			? ! isPolling
 			: ! pollingTimeoutId || isAlone() || advisoryCoversEveryone() );
 	if ( needsWake ) {
 		pollSoonForLocalUpdate();
 	}
-	abortParkedLongPoll();
+	abortParkedStream();
 }
 
 /**
- * Wakes a parked long poll so local work does not wait out the hold.
+ * Wakes a parked stream exchange so local work does not wait for the
+ * next event. Under short polling nothing is ever parked.
  */
-function abortParkedLongPoll(): void {
-	if ( ! longPollMode || ! inFlightParkController ) {
+function abortParkedStream(): void {
+	if ( ! sseMode || ! inFlightParkController ) {
 		return;
 	}
 	parkAbortedForLocalUpdate = true;
@@ -706,11 +720,11 @@ function abortParkedLongPoll(): void {
  * Slow awareness named a new block on the local awareness state. Under
  * short polling the advisory channel's presence lane carries the field
  * to reachable peers, and the timer polls carry it to the rest, so
- * nothing needs to happen here. Under long polling the channel is off
- * and the value rides the next request: reissue a parked one now.
+ * nothing needs to happen here. Under SSE the channel is off and the
+ * value rides the next request: reissue the parked exchange now.
  */
 function onLocalAwarenessChanged(): void {
-	abortParkedLongPoll();
+	abortParkedStream();
 }
 
 /**
@@ -817,9 +831,12 @@ function installAdvisoryHooks(): void {
 		}
 	} );
 	// An active loop carries queued handshake messages on its next poll;
-	// a quiet one leaves them to the heartbeat.
+	// a quiet one leaves them to the heartbeat. So does an SSE loop: its
+	// exchanges send no probe (an open stream carries no request at all,
+	// so a probe could be dropped unanswered), which matters when SSE is
+	// down and the channel is back on as the fallback.
 	setSignalCarrier( () => {
-		if ( isPolling ) {
+		if ( isPolling && ! sseMode ) {
 			pollNow();
 			return true;
 		}
@@ -872,36 +889,74 @@ function installAdvisoryHooks(): void {
 }
 
 /*
- * Long-poll mode: the server holds each request open until it has something
- * to deliver, so on a successful response the client re-issues almost
- * immediately rather than waiting out a fixed interval. Failure backoff is
- * unchanged. Set once by the long-polling provider (a single site-wide
- * transport). See providers/http-long-polling.
+ * SSE mode: receiving rides one long-lived stream response per tab (the
+ * SseExchange), each exchange returning the next stream event, so on a
+ * successful exchange the client re-issues almost immediately rather than
+ * waiting out a fixed interval. Sends still go through the updates
+ * request. Failure backoff is unchanged. Set once by the SSE provider (a
+ * single site-wide transport). See providers/sse.
  */
-let longPollMode = false;
+let sseMode = false;
+const sseExchange = new SseExchange();
 
 /*
- * A parked long-poll in flight (a request that carried NO updates and is
- * being held by the server). Local updates ABORT it so outgoing work never
- * waits out the hold: the server answers senders immediately, but only if
- * the client actually sends. Without the abort, an edit made right after a
- * quiet poll sat queued for up to the full wait budget.
+ * After a room registers, the tab receives over ordinary requests for a
+ * moment instead of opening a stream. The editor registers its rooms one
+ * by one at load and its presence fills in right after, and each of those
+ * would otherwise close and reopen the stream (two or three throwaway
+ * streams per tab, each costing the server a worker, a subscription, and
+ * a full read). Once the room set has been still for this long, one
+ * stream opens with all of it; the bootstrap reads ride the requests.
+ */
+const SSE_SETTLE_MS = 1000;
+let sseSettleUntil = 0;
+
+/**
+ * Whether the next pure receive should open (or read from) the stream.
+ */
+function sseStreamReady(): boolean {
+	return sseMode && sseExchange.available && Date.now() >= sseSettleUntil;
+}
+
+/**
+ * The delay before the next exchange under SSE: right behind each stream
+ * event; the rest of the settling window when one is open; the polling
+ * interval while receiving runs on requests because no stream could be
+ * opened.
+ */
+function sseDelay(): number {
+	if ( ! sseExchange.available ) {
+		return POLLING_INTERVAL_IN_MS;
+	}
+	return Math.max( STREAM_REISSUE_MS, sseSettleUntil - Date.now() );
+}
+
+/**
+ * Select SSE receiving with ordinary REST sends.
+ *
+ * @param enabled Whether SSE is selected.
+ */
+export function setSseMode( enabled: boolean ): void {
+	if ( sseMode !== enabled ) {
+		sseExchange.close();
+	}
+	sseMode = enabled;
+}
+
+/*
+ * A parked stream exchange in flight (a pure receive, waiting for the next
+ * stream event). Local updates ABORT it so outgoing work never waits for
+ * that event: the server answers senders immediately, but only if the
+ * client actually sends. Without the abort (found under the retired
+ * long-polling transport), an edit made right after a quiet exchange sat
+ * queued for up to the full wait.
  */
 let inFlightParkController: AbortController | null = null;
 let parkAbortedForLocalUpdate = false;
 
-/**
- * Enables long-poll cadence on the shared manager.
- *
- * @param enabled Whether the active transport holds requests open.
- */
-export function setLongPollMode( enabled: boolean ): void {
-	longPollMode = enabled;
-}
-
-// Small delay between a released long-poll response and the next request, to
+// Small delay between a delivered stream event and the next exchange, to
 // yield to the event loop without idling.
-const LONG_POLL_REISSUE_MS = 50;
+const STREAM_REISSUE_MS = 50;
 
 // How long a tab going hidden waits before flushing held work (pagehide,
 // which follows a hide on reload/close, cancels it).
@@ -933,6 +988,13 @@ function handleBeforeUnload(): void {
  */
 function handlePageHide(): void {
 	cancelHiddenFlush();
+	if ( sseMode ) {
+		// Drop the stream on purpose: through the park signal, so the
+		// exchange in flight sees a deliberate abort (no failure backoff,
+		// no "will retry" error logged as the page goes away).
+		abortParkedStream();
+		sseExchange.close();
+	}
 	const rooms = Array.from( roomStates.entries() ).map(
 		( [ room, state ] ) => ( {
 			after: 0,
@@ -1098,7 +1160,7 @@ function buildPayloadForRequest( selectedRoomStates: RoomState[] ): {
 } {
 	const payload: SyncPayload = { rooms: [] };
 	const roomsInRequest: RoomState[] = [];
-	const probe = isSignalingAvailable() ? buildProbe() : null;
+	const probe = ! sseMode && isSignalingAvailable() ? buildProbe() : null;
 	if ( probe ) {
 		payload.advisory = probe;
 	}
@@ -1204,15 +1266,14 @@ function poll(): void {
 			( room ) => 0 === room.updates.length
 		);
 		let parkSignal: AbortSignal | undefined;
-		if ( longPollMode && isPureReceive ) {
+		if ( sseMode && isPureReceive ) {
 			inFlightParkController = new AbortController();
 			parkSignal = inFlightParkController.signal;
 		}
 		try {
-			const { rooms, advisory } = await postSyncUpdate(
-				payload,
-				parkSignal
-			);
+			const { rooms, advisory } = sseStreamReady()
+				? await sseExchange.exchange( payload, parkSignal )
+				: await postSyncUpdate( payload, parkSignal );
 			inFlightParkController = null;
 			parkAbortedForLocalUpdate = false;
 			// The signaling answer rode this poll: company, peers, mailbox.
@@ -1401,13 +1462,15 @@ function poll(): void {
 			} );
 
 			/*
-			 * Long polling delivers its own wake (the held request returns
-			 * the instant a row lands), so while it is connected the
-			 * advisory channel would only duplicate it: switch the channel
-			 * off. A failed poll below switches it back on.
+			 * A stream delivers its own wake (an event the instant a row
+			 * lands), so while one is up the advisory channel would only
+			 * duplicate it: switch the channel off. While receiving runs
+			 * on polling instead (no stream could be opened), the channel
+			 * is the wake path again; a failed poll below also switches
+			 * it back on.
 			 */
-			if ( longPollMode ) {
-				setAdvisoryDisabledByTransport( true );
+			if ( sseMode ) {
+				setAdvisoryDisabledByTransport( sseExchange.available );
 			}
 
 			// The first successful poll is the genesis handshake; from
@@ -1523,8 +1586,8 @@ function poll(): void {
 				return;
 			} else {
 				// A disconnected transport has no wake of its own: let the
-				// advisory channel back in (a no-op unless long polling
-				// had switched it off).
+				// advisory channel back in (a no-op unless a stream had
+				// switched it off).
 				setAdvisoryDisabledByTransport( false );
 
 				// Use the explicit retry delay schedule for backoff.
@@ -1821,6 +1884,14 @@ function registerRoom( {
 
 	session.onLocalUpdate( onLocalUpdate );
 	roomStates.set( room, roomState );
+	if ( sseMode ) {
+		// Let the room set settle before a stream (re)opens: the new
+		// room's bootstrap rides an ordinary request meanwhile, and an
+		// open stream would not cover it.
+		sseSettleUntil = Date.now() + SSE_SETTLE_MS;
+		abortParkedStream();
+		sseExchange.close();
+	}
 
 	if ( ! areListenersRegistered ) {
 		window.addEventListener( 'beforeunload', handleBeforeUnload );
@@ -1853,6 +1924,10 @@ function unregisterRoom(
 	room: string,
 	{ sendDisconnectSignal = true }: { sendDisconnectSignal?: boolean } = {}
 ): void {
+	if ( sseMode ) {
+		abortParkedStream();
+		sseExchange.close();
+	}
 	const state = roomStates.get( room );
 	if ( state ) {
 		if ( sendDisconnectSignal ) {

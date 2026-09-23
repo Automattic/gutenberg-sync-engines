@@ -14,7 +14,7 @@ npm run fuzz
 ```
 
 That runs the default matrix — `{intent-log, yjs-server, de-rtc} ×
-{http-polling, http-long-polling, websocket}` — with 5 seeds per combo,
+{http-polling, sse, websocket}` — with 5 seeds per combo,
 12 actions per seed, 2 collaborating browsers. It starts the TESTS wp-env
 (`.wp-env.tests.json`) if needed, flips the engine/transport per combo,
 manages the websocket daemon, rechecks failures, and writes a summary.
@@ -24,6 +24,11 @@ Websocket combos need host port 8787 for a daemon serving the TESTS
 database, so the runner removes the dev env's auto-started daemon
 (`wp-sync-ws-daemon`, which serves the DEV database) for the duration of
 the run; `npm run env start` or `npm run rtc:ws` brings it back.
+
+SSE combos need the Redis container the tests env's `afterStart` hook
+starts beside the site; the runner refuses an sse combo without it, since
+tabs would silently receive over polling and certify nothing. Sync faults
+stay on for sse: a failed stream request is exactly the fallback path.
 
 Common variations:
 

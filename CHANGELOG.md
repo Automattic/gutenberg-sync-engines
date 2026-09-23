@@ -12,6 +12,15 @@ release, which the release script generates from the commit history.
 
 ### Added
 
+-   Server-sent events transport (`sse`) over ordinary WordPress requests:
+    one long-lived response per tab that the server writes each change to,
+    with cursor-based recovery after any interruption. Streams wake on Redis
+    Pub/Sub notices when `WP_SYNC_SSE_REDIS_URL` is set or a Redis object
+    cache is in use, and otherwise by checking a per-room version number
+    every half second (in the object cache when there is one, else in the
+    room-meta table). Local Redis starts and is removed through wp-env
+    lifecycle hooks. Needs a proxy that passes streams through; see
+    `docs/transports.md`.
 -   Awareness gained a drop-in backend seam, the third after the lock and
     the compare-and-swap: implement `WP_Sync_Awareness_Backend` and return
     it from the `wp_sync_awareness_backend` filter. The interface is per
@@ -30,6 +39,14 @@ release, which the release script generates from the commit history.
     `remove_all_filters( 'wp_sync_awareness_backend' )`. Presence API
     0.6.0 or newer answers that in one call; older versions are still
     supported through the checks it had at the time.
+
+### Removed
+
+-   The long-polling transport (`http-long-polling`). Server-sent events
+    replace it: the same held request, now a stream with keepalives, up to
+    five minutes long, and woken by Redis when available. A site that had
+    chosen long polling is moved to server-sent events; the
+    `wp_sync_long_poll_max_wait_ms` filter is gone.
 
 ### Changed
 

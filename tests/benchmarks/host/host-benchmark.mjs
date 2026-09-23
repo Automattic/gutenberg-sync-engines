@@ -51,7 +51,13 @@
  *   engine=     the ONE engine to measure (intent-log | yjs-server |
  *               de-rtc | current; default: the site's current engine —
  *               comparing engines is what --suite=engines is for)
- *   transport=  http-polling | http-long-polling | websocket | current
+ *   transport=  http-polling | sse | websocket | current
+ *   cache=      none | redis | current: the persistent object cache the
+ *               site runs for the run (redis = the Redis Object Cache
+ *               drop-in on the env's Redis; wp-env sites only; restored)
+ *   wake=       auto | redis | cache | table: what an SSE stream sleeps
+ *               on (auto = whatever the site has; cache needs
+ *               cache=redis, table needs cache=none)
  *   windows=    people per phase: collaborator windows, and the same
  *               number of one-after-the-other baseline turns (default 2)
  *   edit-seconds=      editing seconds per person (default 120, min 30)
@@ -81,13 +87,16 @@ import {
 	COLLABORATION_EXPERIMENT,
 	attachCounters,
 	canvasOf,
+	configureHostCache,
 	configureSettings,
 	dismissWelcomeGuide,
 	ensureCollaborationEnabled,
 	login,
 	makeRestClient,
+	observeSseWait,
 	observeTransport,
 	parseCliOptions,
+	restoreHostCache,
 	restoreSettings,
 	waitForSyncTraffic,
 } from '../transport/lib.mjs';
@@ -100,8 +109,13 @@ const HELP = `node tests/benchmarks/host/host-benchmark.mjs [key=value …]
   engine=     the ONE engine to measure (intent-log | yjs-server |
               de-rtc | current; default: the site's current engine —
               comparing engines is what --suite=engines is for)
-  transport=  http-polling | http-long-polling | websocket
+  transport=  http-polling | sse | websocket
               (default: the site's current transport)
+  cache=      none | redis | current: the persistent object cache for the
+              run (redis = the Redis Object Cache drop-in on the env's
+              Redis; this checkout's wp-env sites only; restored after)
+  wake=       auto | redis | cache | table: what an SSE stream sleeps on
+              (cache needs cache=redis, table needs cache=none)
   windows=    people per phase: collaborator windows, and the same
               number of one-after-the-other baseline turns (default 2)
   edit-seconds=      editing seconds per person (default 120, min 30)
@@ -160,6 +174,8 @@ if ( ENGINE.includes( ',' ) ) {
 	process.exit( 1 );
 }
 const TRANSPORT = String( opts.transport ?? 'current' );
+const CACHE = String( opts.cache ?? 'current' );
+const WAKE = String( opts.wake ?? 'auto' );
 const WINDOWS = Math.max( 1, Number( opts.windows ?? 2 ) );
 const EDIT_SECONDS = Number( opts[ 'edit-seconds' ] ?? 120 );
 const IDLE_SECONDS = Number( opts[ 'idle-seconds' ] ?? 120 );
@@ -206,23 +222,34 @@ const jitter = ( step, min, max ) =>
  * has no sync traffic at all, so the host comparison needs the whole
  * wire. Counters are cumulative; phases diff snapshot() results.
  *
- * @param {import('@playwright/test').Page} page Target page.
+ * @param {import('@playwright/test').Page} page          Target page.
+ * @param {Function}                        streamedBytes Current SSE byte count.
  * @return {Object} Counter handle with a snapshot() method.
  */
-function attachAllTrafficCounters( page ) {
+function attachAllTrafficCounters( page, streamedBytes = () => 0 ) {
 	const c = { requests: 0, requestBytes: 0, responseBytes: 0 };
 	page.on( 'request', ( request ) => {
 		c.requests += 1;
 		c.requestBytes += request.postDataBuffer()?.length ?? 0;
 	} );
 	page.on( 'response', async ( response ) => {
+		if (
+			decodeURIComponent( response.url() ).includes( '/wp-sync/v1/sse' )
+		) {
+			return;
+		}
 		try {
 			c.responseBytes += ( await response.body() ).length;
 		} catch {
 			// Body unavailable (navigation, abort): skip its bytes.
 		}
 	} );
-	return { snapshot: () => ( { ...c } ) };
+	return {
+		snapshot: () => ( {
+			...c,
+			responseBytes: c.responseBytes + streamedBytes(),
+		} ),
+	};
 }
 
 /**
@@ -389,8 +416,12 @@ async function openEditorWindow( context, measured, postId, index ) {
 	const page = await context.newPage();
 	measured.add( page );
 	page.on( 'close', () => measured.delete( page ) );
-	const all = attachAllTrafficCounters( page );
 	const sync = attachCounters( page );
+	const all = attachAllTrafficCounters(
+		page,
+		() => sync.snapshot().sseBytesReceived
+	);
+	await sync.ready;
 	await page.goto(
 		`${ BASE }/wp-admin/post.php?post=${ postId }&action=edit`
 	);
@@ -765,6 +796,9 @@ async function main() {
 	// Playwright's own signal handling would close the browser the
 	// instant Ctrl+C lands, killing the REST transport the site-state
 	// restore below runs through — so signals are handled here instead.
+	// The object cache and the SSE wait are site-wide: set them before
+	// any window opens (the baseline phase runs under them too).
+	const hostCache = configureHostCache( { cache: CACHE, wake: WAKE } );
 	const browser = await chromium.launch( {
 		headless: ! HEADED,
 		handleSIGINT: false,
@@ -940,6 +974,13 @@ async function main() {
 		console.log( '  suite=host' );
 		console.log( `  engine=${ engine }` );
 		console.log( `  transport=${ originalSettings.active.transport }` );
+		console.log(
+			`  cache=${ CACHE } wake=${ WAKE }${
+				hostCache
+					? ` (was cache=${ hostCache.previous.cache } wake=${ hostCache.previous.wake })`
+					: ''
+			}`
+		);
 		console.log( `  edit-seconds=${ EDIT_SECONDS }` );
 		console.log( `  idle-seconds=${ IDLE_SECONDS }` );
 		console.log( `  windows=${ WINDOWS }` );
@@ -1122,11 +1163,14 @@ async function main() {
 				idleSeconds: IDLE_SECONDS,
 				muMeasurement: muPresent,
 				server: serverEnv,
+				cache: CACHE,
+				wake: WAKE,
 			},
 			baseline: { postId: baselinePost, detail: baseline },
 			engine: {
 				engine,
 				transport: observed,
+				sseWait: observeSseWait( wins[ 0 ].sync ),
 				postId: post,
 				roomSize,
 				...summarize( phase, baseline, serverRows, engine ),
@@ -1143,6 +1187,11 @@ async function main() {
 		}
 	} finally {
 		await cleanup();
+		try {
+			restoreHostCache( hostCache );
+		} catch ( error ) {
+			console.warn( `WARNING: failed to restore the object cache: ${ error }` );
+		}
 	}
 }
 

@@ -97,11 +97,9 @@ const CONVERGENCE_TIMEOUT_MS = getEnvInt(
 	'RTC_FUZZ_CONVERGENCE_TIMEOUT_MS',
 	20000
 );
-// Long-polling can hold a quiet request up to 20s (DEFAULT_MAX_WAIT_MS), and
-// discovery waits on THREE sync cycles — give that lane real headroom.
 const DISCOVERY_TIMEOUT_MS = getEnvInt(
 	'RTC_FUZZ_DISCOVERY_TIMEOUT_MS',
-	TRANSPORT === 'http-long-polling' ? 90000 : 30000
+	30000
 );
 const DISABLE_SYNC_FAULTS =
 	process.env.RTC_FUZZ_DISABLE_SYNC_FAULTS === '1' ||
@@ -1265,8 +1263,10 @@ async function waitForDiscovery(
 				.waitFor( { timeout: DISCOVERY_TIMEOUT_MS } )
 		)
 	);
-	if ( TRANSPORT === 'websocket' ) {
-		// Sync rides WS frames; waitForConvergence covers document sync.
+	if ( TRANSPORT === 'websocket' || TRANSPORT === 'sse' ) {
+		// Sync rides WS frames, or one long-lived stream response per tab
+		// that answers only when it ends; waitForConvergence covers
+		// document sync.
 		return;
 	}
 	// The fixture's waitForMutualDiscovery iterates ITS page list, which can

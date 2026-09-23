@@ -5,10 +5,10 @@
  * Nothing between `setLocalStateField` and the peers' `onStateChange`
  * inspects awareness content (the server stores it opaquely), so this
  * needs no engine, transport, or PHP change and works over http-polling,
- * long-polling, and websocket alike. Under short polling the advisory
- * channel's presence lane carries the field to every reachable peer within
- * a moment, and the timer polls carry it to the rest; under long polling
- * it rides the next request (a parked one is reissued); under websocket it
+ * sse, and websocket alike. Under short polling the advisory channel's
+ * presence lane carries the field to every reachable peer within a
+ * moment, and the timer polls carry it to the rest; under SSE it rides
+ * the next request (a parked exchange is reissued); under websocket it
  * goes with the periodic awareness frame. The Heartbeat channel is the one
  * with its own cadence.
  *

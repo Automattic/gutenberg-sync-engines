@@ -46,7 +46,20 @@ This plugin provides:
   what runs when the `wp_sync_engine` option is unset. Registration order
   only matters when a CONFIGURED slug isn't registered (misconfiguration
   degrades to the first registered engine: yjs-server).
-- **Transports:** `http-polling` (default), `http-long-polling`, `websocket`.
+- **Transports:** `http-polling` (default), `sse`, `websocket`.
+  SSE uses normal PHP requests: one held worker per stream, woken by
+  Redis Pub/Sub notices when `WP_SYNC_SSE_REDIS_URL` is set or a Redis
+  object cache is detected (`WP_REDIS_*` constants), and otherwise by
+  half-second checks of a per-room VERSION COUNTER
+  (`WP_Sync_Table_Storage::get_room_versions`, bumped atomically on every
+  write; in the object cache when persistent, else a `_version` room-meta
+  row; snapshot taken BEFORE each read) through
+  `WP_Sync_Storage_Change_Waiter`, the retired long-polling transport's
+  wait; a storage without counters is read the long way. Bounded
+  reconnects from durable cursors. A stored `http-long-polling` choice reads as
+  `sse`. wp-env lifecycle hooks start and remove Redis for each checkout
+  and config on its own network. Setup, the proxy/buffering caveat, and
+  failure behavior: `docs/transports.md`.
   Short polling is the BASE transport; beside it every editor tab opens an
   **advisory channel** (`src/providers/advisory/`) that carries presence
   and "go and poll" notices, never content. It runs over one of two
@@ -58,8 +71,13 @@ This plugin provides:
   `handle_advisory_message` in the daemon — and never carries rows). It
   decides the polling cadence: quiet when alone, timer cadence when a
   peer is unreachable, on demand (with the heartbeat carrying the room's
-  head cursor) when every peer is reachable. Long polling turns it off
-  while connected. Rules and failure cases: `docs/plan/advisory-channel.md`.
+  head cursor) when every peer is reachable. SSE turns it off while its
+  stream is up (its handshake signals ride the heartbeat, never a poll),
+  and a solo SSE tab goes quiet like short polling, closing its stream.
+  For the first second after a room registers the tab receives over
+  ordinary requests (`SSE_SETTLE_MS`), so the rooms registering one by
+  one at load open ONE stream, not one per room. Rules and failure
+  cases: `docs/plan/advisory-channel.md`.
   The websocket link can end at a host's OWN relay instead of the
   daemon: with a `WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET` configured
   (constant, env, or the `wp_sync_websocket_access_token_secret` filter),
@@ -245,7 +263,8 @@ The framework/plugin split is complete: the framework ships **neither** engines
     snapshot helpers, `undo.ts`, vendored `y-utilities/` — the latter ignored
     by eslint), inherited from the retired yjs-relay engine and used by
     yjs-server.
-  - `providers/{http-polling,http-long-polling,websocket}/` — transports.
+  - `providers/{http-polling,sse,websocket}/` — transports (sse reuses the
+    polling manager, swapping only its receive half for the stream).
   - `awareness/` — SLOW AWARENESS (`docs/awareness-high-latency.md`),
     on when the "Awareness interval" setting is above 0: each tab
     publishes the block its selection is in (`metadata.syncId`, else the
@@ -374,9 +393,16 @@ npm run env start         # DEV env (.wp-env.json): this plugin (which loads
                           # daemon (detached, --mode=daemon: the site's
                           # transport selection is NOT touched).
 npm run env:tests start   # TESTS env (.wp-env.tests.json): same mounts,
-                          # http://localhost:8889, no lifecycle hook. This is
+                          # http://localhost:8889, Redis lifecycle hooks only. This is
                           # what test:php / test:e2e / CI target.
-npm run env stop          # (env:tests stop for the tests env)
+npm run env:stop          # Stops Redis + WordPress (env:tests:stop for tests)
+npm run cache:on          # Puts the Redis Object Cache drop-in in (a persistent
+                          # object cache on sync-redis; the SSE transport then
+                          # detects Redis by itself). cache:off removes it;
+                          # cache:tests:on/off for the tests env. Both configs
+                          # install the plugin (bundled Predis client, no PHP
+                          # extension) but leave the drop-in OUT, so the suites
+                          # run without a persistent cache.
 ```
 
 `autoPort` is on, so when a port is busy wp-env picks a free one and prints
@@ -419,6 +445,8 @@ npm run test:php            # PHPUnit in the wp-env tests container
 npm run test:e2e            # Playwright: two-browser collaboration (+ http-only)
 npm run test:e2e:websocket  # Playwright: websocket-only suite (test WS provider
                             # plugin + y-websocket daemon, auto-started)
+npm run test:e2e:sse        # Playwright: sse-only suite (selects the SSE
+                            # transport on the tests site; needs its Redis)
 ```
 
 **Iterate at the cheapest layer that can catch the change.** The ladder,
@@ -506,6 +534,15 @@ secret; `collaboration-websocket-advisory-relay.spec.ts` activates
 the `tests/e2e/plugins/advisory-relay-access-token.php` fixture (same
 secret, socket URL aimed at the relay) for its duration, so the
 relay lane never touches the daemon's auth path.
+`tests/e2e/specs/sse-only/` runs only under `test:e2e:sse`
+(`playwright.rtc-sse.config.ts`): its global setup runs the default one
+and then `tests/e2e/bin/rtc-sse-transport.mjs --select`, which refuses
+to run without the tests env's Redis container and selects the SSE
+transport on the tests site; the global teardown restores the previous
+transport from the same state file. The specs read the exchange's
+`window.__wpSyncSseState` (open, events, rooms) the way the websocket
+specs read `__wpSyncWsState`. The fuzzer sweeps `sse` by default and
+refuses an sse combo without Redis.
 (The old y-websocket PEER-relay fixture lane — the test WS provider
 plugin plus `rtc-test-ws-sync-server.mjs` — only demonstrated
 client-merging engines and none remains; the fixture files are kept
@@ -530,7 +567,7 @@ daemon up automatically WITHOUT touching the site's transport selection
 (`|| true` keeps a daemon failure from failing the start itself; the
 diagnosis still prints in the spinner output). The daemon binds host port
 8787 under a fixed container name, so with several checkouts/worktrees the
-most recently started dev env owns it. The tests config has no hook — CI
+most recently started dev env owns it. The tests config starts Redis only — CI
 and the test suites never start a daemon.
 
 ## Diagnostics
@@ -546,7 +583,8 @@ they exist so a failure is observable without re-instrumenting:
   actually loaded (`wp collaboration` commands registered), current
   engine/transport options, the foreign-wp-env-on-:8889 trap, and
   websocket daemon health. Exits non-zero on real problems, each with its
-  fix. First stop when anything smells environmental — uniform timeouts
+  fix. It also reports whether each env runs the Redis object cache
+  drop-in. First stop when anything smells environmental — uniform timeouts
   across all engines are an environment failure, not an engine bug.
 - **Browser wire inspector** — `window.wpSync` (`src/debug/inspector.ts`),
   on every editor page. `wpSync.enable()` (persists per profile), then
@@ -554,9 +592,9 @@ they exist so a failure is observable without re-instrumenting:
   500-record ring buffer, `intents('p1')` filters history touching one
   syncId, `doc()`/`proposals()`/`cursor()` read live session state
   (intent-log), `export()` dumps JSON for bug reports, `help()` lists
-  everything. Covers ALL transports: http-polling, http-long-polling, and
-  websocket (sends and pushed receives are separate one-directional
-  records on the socket lane).
+  everything. Covers ALL transports: http-polling, sse, and websocket
+  (sends and pushed receives are separate one-directional records on
+  the socket and stream lanes).
 - **Server `_debug` envelope** — enabling the inspector also stamps
   `debug: true` on each room request; all THREE engines respond with an
   `_debug` envelope (intent-log: lock wait, window rows, head seq, plan
@@ -617,7 +655,7 @@ they exist so a failure is observable without re-instrumenting:
   a new name reaches every reachable peer with no request at all. A
   new name also raises `announceLocalAwarenessChange`
   (`src/providers/advisory/announce.ts`), which the polling manager
-  uses only under long polling, to reissue a parked request. The e2e
+  uses only under SSE, to reissue a parked stream exchange. The e2e
   spec turns the advisory channel off for its duration. Under the
   Heartbeat channel the block name is a field on the advisory channel's
   discovery probe (`block`), kept on the tab's presence token by
@@ -719,7 +757,14 @@ they exist so a failure is observable without re-instrumenting:
   (eslint still runs it, with relaxed rules, and `tsc` type-checks it via
   `checkJs` + JSDoc); the vendored `src/engines/yjs/y-utilities/**` is
   excluded from both — leave them alone unless deliberately syncing the
-  cross-language contract (JSDoc-only edits to the core are fine).
+  cross-language contract (JSDoc-only edits to the core are fine). The
+  generated test vectors (`tests/js/engines/*/test-vectors/`,
+  `tests/phpunit/test-vectors/`) are excluded from prettier too: their
+  contract is byte parity with the generator, which writes two-space
+  JSON, and prettier would collapse short arrays onto one line.
+- JSON is formatted with two spaces (a `*.json` override in
+  `prettier.config.js`); everything else keeps the WordPress config's
+  tabs.
 
 ## Commits / PRs
 

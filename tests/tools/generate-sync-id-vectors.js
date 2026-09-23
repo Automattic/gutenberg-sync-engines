@@ -56,6 +56,6 @@ process.stdout.write(
 			vectors,
 		},
 		null,
-		'\t'
+		2
 	) + '\n'
 );

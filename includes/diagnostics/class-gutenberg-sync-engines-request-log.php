@@ -723,8 +723,8 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 				$engine = WP_Sync_Engine_Registry::DEFAULT_ENGINE;
 			}
 
-			$transport = false !== strpos( $request->get_route(), 'long-poll' )
-				? 'http-long-polling'
+			$transport = false !== strpos( $request->get_route(), '/sse' )
+				? 'sse'
 				: 'http-polling';
 
 			return $engine . '/' . $transport;
@@ -932,7 +932,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Request_Log' ) ) {
 
 		/**
 		 * Decrements the concurrent-requests counter (shutdown handler, so
-		 * held long-poll requests count for their full hold).
+		 * held SSE streams count for their full length).
 		 *
 		 * @since 0.4.0
 		 *

@@ -326,7 +326,7 @@ describe( 'advisory channel over the websocket link', () => {
 			},
 		] );
 
-		// Long polling switches the channel off: the socket closes and
+		// A stream transport switches the channel off: the socket closes and
 		// nothing reconnects; switching it back on reconnects at once.
 		channel.setAdvisoryDisabledByTransport( true );
 		expect( second.readyState ).toBe( 3 );
