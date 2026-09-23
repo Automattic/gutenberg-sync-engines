@@ -197,9 +197,11 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		/**
 		 * Bumps the room's version counter with an atomic increment: Redis
 		 * and Memcached increment in place, and the row update is one
-		 * statement, so two writers can never lose each other's bump. A
-		 * reader only ever compares the value with its own snapshot, so
-		 * even a lost bump would still read as a change.
+		 * statement, so two writers can never lose each other's bump. That
+		 * atomicity is the guarantee: a reader compares the value with the
+		 * snapshot it took before its last read, and a lost bump could let
+		 * a reader whose snapshot fell between two bumps sleep through the
+		 * second write until its catch-up read.
 		 *
 		 * @since n.e.x.t
 		 *

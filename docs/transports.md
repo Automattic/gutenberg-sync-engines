@@ -103,13 +103,18 @@ order:
 | Version counter in the room-meta table | no cache at all | one indexed query twice a second |
 
 The version counter is a number the room storage bumps after every
-successful write (updates, presence, room meta, a reset) with an atomic
-increment, so two writers can never lose each other's bump. The stream
+successful write (updates, presence, room meta, a reset). The stream
 reads the counters of all its rooms in one lookup and re-reads storage
 when any differs from the snapshot it took just before its last read; a
 write landing during that read therefore still wakes the next check. The
 snapshot is compared for change, not counted, so nothing depends on the
-exact value. A storage other than the plugin's tables (through the
+exact value. The bump is an atomic increment (Redis and Memcached
+increment in place; the row update is one statement MySQL serializes),
+and that is what carries the guarantee: if two writers could each turn
+5 into 6, a stream whose snapshot fell between their bumps would not
+wake for the second write until its next catch-up read. Nothing is
+lost either way, since storage is the truth and every cursor comes from
+a storage read, never from the counter. A storage other than the plugin's tables (through the
 storage filter) has no counters, and the stream checks it the long way
 instead: rows past the cursor and the awareness map, per room, twice a
 second.
