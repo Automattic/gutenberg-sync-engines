@@ -119,6 +119,17 @@ This plugin provides:
   drop` / `WP_Sync_Table_Schema::drop()` remove them. If the tables cannot
   be created the filter leaves the post-meta default in place and an
   admin notice says so.
+- **Awareness:** who is in a room and what they are doing, read and
+  written ONLY through `WP_Sync_Awareness` — transports, the advisory
+  channel and the rooms CLI all go through it, never storage directly.
+  It uses the room array above by default; the
+  `wp_sync_awareness_backend` filter takes a `WP_Sync_Awareness_Backend`
+  instead, addressed per client rather than per room. This plugin
+  returns one when `wp_presence_is_available()` says so, so awareness
+  lives in that plugin's shared `wp_presence` table under
+  `gse-`-prefixed client ids. PHPUnit covers that backend against a
+  stand-in; against the REAL plugin run
+  `tests/tools/check-presence-api.php` (usage in its header).
 
 It registers through the framework's extension points: PHP `wp_sync_engines` /
 `wp_sync_transports` filters; JS `registerSyncEngine` / `registerSyncTransport`

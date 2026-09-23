@@ -225,6 +225,91 @@ class Tests_Collaboration_WpSyncAwareness extends WP_UnitTestCase {
 
 		$this->assertSame( array(), $this->awareness()->entries( $room, 30 ) );
 	}
+
+	/**
+	 * A client that keeps sending the same state stays in the room, which it
+	 * would not if the Presence API's own write skip were left to decide.
+	 */
+	public function test_a_quiet_client_is_refreshed_before_the_room_forgets_it(): void {
+		Fake_Presence_API::$enabled = true;
+		$room                       = $this->room();
+		$state                      = array( 'name' => 'Ada' );
+
+		$this->awareness()->put( $room, 7, $state, self::$editor_id, 30 );
+
+		// Old enough that this backend refreshes, young enough that the
+		// Presence API would not. The assertion below pins the second half.
+		$this->backdate( $room, 'gse-7', 12 );
+		$this->assertGreaterThan(
+			12,
+			Fake_Presence_API::refresh_threshold(),
+			'The Presence API would skip a row this young, which is the case under test.'
+		);
+
+		$entries = $this->awareness()->put( $room, 7, $state, self::$editor_id, 30 );
+
+		$this->assertSame( array( 7 ), array_column( $entries, 'client_id' ) );
+		$this->assertRowIsFresh( $room, 'gse-7' );
+	}
+
+	/**
+	 * An idle client repeating its state writes nothing, so a poll that
+	 * changes nothing stays read-only here too.
+	 */
+	public function test_repeating_the_same_state_does_not_write_to_the_presence_table(): void {
+		Fake_Presence_API::$enabled = true;
+		$room                       = $this->room();
+		$state                      = array( 'name' => 'Ada' );
+
+		$this->awareness()->put( $room, 7, $state, self::$editor_id, 30 );
+		$writes = Fake_Presence_API::$writes;
+
+		$this->awareness()->put( $room, 7, $state, self::$editor_id, 30 );
+
+		$this->assertSame( $writes, Fake_Presence_API::$writes, 'A repeated put should not write.' );
+	}
+
+	/**
+	 * Without the presence table the Presence API can neither read nor
+	 * write, so the backend stands down and the room array serves.
+	 */
+	public function test_the_presence_api_backend_stands_down_without_its_table(): void {
+		Fake_Presence_API::$enabled   = true;
+		Fake_Presence_API::$has_table = false;
+		WP_Sync_Awareness::reset_backend_for_testing();
+
+		$this->assertFalse( WP_Sync_Presence_API_Awareness_Backend::is_available() );
+		$this->assertFalse( WP_Sync_Awareness::has_substitute_backend() );
+
+		$room    = $this->room();
+		$entries = $this->awareness()->put( $room, 7, array( 'name' => 'Ada' ), self::$editor_id, 30 );
+
+		$this->assertSame( array( 7 ), array_column( $entries, 'client_id' ) );
+		$this->assertSame( array( 7 ), array_column( $this->awareness()->entries( $room, 30 ), 'client_id' ) );
+	}
+
+	/**
+	 * Ages one stored presence row.
+	 *
+	 * @param string $room      Room identifier.
+	 * @param string $client_id The row's client id.
+	 * @param int    $seconds   How far back to move it.
+	 */
+	private function backdate( string $room, string $client_id, int $seconds ): void {
+		Fake_Presence_API::$rows[ $room ][ $client_id ]['date_gmt'] = gmdate( 'Y-m-d H:i:s', time() - $seconds );
+	}
+
+	/**
+	 * Asserts a stored presence row was just written.
+	 *
+	 * @param string $room      Room identifier.
+	 * @param string $client_id The row's client id.
+	 */
+	private function assertRowIsFresh( string $room, string $client_id ): void {
+		$age = time() - (int) strtotime( Fake_Presence_API::$rows[ $room ][ $client_id ]['date_gmt'] . ' UTC' );
+
+		$this->assertLessThanOrEqual( 1, $age, 'The row should have been rewritten, and was not.' );
+	}
 }
 
 /**
@@ -294,8 +379,26 @@ class Test_Awareness_Backend implements WP_Sync_Awareness_Backend {
  * The functions below are only defined when the real plugin is absent, and
  * `$enabled` is off until a test asks for it, so `is_available()` answers no
  * and the rest of the suite keeps the room array.
+ *
+ * It copies the real write skip, because a stand-in that wrote every time
+ * would hide the bug these tests are here for.
  */
 class Fake_Presence_API {
+	/**
+	 * The lifetime the real plugin ships with, in seconds.
+	 *
+	 * @var int
+	 */
+	const DEFAULT_TTL = 150;
+
+	/**
+	 * The longest the real plugin leaves an unchanged row unwritten, in
+	 * seconds, published in its README since 0.6.0.
+	 *
+	 * @var int
+	 */
+	const MAX_STALENESS = 30;
+
 	/**
 	 * Whether the stand-in is recording.
 	 *
@@ -304,15 +407,55 @@ class Fake_Presence_API {
 	public static bool $enabled = false;
 
 	/**
+	 * Whether the presence table is there.
+	 *
+	 * @var bool
+	 */
+	public static bool $has_table = true;
+
+	/**
 	 * Rows, keyed by room and then client id.
 	 *
 	 * @var array<string, array<string, array<string, mixed>>>
 	 */
 	public static array $rows = array();
 
+	/**
+	 * How many rows the stand-in has actually written.
+	 *
+	 * @var int
+	 */
+	public static int $writes = 0;
+
 	public static function reset(): void {
-		self::$enabled = false;
-		self::$rows    = array();
+		self::$enabled   = false;
+		self::$has_table = true;
+		self::$rows      = array();
+		self::$writes    = 0;
+	}
+
+	/**
+	 * The lifetime in force, the real `wp_presence_get_timeout()`.
+	 *
+	 * @param int $timeout Lifetime asked for.
+	 * @return int Lifetime to use.
+	 */
+	public static function timeout( int $timeout ): int {
+		return (int) apply_filters( 'wp_presence_default_ttl', $timeout );
+	}
+
+	/**
+	 * The age at which an unchanged row is rewritten anyway.
+	 *
+	 * The real formula: the lifetime, less a 15-second margin, less how long
+	 * until the client's next Heartbeat, which is 120 seconds for any
+	 * request that is not a Heartbeat, every collaboration request. Presence
+	 * API 0.6.0 caps the result at `MAX_STALENESS`.
+	 *
+	 * @return int Age in seconds. 0 never skips.
+	 */
+	public static function refresh_threshold(): int {
+		return max( 0, min( self::timeout( self::DEFAULT_TTL ) - 15 - 120, self::MAX_STALENESS ) );
 	}
 }
 
@@ -321,8 +464,19 @@ if ( ! function_exists( 'wp_set_presence' ) ) {
 		return Fake_Presence_API::$enabled;
 	}
 
-	function wp_get_presence( $room, $timeout = 150 ) {
-		$cutoff  = time() - (int) apply_filters( 'wp_presence_default_ttl', $timeout );
+	function wp_presence_has_table() {
+		return Fake_Presence_API::$has_table;
+	}
+
+	function wp_presence_is_available() {
+		return Fake_Presence_API::$has_table && Fake_Presence_API::$enabled;
+	}
+
+	function wp_get_presence( $room, $timeout = Fake_Presence_API::DEFAULT_TTL ) {
+		if ( ! Fake_Presence_API::$has_table ) {
+			return array();
+		}
+		$cutoff  = time() - Fake_Presence_API::timeout( $timeout );
 		$entries = array();
 		foreach ( Fake_Presence_API::$rows[ $room ] ?? array() as $row ) {
 			if ( strtotime( $row['date_gmt'] . ' UTC' ) > $cutoff ) {
@@ -333,15 +487,40 @@ if ( ! function_exists( 'wp_set_presence' ) ) {
 	}
 
 	function wp_set_presence( $room, $client_id, $state, $user_id = 0, $date_gmt = null ) {
+		if ( ! Fake_Presence_API::$enabled || ! Fake_Presence_API::$has_table ) {
+			return false;
+		}
+
+		$current = gmdate( 'Y-m-d H:i:s' );
+		$now     = null === $date_gmt ? $current : min( $date_gmt, $current );
+		$stored  = Fake_Presence_API::$rows[ $room ][ $client_id ] ?? null;
+
+		// An explicit timestamp is the caller taking the decision itself, so
+		// it is never skipped.
+		if ( null === $date_gmt
+			&& null !== $stored
+			&& Fake_Presence_API::refresh_threshold() > 0
+			&& wp_json_encode( $stored['data'] ) === wp_json_encode( $state )
+			&& ( time() - (int) strtotime( $stored['date_gmt'] . ' UTC' ) ) <= Fake_Presence_API::refresh_threshold()
+		) {
+			return true;
+		}
+
+		++Fake_Presence_API::$writes;
 		Fake_Presence_API::$rows[ $room ][ $client_id ] = array(
 			'client_id' => $client_id,
 			'user_id'   => $user_id,
 			'data'      => $state,
-			'date_gmt'  => $date_gmt ?? gmdate( 'Y-m-d H:i:s' ),
+			'date_gmt'  => $now,
 		);
+		return true;
 	}
 
 	function wp_remove_presence( $room, $client_id ) {
+		if ( ! Fake_Presence_API::$has_table ) {
+			return false;
+		}
 		unset( Fake_Presence_API::$rows[ $room ][ $client_id ] );
+		return true;
 	}
 }

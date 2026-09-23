@@ -9,20 +9,8 @@ if ( ! class_exists( 'WP_Sync_Presence_API_Awareness_Backend' ) ) {
 
 	/**
 	 * Holds awareness in the Presence API plugin's shared `wp_presence`
-	 * table instead of this plugin's room array.
-	 *
-	 * Why defer to it rather than keep our own store:
-	 *
-	 * - One row per client, upserted on a unique (room, client_id), so two
-	 *   clients writing in the same instant cannot drop each other.
-	 * - A table with a TTL behaves the same on every host, where the room
-	 *   array lives only in the object cache a site may not have (P5).
-	 * - Both sides already speak `postType/{type}:{id}`, so no room mapping.
-	 * - Presence API surfaces the same rows in Who's Online and the post
-	 *   list, so a collaborator in the editor is visible outside it.
-	 *
-	 * Presence API writes `user-{id}` and `editor-{id}` rows of its own, so
-	 * this backend writes and reads `gse-{id}` and ignores every other row.
+	 * table instead of this plugin's room array, as `gse-`-prefixed rows so
+	 * that plugin's own rows are read by neither side.
 	 *
 	 * @since 0.0.2
 	 */
@@ -36,28 +24,44 @@ if ( ! class_exists( 'WP_Sync_Presence_API_Awareness_Backend' ) ) {
 		const CLIENT_PREFIX = 'gse-';
 
 		/**
-		 * Whether the Presence API is present and recording.
+		 * What fraction of the caller's window an entry may spend unwritten,
+		 * low enough that several refreshes can be missed before it expires.
 		 *
-		 * With recording off `wp_set_presence()` writes nothing, so a backend
-		 * that kept answering would report an empty room to the callers that
-		 * decide room lifetime from it.
+		 * @since 0.0.2
+		 * @var int
+		 */
+		const REFRESH_FRACTION = 3;
+
+		/**
+		 * Whether the Presence API is present, has its table and is recording,
+		 * since missing any of the three makes every room look deserted and
+		 * the room array should serve instead.
 		 *
 		 * @since 0.0.2
 		 *
 		 * @return bool Whether this backend can serve.
 		 */
 		public static function is_available(): bool {
-			return function_exists( 'wp_get_presence' )
-				&& function_exists( 'wp_set_presence' )
-				&& function_exists( 'wp_remove_presence' )
+			if ( ! function_exists( 'wp_get_presence' )
+				|| ! function_exists( 'wp_set_presence' )
+				|| ! function_exists( 'wp_remove_presence' )
+			) {
+				return false;
+			}
+
+			// One public answer since Presence API 0.6.0. Older versions only
+			// answer it through functions marked private, so fall back to those.
+			if ( function_exists( 'wp_presence_is_available' ) ) {
+				return wp_presence_is_available();
+			}
+
+			return ( ! function_exists( 'wp_presence_has_table' ) || wp_presence_has_table() )
 				&& ( ! function_exists( 'wp_presence_recording_enabled' ) || wp_presence_recording_enabled() );
 		}
 
 		/**
-		 * Every live entry in a room.
-		 *
-		 * A site's `wp_presence_default_ttl` filter can return anything, so
-		 * the entries are aged again here against the caller's own window.
+		 * Every live entry in a room, aged again here because a site's
+		 * `wp_presence_default_ttl` filter can override the caller's window.
 		 *
 		 * @since 0.0.2
 		 *
@@ -88,6 +92,18 @@ if ( ! class_exists( 'WP_Sync_Presence_API_Awareness_Backend' ) ) {
 				);
 			}
 
+			return self::sorted( $entries );
+		}
+
+		/**
+		 * Entries in client id order, the order every caller expects.
+		 *
+		 * @since 0.0.2
+		 *
+		 * @param array<int, array<string, mixed>> $entries Entries to order.
+		 * @return array<int, array<string, mixed>> The same entries, ordered.
+		 */
+		private static function sorted( array $entries ): array {
 			usort(
 				$entries,
 				static function ( array $a, array $b ): int {
@@ -99,10 +115,9 @@ if ( ! class_exists( 'WP_Sync_Presence_API_Awareness_Backend' ) ) {
 		}
 
 		/**
-		 * Records one client's awareness state.
-		 *
-		 * One upsert, so a client writing here never rewrites anyone else's
-		 * row, and the Presence API skips an unchanged young row itself.
+		 * Records one client's awareness state, refreshing the row once it has
+		 * spent its share of the caller's window unwritten and skipping
+		 * otherwise, so an idle poll stays read-only.
 		 *
 		 * @since 0.0.2
 		 *
@@ -115,9 +130,42 @@ if ( ! class_exists( 'WP_Sync_Presence_API_Awareness_Backend' ) ) {
 		 * @return array<int, array<string, mixed>> The room's live entries.
 		 */
 		public function put( string $room, int $client_id, array $state, int $user_id, int $timeout ): array {
-			wp_set_presence( $room, self::CLIENT_PREFIX . $client_id, $state, $user_id );
+			$now     = time();
+			$entries = $this->entries( $room, $timeout );
+			$refresh = max( 1, intdiv( $timeout, self::REFRESH_FRACTION ) );
 
-			return $this->entries( $room, $timeout );
+			foreach ( $entries as $index => $entry ) {
+				if ( $entry['client_id'] !== $client_id ) {
+					continue;
+				}
+
+				// What comes back from the table has been through JSON, so it is
+				// compared encoded rather than against what went in.
+				if ( $now - $entry['updated_at'] < $refresh
+					&& $entry['wp_user_id'] === $user_id
+					&& wp_json_encode( $entry['state'] ) === wp_json_encode( $state )
+				) {
+					return $entries;
+				}
+
+				unset( $entries[ $index ] );
+				break;
+			}
+
+			// The explicit timestamp turns off the Presence API's own write
+			// skip, which runs as long as the caller's whole window and so
+			// would let a live client reach the edge of it unwritten.
+			wp_set_presence( $room, self::CLIENT_PREFIX . $client_id, $state, $user_id, gmdate( 'Y-m-d H:i:s', $now ) );
+
+			// The room as it now stands, without reading it a second time.
+			$entries[] = array(
+				'client_id'  => $client_id,
+				'state'      => $state,
+				'updated_at' => $now,
+				'wp_user_id' => $user_id,
+			);
+
+			return self::sorted( $entries );
 		}
 
 		/**

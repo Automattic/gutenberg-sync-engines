@@ -24,9 +24,12 @@ release, which the release script generates from the commit history.
     like one with it. A collaborator in the editor also shows up in Who's
     Online and the post list. Both sides speak `postType/{type}:{id}`, so
     rooms need no mapping. This plugin's rows carry a `gse-` client id
-    prefix. Deactivating the Presence API, or
-    `remove_all_filters( 'wp_sync_awareness_backend' )`, returns
-    collaboration to the room array.
+    prefix. Collaboration returns to the room array whenever the Presence
+    API cannot serve it, whether because the plugin is deactivated, its
+    table was never created or recording is switched off, and on
+    `remove_all_filters( 'wp_sync_awareness_backend' )`. Presence API
+    0.6.0 or newer answers that in one call; older versions are still
+    supported through the checks it had at the time.
 
 ### Changed
 
