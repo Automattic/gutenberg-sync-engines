@@ -42,11 +42,20 @@ if ( ! class_exists( 'WP_Sync_Presence_API_Awareness_Backend' ) ) {
 		 * @return bool Whether this backend can serve.
 		 */
 		public static function is_available(): bool {
-			// The private checks are skipped when that plugin does not have them.
-			return function_exists( 'wp_get_presence' )
-				&& function_exists( 'wp_set_presence' )
-				&& function_exists( 'wp_remove_presence' )
-				&& ( ! function_exists( 'wp_presence_has_table' ) || wp_presence_has_table() )
+			if ( ! function_exists( 'wp_get_presence' )
+				|| ! function_exists( 'wp_set_presence' )
+				|| ! function_exists( 'wp_remove_presence' )
+			) {
+				return false;
+			}
+
+			// One public answer since Presence API 0.6.0. Older versions only
+			// answer it through functions marked private, so fall back to those.
+			if ( function_exists( 'wp_presence_is_available' ) ) {
+				return wp_presence_is_available();
+			}
+
+			return ( ! function_exists( 'wp_presence_has_table' ) || wp_presence_has_table() )
 				&& ( ! function_exists( 'wp_presence_recording_enabled' ) || wp_presence_recording_enabled() );
 		}
 
@@ -144,8 +153,8 @@ if ( ! class_exists( 'WP_Sync_Presence_API_Awareness_Backend' ) ) {
 			}
 
 			// The explicit timestamp turns off the Presence API's own write
-			// skip, which is measured against its own far longer lifetime and
-			// so would let a live client age out of the caller's window.
+			// skip, which runs as long as the caller's whole window and so
+			// would let a live client reach the edge of it unwritten.
 			wp_set_presence( $room, self::CLIENT_PREFIX . $client_id, $state, $user_id, gmdate( 'Y-m-d H:i:s', $now ) );
 
 			// The room as it now stands, without reading it a second time.

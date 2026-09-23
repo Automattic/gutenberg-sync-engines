@@ -25,9 +25,11 @@ release, which the release script generates from the commit history.
     Online and the post list. Both sides speak `postType/{type}:{id}`, so
     rooms need no mapping. This plugin's rows carry a `gse-` client id
     prefix. Collaboration returns to the room array whenever the Presence
-    API cannot serve it — the plugin deactivated, its table not yet
-    created, recording switched off — or on
-    `remove_all_filters( 'wp_sync_awareness_backend' )`.
+    API cannot serve it, whether because the plugin is deactivated, its
+    table was never created or recording is switched off, and on
+    `remove_all_filters( 'wp_sync_awareness_backend' )`. Presence API
+    0.6.0 or newer answers that in one call; older versions are still
+    supported through the checks it had at the time.
 
 ### Changed
 

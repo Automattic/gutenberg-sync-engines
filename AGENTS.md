@@ -125,14 +125,10 @@ This plugin provides:
   It uses the room array above by default; the
   `wp_sync_awareness_backend` filter takes a `WP_Sync_Awareness_Backend`
   instead, addressed per client rather than per room. This plugin
-  returns one when the **Presence API** plugin is active, has its table
-  and is recording, so awareness lives in that plugin's shared
-  `wp_presence` table under `gse-`-prefixed client ids. TRAP:
-  `wp_set_presence()` leaves an unchanged row unwritten for a stretch
-  measured against its own TTL, far longer than the window collaboration
-  ages entries out at — so the backend decides the refresh itself and
-  passes an explicit timestamp, which is what turns that skip off.
-  PHPUnit covers it against a stand-in; against the REAL plugin run
+  returns one when `wp_presence_is_available()` says so, so awareness
+  lives in that plugin's shared `wp_presence` table under
+  `gse-`-prefixed client ids. PHPUnit covers that backend against a
+  stand-in; against the REAL plugin run
   `tests/tools/check-presence-api.php` (usage in its header).
 
 It registers through the framework's extension points: PHP `wp_sync_engines` /

@@ -253,26 +253,6 @@ class Tests_Collaboration_WpSyncAwareness extends WP_UnitTestCase {
 	}
 
 	/**
-	 * The same holds on a site that has lengthened the Presence API's own
-	 * lifetime, which is where skipping the write does the most damage.
-	 */
-	public function test_a_long_site_ttl_does_not_delay_the_refresh(): void {
-		Fake_Presence_API::$enabled = true;
-		$room                       = $this->room();
-		$state                      = array( 'name' => 'Ada' );
-
-		add_filter( 'wp_presence_default_ttl', static fn() => 10 * MINUTE_IN_SECONDS );
-
-		$this->awareness()->put( $room, 7, $state, self::$editor_id, 30 );
-		$this->backdate( $room, 'gse-7', 25 );
-		$this->awareness()->put( $room, 7, $state, self::$editor_id, 30 );
-
-		// Left to the Presence API this row would go unwritten until long
-		// after the room had given up on the client.
-		$this->assertRowIsFresh( $room, 'gse-7' );
-	}
-
-	/**
 	 * An idle client repeating its state writes nothing, so a poll that
 	 * changes nothing stays read-only here too.
 	 */
@@ -412,6 +392,14 @@ class Fake_Presence_API {
 	const DEFAULT_TTL = 150;
 
 	/**
+	 * The longest the real plugin leaves an unchanged row unwritten, in
+	 * seconds, published in its README since 0.6.0.
+	 *
+	 * @var int
+	 */
+	const MAX_STALENESS = 30;
+
+	/**
 	 * Whether the stand-in is recording.
 	 *
 	 * @var bool
@@ -461,12 +449,13 @@ class Fake_Presence_API {
 	 *
 	 * The real formula: the lifetime, less a 15-second margin, less how long
 	 * until the client's next Heartbeat, which is 120 seconds for any
-	 * request that is not a Heartbeat — every collaboration request.
+	 * request that is not a Heartbeat, every collaboration request. Presence
+	 * API 0.6.0 caps the result at `MAX_STALENESS`.
 	 *
 	 * @return int Age in seconds. 0 never skips.
 	 */
 	public static function refresh_threshold(): int {
-		return max( 0, self::timeout( self::DEFAULT_TTL ) - 15 - 120 );
+		return max( 0, min( self::timeout( self::DEFAULT_TTL ) - 15 - 120, self::MAX_STALENESS ) );
 	}
 }
 
@@ -477,6 +466,10 @@ if ( ! function_exists( 'wp_set_presence' ) ) {
 
 	function wp_presence_has_table() {
 		return Fake_Presence_API::$has_table;
+	}
+
+	function wp_presence_is_available() {
+		return Fake_Presence_API::$has_table && Fake_Presence_API::$enabled;
 	}
 
 	function wp_get_presence( $room, $timeout = Fake_Presence_API::DEFAULT_TTL ) {

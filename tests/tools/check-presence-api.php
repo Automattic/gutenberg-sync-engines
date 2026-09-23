@@ -112,21 +112,27 @@ add_filter(
 $gse_awareness->put( $gse_room, 7, $gse_state, $gse_user_id, 30 );
 gse_presence_check( 0 === $gse_writes, 'an idle repeat is read-only', "writes={$gse_writes}" );
 
-// A quiet client past the refresh age IS rewritten, where the Presence API's
-// own skip would have left the row alone. The check below pins that premise.
+// A quiet client past this backend's refresh age IS rewritten, at the oldest
+// age the Presence API's own skip would still have left the row alone. Both
+// ages are read off the code rather than guessed, and the check below pins
+// that the one is in fact past the other.
+$gse_refresh = max( 1, intdiv( 30, WP_Sync_Presence_API_Awareness_Backend::REFRESH_FRACTION ) );
+$gse_skip    = function_exists( 'wp_presence_refresh_threshold' ) ? wp_presence_refresh_threshold() : $gse_refresh;
+
+gse_presence_check(
+	$gse_skip >= $gse_refresh,
+	'the Presence API would skip a row this backend refreshes',
+	"skip={$gse_skip}s refresh={$gse_refresh}s"
+);
+
 // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 $wpdb->query(
 	$wpdb->prepare(
 		"UPDATE {$wpdb->presence} SET date_gmt = %s WHERE room = %s AND client_id = %s",
-		gmdate( 'Y-m-d H:i:s', time() - 12 ),
+		gmdate( 'Y-m-d H:i:s', time() - $gse_skip ),
 		$gse_room,
 		'gse-7'
 	)
-);
-gse_presence_check(
-	! function_exists( 'wp_presence_refresh_threshold' ) || wp_presence_refresh_threshold() > 12,
-	'the Presence API would have skipped a row this young',
-	function_exists( 'wp_presence_refresh_threshold' ) ? 'threshold=' . wp_presence_refresh_threshold() . 's' : ''
 );
 
 $gse_awareness->put( $gse_room, 7, $gse_state, $gse_user_id, 30 );
