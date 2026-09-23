@@ -23,7 +23,7 @@ edit-to-visible latency as a user experiences it.
   that hosts should size for. Byte counts are message bodies only; HTTP
   headers add roughly another 0.5–1 KB per request on top.
 - **Observed transport** — self-labeled from the traffic actually seen
-  (websocket frames / `/long-poll` / `/updates`), and compared against the
+  (websocket frames / `/sse` streams / `/updates`), and compared against the
   requested transport. A mismatch usually means a
   `WP_COLLABORATION_TRANSPORT` constant/env override on the site, or a
   failed negotiation.
@@ -57,7 +57,7 @@ node tests/benchmarks/transport/benchmark-transport.mjs \
     transport=http-polling trials=30 json=polling.json
 
 node tests/benchmarks/transport/benchmark-transport.mjs \
-    transport=http-long-polling trials=30 json=long-polling.json
+    transport=sse trials=30 json=sse.json
 ```
 
 Arguments are bare `key=value` tokens (the engine benchmark's convention):
@@ -140,19 +140,16 @@ under `engine=yjs-server` until that is fixed.
   interval (~1–1.5 s) and a max near two. Requests continue at the same
   cadence while idle; that idle request rate × collaborators is the host's
   steady-state load.
-- **http-long-polling**: receive latency drops to near-push (the server
-  re-checks storage every 500 ms while holding the request), so expect a p50
-  in the hundreds of milliseconds. The cost moves server-side: each held
-  request occupies a PHP worker for up to its wait budget (default 20 s) —
-  the *request count* here understates worker occupancy; see the capacity
-  warning in `includes/transports/class-wp-http-long-polling-sync-server.php`.
-  Note also that held requests wake on awareness changes, and with
-  collaborators present each client's awareness heartbeat keeps releasing
-  the other's held request — so the idle *request rate* can exceed
-  short-polling's (observed ~94 vs ~56 requests/min per window) even though
-  each request is short-lived.
-- **websocket**: true push — observed p50 ≈ 30 ms edit-to-visible (~20×
-  better than long-polling, ~60× better than polling) with the lowest idle
+- **sse**: receive latency drops to near-push: with Redis the stream is
+  written the moment a row lands; without it the server re-checks storage
+  every 500 ms while holding the stream, so expect a p50 in the hundreds of
+  milliseconds. The cost moves server-side: each open stream occupies a
+  PHP worker for its whole length (up to five minutes) — the *request
+  count* here understates worker occupancy, and without Redis each stream
+  also costs two storage reads a second. See
+  `docs/transports.md#server-sent-events`.
+- **websocket**: true push — observed p50 ≈ 30 ms edit-to-visible (~60×
+  better than polling) with the lowest idle
   wire volume by far (~14 frames/idle-30 s per window vs ~28–49 HTTP
   requests). The price is the heaviest hosting ask: a persistent daemon,
   TLS termination, and an exposed port.

@@ -51,11 +51,10 @@ export function attachCounters( page ) {
 		requests: 0,
 		requestBytes: 0,
 		responseBytes: 0,
-		// Data-plane requests only (/updates, /long-poll) — `requests`
-		// also counts auxiliary routes like /ws-token, whose retry loop
-		// must not read as a live session.
+		// Data-plane requests only (/updates, /sse) — `requests` also
+		// counts auxiliary routes like /ws-token, whose retry loop must
+		// not read as a live session.
 		dataRequests: 0,
-		longPollRequests: 0,
 		sseRequests: 0,
 		sseStreams: 0,
 		sseBytesReceived: 0,
@@ -93,10 +92,6 @@ export function attachCounters( page ) {
 		}
 		if ( url.includes( '/updates' ) ) {
 			c.dataRequests += 1;
-		}
-		if ( url.includes( '/long-poll' ) ) {
-			c.dataRequests += 1;
-			c.longPollRequests += 1;
 		}
 	} );
 	page.on( 'response', async ( response ) => {
@@ -246,9 +241,6 @@ export async function dismissWelcomeGuide( page ) {
  * @return {string} Transport slug.
  */
 export function deliveryTransport( delivery ) {
-	if ( delivery === 'long-polling' ) {
-		return 'http-long-polling';
-	}
 	if ( delivery === 'sse' || delivery === 'websocket' ) {
 		return delivery;
 	}
@@ -262,9 +254,6 @@ export function deliveryTransport( delivery ) {
  * @return {string} Radio value (the delivery field).
  */
 function transportDelivery( transport ) {
-	if ( transport === 'http-long-polling' ) {
-		return 'long-polling';
-	}
 	if ( transport === 'http-polling' ) {
 		return 'polling';
 	}
@@ -645,7 +634,7 @@ export async function collectServerSide( rest ) {
 
 /**
  * Waits until a window's sync session is live — gated on DATA-PLANE
- * traffic only (/updates, /long-poll POSTs or socket frames). Auxiliary
+ * traffic only (/updates POSTs, stream bytes, or socket frames). Auxiliary
  * requests must not count: a dead websocket setup retries /ws-token
  * forever, which would read as "live".
  *
@@ -690,9 +679,6 @@ export function observeTransport( counters ) {
 	}
 	if ( c.wsFramesSent + c.wsFramesReceived > 0 ) {
 		return 'websocket';
-	}
-	if ( c.longPollRequests > 0 ) {
-		return 'http-long-polling';
 	}
 	if ( c.dataRequests > 0 ) {
 		return 'http-polling';

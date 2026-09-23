@@ -57,7 +57,6 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		const DELIVERY_POLLING           = 'polling';
 		const DELIVERY_POLLING_WEBRTC    = 'polling-webrtc';
 		const DELIVERY_POLLING_WEBSOCKET = 'polling-websocket';
-		const DELIVERY_LONG_POLLING      = 'long-polling';
 		const DELIVERY_SSE               = 'sse';
 		const DELIVERY_WEBSOCKET         = 'websocket';
 
@@ -219,10 +218,25 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			add_filter(
 				'wp_collaboration_transport',
 				function ( $default_slug ) {
-					$stored = (string) get_option( self::TRANSPORT_OPTION, '' );
+					$stored = self::stored_transport();
 					return '' !== $stored ? $stored : $default_slug;
 				}
 			);
+		}
+
+		/**
+		 * The stored transport slug, with the retired long-polling transport
+		 * read as SSE: the same held request, now a stream (sites that chose
+		 * it before the change keep push delivery without a visit to the
+		 * settings screen).
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return string The transport slug, or '' when none is stored.
+		 */
+		public static function stored_transport(): string {
+			$stored = (string) get_option( self::TRANSPORT_OPTION, '' );
+			return 'http-long-polling' === $stored ? 'sse' : $stored;
 		}
 
 		/**
@@ -289,10 +303,9 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 */
 		public static function transport_choices(): array {
 			$labels  = array(
-				'http-polling'      => __( 'Short-polling (default)', 'gutenberg-sync-engines' ),
-				'http-long-polling' => __( 'Long-polling', 'gutenberg-sync-engines' ),
-				'sse'               => __( 'Server-sent events (Redis)', 'gutenberg-sync-engines' ),
-				'websocket'         => __( 'WebSocket', 'gutenberg-sync-engines' ),
+				'http-polling' => __( 'Short-polling (default)', 'gutenberg-sync-engines' ),
+				'sse'          => __( 'Server-sent events', 'gutenberg-sync-engines' ),
+				'websocket'    => __( 'WebSocket', 'gutenberg-sync-engines' ),
 			);
 			$choices = array();
 
@@ -309,7 +322,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 
 		/**
 		 * The "Transport" list: each entry is one (transport, advisory
-		 * channel) pair. Long polling and the WebSocket transport carry
+		 * channel) pair. SSE and the WebSocket transport carry
 		 * everything themselves while connected; the WebRTC advisory
 		 * channel they store is what serves when the connection is down
 		 * and tabs fall back to polling.
@@ -319,9 +332,9 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * @return array<string, array{transport: string, advisory: string, label: string, description: string}> Choices.
 		 */
 		public static function delivery_choices(): array {
-			$sse_description = __( 'Receives updates over an HTTP stream. Requires Redis and an available PHP worker per stream. Falls back to polling on failure.', 'gutenberg-sync-engines' );
+			$sse_description = __( 'Receives updates over an HTTP stream held open by the server, one PHP worker per stream. Streams wake on Redis notices when a Redis address is configured, and by re-checking storage every half second otherwise. Peers fall back to polling on failure.', 'gutenberg-sync-engines' );
 			if ( class_exists( 'WP_Sync_Redis_Notifications' ) && '' === WP_Sync_Redis_Notifications::url() ) {
-				$sse_description .= ' ' . __( 'No Redis address is configured on this site (WP_SYNC_SSE_REDIS_URL), so this choice would run on polling.', 'gutenberg-sync-engines' );
+				$sse_description .= ' ' . __( 'No Redis address is configured on this site (WP_SYNC_SSE_REDIS_URL): each open stream re-reads storage twice a second.', 'gutenberg-sync-engines' );
 			}
 			return array(
 				self::DELIVERY_POLLING           => array(
@@ -342,16 +355,10 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 					'label'       => __( 'Polling with a WebSocket advisory channel', 'gutenberg-sync-engines' ),
 					'description' => __( 'Peers connect via a socket to share announcements and poll for updates only when needed. Peers fall back to polling on failure.', 'gutenberg-sync-engines' ),
 				),
-				self::DELIVERY_LONG_POLLING      => array(
-					'transport'   => 'http-long-polling',
-					'advisory'    => self::ADVISORY_WEBRTC,
-					'label'       => __( 'Long polling', 'gutenberg-sync-engines' ),
-					'description' => __( 'The server holds polling requests open until updates are delivered. Peers fall back to polling on failure.', 'gutenberg-sync-engines' ),
-				),
 				self::DELIVERY_SSE               => array(
 					'transport'   => 'sse',
 					'advisory'    => self::ADVISORY_WEBRTC,
-					'label'       => __( 'Server-sent events (Redis)', 'gutenberg-sync-engines' ),
+					'label'       => __( 'Server-sent events', 'gutenberg-sync-engines' ),
 					'description' => $sse_description,
 				),
 				self::DELIVERY_WEBSOCKET         => array(
@@ -365,18 +372,15 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 
 		/**
 		 * The list entry the stored transport and advisory options amount
-		 * to. Long polling and the WebSocket transport map to their entry
-		 * whatever advisory channel is stored (it only serves as fallback).
+		 * to. SSE and the WebSocket transport map to their entry whatever
+		 * advisory channel is stored (it only serves as fallback).
 		 *
 		 * @since 0.0.1
 		 *
 		 * @return string A DELIVERY_* value.
 		 */
 		public static function delivery(): string {
-			$transport = (string) get_option( self::TRANSPORT_OPTION, 'http-polling' );
-			if ( 'http-long-polling' === $transport ) {
-				return self::DELIVERY_LONG_POLLING;
-			}
+			$transport = self::stored_transport();
 			if ( 'sse' === $transport ) {
 				return self::DELIVERY_SSE;
 			}
@@ -781,7 +785,11 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * @return string Transport slug.
 		 */
 		public function sanitize_transport( $value ): string {
-			$value   = sanitize_key( (string) $value );
+			$value = sanitize_key( (string) $value );
+			if ( 'http-long-polling' === $value ) {
+				// The retired transport; its stream successor.
+				$value = 'sse';
+			}
 			$choices = self::transport_choices();
 			return isset( $choices[ $value ] ) ? $value : 'http-polling';
 		}

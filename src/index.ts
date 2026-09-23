@@ -6,7 +6,7 @@
  * APIs. This plugin unlocks them with the shared consent string and adds:
  *   - engine adapters (intent-log, yjs-server) via
  *     `registerSyncEngine`
- *   - transport providers (http-polling, http-long-polling, websocket) via
+ *   - transport providers (http-polling, sse, websocket) via
  *     `registerSyncTransport`
  *
  * With this plugin inactive the framework registers nothing, so a session
@@ -36,7 +36,6 @@ import { createIntentLogEngineAdapter } from './engines/intent-log-adapter';
 import { createYjsServerEngineAdapter } from './engines/yjs-server-adapter';
 import { createDeRtcEngineAdapter } from './engines/de-rtc-adapter';
 import { createHttpPollingProvider } from './providers/http-polling/http-polling-provider';
-import { createHttpLongPollingProvider } from './providers/http-long-polling/http-long-polling-provider';
 import { createWebSocketProvider } from './providers/websocket/websocket-provider';
 import { createSseProvider } from './providers/sse/sse-provider';
 import { bootstrapSlowAwareness } from './awareness';
@@ -54,11 +53,6 @@ registerSyncTransport( {
 	slug: 'http-polling',
 	protocolVersion: 1,
 	create: createHttpPollingProvider,
-} );
-registerSyncTransport( {
-	slug: 'http-long-polling',
-	protocolVersion: 1,
-	create: createHttpLongPollingProvider,
 } );
 registerSyncTransport( {
 	slug: 'websocket',

@@ -11,7 +11,7 @@
  *
  * @since n.e.x.t
  */
-class WP_Sync_Redis {
+class WP_Sync_Redis implements WP_Sync_Change_Waiter {
 	/**
 	 * Redis socket.
 	 *

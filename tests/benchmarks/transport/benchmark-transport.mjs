@@ -22,7 +22,7 @@
  * Arguments are bare `key=value` tokens (same convention as the engine
  * benchmark):
  *
- *   transport=  http-polling | http-long-polling | sse | websocket | current
+ *   transport=  http-polling | sse | websocket | current
  *               Switched via the Settings → Collaboration screen and
  *               restored afterwards. Default: current (no switch).
  *   engine=     intent-log | yjs-server | current (default: current)

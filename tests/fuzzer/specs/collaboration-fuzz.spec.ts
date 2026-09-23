@@ -97,11 +97,9 @@ const CONVERGENCE_TIMEOUT_MS = getEnvInt(
 	'RTC_FUZZ_CONVERGENCE_TIMEOUT_MS',
 	20000
 );
-// Long-polling can hold a quiet request up to 20s (DEFAULT_MAX_WAIT_MS), and
-// discovery waits on THREE sync cycles — give that lane real headroom.
 const DISCOVERY_TIMEOUT_MS = getEnvInt(
 	'RTC_FUZZ_DISCOVERY_TIMEOUT_MS',
-	TRANSPORT === 'http-long-polling' ? 90000 : 30000
+	30000
 );
 const DISABLE_SYNC_FAULTS =
 	process.env.RTC_FUZZ_DISABLE_SYNC_FAULTS === '1' ||

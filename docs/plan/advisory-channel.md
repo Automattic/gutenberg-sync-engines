@@ -76,7 +76,7 @@ its token first and offers once it knows whom to offer to):
 ### Preferred transport
 
 Short polling is always available as the fallback. When an admin
-selects another transport (long polling, websocket), that is their
+selects another transport (SSE, websocket), that is their
 PREFERRED transport: it moves everything the base transport does while
 it is connected, and the client stops polling on the base transport and
 the advisory channel meanwhile. An example is the `websocket`
@@ -91,8 +91,9 @@ enabled, the advisory channel) until it is back.
 
 Two stored options, chosen through one list:
 
-1. Transport: `http-polling` (default), `http-long-polling`, or
-   `websocket`. The default short-polling transport is always available
+1. Transport: `http-polling` (default), `sse`, or `websocket` (the
+   long-polling transport was retired in favor of `sse`, which is the
+   same held request as a stream). The default short-polling transport is always available
    as a fallback.
 2. Advisory channel: `webrtc-advisory` (default), `websocket-advisory`,
    or off. An advisory channel reduces polling by signaling to peers when
@@ -116,7 +117,7 @@ daemon), and the polling interval (default 5 seconds).
 
 1. **Short polling is the base transport everyone has.** One transport
    slug is announced. There is no mesh of transports. A site can prefer
-   another transport (long polling, websocket) that carries everything
+   another transport (SSE, websocket) that carries everything
    while connected; short polling is always the fallback.
 2. **The advisory channel is a rumor.** A nudge carries a room name and
    nothing else. Nothing in it moves the cursor, applies a row, or
@@ -173,7 +174,7 @@ daemon), and the polling interval (default 5 seconds).
    live token owns are swept once a minute, even after the token record
    itself has expired.
 7. **A preferred transport switches the channel off, but only while
-   connected.** Long polling does this explicitly; websocket does it by
+   connected.** SSE does this explicitly; websocket does it by
    construction (the polling manager has no rooms while the socket
    serves them). The channel comes back while the transport is down.
 
@@ -270,12 +271,12 @@ Client:
     via `save-flush.ts`, or the tab going hidden; codecs declaring
     `sendsWhileAlone` are exempt), the announce-after-send, the base
     presence overlay (per client, on top of the poll response's copy),
-    and the long-poll disable hook.
+    and the stream disable hook.
 -   Settings → Collaboration: one "Transport" list whose entries are
     (transport, advisory channel) pairs — polling; polling with a
     WebRTC advisory channel (default); polling with a WebSocket advisory
-    channel; long polling; WebSocket — so the conflicting pairs cannot
-    be chosen. Long polling and WebSocket store WebRTC as the fallback
+    channel; server-sent events; WebSocket — so the conflicting pairs cannot
+    be chosen. SSE and WebSocket store WebRTC as the fallback
     channel. The stored options stay `gutenberg_sync_engines_transport`
     and `gutenberg_sync_engines_advisory_channel`. Two server URL fields
     (transport server, advisory server) with "Test" buttons show only
@@ -489,7 +490,7 @@ uses it to poll sooner and to show presence faster.**
     rows landed meanwhile are the head-cursor check's business. A
     dropped advisory socket never counts as a closed tab: awareness
     and the leave beacon stay the polling transport's, so a room is
-    never reset because a relay blinked. Long polling switches the
+    never reset because a relay blinked. SSE switches the
     link off exactly as it does WebRTC.
 -   Queued work never waits for a slow timer. A coverage flip re-evaluates
     a pending timer; if that would replace a 1 s timer with the 25 s
@@ -516,7 +517,7 @@ uses it to poll sooner and to show presence faster.**
     token handshake, roster overlay, coverage, notices, reconnect and the
     transport switch; coverage rules), and the polling manager
     cadence rules (quiet when alone, wake on company, on-demand polls
-    under coverage, safety poll, announce coalescing, long-poll disable).
+    under coverage, safety poll, announce coalescing, stream disable).
 -   PHPUnit: `tests/phpunit/gutenbergSyncEnginesAdvisoryPresence.php`
     (token record and expiry, others-present from tokens and awareness,
     mailbox relay with caps, permission fence, leave route, page-render

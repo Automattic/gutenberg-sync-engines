@@ -46,11 +46,15 @@ This plugin provides:
   what runs when the `wp_sync_engine` option is unset. Registration order
   only matters when a CONFIGURED slug isn't registered (misconfiguration
   degrades to the first registered engine: yjs-server).
-- **Transports:** `http-polling` (default), `http-long-polling`, `sse`, `websocket`.
-  SSE uses normal PHP requests with Redis Pub/Sub notices, one worker per
-  stream, and bounded reconnects with durable cursors. wp-env lifecycle hooks
-  start and remove Redis for each checkout and config on its own
-  network. Setup and failure behavior: `docs/transports.md`.
+- **Transports:** `http-polling` (default), `sse`, `websocket`.
+  SSE uses normal PHP requests: one held worker per stream, woken by
+  Redis Pub/Sub notices when `WP_SYNC_SSE_REDIS_URL` is set and by
+  half-second storage checks otherwise (`WP_Sync_Storage_Change_Waiter`,
+  the retired long-polling transport's wait), with bounded reconnects
+  from durable cursors. A stored `http-long-polling` choice reads as
+  `sse`. wp-env lifecycle hooks start and remove Redis for each checkout
+  and config on its own network. Setup, the proxy/buffering caveat, and
+  failure behavior: `docs/transports.md`.
   Short polling is the BASE transport; beside it every editor tab opens an
   **advisory channel** (`src/providers/advisory/`) that carries presence
   and "go and poll" notices, never content. It runs over one of two
@@ -62,11 +66,10 @@ This plugin provides:
   `handle_advisory_message` in the daemon — and never carries rows). It
   decides the polling cadence: quiet when alone, timer cadence when a
   peer is unreachable, on demand (with the heartbeat carrying the room's
-  head cursor) when every peer is reachable. Long polling turns it off
-  while connected; so does SSE while its stream is up (its handshake
-  signals ride the heartbeat, never a poll), and a solo SSE tab goes
-  quiet like every HTTP transport, closing its stream. Rules and
-  failure cases: `docs/plan/advisory-channel.md`.
+  head cursor) when every peer is reachable. SSE turns it off while its
+  stream is up (its handshake signals ride the heartbeat, never a poll),
+  and a solo SSE tab goes quiet like short polling, closing its stream.
+  Rules and failure cases: `docs/plan/advisory-channel.md`.
   The websocket link can end at a host's OWN relay instead of the
   daemon: with a `WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET` configured
   (constant, env, or the `wp_sync_websocket_access_token_secret` filter),
@@ -241,7 +244,8 @@ The framework/plugin split is complete: the framework ships **neither** engines
     snapshot helpers, `undo.ts`, vendored `y-utilities/` — the latter ignored
     by eslint), inherited from the retired yjs-relay engine and used by
     yjs-server.
-  - `providers/{http-polling,http-long-polling,websocket}/` — transports.
+  - `providers/{http-polling,sse,websocket}/` — transports (sse reuses the
+    polling manager, swapping only its receive half for the stream).
   - `awareness/` — SLOW AWARENESS (`docs/awareness-high-latency.md`),
     on when the "Awareness interval" setting is above 0: each tab
     publishes the block its selection is in (`metadata.syncId`, else the
@@ -561,9 +565,9 @@ they exist so a failure is observable without re-instrumenting:
   500-record ring buffer, `intents('p1')` filters history touching one
   syncId, `doc()`/`proposals()`/`cursor()` read live session state
   (intent-log), `export()` dumps JSON for bug reports, `help()` lists
-  everything. Covers ALL transports: http-polling, http-long-polling, and
-  websocket (sends and pushed receives are separate one-directional
-  records on the socket lane).
+  everything. Covers ALL transports: http-polling, sse, and websocket
+  (sends and pushed receives are separate one-directional records on
+  the socket and stream lanes).
 - **Server `_debug` envelope** — enabling the inspector also stamps
   `debug: true` on each room request; all THREE engines respond with an
   `_debug` envelope (intent-log: lock wait, window rows, head seq, plan
@@ -624,7 +628,7 @@ they exist so a failure is observable without re-instrumenting:
   a new name reaches every reachable peer with no request at all. A
   new name also raises `announceLocalAwarenessChange`
   (`src/providers/advisory/announce.ts`), which the polling manager
-  uses only under long polling, to reissue a parked request. The e2e
+  uses only under SSE, to reissue a parked stream exchange. The e2e
   spec turns the advisory channel off for its duration. Under the
   Heartbeat channel the block name is a field on the advisory channel's
   discovery probe (`block`), kept on the tab's presence token by

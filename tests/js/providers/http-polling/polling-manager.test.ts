@@ -39,6 +39,18 @@ jest.mock( '../../../../src/providers/http-polling/config', () => ( {
 	MIN_SYNC_REQUEST_BODY_SIZE_IN_BYTES: 100,
 } ) );
 
+const mockSseExchange = {
+	available: true,
+	close: jest.fn(),
+	exchange:
+		jest.fn<
+			( payload: unknown, signal?: AbortSignal ) => Promise< unknown >
+		>(),
+};
+jest.mock( '../../../../src/providers/sse/sse-exchange', () => ( {
+	SseExchange: jest.fn( () => mockSseExchange ),
+} ) );
+
 jest.mock( '../../../../src/providers/http-polling/utils', () => ( {
 	...( jest.requireActual(
 		'../../../../src/providers/http-polling/utils'
@@ -169,7 +181,7 @@ describe( 'polling-manager', () => {
 		typeof import('../../../../src/providers/http-polling/utils').postSyncUpdateNonBlocking
 	>;
 	let mockApplyFilters: jest.Mock;
-	let setLongPollMode: ( enabled: boolean ) => void;
+	let setSseMode: ( enabled: boolean ) => void;
 	let inspector: typeof import('../../../../src/providers/http-polling/../../../src/debug/inspector').syncDebugApi;
 
 	beforeEach( () => {
@@ -180,7 +192,7 @@ describe( 'polling-manager', () => {
 		jest.isolateModules( () => {
 			const managerModule = require( '../../../../src/providers/http-polling/polling-manager' );
 			pollingManager = managerModule.pollingManager;
-			setLongPollMode = managerModule.setLongPollMode;
+			setSseMode = managerModule.setSseMode;
 			mockPostSyncUpdate =
 				require( '../../../../src/providers/http-polling/utils' ).postSyncUpdate;
 			mockPostSyncUpdateNonBlocking =
@@ -2461,20 +2473,29 @@ describe( 'polling-manager', () => {
 			expect( inspector.log() ).toHaveLength( 0 );
 		} );
 	} );
-	describe( 'long-poll park wake', () => {
+	describe( 'stream park wake', () => {
 		afterEach( () => {
-			setLongPollMode( false );
+			setSseMode( false );
 		} );
 
-		it( 'aborts a parked pure-receive poll when local work arrives, then re-sends immediately', async () => {
+		it( 'aborts a parked pure-receive exchange when local work arrives, then re-sends immediately', async () => {
 			/*
-			 * REGRESSION (fuzzer, long-polling lanes): once the server hold
-			 * actually worked, an edit made right after a quiet poll sat
-			 * queued behind the client's own parked request for up to the
-			 * full wait budget, blowing every convergence window. A local
-			 * update must abort the park and go out at once.
+			 * REGRESSION (fuzzer, found under the retired long-polling
+			 * transport): once the server hold actually worked, an edit
+			 * made right after a quiet exchange sat queued behind the
+			 * client's own parked request for up to the full wait,
+			 * blowing every convergence window. A local update must abort
+			 * the park and go out at once. The SSE exchange is mocked to
+			 * behave like that hold: it delegates to postSyncUpdate.
 			 */
-			setLongPollMode( true );
+			setSseMode( true );
+			mockSseExchange.exchange.mockImplementation(
+				( payload: unknown, signal?: AbortSignal ) =>
+					mockPostSyncUpdate(
+						payload as Parameters< typeof mockPostSyncUpdate >[ 0 ],
+						signal
+					)
+			);
 			const session = createMockSession( 1 );
 			const signals: Array< AbortSignal | undefined > = [];
 			// Collaborators present: room queues resume (paused while solo).
@@ -2521,8 +2542,8 @@ describe( 'polling-manager', () => {
 				onStatusChange: jest.fn(),
 			} );
 
-			// Let polling settle into a parked pure-receive request (the
-			// long-poll reissue is 50 ms; update-carrying calls resolve).
+			// Let polling settle into a parked pure-receive exchange (the
+			// stream reissue is 50 ms; update-carrying calls resolve).
 			await jest.advanceTimersByTimeAsync( 120 );
 			const parkedCalls = mockPostSyncUpdate.mock.calls.length;
 			expect( parkedCalls ).toBeGreaterThan( 0 );

@@ -41,8 +41,10 @@ engine as a feature plugin for wider testing.
 
 - **http-polling**: the editor asks the server for updates on a short
   timer (`POST /wp-sync/v1/updates`). Every host can run it (default).
-- **http-long-polling**: the same request, held open by the server until
-  there is something to send.
+- **sse**: one long-lived response per tab that the server writes each
+  change to (server-sent events), woken by Redis when a Redis address is
+  configured and by half-second storage checks otherwise. Needs a proxy
+  that passes streams through unbuffered.
 - **websocket**: the server pushes updates over a persistent connection
   served by a bundled PHP daemon (`wp collaboration sync-server`). For
   local dev, `npm run rtc:ws` starts everything in one command (and
@@ -71,8 +73,8 @@ runs over a direct WebRTC link between browsers or over a WebSocket.
   removes them. `wp collaboration storage status` shows what a site has.
 
 The active engine, and how editors get each other's changes (polling,
-polling with an advisory channel over WebRTC or a WebSocket, long
-polling, or WebSocket), are chosen on the plugin's **Settings →
+polling with an advisory channel over WebRTC or a WebSocket,
+server-sent events, or WebSocket), are chosen on the plugin's **Settings →
 Collaboration** screen (or via `wp_sync_engine` / the
 `WP_COLLABORATION_TRANSPORT` config value).
 

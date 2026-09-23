@@ -73,12 +73,7 @@ const DEFAULT_ENGINES = [ 'intent-log', 'yjs-server', 'de-rtc' ];
  * doc that documents the gap.
  */
 const ENGINE_CAPABILITIES = {};
-const DEFAULT_TRANSPORTS = [
-	'http-polling',
-	'http-long-polling',
-	'sse',
-	'websocket',
-];
+const DEFAULT_TRANSPORTS = [ 'http-polling', 'sse', 'websocket' ];
 
 const CLI_OPTIONS = {
 	engines: { type: 'string' },
@@ -155,7 +150,7 @@ function printUsage() {
 			'Usage: npm run fuzz -- [options]',
 			'',
 			'  --engines=a,b        Engines to sweep (default: intent-log,yjs-server,de-rtc)',
-			'  --transports=a,b     Transports to sweep (default: http-polling,http-long-polling,sse,websocket)',
+			'  --transports=a,b     Transports to sweep (default: http-polling,sse,websocket)',
 			'  --combos=e/t,...     Explicit engine/transport pairs (overrides the cross product)',
 			'  --seeds=N            Seeds per combo (default: 5)',
 			'  --seed-start=N       First seed (default: 1)',

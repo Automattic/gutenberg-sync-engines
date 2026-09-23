@@ -51,7 +51,7 @@
  *   engine=     the ONE engine to measure (intent-log | yjs-server |
  *               de-rtc | current; default: the site's current engine —
  *               comparing engines is what --suite=engines is for)
- *   transport=  http-polling | http-long-polling | sse | websocket | current
+ *   transport=  http-polling | sse | websocket | current
  *   windows=    people per phase: collaborator windows, and the same
  *               number of one-after-the-other baseline turns (default 2)
  *   edit-seconds=      editing seconds per person (default 120, min 30)
@@ -100,7 +100,7 @@ const HELP = `node tests/benchmarks/host/host-benchmark.mjs [key=value …]
   engine=     the ONE engine to measure (intent-log | yjs-server |
               de-rtc | current; default: the site's current engine —
               comparing engines is what --suite=engines is for)
-  transport=  http-polling | http-long-polling | sse | websocket
+  transport=  http-polling | sse | websocket
               (default: the site's current transport)
   windows=    people per phase: collaborator windows, and the same
               number of one-after-the-other baseline turns (default 2)

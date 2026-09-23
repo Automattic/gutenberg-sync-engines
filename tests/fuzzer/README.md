@@ -14,7 +14,7 @@ npm run fuzz
 ```
 
 That runs the default matrix — `{intent-log, yjs-server, de-rtc} ×
-{http-polling, http-long-polling, sse, websocket}` — with 5 seeds per combo,
+{http-polling, sse, websocket}` — with 5 seeds per combo,
 12 actions per seed, 2 collaborating browsers. It starts the TESTS wp-env
 (`.wp-env.tests.json`) if needed, flips the engine/transport per combo,
 manages the websocket daemon, rechecks failures, and writes a summary.

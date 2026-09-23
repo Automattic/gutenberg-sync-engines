@@ -10,8 +10,8 @@
  *   `announceLocalAwarenessChange` when it names a new block on the local
  *   awareness state. Under short polling the advisory channel's presence
  *   lane already carries the field, so the polling manager only reacts
- *   under long polling, where it reissues a parked request so the value
- *   does not wait out the hold.
+ *   under SSE, where it reissues a parked stream exchange so the value
+ *   does not wait for the next event.
  */
 
 export const ANY_ROOM = '*';

@@ -12,11 +12,21 @@ release, which the release script generates from the commit history.
 
 ### Added
 
-- Server-sent events transport over ordinary WordPress requests, with Redis
-  Pub/Sub change notices and cursor-based recovery after interruptions. Local Redis
-  starts and is removed through wp-env lifecycle hooks. Channels are namespaced
-  per site so installations can share Redis. Streams last up
-  to five minutes, with twenty-second catch-up reads for missed notices.
+- Server-sent events transport (`sse`) over ordinary WordPress requests:
+  one long-lived response per tab that the server writes each change to,
+  with cursor-based recovery after any interruption. Streams wake on Redis
+  Pub/Sub notices when `WP_SYNC_SSE_REDIS_URL` is set, and by half-second
+  storage checks otherwise. Local Redis starts and is removed through
+  wp-env lifecycle hooks. Needs a proxy that passes streams through; see
+  `docs/transports.md`.
+
+### Removed
+
+- The long-polling transport (`http-long-polling`). Server-sent events
+  replace it: the same held request, now a stream with keepalives, up to
+  five minutes long, and woken by Redis when available. A site that had
+  chosen long polling is moved to server-sent events; the
+  `wp_sync_long_poll_max_wait_ms` filter is gone.
 
 ### Changed
 

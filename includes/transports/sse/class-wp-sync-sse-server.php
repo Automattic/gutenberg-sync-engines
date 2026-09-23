@@ -1,13 +1,16 @@
 <?php
 /**
- * SSE over ordinary authenticated WordPress REST requests, woken by Redis.
+ * SSE over ordinary authenticated WordPress REST requests.
  *
  * @package GutenbergSyncEngines
  * @since n.e.x.t
  */
 
 /**
- * Authenticated receive streams backed by durable room cursors.
+ * Authenticated receive streams backed by durable room cursors. A stream
+ * sleeps on Redis notices when a Redis address is configured and reachable,
+ * and on half-second storage checks otherwise; everything else about the
+ * stream is the same.
  *
  * @since n.e.x.t
  */
@@ -20,11 +23,25 @@ class WP_Sync_SSE_Server extends WP_HTTP_Polling_Sync_Server {
 	const TRANSPORT_SLUG = 'sse';
 
 	/**
-	 * Subscriber owned by this HTTP request.
+	 * What this request's stream sleeps on.
 	 *
-	 * @var WP_Sync_Redis|null Subscriber owned by this HTTP request.
+	 * @var WP_Sync_Change_Waiter|null What this request's stream sleeps on.
 	 */
-	private $subscriber;
+	protected $subscriber;
+
+	/**
+	 * The stream's room requests with their current cursors.
+	 *
+	 * @var array The stream's room requests with their current cursors.
+	 */
+	protected $stream_rooms = array();
+
+	/**
+	 * The awareness map last sent per room, for the storage waiter's compare.
+	 *
+	 * @var array<string, array> The awareness map last sent per room.
+	 */
+	protected $stream_awareness = array();
 
 	/**
 	 * Transport slug.
@@ -64,12 +81,8 @@ class WP_Sync_SSE_Server extends WP_HTTP_Polling_Sync_Server {
 				return new WP_Error( 'rest_sse_read_only', 'Send updates through the updates endpoint.', array( 'status' => 400 ) );
 			}
 		}
-		try {
-			$this->subscriber = $this->subscribe( array_column( $request['rooms'], 'room' ) );
-		} catch ( RuntimeException $error ) {
-			return new WP_Error( 'rest_sse_unavailable', 'SSE notifications are unavailable.', array( 'status' => 503 ) );
-		}
-		$response = parent::handle_request( $request );
+		$this->subscriber = $this->subscribe( array_column( $request['rooms'], 'room' ) );
+		$response         = parent::handle_request( $request );
 		if ( is_wp_error( $response ) ) {
 			$this->subscriber->close();
 			$this->subscriber = null;
@@ -78,15 +91,81 @@ class WP_Sync_SSE_Server extends WP_HTTP_Polling_Sync_Server {
 	}
 
 	/**
-	 * Open the subscriber. Separate for deterministic unit tests.
+	 * Open what the stream sleeps on: a Redis subscription when a Redis
+	 * address is configured and answers, else half-second storage checks.
+	 * A configured Redis that does not answer is reported, not fatal: the
+	 * stream still works, at the storage checks' cost, and the browser
+	 * never has to fall back to polling for it. Separate for deterministic
+	 * unit tests.
 	 *
 	 * @param string[] $rooms Room names.
-	 * @return WP_Sync_Redis Subscriber.
+	 * @return WP_Sync_Change_Waiter What the stream sleeps on.
 	 */
-	protected function subscribe( array $rooms ): WP_Sync_Redis {
-		$redis = new WP_Sync_Redis( WP_Sync_Redis_Notifications::url() );
-		$redis->subscribe( array_map( array( WP_Sync_Redis_Notifications::class, 'channel' ), array_unique( $rooms ) ) );
-		return $redis;
+	protected function subscribe( array $rooms ): WP_Sync_Change_Waiter {
+		$url = WP_Sync_Redis_Notifications::url();
+		if ( '' !== $url ) {
+			try {
+				$redis = new WP_Sync_Redis( $url );
+				$redis->subscribe( array_map( array( WP_Sync_Redis_Notifications::class, 'channel' ), array_unique( $rooms ) ) );
+				return $redis;
+			} catch ( RuntimeException $error ) {
+				// phpcs:ignore WordPress.NamingConventions.ValidHookName.UseUnderscores, WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Query Monitor's debug hook.
+				do_action( 'qm/debug', 'wp-sync: SSE stream falls back to storage checks: ' . $error->getMessage() );
+				/**
+				 * Fires when a configured Redis could not be reached for a stream.
+				 *
+				 * @since n.e.x.t
+				 * @param RuntimeException $error The failure.
+				 */
+				do_action( 'gutenberg_sync_engines_sse_redis_failed', $error );
+			}
+		}
+		return $this->storage_waiter(
+			function (): bool {
+				return $this->stream_has_new_data();
+			}
+		);
+	}
+
+	/**
+	 * The no-Redis wait. Separate so tests can replace its sleep.
+	 *
+	 * @param callable $has_changes Returns true when a watched room changed.
+	 * @return WP_Sync_Storage_Change_Waiter The wait.
+	 */
+	protected function storage_waiter( callable $has_changes ): WP_Sync_Storage_Change_Waiter {
+		return new WP_Sync_Storage_Change_Waiter( $has_changes );
+	}
+
+	/**
+	 * Whether any watched room has rows past the stream's cursor, or an
+	 * awareness map other than the one last sent. Ported from the retired
+	 * long-polling transport's held request.
+	 *
+	 * @return bool True when the next read would carry something.
+	 */
+	protected function stream_has_new_data(): bool {
+		// Clear only this process's cache, never the shared object cache.
+		if ( function_exists( 'wp_cache_flush_runtime' ) ) {
+			wp_cache_flush_runtime();
+		}
+		foreach ( $this->stream_rooms as $room ) {
+			$name   = (string) $room['room'];
+			$engine = $this->engines->get_engine_for_room( $name );
+			$result = $engine->get_updates_since( $name, (int) $room['client_id'], (int) $room['after'], array() );
+			if ( ! empty( $result['updates'] ) ) {
+				return true;
+			}
+			$current = array();
+			foreach ( $this->awareness->entries( $name, self::AWARENESS_TIMEOUT ) as $entry ) {
+				$current[ $entry['client_id'] ] = $entry['state'];
+			}
+			// phpcs:ignore Universal.Operators.StrictComparisons.LooseNotEqual, WordPress.PHP.YodaConditions.NotYoda -- Order-insensitive comparison intended.
+			if ( $current != ( $this->stream_awareness[ $name ] ?? array() ) ) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -156,7 +235,9 @@ class WP_Sync_SSE_Server extends WP_HTTP_Polling_Sync_Server {
 						}
 					}
 					unset( $room );
+					$this->stream_awareness[ $response['room'] ] = $response['awareness'] ?? array();
 				}
+				$this->stream_rooms = $rooms;
 				WP_Sync_Redis_Notifications::flush();
 				$catch_up_at = $this->now() + 20.0;
 				do {
@@ -207,6 +288,9 @@ class WP_Sync_SSE_Server extends WP_HTTP_Polling_Sync_Server {
 			// End the response. Reconnect does a full cursor catch-up, even
 			// if Redis restarted and discarded every notification.
 			$emit( "event: retry\ndata: {}\n\n" );
+		} finally {
+			$this->stream_rooms     = array();
+			$this->stream_awareness = array();
 		}
 	}
 	/**

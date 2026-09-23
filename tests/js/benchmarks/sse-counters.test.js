@@ -45,6 +45,5 @@ it( 'counts SSE bytes before response completion and identifies the transport', 
 
 it( 'maps the current settings radio choices', () => {
 	expect( deliveryTransport( 'sse' ) ).toBe( 'sse' );
-	expect( deliveryTransport( 'long-polling' ) ).toBe( 'http-long-polling' );
 	expect( deliveryTransport( 'polling-webrtc' ) ).toBe( 'http-polling' );
 } );

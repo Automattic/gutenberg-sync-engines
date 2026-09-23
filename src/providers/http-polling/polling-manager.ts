@@ -426,9 +426,10 @@ let syncRequestBodySizeLimit = MAX_SYNC_REQUEST_BODY_SIZE_IN_BYTES;
  * - No signaling lane on this page (a screen with no per-post room, or
  *   the channel disabled site-wide): the always-on cadence, unchanged.
  *
- * Long polling keeps its own re-issue cadence and turns the channel off
- * while its held request is connected; the alone rule still applies to
- * it (a held request for a lone editor pins a PHP worker for nothing).
+ * SSE keeps its own re-issue cadence (the next exchange right behind
+ * each stream event) and turns the channel off while its stream is up;
+ * the alone rule still applies to it (a held stream for a lone editor
+ * pins a PHP worker for nothing).
  */
 let hasBootstrapped = false;
 let pollAgainRequested = false;
@@ -577,18 +578,13 @@ function nextScheduledDelay(): number | null {
 			return null;
 		}
 		return sseMode && sseExchange.available
-			? LONG_POLL_REISSUE_MS
+			? STREAM_REISSUE_MS
 			: POLLING_INTERVAL_IN_MS;
 	}
 	if ( sseMode ) {
 		return sseExchange.available
-			? LONG_POLL_REISSUE_MS
+			? STREAM_REISSUE_MS
 			: POLLING_INTERVAL_IN_MS;
-	}
-	if ( longPollMode ) {
-		return isActiveBrowser
-			? LONG_POLL_REISSUE_MS
-			: POLLING_INTERVAL_BACKGROUND_TAB_IN_MS;
 	}
 	if ( advisoryCoversEveryone() ) {
 		return null;
@@ -692,8 +688,8 @@ function reschedule(): void {
  * loop is quiet (alone), a request is in flight with nothing scheduled
  * behind it (alone, mid-poll), or the pending timer is the slow safety
  * cadence (every peer on the channel). A scheduled timer at the normal
- * cadence, or a long-poll re-issue, needs no help. A parked long poll is
- * woken either way: local work must not wait out the hold.
+ * cadence, or a stream re-issue, needs no help. A parked stream is
+ * woken either way: local work must not wait for the next event.
  *
  * @param held Whether the work sits in a held queue (alone, holdable
  *             codec), which waits for company or a flush instead.
@@ -701,20 +697,21 @@ function reschedule(): void {
 function wakeForLocalWork( held = false ): void {
 	const needsWake =
 		! held &&
-		( longPollMode || sseMode
+		( sseMode
 			? ! isPolling
 			: ! pollingTimeoutId || isAlone() || advisoryCoversEveryone() );
 	if ( needsWake ) {
 		pollSoonForLocalUpdate();
 	}
-	abortParkedLongPoll();
+	abortParkedStream();
 }
 
 /**
- * Wakes a parked long poll so local work does not wait out the hold.
+ * Wakes a parked stream exchange so local work does not wait for the
+ * next event. Under short polling nothing is ever parked.
  */
-function abortParkedLongPoll(): void {
-	if ( ( ! longPollMode && ! sseMode ) || ! inFlightParkController ) {
+function abortParkedStream(): void {
+	if ( ! sseMode || ! inFlightParkController ) {
 		return;
 	}
 	parkAbortedForLocalUpdate = true;
@@ -727,11 +724,11 @@ function abortParkedLongPoll(): void {
  * Slow awareness named a new block on the local awareness state. Under
  * short polling the advisory channel's presence lane carries the field
  * to reachable peers, and the timer polls carry it to the rest, so
- * nothing needs to happen here. Under long polling the channel is off
- * and the value rides the next request: reissue a parked one now.
+ * nothing needs to happen here. Under SSE the channel is off and the
+ * value rides the next request: reissue the parked exchange now.
  */
 function onLocalAwarenessChanged(): void {
-	abortParkedLongPoll();
+	abortParkedStream();
 }
 
 /**
@@ -896,18 +893,18 @@ function installAdvisoryHooks(): void {
 }
 
 /*
- * Long-poll mode: the server holds each request open until it has something
- * to deliver, so on a successful response the client re-issues almost
- * immediately rather than waiting out a fixed interval. Failure backoff is
- * unchanged. Set once by the long-polling provider (a single site-wide
- * transport). See providers/http-long-polling.
+ * SSE mode: receiving rides one long-lived stream response per tab (the
+ * SseExchange), each exchange returning the next stream event, so on a
+ * successful exchange the client re-issues almost immediately rather than
+ * waiting out a fixed interval. Sends still go through the updates
+ * request. Failure backoff is unchanged. Set once by the SSE provider (a
+ * single site-wide transport). See providers/sse.
  */
-let longPollMode = false;
 let sseMode = false;
 const sseExchange = new SseExchange();
 
 /**
- * Select Redis-backed SSE receiving with ordinary REST sends.
+ * Select SSE receiving with ordinary REST sends.
  *
  * @param enabled Whether SSE is selected.
  */
@@ -919,27 +916,19 @@ export function setSseMode( enabled: boolean ): void {
 }
 
 /*
- * A parked long-poll in flight (a request that carried NO updates and is
- * being held by the server). Local updates ABORT it so outgoing work never
- * waits out the hold: the server answers senders immediately, but only if
- * the client actually sends. Without the abort, an edit made right after a
- * quiet poll sat queued for up to the full wait budget.
+ * A parked stream exchange in flight (a pure receive, waiting for the next
+ * stream event). Local updates ABORT it so outgoing work never waits for
+ * that event: the server answers senders immediately, but only if the
+ * client actually sends. Without the abort (found under the retired
+ * long-polling transport), an edit made right after a quiet exchange sat
+ * queued for up to the full wait.
  */
 let inFlightParkController: AbortController | null = null;
 let parkAbortedForLocalUpdate = false;
 
-/**
- * Enables long-poll cadence on the shared manager.
- *
- * @param enabled Whether the active transport holds requests open.
- */
-export function setLongPollMode( enabled: boolean ): void {
-	longPollMode = enabled;
-}
-
-// Small delay between a released long-poll response and the next request, to
+// Small delay between a delivered stream event and the next exchange, to
 // yield to the event loop without idling.
-const LONG_POLL_REISSUE_MS = 50;
+const STREAM_REISSUE_MS = 50;
 
 // How long a tab going hidden waits before flushing held work (pagehide,
 // which follows a hide on reload/close, cancels it).
@@ -975,7 +964,7 @@ function handlePageHide(): void {
 		// Drop the stream on purpose: through the park signal, so the
 		// exchange in flight sees a deliberate abort (no failure backoff,
 		// no "will retry" error logged as the page goes away).
-		abortParkedLongPoll();
+		abortParkedStream();
 		sseExchange.close();
 	}
 	const rooms = Array.from( roomStates.entries() ).map(
@@ -1249,7 +1238,7 @@ function poll(): void {
 			( room ) => 0 === room.updates.length
 		);
 		let parkSignal: AbortSignal | undefined;
-		if ( ( longPollMode || sseMode ) && isPureReceive ) {
+		if ( sseMode && isPureReceive ) {
 			inFlightParkController = new AbortController();
 			parkSignal = inFlightParkController.signal;
 		}
@@ -1445,15 +1434,15 @@ function poll(): void {
 			} );
 
 			/*
-			 * Long polling delivers its own wake (the held request returns
-			 * the instant a row lands), so while it is connected the
-			 * advisory channel would only duplicate it: switch the channel
-			 * off. A failed poll below switches it back on.
+			 * A stream delivers its own wake (an event the instant a row
+			 * lands), so while one is up the advisory channel would only
+			 * duplicate it: switch the channel off. While receiving runs
+			 * on polling instead (no stream could be opened), the channel
+			 * is the wake path again; a failed poll below also switches
+			 * it back on.
 			 */
-			if ( longPollMode || sseMode ) {
-				setAdvisoryDisabledByTransport(
-					! sseMode || sseExchange.available
-				);
+			if ( sseMode ) {
+				setAdvisoryDisabledByTransport( sseExchange.available );
 			}
 
 			// The first successful poll is the genesis handshake; from
@@ -1569,8 +1558,8 @@ function poll(): void {
 				return;
 			} else {
 				// A disconnected transport has no wake of its own: let the
-				// advisory channel back in (a no-op unless long polling
-				// had switched it off).
+				// advisory channel back in (a no-op unless a stream had
+				// switched it off).
 				setAdvisoryDisabledByTransport( false );
 
 				// Use the explicit retry delay schedule for backoff.
@@ -1868,7 +1857,7 @@ function registerRoom( {
 	session.onLocalUpdate( onLocalUpdate );
 	roomStates.set( room, roomState );
 	if ( sseMode ) {
-		abortParkedLongPoll();
+		abortParkedStream();
 	}
 
 	if ( ! areListenersRegistered ) {
@@ -1903,7 +1892,7 @@ function unregisterRoom(
 	{ sendDisconnectSignal = true }: { sendDisconnectSignal?: boolean } = {}
 ): void {
 	if ( sseMode ) {
-		abortParkedLongPoll();
+		abortParkedStream();
 		sseExchange.close();
 	}
 	const state = roomStates.get( room );

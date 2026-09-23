@@ -35,19 +35,26 @@ class Tests_Collaboration_WpSseSyncServer extends WP_Test_REST_TestCase {
 		$this->server        = new class( new WP_Sync_Table_Storage() ) extends WP_Sync_SSE_Server {
 			public $redis;
 			public $on_subscribe;
+			public $sleep;
 			public $clock     = 0.0;
 			public $refreshes = array();
 			public function update_awareness( string $room, int $client_id, ?array $state ): array {
 				$this->refreshes[] = array( $this->clock, $state );
 				return parent::update_awareness( $room, $client_id, $state );
 			}
+			public function waiter() {
+				return $this->subscriber;
+			}
 			protected function now(): float {
 				return $this->clock;
 			}
-			protected function subscribe( array $rooms ): WP_Sync_Redis {
+			protected function subscribe( array $rooms ): WP_Sync_Change_Waiter {
 				if ( $this->on_subscribe ) {
 					( $this->on_subscribe )(); }
-				return $this->redis;
+				return $this->redis ? $this->redis : parent::subscribe( $rooms );
+			}
+			protected function storage_waiter( callable $has_changes ): WP_Sync_Storage_Change_Waiter {
+				return new WP_Sync_Storage_Change_Waiter( $has_changes, $this->sleep );
 			}
 		};
 		$this->server->redis = $this->redis;
@@ -122,6 +129,85 @@ class Tests_Collaboration_WpSseSyncServer extends WP_Test_REST_TestCase {
 		$next = $this->server->handle_request( $this->request( $cursor ) )->get_data();
 		$this->assertSame( 'missed while disconnected', $next['rooms'][0]['updates'][0]['data'] );
 		$this->assertGreaterThan( $cursor, $next['rooms'][0]['end_cursor'] );
+	}
+
+	public function test_without_redis_the_stream_notices_a_new_row_by_checking_storage() {
+		add_filter( 'wp_sync_sse_redis_url', '__return_empty_string' );
+		$this->server->redis = null;
+		$sleeps              = 0;
+		$this->server->sleep = function ( float $seconds ) use ( &$sleeps ) {
+			$this->server->clock += $seconds;
+			++$sleeps;
+			if ( 2 === $sleeps ) {
+				( new WP_Sync_Table_Storage() )->add_update(
+					'postType/post:' . $this->post_id,
+					array(
+						'type' => WP_Intent_Log_Engine::UPDATE_TYPE_SNAPSHOT,
+						'data' => 'seen by a storage check',
+					)
+				);
+			}
+			if ( $sleeps > 6 ) {
+				throw new RuntimeException( 'End test stream' );
+			}
+		};
+		$request             = $this->request();
+		$initial             = $this->server->handle_request( $request )->get_data();
+		$this->assertInstanceOf( WP_Sync_Storage_Change_Waiter::class, $this->server->waiter() );
+		$events = array();
+		$this->server->stream(
+			$request,
+			$initial,
+			function ( $frame ) use ( &$events ) {
+				if ( 0 === strpos( $frame, 'event: sync' ) ) {
+					$events[] = array( $this->server->clock, json_decode( explode( 'data: ', $frame, 2 )[1], true ) );
+				}
+			}
+		);
+		$this->assertCount( 2, $events, 'The initial read, then the read the storage check woke.' );
+		$this->assertSame( 1.0, $events[1][0], 'Noticed on the check right after the write (two half-second steps).' );
+		$this->assertSame( 'seen by a storage check', $events[1][1]['rooms'][0]['updates'][0]['data'] );
+	}
+
+	public function test_a_configured_but_unreachable_redis_falls_back_to_storage_checks() {
+		add_filter( 'wp_sync_sse_redis_url', static fn() => 'redis://127.0.0.1:1' );
+		$this->server->redis = null;
+		$failures            = array();
+		add_action(
+			'gutenberg_sync_engines_sse_redis_failed',
+			static function ( $error ) use ( &$failures ) {
+				$failures[] = $error->getMessage();
+			}
+		);
+		$result = $this->server->handle_request( $this->request() );
+		$this->assertInstanceOf( WP_REST_Response::class, $result, 'The stream still opens.' );
+		$this->assertInstanceOf( WP_Sync_Storage_Change_Waiter::class, $this->server->waiter() );
+		$this->assertSame( array( 'Collaboration Redis is unavailable.' ), $failures );
+	}
+
+	public function test_storage_waiter_sleeps_in_half_second_steps_until_a_change() {
+		$checks = 0;
+		$slept  = array();
+		$waiter = new WP_Sync_Storage_Change_Waiter(
+			static function () use ( &$checks ): bool {
+				return ++$checks >= 3;
+			},
+			static function ( float $seconds ) use ( &$slept ): void {
+				$slept[] = $seconds;
+			}
+		);
+		$this->assertTrue( $waiter->wait( 5.0 ) );
+		$this->assertSame( array( 0.5, 0.5, 0.5 ), $slept );
+
+		$slept  = array();
+		$waiter = new WP_Sync_Storage_Change_Waiter(
+			'__return_false',
+			static function ( float $seconds ) use ( &$slept ): void {
+				$slept[] = $seconds;
+			}
+		);
+		$this->assertFalse( $waiter->wait( 1.2 ) );
+		$this->assertSame( array( 0.5, 0.5, 0.2 ), array_map( static fn( $seconds ) => round( $seconds, 6 ), $slept ), 'Never oversleeps the budget.' );
 	}
 
 	public function test_stream_rejects_writes() {

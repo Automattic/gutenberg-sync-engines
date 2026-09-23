@@ -141,7 +141,6 @@ function createMockSession( clientId = 1, sendsWhileAlone = false ) {
 
 describe( 'polling-manager cadence', () => {
 	let pollingManager: Manager[ 'pollingManager' ];
-	let setLongPollMode: Manager[ 'setLongPollMode' ];
 	let setSseMode: Manager[ 'setSseMode' ];
 	let flushHeldUpdates: Manager[ 'flushHeldUpdates' ];
 	let mockPostSyncUpdate: jest.Mock<
@@ -170,7 +169,6 @@ describe( 'polling-manager cadence', () => {
 		jest.isolateModules( () => {
 			const managerModule: Manager = require( '../../../../src/providers/http-polling/polling-manager' );
 			pollingManager = managerModule.pollingManager;
-			setLongPollMode = managerModule.setLongPollMode;
 			setSseMode = managerModule.setSseMode;
 			flushHeldUpdates = managerModule.flushHeldUpdates;
 			mockPostSyncUpdate =
@@ -610,19 +608,6 @@ describe( 'polling-manager cadence', () => {
 		await jest.advanceTimersByTimeAsync( 0 );
 		await jest.advanceTimersByTimeAsync( 4000 );
 		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
-	} );
-
-	it( 'long polling switches the channel off while connected and back on after a failure', async () => {
-		setLongPollMode( true );
-		mockOthers = true;
-		mockPostSyncUpdate.mockResolvedValueOnce( response( [ 1, 2 ] ) );
-		register();
-		await jest.advanceTimersByTimeAsync( 0 );
-		expect( mockSetDisabled ).toHaveBeenLastCalledWith( true );
-
-		mockPostSyncUpdate.mockRejectedValueOnce( new Error( 'down' ) );
-		await jest.advanceTimersByTimeAsync( 50 );
-		expect( mockSetDisabled ).toHaveBeenLastCalledWith( false );
 	} );
 
 	it( 'SSE: a lone tab streams through the discovery window, then closes its stream and stops; company reopens it', async () => {

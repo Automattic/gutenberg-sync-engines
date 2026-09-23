@@ -36,7 +36,8 @@ class Tests_Collaboration_GutenbergSyncEnginesSettings extends WP_UnitTestCase {
 			array( 'http-polling', 'websocket-advisory', Gutenberg_Sync_Engines_Settings::DELIVERY_POLLING_WEBSOCKET ),
 			// A preferred transport maps to its entry whatever fallback
 			// channel is stored.
-			array( 'http-long-polling', 'websocket-advisory', Gutenberg_Sync_Engines_Settings::DELIVERY_LONG_POLLING ),
+			// The retired long-polling transport reads as its successor.
+			array( 'http-long-polling', 'websocket-advisory', Gutenberg_Sync_Engines_Settings::DELIVERY_SSE ),
 			array( 'websocket', '', Gutenberg_Sync_Engines_Settings::DELIVERY_WEBSOCKET ),
 			array( 'sse', 'websocket-advisory', Gutenberg_Sync_Engines_Settings::DELIVERY_SSE ),
 		);
@@ -59,7 +60,7 @@ class Tests_Collaboration_GutenbergSyncEnginesSettings extends WP_UnitTestCase {
 		$this->assertSame( 'http-polling', get_option( Gutenberg_Sync_Engines_Settings::TRANSPORT_OPTION ) );
 		$this->assertSame( 'websocket-advisory', get_option( Gutenberg_Sync_Engines_Settings::ADVISORY_OPTION ) );
 
-		// Long polling and WebSocket keep WebRTC as the fallback channel.
+		// SSE and WebSocket keep WebRTC as the fallback channel.
 		$settings->sanitize_delivery( 'websocket' );
 		$this->assertSame( 'websocket', get_option( Gutenberg_Sync_Engines_Settings::TRANSPORT_OPTION ) );
 		$this->assertSame( 'webrtc-advisory', get_option( Gutenberg_Sync_Engines_Settings::ADVISORY_OPTION ) );
@@ -79,14 +80,22 @@ class Tests_Collaboration_GutenbergSyncEnginesSettings extends WP_UnitTestCase {
 		// The field's own name is never stored: the plugin short-circuits
 		// its update (the sanitize callback has already written the pair).
 		$this->assertNotFalse( has_filter( 'pre_update_option_' . Gutenberg_Sync_Engines_Settings::DELIVERY_FIELD ) );
-		update_option( Gutenberg_Sync_Engines_Settings::DELIVERY_FIELD, 'long-polling' );
+		update_option( Gutenberg_Sync_Engines_Settings::DELIVERY_FIELD, 'websocket' );
 		$this->assertFalse( get_option( Gutenberg_Sync_Engines_Settings::DELIVERY_FIELD ) );
-		$this->assertSame( 'http-long-polling', get_option( Gutenberg_Sync_Engines_Settings::TRANSPORT_OPTION ) );
+		$this->assertSame( 'websocket', get_option( Gutenberg_Sync_Engines_Settings::TRANSPORT_OPTION ) );
 
 		// The two options stay scriptable on their own (WP-CLI, the e2e
 		// specs): writing one never touches the other.
 		update_option( Gutenberg_Sync_Engines_Settings::ADVISORY_OPTION, 'websocket-advisory' );
-		$this->assertSame( 'http-long-polling', get_option( Gutenberg_Sync_Engines_Settings::TRANSPORT_OPTION ) );
+		$this->assertSame( 'websocket', get_option( Gutenberg_Sync_Engines_Settings::TRANSPORT_OPTION ) );
+	}
+
+	public function test_a_stored_long_polling_choice_becomes_sse() {
+		$settings = new Gutenberg_Sync_Engines_Settings();
+		update_option( Gutenberg_Sync_Engines_Settings::TRANSPORT_OPTION, 'http-long-polling' );
+		$this->assertSame( 'sse', Gutenberg_Sync_Engines_Settings::stored_transport() );
+		$this->assertSame( 'sse', wp_get_collaboration_transport_registry()->get_active_slug() );
+		$this->assertSame( 'sse', $settings->sanitize_transport( 'http-long-polling' ) );
 	}
 
 	public function test_the_advisory_server_url_falls_back_to_the_transport_server() {

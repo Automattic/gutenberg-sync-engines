@@ -27,7 +27,7 @@
  * Arguments (bare key=value, like the other benchmarks):
  *
  *   engine=     intent-log | yjs-server | de-rtc | current
- *   transport=  http-polling | http-long-polling | sse | websocket | current
+ *   transport=  http-polling | sse | websocket | current
  *   windows=    collaborator windows (default 3, min 2)
  *   soak=       soak duration in seconds (default 3600)
  *   probe=      seconds between latency probes (default 30)

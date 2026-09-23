@@ -234,7 +234,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 			if ( class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 				// The settings screen's choice. Independent of the transport
 				// choice: the channel serves whenever short polling does,
-				// which under a preferred transport (long polling, websocket)
+				// which under a preferred transport (SSE, websocket)
 				// is only while that transport is down.
 				$enabled = '' !== Gutenberg_Sync_Engines_Settings::advisory_channel();
 			}
