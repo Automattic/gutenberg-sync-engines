@@ -730,7 +730,14 @@ they exist so a failure is observable without re-instrumenting:
   (eslint still runs it, with relaxed rules, and `tsc` type-checks it via
   `checkJs` + JSDoc); the vendored `src/engines/yjs/y-utilities/**` is
   excluded from both — leave them alone unless deliberately syncing the
-  cross-language contract (JSDoc-only edits to the core are fine).
+  cross-language contract (JSDoc-only edits to the core are fine). The
+  generated test vectors (`tests/js/engines/*/test-vectors/`,
+  `tests/phpunit/test-vectors/`) are excluded from prettier too: their
+  contract is byte parity with the generator, which writes two-space
+  JSON, and prettier would collapse short arrays onto one line.
+- JSON is formatted with two spaces (a `*.json` override in
+  `prettier.config.js`); everything else keeps the WordPress config's
+  tabs.
 
 ## Commits / PRs
 

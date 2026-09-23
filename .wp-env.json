@@ -1,12 +1,8 @@
 {
   "$schema": "./gutenberg/schemas/json/wp-env.json",
   "core": "WordPress/WordPress",
-  "plugins": [
-    "."
-  ],
-  "themes": [
-    "./gutenberg/test/emptytheme"
-  ],
+  "plugins": [ "." ],
+  "themes": [ "./gutenberg/test/emptytheme" ],
   "port": 8888,
   "autoPort": true,
   "testsEnvironment": false,
