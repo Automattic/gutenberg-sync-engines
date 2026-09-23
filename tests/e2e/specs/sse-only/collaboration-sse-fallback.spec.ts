@@ -36,7 +36,13 @@ async function sseState( page: Page ): Promise< SseDebugState > {
 const isStreamRequest = ( url: URL ) =>
 	decodeURIComponent( url.href ).includes( '/wp-sync/v1/sse' );
 
-async function countUpdatesRequests( page: Page, windowMs: number ) {
+/**
+ * Counts the tab's updates requests (the short-polling exchange) from now
+ * until `stop()` is called.
+ *
+ * @param page The tab.
+ */
+function countUpdatesRequests( page: Page ) {
 	let count = 0;
 	const onRequest = ( request: { url: () => string } ) => {
 		if (
@@ -48,9 +54,12 @@ async function countUpdatesRequests( page: Page, windowMs: number ) {
 		}
 	};
 	page.on( 'request', onRequest );
-	await page.waitForTimeout( windowMs );
-	page.off( 'request', onRequest );
-	return count;
+	return {
+		stop() {
+			page.off( 'request', onRequest );
+			return count;
+		},
+	};
 }
 
 test.describe( 'Collaboration - server-sent events fallback to short polling', () => {
@@ -103,11 +112,13 @@ test.describe( 'Collaboration - server-sent events fallback to short polling', (
 			} );
 		}
 
-		// Short polling is live: updates requests flow on the timer cadence
-		// (the tests site pins the interval to one second).
-		expect( await countUpdatesRequests( page, 4000 ) ).toBeGreaterThan( 0 );
-
-		// And edits still converge through it.
+		// Edits converge over short polling: the joiner receives them
+		// through updates requests while its stream stays closed. Its
+		// cadence is the base transport's (on demand while the tabs reach
+		// each other over the advisory channel, a timer otherwise), so
+		// the proof is the requests made while the edit lands, not a
+		// count taken on a timer.
+		const joinerRequests = countUpdatesRequests( joined.page );
 		await editor.canvas
 			.getByRole( 'document', { name: /Block: Paragraph/ } )
 			.first()
@@ -119,8 +130,12 @@ test.describe( 'Collaboration - server-sent events fallback to short polling', (
 				.getByRole( 'document', { name: /Block: Paragraph/ } )
 				.first()
 		).toContainText( 'Fallback over polling', { timeout: 20000 } );
+		expect( joinerRequests.stop() ).toBeGreaterThan( 0 );
 		for ( const target of [ page, joined.page ] ) {
-			expect( ( await sseState( target ) ).open ).toBe( false );
+			expect( await sseState( target ) ).toMatchObject( {
+				open: false,
+				events: 0,
+			} );
 		}
 	} );
 } );

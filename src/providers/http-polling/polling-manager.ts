@@ -577,11 +577,14 @@ function nextScheduledDelay(): number | null {
 		if ( Date.now() >= fastDiscoveryUntil ) {
 			return null;
 		}
-		return sseMode ? sseDelay() : POLLING_INTERVAL_IN_MS;
+		return sseStreaming() ? sseDelay() : POLLING_INTERVAL_IN_MS;
 	}
-	if ( sseMode ) {
+	if ( sseStreaming() ) {
 		return sseDelay();
 	}
+	// Short polling proper, including SSE while no stream can be opened:
+	// receiving then runs on the base transport, with its cadence rules
+	// and its advisory channel (switched back on by the failed exchange).
 	if ( advisoryCoversEveryone() ) {
 		return null;
 	}
@@ -893,8 +896,13 @@ function installAdvisoryHooks(): void {
  * SseExchange), each exchange returning the next stream event, so on a
  * successful exchange the client re-issues almost immediately rather than
  * waiting out a fixed interval. Sends still go through the updates
- * request. Failure backoff is unchanged. Set once by the SSE provider (a
- * single site-wide transport). See providers/sse.
+ * request. Failure backoff is unchanged. After a failed stream the
+ * exchange refuses to open one for a while (growing with each failure in
+ * a row); receiving then runs on short polling under ITS cadence rules —
+ * the collaborator interval, quiet under channel coverage, the background
+ * cadence — until the exchange is willing again, when the next receive
+ * reopens a stream. Set once by the SSE provider (a single site-wide
+ * transport). See providers/sse.
  */
 let sseMode = false;
 const sseExchange = new SseExchange();
@@ -912,22 +920,26 @@ const SSE_SETTLE_MS = 1000;
 let sseSettleUntil = 0;
 
 /**
- * Whether the next pure receive should open (or read from) the stream.
+ * Whether receiving is on the stream (or about to be, once the room set
+ * settles): SSE is selected and the exchange is willing to open one. When
+ * it is not (a stream failed recently), receiving is short polling.
  */
-function sseStreamReady(): boolean {
-	return sseMode && sseExchange.available && Date.now() >= sseSettleUntil;
+function sseStreaming(): boolean {
+	return sseMode && sseExchange.available;
 }
 
 /**
- * The delay before the next exchange under SSE: right behind each stream
- * event; the rest of the settling window when one is open; the polling
- * interval while receiving runs on requests because no stream could be
- * opened.
+ * Whether the next pure receive should open (or read from) the stream.
+ */
+function sseStreamReady(): boolean {
+	return sseStreaming() && Date.now() >= sseSettleUntil;
+}
+
+/**
+ * The delay before the next exchange while streaming: right behind each
+ * stream event, or the rest of the settling window.
  */
 function sseDelay(): number {
-	if ( ! sseExchange.available ) {
-		return POLLING_INTERVAL_IN_MS;
-	}
 	return Math.max( STREAM_REISSUE_MS, sseSettleUntil - Date.now() );
 }
 
