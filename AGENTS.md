@@ -46,7 +46,11 @@ This plugin provides:
   what runs when the `wp_sync_engine` option is unset. Registration order
   only matters when a CONFIGURED slug isn't registered (misconfiguration
   degrades to the first registered engine: yjs-server).
-- **Transports:** `http-polling` (default), `http-long-polling`, `websocket`.
+- **Transports:** `http-polling` (default), `http-long-polling`, `sse`, `websocket`.
+  SSE uses normal PHP requests with Redis Pub/Sub notices, one worker per
+  stream, and bounded reconnects with durable cursors. wp-env lifecycle hooks
+  start and remove Redis for each checkout and config on its own
+  network. Setup and failure behavior: `docs/transports.md`.
   Short polling is the BASE transport; beside it every editor tab opens an
   **advisory channel** (`src/providers/advisory/`) that carries presence
   and "go and poll" notices, never content. It runs over one of two
@@ -59,7 +63,10 @@ This plugin provides:
   decides the polling cadence: quiet when alone, timer cadence when a
   peer is unreachable, on demand (with the heartbeat carrying the room's
   head cursor) when every peer is reachable. Long polling turns it off
-  while connected. Rules and failure cases: `docs/plan/advisory-channel.md`.
+  while connected; so does SSE while its stream is up (its handshake
+  signals ride the heartbeat, never a poll), and a solo SSE tab goes
+  quiet like every HTTP transport, closing its stream. Rules and
+  failure cases: `docs/plan/advisory-channel.md`.
   The websocket link can end at a host's OWN relay instead of the
   daemon: with a `WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET` configured
   (constant, env, or the `wp_sync_websocket_access_token_secret` filter),
@@ -363,9 +370,9 @@ npm run env start         # DEV env (.wp-env.json): this plugin (which loads
                           # daemon (detached, --mode=daemon: the site's
                           # transport selection is NOT touched).
 npm run env:tests start   # TESTS env (.wp-env.tests.json): same mounts,
-                          # http://localhost:8889, no lifecycle hook. This is
+                          # http://localhost:8889, Redis lifecycle hooks only. This is
                           # what test:php / test:e2e / CI target.
-npm run env stop          # (env:tests stop for the tests env)
+npm run env:stop          # Stops Redis + WordPress (env:tests:stop for tests)
 ```
 
 `autoPort` is on, so when a port is busy wp-env picks a free one and prints
@@ -519,7 +526,7 @@ daemon up automatically WITHOUT touching the site's transport selection
 (`|| true` keeps a daemon failure from failing the start itself; the
 diagnosis still prints in the spinner output). The daemon binds host port
 8787 under a fixed container name, so with several checkouts/worktrees the
-most recently started dev env owns it. The tests config has no hook — CI
+most recently started dev env owns it. The tests config starts Redis only — CI
 and the test suites never start a daemon.
 
 ## Diagnostics

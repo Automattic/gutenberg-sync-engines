@@ -150,6 +150,10 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			$transports = GUTENBERG_SYNC_ENGINES_PATH . 'includes/transports/';
 			require_once $transports . 'class-wp-http-polling-sync-server.php';
 			require_once $transports . 'class-wp-http-long-polling-sync-server.php';
+			require_once $transports . 'sse/class-wp-sync-redis.php';
+			require_once $transports . 'sse/class-wp-sync-redis-notifications.php';
+			require_once $transports . 'sse/class-wp-sync-sse-server.php';
+			WP_Sync_Redis_Notifications::register();
 			require_once $transports . 'websocket/class-wp-websocket-access-token.php';
 			require_once $transports . 'websocket/class-wp-websocket-token-controller.php';
 			require_once $transports . 'websocket/class-wp-websocket-connection.php';
@@ -272,6 +276,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 		public function register_transports( array $transports, WP_Sync_Storage $storage, WP_Sync_Engine_Registry $engines ): array {
 			$transports[] = new WP_HTTP_Polling_Sync_Server( $storage, $engines );
 			$transports[] = new WP_HTTP_Long_Polling_Sync_Server( $storage, $engines );
+			$transports[] = new WP_Sync_SSE_Server( $storage, $engines );
 			$transports[] = new WP_WebSocket_Sync_Transport( $storage, $engines );
 			return $transports;
 		}

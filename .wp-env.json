@@ -13,16 +13,18 @@
   "config": {
     "WP_DEBUG": true,
     "SCRIPT_DEBUG": true,
+    "WP_SYNC_SSE_REDIS_URL": "redis://sync-redis:6379",
     "WP_SYNC_WEBSOCKET_HOST": "localhost",
     "WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET": "wp-env-development-secret-not-for-production"
+  },
+  "lifecycleScripts": {
+    "afterStart": "(npm run redis:start || echo 'Redis did not start: the SSE transport runs on polling until it does (npm run doctor)') && (node tests/e2e/bin/rtc-dev.mjs --mode=daemon --detach || true)",
+    "afterDestroy": "npm run redis:destroy"
   },
   "mappings": {
     "wp-content/plugins/gutenberg-sync-engines": ".",
     "wp-content/plugins/gutenberg-test-plugins": "./gutenberg/packages/e2e-tests/plugins",
     "wp-content/plugins/sync-engines-test-plugins": "./tests/e2e/plugins",
     "wp-content/mu-plugins/gutenberg-sync-engines-bench-log.php": "./tests/benchmarks/host/mu-bench-log.php"
-  },
-  "lifecycleScripts": {
-    "afterStart": "node tests/e2e/bin/rtc-dev.mjs --mode=daemon --detach || true"
   }
 }

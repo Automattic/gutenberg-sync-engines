@@ -717,6 +717,36 @@ async function runDoctorMode() {
 			}`
 		);
 
+		// The SSE transport wakes streams through Redis, which each env's
+		// afterStart hook starts as a sibling container on the env's own
+		// network (npm run redis:start). Without it SSE runs on polling.
+		const redisContainer = `${ path.basename( workDirectory ) }-redis`;
+		const redisState = spawnSync(
+			'docker',
+			[ 'inspect', '-f', '{{.State.Running}}', redisContainer ],
+			{ encoding: 'utf8' }
+		);
+		const redisRunning =
+			0 === redisState.status && 'true' === redisState.stdout.trim();
+		if ( redisRunning ) {
+			ok( `Redis running (${ redisContainer }) for the SSE transport` );
+		} else if ( 'sse' === ( transport || '' ).trim() ) {
+			fail(
+				`the site selects the SSE transport but Redis container ${ redisContainer } is ${
+					0 === redisState.status ? 'stopped' : 'absent'
+				} — every tab falls back to polling`,
+				`${
+					configFile ? 'npm run env:tests start' : 'npm run env start'
+				} (its afterStart hook runs npm run redis:start)`
+			);
+		} else {
+			info(
+				`Redis ${
+					0 === redisState.status ? 'stopped' : 'absent'
+				} (${ redisContainer }); only the SSE transport needs it`
+			);
+		}
+
 		if ( configFile && 8889 !== sitePort ) {
 			// This checkout's tests env is NOT on the default port; if some
 			// other project's env answers there, Playwright's webServer check

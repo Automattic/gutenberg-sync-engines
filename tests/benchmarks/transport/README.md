@@ -169,3 +169,28 @@ tool, not a benchmark: it lives at `tests/debugging/soak-transport.mjs`
 with its documentation in `tests/debugging/README.md`. It imports this
 directory's `lib.mjs`, so the soak and this benchmark use identical
 counters, tagging, and server-log collection.
+
+### SSE
+
+Start the test site with `npm run env:tests start`; its lifecycle hook starts
+and connects Redis. Select it with `transport=sse`, for example:
+
+```sh
+WP_BASE_URL=http://localhost:8889 npm run bench -- --suite=transport --transport=sse --engine=intent-log --trials=30 --json=/tmp/sse.json
+```
+
+Use the port printed by wp-env. SSE response bytes are measured while the
+stream is open. JSON counters include `sseRequests`, `sseStreams`, and
+`sseBytesReceived`; only a successful stream with received bytes counts as
+observed SSE. A Redis outage can make the run use polling, so check the
+observed transport. Setup and recovery details are in
+[the transport guide](../../../docs/transports.md#server-sent-events-with-redis).
+
+Add `--recovery` to the transport benchmark to interrupt the receiving tab,
+accept an edit while it is offline, and require it to catch up without a reload.
+The JSON report includes the recovery time separately from normal edit latency.
+
+For longer-stream checks, add `--idle=65` to cross several twenty-second
+catch-up reads, or `--idle=310` to include five-minute renewal. A positive PHP
+execution limit can shorten streams; compare the `sseRequests` counters with
+the site's limit when interpreting reconnect counts.

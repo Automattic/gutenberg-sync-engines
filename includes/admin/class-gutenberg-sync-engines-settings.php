@@ -58,6 +58,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		const DELIVERY_POLLING_WEBRTC    = 'polling-webrtc';
 		const DELIVERY_POLLING_WEBSOCKET = 'polling-websocket';
 		const DELIVERY_LONG_POLLING      = 'long-polling';
+		const DELIVERY_SSE               = 'sse';
 		const DELIVERY_WEBSOCKET         = 'websocket';
 
 		/**
@@ -290,6 +291,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			$labels  = array(
 				'http-polling'      => __( 'Short-polling (default)', 'gutenberg-sync-engines' ),
 				'http-long-polling' => __( 'Long-polling', 'gutenberg-sync-engines' ),
+				'sse'               => __( 'Server-sent events (Redis)', 'gutenberg-sync-engines' ),
 				'websocket'         => __( 'WebSocket', 'gutenberg-sync-engines' ),
 			);
 			$choices = array();
@@ -317,6 +319,10 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * @return array<string, array{transport: string, advisory: string, label: string, description: string}> Choices.
 		 */
 		public static function delivery_choices(): array {
+			$sse_description = __( 'Receives updates over an HTTP stream. Requires Redis and an available PHP worker per stream. Falls back to polling on failure.', 'gutenberg-sync-engines' );
+			if ( class_exists( 'WP_Sync_Redis_Notifications' ) && '' === WP_Sync_Redis_Notifications::url() ) {
+				$sse_description .= ' ' . __( 'No Redis address is configured on this site (WP_SYNC_SSE_REDIS_URL), so this choice would run on polling.', 'gutenberg-sync-engines' );
+			}
 			return array(
 				self::DELIVERY_POLLING           => array(
 					'transport'   => 'http-polling',
@@ -342,6 +348,12 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 					'label'       => __( 'Long polling', 'gutenberg-sync-engines' ),
 					'description' => __( 'The server holds polling requests open until updates are delivered. Peers fall back to polling on failure.', 'gutenberg-sync-engines' ),
 				),
+				self::DELIVERY_SSE               => array(
+					'transport'   => 'sse',
+					'advisory'    => self::ADVISORY_WEBRTC,
+					'label'       => __( 'Server-sent events (Redis)', 'gutenberg-sync-engines' ),
+					'description' => $sse_description,
+				),
 				self::DELIVERY_WEBSOCKET         => array(
 					'transport'   => 'websocket',
 					'advisory'    => self::ADVISORY_WEBRTC,
@@ -364,6 +376,9 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 			$transport = (string) get_option( self::TRANSPORT_OPTION, 'http-polling' );
 			if ( 'http-long-polling' === $transport ) {
 				return self::DELIVERY_LONG_POLLING;
+			}
+			if ( 'sse' === $transport ) {
+				return self::DELIVERY_SSE;
 			}
 			if ( 'websocket' === $transport ) {
 				return self::DELIVERY_WEBSOCKET;

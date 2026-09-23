@@ -6,6 +6,7 @@ import { applyFilters } from '@wordpress/hooks';
 /**
  * Internal dependencies
  */
+import { SseExchange } from '../sse/sse-exchange';
 import {
 	DEFAULT_CLIENT_LIMIT_PER_ROOM,
 	ERROR_RETRY_DELAYS_SOLO_MS,
@@ -569,7 +570,20 @@ function advisoryCoversEveryone(): boolean {
  */
 function nextScheduledDelay(): number | null {
 	if ( hasBootstrapped && isAlone() ) {
-		return Date.now() < fastDiscoveryUntil ? POLLING_INTERVAL_IN_MS : null;
+		// Alone: the discovery window, then quiet. Under SSE quiet means no
+		// held stream either (scheduleNext closes it); the heartbeat's
+		// company report reopens it, as it restarts any HTTP transport.
+		if ( Date.now() >= fastDiscoveryUntil ) {
+			return null;
+		}
+		return sseMode && sseExchange.available
+			? LONG_POLL_REISSUE_MS
+			: POLLING_INTERVAL_IN_MS;
+	}
+	if ( sseMode ) {
+		return sseExchange.available
+			? LONG_POLL_REISSUE_MS
+			: POLLING_INTERVAL_IN_MS;
 	}
 	if ( longPollMode ) {
 		return isActiveBrowser
@@ -613,6 +627,10 @@ function scheduleNext( delay: number | null ): void {
 	if ( null === delay ) {
 		isPolling = false;
 		pollingTimeoutId = null;
+		if ( sseMode ) {
+			// A quiet loop holds no PHP worker: drop the receive stream.
+			sseExchange.close();
+		}
 		return;
 	}
 	pollingTimeoutId = setTimeout( poll, delay );
@@ -655,6 +673,9 @@ function reschedule(): void {
 		const delay = boundedByQueuedWork( nextScheduledDelay() );
 		if ( null === delay ) {
 			isPolling = false;
+			if ( sseMode ) {
+				sseExchange.close();
+			}
 			return;
 		}
 		pollingTimeoutId = setTimeout( poll, delay );
@@ -680,7 +701,7 @@ function reschedule(): void {
 function wakeForLocalWork( held = false ): void {
 	const needsWake =
 		! held &&
-		( longPollMode
+		( longPollMode || sseMode
 			? ! isPolling
 			: ! pollingTimeoutId || isAlone() || advisoryCoversEveryone() );
 	if ( needsWake ) {
@@ -693,7 +714,7 @@ function wakeForLocalWork( held = false ): void {
  * Wakes a parked long poll so local work does not wait out the hold.
  */
 function abortParkedLongPoll(): void {
-	if ( ! longPollMode || ! inFlightParkController ) {
+	if ( ( ! longPollMode && ! sseMode ) || ! inFlightParkController ) {
 		return;
 	}
 	parkAbortedForLocalUpdate = true;
@@ -817,9 +838,12 @@ function installAdvisoryHooks(): void {
 		}
 	} );
 	// An active loop carries queued handshake messages on its next poll;
-	// a quiet one leaves them to the heartbeat.
+	// a quiet one leaves them to the heartbeat. So does an SSE loop: its
+	// exchanges send no probe (an open stream carries no request at all,
+	// so a probe could be dropped unanswered), which matters when SSE is
+	// down and the channel is back on as the fallback.
 	setSignalCarrier( () => {
-		if ( isPolling ) {
+		if ( isPolling && ! sseMode ) {
 			pollNow();
 			return true;
 		}
@@ -879,6 +903,20 @@ function installAdvisoryHooks(): void {
  * transport). See providers/http-long-polling.
  */
 let longPollMode = false;
+let sseMode = false;
+const sseExchange = new SseExchange();
+
+/**
+ * Select Redis-backed SSE receiving with ordinary REST sends.
+ *
+ * @param enabled Whether SSE is selected.
+ */
+export function setSseMode( enabled: boolean ): void {
+	if ( sseMode !== enabled ) {
+		sseExchange.close();
+	}
+	sseMode = enabled;
+}
 
 /*
  * A parked long-poll in flight (a request that carried NO updates and is
@@ -933,6 +971,9 @@ function handleBeforeUnload(): void {
  */
 function handlePageHide(): void {
 	cancelHiddenFlush();
+	if ( sseMode ) {
+		sseExchange.close();
+	}
 	const rooms = Array.from( roomStates.entries() ).map(
 		( [ room, state ] ) => ( {
 			after: 0,
@@ -1098,7 +1139,7 @@ function buildPayloadForRequest( selectedRoomStates: RoomState[] ): {
 } {
 	const payload: SyncPayload = { rooms: [] };
 	const roomsInRequest: RoomState[] = [];
-	const probe = isSignalingAvailable() ? buildProbe() : null;
+	const probe = ! sseMode && isSignalingAvailable() ? buildProbe() : null;
 	if ( probe ) {
 		payload.advisory = probe;
 	}
@@ -1204,15 +1245,14 @@ function poll(): void {
 			( room ) => 0 === room.updates.length
 		);
 		let parkSignal: AbortSignal | undefined;
-		if ( longPollMode && isPureReceive ) {
+		if ( ( longPollMode || sseMode ) && isPureReceive ) {
 			inFlightParkController = new AbortController();
 			parkSignal = inFlightParkController.signal;
 		}
 		try {
-			const { rooms, advisory } = await postSyncUpdate(
-				payload,
-				parkSignal
-			);
+			const { rooms, advisory } = sseMode
+				? await sseExchange.exchange( payload, parkSignal )
+				: await postSyncUpdate( payload, parkSignal );
 			inFlightParkController = null;
 			parkAbortedForLocalUpdate = false;
 			// The signaling answer rode this poll: company, peers, mailbox.
@@ -1406,8 +1446,10 @@ function poll(): void {
 			 * advisory channel would only duplicate it: switch the channel
 			 * off. A failed poll below switches it back on.
 			 */
-			if ( longPollMode ) {
-				setAdvisoryDisabledByTransport( true );
+			if ( longPollMode || sseMode ) {
+				setAdvisoryDisabledByTransport(
+					! sseMode || sseExchange.available
+				);
 			}
 
 			// The first successful poll is the genesis handshake; from
@@ -1821,6 +1863,9 @@ function registerRoom( {
 
 	session.onLocalUpdate( onLocalUpdate );
 	roomStates.set( room, roomState );
+	if ( sseMode ) {
+		abortParkedLongPoll();
+	}
 
 	if ( ! areListenersRegistered ) {
 		window.addEventListener( 'beforeunload', handleBeforeUnload );
@@ -1853,6 +1898,10 @@ function unregisterRoom(
 	room: string,
 	{ sendDisconnectSignal = true }: { sendDisconnectSignal?: boolean } = {}
 ): void {
+	if ( sseMode ) {
+		abortParkedLongPoll();
+		sseExchange.close();
+	}
 	const state = roomStates.get( room );
 	if ( state ) {
 		if ( sendDisconnectSignal ) {

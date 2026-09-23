@@ -10,6 +10,14 @@ release, which the release script generates from the commit history.
 
 ## Unreleased
 
+### Added
+
+- Server-sent events transport over ordinary WordPress requests, with Redis
+  Pub/Sub change notices and cursor-based recovery after interruptions. Local Redis
+  starts and is removed through wp-env lifecycle hooks. Channels are namespaced
+  per site so installations can share Redis. Streams last up
+  to five minutes, with twenty-second catch-up reads for missed notices.
+
 ### Changed
 
 -   Every awareness read and write in the plugin now goes through one

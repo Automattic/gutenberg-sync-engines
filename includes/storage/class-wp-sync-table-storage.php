@@ -147,6 +147,28 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		}
 
 		/**
+		 * Notify transports only after a successful write.
+		 *
+		 * @since n.e.x.t
+		 * @param string $room Changed room.
+		 * @param bool   $stored Write result.
+		 * @return bool Unchanged write result.
+		 */
+		private function notify_change( string $room, bool $stored ): bool {
+			if ( $stored ) {
+				/**
+				 * Fires after room data changes. Subscribers must treat this as
+				 * a wake hint and read durable state after the writer finishes.
+				 *
+				 * @since n.e.x.t
+				 * @param string $room Room name.
+				 */
+				do_action( 'gutenberg_sync_engines_room_changed', $room );
+			}
+			return $stored;
+		}
+
+		/**
 		 * Whether a room identifier fits the `room` column. Longer rooms
 		 * cannot be stored (MySQL would truncate or reject them), so every
 		 * write refuses them and every read treats them as empty.
@@ -181,7 +203,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 				return false;
 			}
 
-			return (bool) $wpdb->insert(
+			$stored = (bool) $wpdb->insert(
 				$wpdb->sync_updates,
 				array(
 					'room'        => $room,
@@ -190,6 +212,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 				),
 				array( '%s', '%s', '%s' )
 			);
+			return $this->notify_change( $room, $stored );
 		}
 
 		/**
@@ -234,15 +257,16 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 				if ( ! $this->is_storable_room( $room ) ) {
 					return false;
 				}
-				return (bool) wp_cache_set(
+				$stored = (bool) wp_cache_set(
 					$this->cache_key( $room, self::AWARENESS_KEY ),
 					array_values( $awareness ),
 					WP_Sync_Table_Schema::CACHE_GROUP,
 					self::AWARENESS_CACHE_TTL
 				);
+				return $this->notify_change( $room, $stored );
 			}
 
-			return $this->upsert_meta( $room, self::AWARENESS_KEY, (string) wp_json_encode( $awareness ) );
+			return $this->notify_change( $room, $this->upsert_meta( $room, self::AWARENESS_KEY, (string) wp_json_encode( $awareness ) ) );
 		}
 
 		/**
@@ -547,7 +571,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 				// Written once per room lifetime; the next read re-primes.
 				wp_cache_delete( $this->cache_key( $room, $key ), WP_Sync_Table_Schema::CACHE_GROUP );
 			}
-			return $this->upsert_meta( $room, $key, (string) wp_json_encode( $value ) );
+			return $this->notify_change( $room, $this->upsert_meta( $room, $key, (string) wp_json_encode( $value ) ) );
 		}
 
 		/**
@@ -581,7 +605,7 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 			$updates = $wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->sync_updates} WHERE room = %s", $room ) );
 			$meta    = $wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->sync_room_meta} WHERE room = %s", $room ) );
 
-			return false !== $updates && false !== $meta;
+			return $this->notify_change( $room, false !== $updates && false !== $meta );
 		}
 
 		/**

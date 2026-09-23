@@ -10,6 +10,7 @@ idle traffic on your hardware; the stable shape:
 | --- | --- | --- |
 | http-polling | seconds-scale (bounded below by the poll interval) | roughly one request per poll interval |
 | http-long-polling | sub-second (held requests wake on new rows and awareness heartbeats) | more requests than plain polling, each holding a PHP worker up to its wait budget |
+| sse | pushed after Redis announces stored changes | one held PHP worker per stream, plus Redis; periodic reconnects |
 | websocket | tens of milliseconds | a few frames per heartbeat — plus a persistent daemon, TLS termination, and an exposed port |
 
 **Short polling is the base transport, and an advisory channel sits
@@ -84,3 +85,99 @@ site, publishes the `wp collaboration sync-server` daemon, and restores
 the previous transport at teardown (`npm run test:e2e:websocket`). For
 hour-scale per-user costs with a convergence gate, run the soak harness
 (`tests/debugging/soak-transport.mjs`).
+
+## Server-sent events with Redis
+
+Select **Server-sent events (Redis)** in Settings → Collaboration. This
+transport runs through ordinary WordPress REST requests. It needs no sync
+daemon or PHP Redis extension. Each open receive stream occupies a PHP web
+worker; Redis removes frequent database checks, not that worker requirement.
+
+For local use, run `npm run env start` or `npm run env:tests start`.
+Each config's `afterStart` hook starts Redis, connects it to that environment's
+network as `sync-redis`, and waits until it responds. Both configs set
+`WP_SYNC_SSE_REDIS_URL` to `redis://sync-redis:6379`. No separate launcher or
+Compose file is needed. Redis has no public port and stores no persistent data.
+A Redis that fails to start does not fail the environment start (the other
+transports need no Redis); the hook prints a notice, and `npm run doctor`
+reports the Redis container for each environment.
+
+The hooks call shared npm commands. `redis:project` reads wp-env's project name,
+which already identifies the checkout and config. Shell variables `REDIS_PROJECT`
+and `REDIS_NAME` reuse that name for the network and Redis container. Set
+`GSE_WP_ENV_CONFIG=.wp-env.tests.json` for the tests config; the default is dev.
+
+Use `npm run env:stop` or `npm run env:tests:stop` to stop Redis and WordPress.
+This wp-env version has no stop lifecycle hook: plain `wp-env stop` (including
+`npm run env stop`) does not stop Redis. Redis uses Docker's `--rm`, so stopping
+it also removes its disposable container; the next start creates it again.
+`afterDestroy` removes the matching Redis container if it still exists.
+The dev config keeps its existing WebSocket daemon startup.
+Other transports do not require Redis to be running.
+
+Redis Pub/Sub channels are namespaced by the database host and name, table
+prefix, and multisite blog ID, followed by the room name. Installations with
+different databases can share one Redis instance without receiving each other's
+notices, and one site reached through several hostnames still shares one
+channel. Redis carries only notices; document storage stays in WordPress.
+
+On a host, set `WP_SYNC_SSE_REDIS_URL` (or the `wp_sync_sse_redis_url` filter)
+to a private Redis address. The settings screen says so next to the choice
+when no address is configured; selecting it then runs on polling. `redis://user:password@host:6379` supports Redis ACL
+credentials; `rediss://` uses TLS. Keep this value server-side. Configure the
+web server and proxy to stream `text/event-stream` without buffering or
+compression. The route sends `X-Accel-Buffering: no` and `Cache-Control:
+no-cache, no-store, no-transform`.
+
+The browser opens a POST stream with normal WordPress cookies and REST nonce
+headers. It shares one stream across its current rooms. The server subscribes
+to each Redis channel **before** reading stored updates. Edits, presence, and
+room resets queue notices from the table storage; notices publish after the
+writer finishes. Redis never stores document content. A replacement storage
+must emit `gutenberg_sync_engines_room_changed` after its own successful writes
+to get prompt notifications.
+
+Streams send JSON room responses in `sync` events, with a comment heartbeat
+at least every five seconds while waiting. They end after at most five
+minutes (`wp_sync_sse_max_seconds` can shorten this), then the browser
+reauthorizes and resumes from its last applied room cursors. A storage catch-up
+read every twenty seconds, within the same request,
+also covers a process killed after a database write but before its
+Redis publish. Redis restart, deploy, and truncated SSE events cannot remove
+stored edits. A disconnected browser's unsent edits retain the existing
+engine recovery rules; a page reload can still lose unsent local edits.
+
+Local edits close the receive stream, use the normal `/updates` request, and
+resume the stream after that response is applied. This prevents overlapping
+responses from moving a room's cursor backward. Redis failures switch receiving
+to polling; the browser retries SSE after five seconds, and each further
+failure in a row doubles that wait, up to one minute. A tab alone in its room
+closes its stream once the discovery window after load passes, exactly as the
+other HTTP transports go quiet, so an idle solo tab holds no PHP worker; the
+heartbeat's company report reopens it. Every twenty seconds the stream
+refreshes presence only for a client still
+listed in the room, using its current state. It does not recreate an entry
+removed by a leave or room reset. Five-second heartbeat comments reset the
+browser's twenty-five-second inactivity timeout; a silent connection is aborted.
+
+The server shortens the stream to five seconds below a positive PHP execution
+limit. This is a conservative cap; PHP execution time is not always elapsed
+time. A host's PHP-FPM or proxy timeout can end the request earlier, and the
+browser reconnects with a fresh storage read.
+
+Benchmark on the test site's actual port (wp-env may choose another):
+
+```sh
+WP_BASE_URL=http://localhost:8889 npm run bench -- --suite=transport --transport=sse --engine=intent-log --trials=30 --json=/tmp/sse.json
+```
+
+The transport and host benchmarks count SSE response bytes as they arrive,
+including streams that later get interrupted. Reports distinguish successful
+SSE streams from attempted requests and polling fallback. Server request
+metrics recorded at dispatch do not include the later stream wait; use the
+host benchmark's whole-request measurements for PHP occupancy. Short runs can
+end before a held request is logged at shutdown.
+
+Add `--recovery` to the transport benchmark to interrupt the receiving tab,
+accept an edit while it is offline, and require it to catch up without a reload.
+The JSON report includes the recovery time separately from normal edit latency.

@@ -51,7 +51,7 @@
  *   engine=     the ONE engine to measure (intent-log | yjs-server |
  *               de-rtc | current; default: the site's current engine —
  *               comparing engines is what --suite=engines is for)
- *   transport=  http-polling | http-long-polling | websocket | current
+ *   transport=  http-polling | http-long-polling | sse | websocket | current
  *   windows=    people per phase: collaborator windows, and the same
  *               number of one-after-the-other baseline turns (default 2)
  *   edit-seconds=      editing seconds per person (default 120, min 30)
@@ -100,7 +100,7 @@ const HELP = `node tests/benchmarks/host/host-benchmark.mjs [key=value …]
   engine=     the ONE engine to measure (intent-log | yjs-server |
               de-rtc | current; default: the site's current engine —
               comparing engines is what --suite=engines is for)
-  transport=  http-polling | http-long-polling | websocket
+  transport=  http-polling | http-long-polling | sse | websocket
               (default: the site's current transport)
   windows=    people per phase: collaborator windows, and the same
               number of one-after-the-other baseline turns (default 2)
@@ -206,23 +206,34 @@ const jitter = ( step, min, max ) =>
  * has no sync traffic at all, so the host comparison needs the whole
  * wire. Counters are cumulative; phases diff snapshot() results.
  *
- * @param {import('@playwright/test').Page} page Target page.
+ * @param {import('@playwright/test').Page} page          Target page.
+ * @param {Function}                        streamedBytes Current SSE byte count.
  * @return {Object} Counter handle with a snapshot() method.
  */
-function attachAllTrafficCounters( page ) {
+function attachAllTrafficCounters( page, streamedBytes = () => 0 ) {
 	const c = { requests: 0, requestBytes: 0, responseBytes: 0 };
 	page.on( 'request', ( request ) => {
 		c.requests += 1;
 		c.requestBytes += request.postDataBuffer()?.length ?? 0;
 	} );
 	page.on( 'response', async ( response ) => {
+		if (
+			decodeURIComponent( response.url() ).includes( '/wp-sync/v1/sse' )
+		) {
+			return;
+		}
 		try {
 			c.responseBytes += ( await response.body() ).length;
 		} catch {
 			// Body unavailable (navigation, abort): skip its bytes.
 		}
 	} );
-	return { snapshot: () => ( { ...c } ) };
+	return {
+		snapshot: () => ( {
+			...c,
+			responseBytes: c.responseBytes + streamedBytes(),
+		} ),
+	};
 }
 
 /**
@@ -389,8 +400,12 @@ async function openEditorWindow( context, measured, postId, index ) {
 	const page = await context.newPage();
 	measured.add( page );
 	page.on( 'close', () => measured.delete( page ) );
-	const all = attachAllTrafficCounters( page );
 	const sync = attachCounters( page );
+	const all = attachAllTrafficCounters(
+		page,
+		() => sync.snapshot().sseBytesReceived
+	);
+	await sync.ready;
 	await page.goto(
 		`${ BASE }/wp-admin/post.php?post=${ postId }&action=edit`
 	);

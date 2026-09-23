@@ -56,6 +56,9 @@ export function attachCounters( page ) {
 		// must not read as a live session.
 		dataRequests: 0,
 		longPollRequests: 0,
+		sseRequests: 0,
+		sseStreams: 0,
+		sseBytesReceived: 0,
 		wsFramesSent: 0,
 		wsFramesReceived: 0,
 		wsBytesSent: 0,
@@ -85,6 +88,9 @@ export function attachCounters( page ) {
 		}
 		c.requests += 1;
 		c.requestBytes += request.postDataBuffer()?.length ?? 0;
+		if ( url.includes( '/sse' ) ) {
+			c.sseRequests += 1;
+		}
 		if ( url.includes( '/updates' ) ) {
 			c.dataRequests += 1;
 		}
@@ -96,6 +102,9 @@ export function attachCounters( page ) {
 	page.on( 'response', async ( response ) => {
 		if ( ! isSync( response.url() ) && ! isCommit( response.request() ) ) {
 			return;
+		}
+		if ( decoded( response.url() ).includes( '/sse' ) ) {
+			return; // Count streamed bytes through CDP as they arrive.
 		}
 		try {
 			c.responseBytes += ( await response.body() ).length;
@@ -117,9 +126,46 @@ export function attachCounters( page ) {
 			c.wsBytesReceived += frameBytes( frame );
 		} );
 	} );
-	return {
-		snapshot: () => ( { ...c } ),
-	};
+	// Fetch-based SSE responses do not finish until the stream closes.
+	// Chromium reports received bytes while the response is still open.
+	const ready = page
+		.context()
+		.newCDPSession( page )
+		.then( async ( session ) => {
+			const streams = new Set();
+			session.on(
+				'Network.responseReceived',
+				( { requestId, response } ) => {
+					if (
+						decoded( response.url ).includes( '/wp-sync/v1/sse' ) &&
+						response.status === 200 &&
+						response.mimeType === 'text/event-stream'
+					) {
+						streams.add( requestId );
+						c.sseStreams++;
+					}
+				}
+			);
+			session.on(
+				'Network.dataReceived',
+				( { requestId, dataLength } ) => {
+					if ( streams.has( requestId ) ) {
+						c.sseBytesReceived += dataLength;
+						c.responseBytes += dataLength;
+					}
+				}
+			);
+			for ( const event of [
+				'Network.loadingFinished',
+				'Network.loadingFailed',
+			] ) {
+				session.on( event, ( { requestId } ) =>
+					streams.delete( requestId )
+				);
+			}
+			await session.send( 'Network.enable' );
+		} );
+	return { ready, snapshot: () => ( { ...c } ) };
 }
 
 /**
@@ -194,6 +240,41 @@ export async function dismissWelcomeGuide( page ) {
 }
 
 /**
+ * Maps a settings radio value to its transport slug.
+ *
+ * @param {string} delivery Radio value (the delivery field).
+ * @return {string} Transport slug.
+ */
+export function deliveryTransport( delivery ) {
+	if ( delivery === 'long-polling' ) {
+		return 'http-long-polling';
+	}
+	if ( delivery === 'sse' || delivery === 'websocket' ) {
+		return delivery;
+	}
+	return 'http-polling';
+}
+
+/**
+ * Maps a transport slug to the settings radio value that selects it.
+ *
+ * @param {string} transport Transport slug.
+ * @return {string} Radio value (the delivery field).
+ */
+function transportDelivery( transport ) {
+	if ( transport === 'http-long-polling' ) {
+		return 'long-polling';
+	}
+	if ( transport === 'http-polling' ) {
+		return 'polling';
+	}
+	if ( transport === 'sse' || transport === 'websocket' ) {
+		return transport;
+	}
+	throw new Error( `Unknown transport: ${ transport }` );
+}
+
+/**
  * Reads current engine/transport from the settings screen and switches
  * either when requested. Returns previous and active values.
  *
@@ -205,7 +286,9 @@ export async function dismissWelcomeGuide( page ) {
 export async function configureSettings( page, engine, transport ) {
 	await page.goto( `${ BASE }${ SETTINGS_PAGE }` );
 	const engineSelect = page.locator( '#wp_sync_engine' );
-	const transportSelect = page.locator( '#gutenberg_sync_engines_transport' );
+	const transportSelect = page.locator(
+		'input[name="gutenberg_sync_engines_delivery"]:checked'
+	);
 	if ( ! ( await engineSelect.count() ) ) {
 		throw new Error(
 			'Settings → Collaboration screen not found. Are the gutenberg ' +
@@ -215,7 +298,8 @@ export async function configureSettings( page, engine, transport ) {
 	}
 	const previous = {
 		engine: await engineSelect.inputValue(),
-		transport: await transportSelect.inputValue(),
+		delivery: await transportSelect.inputValue(),
+		transport: deliveryTransport( await transportSelect.inputValue() ),
 	};
 	const wanted = {
 		engine: engine === 'current' ? previous.engine : engine,
@@ -226,7 +310,15 @@ export async function configureSettings( page, engine, transport ) {
 		wanted.transport !== previous.transport
 	) {
 		await engineSelect.selectOption( wanted.engine );
-		await transportSelect.selectOption( wanted.transport );
+		const delivery =
+			wanted.transport === previous.transport
+				? previous.delivery
+				: transportDelivery( wanted.transport );
+		await page
+			.locator(
+				`input[name="gutenberg_sync_engines_delivery"][value="${ delivery }"]`
+			)
+			.check();
 		await page.click( '#submit' );
 		await page.waitForURL( /settings-updated=true/ );
 	}
@@ -243,8 +335,12 @@ export async function restoreSettings( page, previous ) {
 	await page.goto( `${ BASE }${ SETTINGS_PAGE }` );
 	await page.locator( '#wp_sync_engine' ).selectOption( previous.engine );
 	await page
-		.locator( '#gutenberg_sync_engines_transport' )
-		.selectOption( previous.transport );
+		.locator(
+			`input[name="gutenberg_sync_engines_delivery"][value="${
+				previous.delivery ?? transportDelivery( previous.transport )
+			}"]`
+		)
+		.check();
 	await page.click( '#submit' );
 	await page.waitForURL( /settings-updated=true/ );
 }
@@ -561,7 +657,11 @@ export async function waitForSyncTraffic( page, counters, label ) {
 	const deadline = Date.now() + 30000;
 	const live = () => {
 		const c = counters.snapshot();
-		return c.dataRequests >= 2 || c.wsFramesSent + c.wsFramesReceived >= 2;
+		return (
+			c.dataRequests >= 2 ||
+			( c.sseStreams > 0 && c.sseBytesReceived > 0 ) ||
+			c.wsFramesSent + c.wsFramesReceived >= 2
+		);
 	};
 	while ( ! live() ) {
 		if ( Date.now() > deadline ) {
@@ -585,6 +685,9 @@ export async function waitForSyncTraffic( page, counters, label ) {
  */
 export function observeTransport( counters ) {
 	const c = counters.snapshot();
+	if ( c.sseStreams > 0 && c.sseBytesReceived > 0 ) {
+		return 'sse';
+	}
 	if ( c.wsFramesSent + c.wsFramesReceived > 0 ) {
 		return 'websocket';
 	}

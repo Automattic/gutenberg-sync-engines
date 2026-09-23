@@ -38,7 +38,13 @@ const mockCallbacks: {
 	awareness: [],
 };
 const mockSetDisabled = jest.fn();
+const mockSetSignalCarrier = jest.fn();
 const mockAnnounceLocalWrite = jest.fn();
+const mockSseExchange = {
+	available: true,
+	close: jest.fn(),
+	exchange: jest.fn< () => Promise< ReturnType< typeof response > > >(),
+};
 
 jest.mock( '@wordpress/hooks', () => ( {
 	addAction: jest.fn(),
@@ -63,8 +69,12 @@ jest.mock( '../../../../src/providers/advisory/signaling', () => ( {
 		mockCallbacks.cursor.push( cb ),
 	onRoomEngine: ( cb: ( engine: string ) => void ) =>
 		mockCallbacks.engine.push( cb ),
-	setSignalCarrier: jest.fn(),
+	setSignalCarrier: mockSetSignalCarrier,
 	setSyncClientId: jest.fn(),
+} ) );
+
+jest.mock( '../../../../src/providers/sse/sse-exchange', () => ( {
+	SseExchange: jest.fn( () => mockSseExchange ),
 } ) );
 
 jest.mock( '../../../../src/providers/http-polling/save-flush', () => ( {
@@ -132,6 +142,7 @@ function createMockSession( clientId = 1, sendsWhileAlone = false ) {
 describe( 'polling-manager cadence', () => {
 	let pollingManager: Manager[ 'pollingManager' ];
 	let setLongPollMode: Manager[ 'setLongPollMode' ];
+	let setSseMode: Manager[ 'setSseMode' ];
 	let flushHeldUpdates: Manager[ 'flushHeldUpdates' ];
 	let mockPostSyncUpdate: jest.Mock<
 		typeof import('../../../../src/providers/http-polling/utils').postSyncUpdate
@@ -151,11 +162,16 @@ describe( 'polling-manager cadence', () => {
 		mockCallbacks.engine.length = 0;
 		mockCallbacks.awareness.length = 0;
 		mockSetDisabled.mockClear();
+		mockSetSignalCarrier.mockClear();
 		mockAnnounceLocalWrite.mockClear();
+		mockSseExchange.available = true;
+		mockSseExchange.close.mockClear();
+		mockSseExchange.exchange.mockReset();
 		jest.isolateModules( () => {
 			const managerModule: Manager = require( '../../../../src/providers/http-polling/polling-manager' );
 			pollingManager = managerModule.pollingManager;
 			setLongPollMode = managerModule.setLongPollMode;
+			setSseMode = managerModule.setSseMode;
 			flushHeldUpdates = managerModule.flushHeldUpdates;
 			mockPostSyncUpdate =
 				require( '../../../../src/providers/http-polling/utils' ).postSyncUpdate;
@@ -605,6 +621,60 @@ describe( 'polling-manager cadence', () => {
 		expect( mockSetDisabled ).toHaveBeenLastCalledWith( true );
 
 		mockPostSyncUpdate.mockRejectedValueOnce( new Error( 'down' ) );
+		await jest.advanceTimersByTimeAsync( 50 );
+		expect( mockSetDisabled ).toHaveBeenLastCalledWith( false );
+	} );
+
+	it( 'SSE: a lone tab streams through the discovery window, then closes its stream and stops; company reopens it', async () => {
+		setSseMode( true );
+		mockSseExchange.exchange.mockResolvedValue( response( [ 1 ] ) );
+		register();
+		await jest.advanceTimersByTimeAsync( 0 );
+		expect( mockSseExchange.exchange ).toHaveBeenCalledTimes( 1 );
+		expect( mockPostSyncUpdate ).not.toHaveBeenCalled();
+		// Inside the window the loop re-issues right behind each event.
+		await jest.advanceTimersByTimeAsync( 50 );
+		expect( mockSseExchange.exchange ).toHaveBeenCalledTimes( 2 );
+		mockSseExchange.close.mockClear();
+		// Past the window: the stream is closed (no held PHP worker) and
+		// nothing is scheduled.
+		await jest.advanceTimersByTimeAsync( 31000 );
+		expect( mockSseExchange.close ).toHaveBeenCalled();
+		const afterWindow = mockSseExchange.exchange.mock.calls.length;
+		await jest.advanceTimersByTimeAsync( 120000 );
+		expect( mockSseExchange.exchange ).toHaveBeenCalledTimes( afterWindow );
+		// Company from the heartbeat restarts the loop, which reopens one.
+		mockOthers = true;
+		mockCallbacks.others.forEach( ( cb ) => cb( true ) );
+		await jest.advanceTimersByTimeAsync( 0 );
+		expect( mockSseExchange.exchange ).toHaveBeenCalledTimes(
+			afterWindow + 1
+		);
+	} );
+
+	it( 'SSE: handshake signals ride the heartbeat, never a poll', async () => {
+		setSseMode( true );
+		mockOthers = true;
+		mockSseExchange.exchange.mockResolvedValue( response( [ 1, 2 ] ) );
+		register();
+		await jest.advanceTimersByTimeAsync( 0 );
+		const carrier = mockSetSignalCarrier.mock.calls.at( -1 )?.[ 0 ] as
+			| ( () => boolean )
+			| undefined;
+		expect( carrier?.() ).toBe( false );
+	} );
+
+	it( 'SSE: switches the channel off while streaming and back on while receiving runs on polling', async () => {
+		setSseMode( true );
+		mockOthers = true;
+		mockSseExchange.exchange.mockResolvedValueOnce( response( [ 1, 2 ] ) );
+		register();
+		await jest.advanceTimersByTimeAsync( 0 );
+		expect( mockSetDisabled ).toHaveBeenLastCalledWith( true );
+		// The stream failed and receiving runs on polling for a while: the
+		// channel is the wake path again until SSE is retried.
+		mockSseExchange.available = false;
+		mockSseExchange.exchange.mockResolvedValueOnce( response( [ 1, 2 ] ) );
 		await jest.advanceTimersByTimeAsync( 50 );
 		expect( mockSetDisabled ).toHaveBeenLastCalledWith( false );
 	} );

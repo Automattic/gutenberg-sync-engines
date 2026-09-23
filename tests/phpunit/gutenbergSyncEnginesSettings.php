@@ -38,6 +38,7 @@ class Tests_Collaboration_GutenbergSyncEnginesSettings extends WP_UnitTestCase {
 			// channel is stored.
 			array( 'http-long-polling', 'websocket-advisory', Gutenberg_Sync_Engines_Settings::DELIVERY_LONG_POLLING ),
 			array( 'websocket', '', Gutenberg_Sync_Engines_Settings::DELIVERY_WEBSOCKET ),
+			array( 'sse', 'websocket-advisory', Gutenberg_Sync_Engines_Settings::DELIVERY_SSE ),
 		);
 		foreach ( $cases as list( $transport, $advisory, $expected ) ) {
 			update_option( Gutenberg_Sync_Engines_Settings::TRANSPORT_OPTION, $transport );
@@ -61,6 +62,10 @@ class Tests_Collaboration_GutenbergSyncEnginesSettings extends WP_UnitTestCase {
 		// Long polling and WebSocket keep WebRTC as the fallback channel.
 		$settings->sanitize_delivery( 'websocket' );
 		$this->assertSame( 'websocket', get_option( Gutenberg_Sync_Engines_Settings::TRANSPORT_OPTION ) );
+		$this->assertSame( 'webrtc-advisory', get_option( Gutenberg_Sync_Engines_Settings::ADVISORY_OPTION ) );
+
+		$settings->sanitize_delivery( Gutenberg_Sync_Engines_Settings::DELIVERY_SSE );
+		$this->assertSame( 'sse', get_option( Gutenberg_Sync_Engines_Settings::TRANSPORT_OPTION ) );
 		$this->assertSame( 'webrtc-advisory', get_option( Gutenberg_Sync_Engines_Settings::ADVISORY_OPTION ) );
 
 		$settings->sanitize_delivery( 'polling' );

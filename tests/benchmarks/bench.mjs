@@ -87,7 +87,7 @@ Suites (--suite=; default: host):
                              yjs-server | de-rtc | current; default: the
                              site's current engine — comparing engines
                              is what --suite=engines is for)
-               --transport=  http-polling | http-long-polling | websocket
+               --transport=  http-polling | http-long-polling | sse | websocket
                              (default: the site's current transport)
                --windows=    collaborator windows per engine phase
                              (default 2)
