@@ -332,9 +332,9 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Settings' ) ) {
 		 * @return array<string, array{transport: string, advisory: string, label: string, description: string}> Choices.
 		 */
 		public static function delivery_choices(): array {
-			$sse_description = __( 'Receives updates over an HTTP stream held open by the server, one PHP worker per stream. Streams wake on Redis notices when a Redis address is configured, and by re-checking storage every half second otherwise. Peers fall back to polling on failure.', 'gutenberg-sync-engines' );
+			$sse_description = __( 'Receives updates over an HTTP stream held open by the server, one PHP worker per stream. Streams wake on Redis notices when a Redis address is configured or a Redis object cache is in use, and by checking a per-room version number every half second otherwise. Peers fall back to polling on failure.', 'gutenberg-sync-engines' );
 			if ( class_exists( 'WP_Sync_Redis_Notifications' ) && '' === WP_Sync_Redis_Notifications::url() ) {
-				$sse_description .= ' ' . __( 'No Redis address is configured on this site (WP_SYNC_SSE_REDIS_URL): each open stream re-reads storage twice a second.', 'gutenberg-sync-engines' );
+				$sse_description .= ' ' . __( 'No Redis is configured on this site (WP_SYNC_SSE_REDIS_URL, or a Redis object cache): streams check the version number instead, one small lookup per stream twice a second.', 'gutenberg-sync-engines' );
 			}
 			return array(
 				self::DELIVERY_POLLING           => array(

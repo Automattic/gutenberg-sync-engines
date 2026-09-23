@@ -56,6 +56,10 @@ class Tests_Collaboration_WpSseSyncServer extends WP_Test_REST_TestCase {
 			protected function storage_waiter( callable $has_changes ): WP_Sync_Storage_Change_Waiter {
 				return new WP_Sync_Storage_Change_Waiter( $has_changes, $this->sleep );
 			}
+			public $versions_supported = true;
+			protected function storage_has_versions(): bool {
+				return $this->versions_supported && parent::storage_has_versions();
+			}
 		};
 		$this->server->redis = $this->redis;
 		$this->frames        = array();
@@ -131,11 +135,15 @@ class Tests_Collaboration_WpSseSyncServer extends WP_Test_REST_TestCase {
 		$this->assertGreaterThan( $cursor, $next['rooms'][0]['end_cursor'] );
 	}
 
-	public function test_without_redis_the_stream_notices_a_new_row_by_checking_storage() {
+	/**
+	 * @dataProvider version_or_reading
+	 */
+	public function test_without_redis_the_stream_notices_a_new_row_by_checking_storage( bool $versions_supported ) {
 		add_filter( 'wp_sync_sse_redis_url', '__return_empty_string' );
-		$this->server->redis = null;
-		$sleeps              = 0;
-		$this->server->sleep = function ( float $seconds ) use ( &$sleeps ) {
+		$this->server->redis              = null;
+		$this->server->versions_supported = $versions_supported;
+		$sleeps                           = 0;
+		$this->server->sleep              = function ( float $seconds ) use ( &$sleeps ) {
 			$this->server->clock += $seconds;
 			++$sleeps;
 			if ( 2 === $sleeps ) {
@@ -151,8 +159,12 @@ class Tests_Collaboration_WpSseSyncServer extends WP_Test_REST_TestCase {
 				throw new RuntimeException( 'End test stream' );
 			}
 		};
-		$request             = $this->request();
-		$initial             = $this->server->handle_request( $request )->get_data();
+		// A room's FIRST read mints its generation token, a write that wakes
+		// one check once per room lifetime; settle it before the stream
+		// under test opens.
+		$this->server->handle_request( $this->request() );
+		$request = $this->request();
+		$initial = $this->server->handle_request( $request )->get_data();
 		$this->assertInstanceOf( WP_Sync_Storage_Change_Waiter::class, $this->server->waiter() );
 		$events = array();
 		$this->server->stream(
@@ -167,6 +179,52 @@ class Tests_Collaboration_WpSseSyncServer extends WP_Test_REST_TestCase {
 		$this->assertCount( 2, $events, 'The initial read, then the read the storage check woke.' );
 		$this->assertSame( 1.0, $events[1][0], 'Noticed on the check right after the write (two half-second steps).' );
 		$this->assertSame( 'seen by a storage check', $events[1][1]['rooms'][0]['updates'][0]['data'] );
+	}
+
+	public function version_or_reading(): array {
+		return array(
+			'version counters (table storage)'             => array( true ),
+			'reading the rooms (storage without counters)' => array( false ),
+		);
+	}
+
+	public function test_an_idle_version_check_costs_one_query_and_a_presence_change_wakes_it() {
+		global $wpdb;
+		add_filter( 'wp_sync_sse_redis_url', '__return_empty_string' );
+		$this->server->redis = null;
+		$this->server->sleep = static function () {};
+		$this->server->handle_request( $this->request() ); // Mints the generation token (see above).
+		$this->server->handle_request( $this->request() );
+		$waiter = $this->server->waiter();
+
+		$before = $wpdb->num_queries;
+		$this->assertFalse( $waiter->wait( 1.0 ), 'Nothing changed.' );
+		$this->assertSame( 2, $wpdb->num_queries - $before, 'Two half-second steps, one query each.' );
+
+		$this->server->update_awareness( 'postType/post:' . $this->post_id, 42, array( 'name' => 'peer' ) );
+		$this->assertTrue( $waiter->wait( 1.0 ), 'A presence write bumps the version.' );
+	}
+
+	public function test_a_write_during_the_read_still_wakes_the_next_check() {
+		add_filter( 'wp_sync_sse_redis_url', '__return_empty_string' );
+		$this->server->redis        = null;
+		$this->server->sleep        = static function () {};
+		$this->server->on_subscribe = function () {
+			// The snapshot is taken in subscribe(), BEFORE the initial read:
+			// a write that lands between the two must read as a change.
+			$this->server->on_subscribe = null;
+		};
+		$request                    = $this->request();
+		$initial                    = $this->server->handle_request( $request )->get_data();
+		( new WP_Sync_Table_Storage() )->add_update(
+			'postType/post:' . $this->post_id,
+			array(
+				'type' => WP_Intent_Log_Engine::UPDATE_TYPE_SNAPSHOT,
+				'data' => 'landed during the read',
+			)
+		);
+		$this->assertTrue( $this->server->waiter()->wait( 0.5 ) );
+		$this->assertNotEmpty( $initial['rooms'][0]['updates'] );
 	}
 
 	public function test_a_configured_but_unreachable_redis_falls_back_to_storage_checks() {
@@ -364,7 +422,8 @@ class Tests_Collaboration_WpSseSyncServer extends WP_Test_REST_TestCase {
 			$initial             = $this->server->handle_request( $request )->get_data();
 			$this->server->stream( $request, $initial, static function () {} );
 			$this->assertSame( $expected, $this->server->clock );
-			$this->assertSame( array( 20.0, array( 'name' => 'editor' ) ), $this->server->refreshes[0] );
+			// [0] is the request's own presence write; the refresh follows at 20 s.
+			$this->assertSame( array( 20.0, array( 'name' => 'editor' ) ), $this->server->refreshes[1] );
 		} finally {
 			set_time_limit( (int) $previous );
 		}

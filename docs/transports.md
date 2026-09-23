@@ -9,7 +9,7 @@ idle traffic on your hardware; the stable shape:
 | | edit-to-visible latency | idle traffic per collaborator |
 | --- | --- | --- |
 | http-polling | seconds-scale (bounded below by the poll interval) | roughly one request per poll interval |
-| sse | pushed the moment a row lands (Redis notices), or within half a second (storage checks) | one held PHP worker per stream for up to five minutes; without Redis, two storage reads a second per stream; needs a proxy that passes streams through |
+| sse | pushed the moment a row lands (Redis notices), or within half a second (version checks) | one held PHP worker per stream for up to five minutes; without Redis, one small lookup twice a second per stream; needs a proxy that passes streams through |
 | websocket | tens of milliseconds | a few frames per heartbeat — plus a persistent daemon, TLS termination, and an exposed port |
 
 **Short polling is the base transport, and an advisory channel sits
@@ -93,16 +93,35 @@ long-lived response per tab and the server writes each change to it. It
 needs no sync daemon or PHP Redis extension. Each open receive stream
 occupies a PHP web worker for its whole length.
 
-Redis is optional. With a Redis address configured, a stream sleeps until
-Redis announces a change to one of its rooms, so it costs no database
-reads while idle. Without one, the stream re-checks storage every half
-second (this is what the retired long-polling transport did inside its
-held request): the same push delivery, at the cost of two storage reads a
-second per open stream. A configured Redis that does not answer is
-reported through the `gutenberg_sync_engines_sse_redis_failed` action and
-the stream falls back to the storage checks; the browser never has to
-fall back to polling for it. A few editors run fine without Redis; a busy
-site should configure it.
+Redis is optional. What a stream sleeps on is chosen per request, in this
+order:
+
+| Wait | Chosen when | Cost per open stream while idle |
+| --- | --- | --- |
+| Redis Pub/Sub notice | `WP_SYNC_SSE_REDIS_URL` is set, or a Redis object cache is in use (its `WP_REDIS_*` constants name the server) | nothing: the stream is written the moment a row lands |
+| Version counter in the object cache | a persistent object cache of any kind (Memcached included) | one memory read twice a second |
+| Version counter in the room-meta table | no cache at all | one indexed query twice a second |
+
+The version counter is a number the room storage bumps after every
+successful write (updates, presence, room meta, a reset) with an atomic
+increment, so two writers can never lose each other's bump. The stream
+reads the counters of all its rooms in one lookup and re-reads storage
+when any differs from the snapshot it took just before its last read; a
+write landing during that read therefore still wakes the next check. The
+snapshot is compared for change, not counted, so nothing depends on the
+exact value. A storage other than the plugin's tables (through the
+storage filter) has no counters, and the stream checks it the long way
+instead: rows past the cursor and the awareness map, per room, twice a
+second.
+
+A configured Redis that does not answer is reported through the
+`gutenberg_sync_engines_sse_redis_failed` action and the stream falls back
+to the version checks; the browser never has to fall back to polling for
+it. The `wp_sync_sse_redis_url` filter sees the configured or detected
+address and may replace it, or return an empty string to keep the
+transport off Redis. Detection skips a Redis cluster, replica set, or
+sentinel group, which the plugin's small client does not speak; set the
+address by hand there if a single endpoint is available.
 
 ### Proxies, buffering, and timeouts
 
@@ -166,10 +185,12 @@ different databases can share one Redis instance without receiving each other's
 notices, and one site reached through several hostnames still shares one
 channel. Redis carries only notices; document storage stays in WordPress.
 
-On a host, set `WP_SYNC_SSE_REDIS_URL` (or the `wp_sync_sse_redis_url` filter)
-to a private Redis address. The settings screen says so next to the choice
-when no address is configured; streams then run on storage checks. `redis://user:password@host:6379` supports Redis ACL
-credentials; `rediss://` uses TLS. Keep this value server-side.
+On a host without a Redis object cache, set `WP_SYNC_SSE_REDIS_URL` (or the
+`wp_sync_sse_redis_url` filter) to a private Redis address to get the
+instant wake; the settings screen says so next to the choice when no Redis
+is configured or detected. `redis://user:password@host:6379` supports Redis
+ACL credentials, `rediss://` uses TLS, and `unix:///path/to/redis.sock` a
+local socket. Keep this value server-side.
 
 The browser opens a POST stream with normal WordPress cookies and REST nonce
 headers. It shares one stream across its current rooms. The server subscribes

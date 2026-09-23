@@ -63,6 +63,73 @@ class Tests_Collaboration_WpSyncRedis extends WP_UnitTestCase {
 		$client->subscribe( array( 'room' ) );
 		$this->assertTrue( $client->wait( 0.01 ) );
 	}
+	/**
+	 * @dataProvider object_cache_settings
+	 */
+	public function test_derives_the_redis_address_from_a_redis_object_cache( array $settings, string $expected ) {
+		$this->assertSame( $expected, WP_Sync_Redis_Notifications::object_cache_url( $settings ) );
+	}
+
+	public function object_cache_settings(): array {
+		$base = array(
+			'persistent' => true,
+			'cluster'    => false,
+			'scheme'     => 'tcp',
+			'host'       => '10.0.0.5',
+			'port'       => 6380,
+			'path'       => null,
+			'password'   => null,
+		);
+		return array(
+			'host and port'                     => array( $base, 'redis://10.0.0.5:6380' ),
+			'default port'                      => array( array_merge( $base, array( 'port' => null ) ), 'redis://10.0.0.5:6379' ),
+			'password'                          => array( array_merge( $base, array( 'password' => 'p@ss word' ) ), 'redis://:p%40ss%20word@10.0.0.5:6380' ),
+			'ACL user and password'             => array( array_merge( $base, array( 'password' => array( 'app', 'secret' ) ) ), 'redis://app:secret@10.0.0.5:6380' ),
+			'TLS'                               => array( array_merge( $base, array( 'scheme' => 'tls' ) ), 'rediss://10.0.0.5:6380' ),
+			'unix socket'                       => array(
+				array_merge(
+					$base,
+					array(
+						'scheme' => 'unix',
+						'path'   => '/var/run/redis.sock',
+					)
+				),
+				'unix:///var/run/redis.sock',
+			),
+			'no persistent cache'               => array( array_merge( $base, array( 'persistent' => false ) ), '' ),
+			'no host configured'                => array( array_merge( $base, array( 'host' => null ) ), '' ),
+			'a cluster the client cannot speak' => array( array_merge( $base, array( 'cluster' => true ) ), '' ),
+		);
+	}
+
+	public function test_the_configured_address_wins_and_the_filter_can_turn_redis_off() {
+		$expected = defined( 'WP_SYNC_SSE_REDIS_URL' ) ? WP_SYNC_SSE_REDIS_URL : WP_Sync_Redis_Notifications::object_cache_url();
+		$this->assertSame( $expected, WP_Sync_Redis_Notifications::url() );
+		$derived = static fn() => 'redis://cache.example:6379';
+		add_filter( 'wp_sync_sse_redis_url', $derived );
+		$this->assertSame( 'redis://cache.example:6379', WP_Sync_Redis_Notifications::url() );
+		remove_filter( 'wp_sync_sse_redis_url', $derived );
+		add_filter( 'wp_sync_sse_redis_url', '__return_empty_string' );
+		$this->assertSame( '', WP_Sync_Redis_Notifications::url() );
+	}
+
+	public function test_connects_over_a_unix_socket() {
+		$path   = sys_get_temp_dir() . '/wp-sync-redis-' . wp_generate_password( 8, false ) . '.sock';
+		$server = stream_socket_server( 'unix://' . $path );
+		try {
+			$client = new WP_Sync_Redis( 'unix://' . $path );
+			$peer   = stream_socket_accept( $server, 1 );
+			$this->assertIsResource( $peer );
+			$client->command( array( 'PING' ) );
+			$this->assertSame( "*1\r\n$4\r\nPING\r\n", fread( $peer, 64 ) );
+			$client->close();
+			fclose( $peer );
+		} finally {
+			fclose( $server );
+			@unlink( $path ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+		}
+	}
+
 	public function test_channel_namespace_is_stable_and_separates_rooms() {
 		$room    = 'postType/post:1';
 		$channel = WP_Sync_Redis_Notifications::channel( $room );

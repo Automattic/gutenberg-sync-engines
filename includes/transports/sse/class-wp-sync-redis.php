@@ -22,15 +22,21 @@ class WP_Sync_Redis implements WP_Sync_Change_Waiter {
 	/**
 	 * Connect with a bounded timeout. Credentials never enter a browser URL.
 	 *
-	 * @param string $url Redis URL (redis://[:password@]host:port or rediss://).
+	 * @param string $url Redis URL: redis://[user:password@]host:port,
+	 *                    rediss:// for TLS, or unix:///path/to/redis.sock.
 	 * @throws RuntimeException When Redis cannot be reached.
 	 */
 	public function __construct( string $url ) {
-		$parts = wp_parse_url( $url );
-		if ( ! is_array( $parts ) || ! in_array( $parts['scheme'] ?? '', array( 'redis', 'rediss' ), true ) || empty( $parts['host'] ) ) {
+		$parts  = wp_parse_url( $url );
+		$scheme = is_array( $parts ) ? ( $parts['scheme'] ?? '' ) : '';
+		if ( preg_match( '#^unix:/*(/.+)$#', $url, $unix ) ) {
+			// parse_url() rejects the empty host in unix:///path.
+			$address = 'unix://' . $unix[1];
+		} elseif ( in_array( $scheme, array( 'redis', 'rediss' ), true ) && ! empty( $parts['host'] ) ) {
+			$address = ( 'rediss' === $scheme ? 'tls' : 'tcp' ) . '://' . $parts['host'] . ':' . ( $parts['port'] ?? 6379 );
+		} else {
 			throw new RuntimeException( 'Invalid collaboration Redis URL.' );
 		}
-		$address = ( 'rediss' === $parts['scheme'] ? 'tls' : 'tcp' ) . '://' . $parts['host'] . ':' . ( $parts['port'] ?? 6379 );
 		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
 		$this->socket = @stream_socket_client( $address, $errno, $errstr, 0.25 );
 		if ( ! $this->socket ) {

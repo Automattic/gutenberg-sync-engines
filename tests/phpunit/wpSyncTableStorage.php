@@ -185,6 +185,68 @@ class Tests_Collaboration_WpSyncTableStorage extends WP_UnitTestCase {
 		$this->assertSame( array(), $storage->get_awareness_state( $room ) );
 	}
 
+	public function test_room_versions_change_on_every_write_and_read_in_one_lookup() {
+		global $wpdb;
+		$storage = $this->storage();
+		$room    = $this->room();
+		$other   = $room . '-other';
+
+		$this->assertSame(
+			array(
+				$room  => null,
+				$other => null,
+			),
+			$storage->get_room_versions( array( $room, $other ) ),
+			'Never written: no counter.'
+		);
+
+		$storage->add_update( $room, 'a' );
+		$this->assertSame( '1', $storage->get_room_versions( array( $room ) )[ $room ] );
+		$storage->set_awareness_state( $room, array( array( 'client_id' => 1 ) ) );
+		$storage->set_room_meta( $room, 'k', 'v' );
+		$storage->set_room_engine( $room, 'intent-log' );
+		$storage->add_update( $other, 'b' );
+
+		$before   = $wpdb->num_queries;
+		$versions = $storage->get_room_versions( array( $room, $other, str_repeat( 'x', 1000 ) ) );
+		$this->assertSame( 1, $wpdb->num_queries - $before, 'All rooms in one query.' );
+		$this->assertSame(
+			array(
+				$room  => '3',
+				$other => '1',
+			),
+			$versions,
+			'Every notified write bumps (lineage stamping is not one); an unstorable room is left out.'
+		);
+
+		$storage->reset_room( $room );
+		$this->assertSame( array( $room => null ), $storage->get_room_versions( array( $room ) ), 'A reset leaves no row; absence is the change.' );
+		$storage->add_update( $room, 'c' );
+		$this->assertSame( '1', $storage->get_room_versions( array( $room ) )[ $room ] );
+	}
+
+	public function test_room_versions_live_only_in_a_persistent_object_cache() {
+		$this->with_persistent_object_cache(
+			function () {
+				global $wpdb;
+				$storage = $this->storage();
+				$room    = $this->room();
+
+				$storage->add_update( $room, 'a' );
+				$storage->set_awareness_state( $room, array( array( 'client_id' => 1 ) ) );
+				$this->assertSame( '2', $storage->get_room_versions( array( $room ) )[ $room ] );
+				$this->assertSame(
+					'0',
+					$wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->sync_room_meta} WHERE room = %s AND meta_key = %s", $room, WP_Sync_Table_Storage::VERSION_KEY ) ),
+					'Never a row with a persistent cache.'
+				);
+
+				$storage->reset_room( $room );
+				$this->assertSame( '3', $storage->get_room_versions( array( $room ) )[ $room ], 'A cached counter is kept and bumped by a reset.' );
+			}
+		);
+	}
+
 	/**
 	 * Runs a callback with `wp_using_ext_object_cache()` reporting a
 	 * persistent cache. The test suite's in-memory cache stands in for it:

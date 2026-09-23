@@ -48,10 +48,15 @@ This plugin provides:
   degrades to the first registered engine: yjs-server).
 - **Transports:** `http-polling` (default), `sse`, `websocket`.
   SSE uses normal PHP requests: one held worker per stream, woken by
-  Redis Pub/Sub notices when `WP_SYNC_SSE_REDIS_URL` is set and by
-  half-second storage checks otherwise (`WP_Sync_Storage_Change_Waiter`,
-  the retired long-polling transport's wait), with bounded reconnects
-  from durable cursors. A stored `http-long-polling` choice reads as
+  Redis Pub/Sub notices when `WP_SYNC_SSE_REDIS_URL` is set or a Redis
+  object cache is detected (`WP_REDIS_*` constants), and otherwise by
+  half-second checks of a per-room VERSION COUNTER
+  (`WP_Sync_Table_Storage::get_room_versions`, bumped atomically on every
+  write; in the object cache when persistent, else a `_version` room-meta
+  row; snapshot taken BEFORE each read) through
+  `WP_Sync_Storage_Change_Waiter`, the retired long-polling transport's
+  wait; a storage without counters is read the long way. Bounded
+  reconnects from durable cursors. A stored `http-long-polling` choice reads as
   `sse`. wp-env lifecycle hooks start and remove Redis for each checkout
   and config on its own network. Setup, the proxy/buffering caveat, and
   failure behavior: `docs/transports.md`.

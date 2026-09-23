@@ -37,11 +37,22 @@ class WP_Sync_SSE_Server extends WP_HTTP_Polling_Sync_Server {
 	protected $stream_rooms = array();
 
 	/**
-	 * The awareness map last sent per room, for the storage waiter's compare.
+	 * The awareness map last sent per room, for the storage waiter's compare
+	 * on a storage without version counters.
 	 *
 	 * @var array<string, array> The awareness map last sent per room.
 	 */
 	protected $stream_awareness = array();
+
+	/**
+	 * The room version counters as read just BEFORE the stream's last
+	 * storage read, so a write landing during that read still reads as a
+	 * change afterwards (an extra read is harmless; a missed one would wait
+	 * for the catch-up).
+	 *
+	 * @var array<string, string|null> Room => counter at the last snapshot.
+	 */
+	protected $stream_versions = array();
 
 	/**
 	 * Transport slug.
@@ -81,6 +92,21 @@ class WP_Sync_SSE_Server extends WP_HTTP_Polling_Sync_Server {
 				return new WP_Error( 'rest_sse_read_only', 'Send updates through the updates endpoint.', array( 'status' => 400 ) );
 			}
 		}
+		$this->stream_rooms = $request['rooms'];
+
+		/*
+		 * Write this client's presence BEFORE the wait is opened, and publish
+		 * it: the version snapshot and the Redis subscription then already
+		 * include the stream's own write, so it cannot wake the first check
+		 * (the parent's re-merge below finds nothing changed and skips the
+		 * write). Peers get the presence notice a read earlier, too.
+		 */
+		foreach ( $request['rooms'] as $room ) {
+			if ( is_array( $room['awareness'] ?? null ) ) {
+				$this->update_awareness( (string) $room['room'], (int) $room['client_id'], $room['awareness'] );
+			}
+		}
+		WP_Sync_Redis_Notifications::flush();
 		$this->subscriber = $this->subscribe( array_column( $request['rooms'], 'room' ) );
 		$response         = parent::handle_request( $request );
 		if ( is_wp_error( $response ) ) {
@@ -92,11 +118,12 @@ class WP_Sync_SSE_Server extends WP_HTTP_Polling_Sync_Server {
 
 	/**
 	 * Open what the stream sleeps on: a Redis subscription when a Redis
-	 * address is configured and answers, else half-second storage checks.
-	 * A configured Redis that does not answer is reported, not fatal: the
-	 * stream still works, at the storage checks' cost, and the browser
-	 * never has to fall back to polling for it. Separate for deterministic
-	 * unit tests.
+	 * address is configured (or a Redis object cache is detected) and
+	 * answers, else half-second checks of the rooms' version counters (a
+	 * single lookup; a storage without counters is read the long way). A
+	 * configured Redis that does not answer is reported, not fatal: the
+	 * stream still works, at the checks' cost, and the browser never has to
+	 * fall back to polling for it. Separate for deterministic unit tests.
 	 *
 	 * @param string[] $rooms Room names.
 	 * @return WP_Sync_Change_Waiter What the stream sleeps on.
@@ -120,11 +147,31 @@ class WP_Sync_SSE_Server extends WP_HTTP_Polling_Sync_Server {
 				do_action( 'gutenberg_sync_engines_sse_redis_failed', $error );
 			}
 		}
+		$this->snapshot_versions();
 		return $this->storage_waiter(
 			function (): bool {
 				return $this->stream_has_new_data();
 			}
 		);
+	}
+
+	/**
+	 * Whether the active storage keeps per-room version counters.
+	 *
+	 * @return bool True for the plugin's table storage.
+	 */
+	protected function storage_has_versions(): bool {
+		return $this->storage instanceof WP_Sync_Table_Storage;
+	}
+
+	/**
+	 * Records the rooms' version counters. Called right BEFORE a storage
+	 * read, never after (see $stream_versions).
+	 */
+	protected function snapshot_versions(): void {
+		if ( $this->storage_has_versions() ) {
+			$this->stream_versions = $this->storage->get_room_versions( array_column( $this->stream_rooms, 'room' ) );
+		}
 	}
 
 	/**
@@ -138,9 +185,12 @@ class WP_Sync_SSE_Server extends WP_HTTP_Polling_Sync_Server {
 	}
 
 	/**
-	 * Whether any watched room has rows past the stream's cursor, or an
-	 * awareness map other than the one last sent. Ported from the retired
-	 * long-polling transport's held request.
+	 * Whether a watched room changed since the last snapshot: one lookup of
+	 * the rooms' version counters (a memory read with a persistent object
+	 * cache, one indexed query without). A storage without counters is
+	 * asked the long way, per room: rows past the stream's cursor, or an
+	 * awareness map other than the one last sent (the retired long-polling
+	 * transport's check).
 	 *
 	 * @return bool True when the next read would carry something.
 	 */
@@ -148,6 +198,9 @@ class WP_Sync_SSE_Server extends WP_HTTP_Polling_Sync_Server {
 		// Clear only this process's cache, never the shared object cache.
 		if ( function_exists( 'wp_cache_flush_runtime' ) ) {
 			wp_cache_flush_runtime();
+		}
+		if ( $this->storage_has_versions() ) {
+			return $this->storage->get_room_versions( array_column( $this->stream_rooms, 'room' ) ) !== $this->stream_versions;
 		}
 		foreach ( $this->stream_rooms as $room ) {
 			$name   = (string) $room['room'];
@@ -257,20 +310,29 @@ class WP_Sync_SSE_Server extends WP_HTTP_Polling_Sync_Server {
 				if ( function_exists( 'wp_cache_flush_runtime' ) ) {
 					wp_cache_flush_runtime();
 				}
-				$data = array( 'rooms' => array() );
 				foreach ( $rooms as $room ) {
 					if ( ! $this->can_user_sync_room( $room['room'] ) ) {
 						return;
 					}
-					// Refresh only a still-present client, using its current state.
-					// Never recreate presence removed by a leave or room reset.
-					if ( $this->now() >= $presence_at ) {
+				}
+				// Refresh only a still-present client, using its current state.
+				// Never recreate presence removed by a leave or room reset. The
+				// stream's own write goes BEFORE the version snapshot below, so
+				// it cannot wake the next check.
+				if ( $this->now() >= $presence_at ) {
+					foreach ( $rooms as $room ) {
 						foreach ( $this->awareness->entries( $room['room'], self::AWARENESS_TIMEOUT ) as $entry ) {
 							if ( (int) $entry['client_id'] === (int) $room['client_id'] ) {
 								$this->update_awareness( $room['room'], (int) $room['client_id'], $entry['state'] );
 							}
 						}
 					}
+					$presence_at = $this->now() + 20.0;
+					WP_Sync_Redis_Notifications::flush();
+				}
+				$this->snapshot_versions();
+				$data = array( 'rooms' => array() );
+				foreach ( $rooms as $room ) {
 					$engine                = $this->engines->get_engine_for_room( $room['room'] );
 					$response              = $engine->get_updates_since( $room['room'], (int) $room['client_id'], (int) $room['after'], array() );
 					$response['awareness'] = array();
@@ -280,9 +342,6 @@ class WP_Sync_SSE_Server extends WP_HTTP_Polling_Sync_Server {
 					$response['generation'] = $this->room_generation( $room['room'], (int) $response['end_cursor'] );
 					$data['rooms'][]        = $response;
 				}
-				if ( $this->now() >= $presence_at ) {
-					$presence_at = $this->now() + 20.0;
-				}
 			}
 		} catch ( RuntimeException $error ) {
 			// End the response. Reconnect does a full cursor catch-up, even
@@ -291,6 +350,7 @@ class WP_Sync_SSE_Server extends WP_HTTP_Polling_Sync_Server {
 		} finally {
 			$this->stream_rooms     = array();
 			$this->stream_awareness = array();
+			$this->stream_versions  = array();
 		}
 	}
 	/**

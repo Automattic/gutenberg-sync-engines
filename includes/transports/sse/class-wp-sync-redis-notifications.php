@@ -20,12 +20,76 @@ class WP_Sync_Redis_Notifications {
 	private static $pending = array();
 
 	/**
-	 * Server-only Redis URL, or empty when disabled.
+	 * Server-only Redis URL, or empty when there is none: the configured
+	 * address, else the one a Redis object cache drop-in is configured
+	 * with, then the filter (which may blank it to turn Redis off).
 	 *
-	 * @return string Server-only Redis URL, or empty when disabled.
+	 * @return string Server-only Redis URL, or empty when there is none.
 	 */
 	public static function url(): string {
-		return (string) apply_filters( 'wp_sync_sse_redis_url', defined( 'WP_SYNC_SSE_REDIS_URL' ) ? WP_SYNC_SSE_REDIS_URL : '' );
+		$configured = defined( 'WP_SYNC_SSE_REDIS_URL' ) ? (string) WP_SYNC_SSE_REDIS_URL : '';
+		/**
+		 * Filters the Redis address the SSE transport publishes and subscribes on.
+		 *
+		 * @since n.e.x.t
+		 * @param string $url `redis://`, `rediss://`, or `unix://` address; '' for none.
+		 */
+		return (string) apply_filters( 'wp_sync_sse_redis_url', '' !== $configured ? $configured : self::object_cache_url() );
+	}
+
+	/**
+	 * The address of the Redis a persistent object cache drop-in uses, read
+	 * from the constants the Redis Object Cache plugin documents
+	 * (WP_REDIS_HOST, WP_REDIS_PORT, WP_REDIS_PASSWORD, WP_REDIS_SCHEME,
+	 * WP_REDIS_PATH). Empty when there is no persistent cache, when no host
+	 * is configured, or when the cache is a cluster, replica set, or
+	 * sentinel group the plugin's small client does not speak.
+	 *
+	 * @param array|null $settings The drop-in settings (tests); null reads the constants.
+	 * @return string Redis URL, or '' when none applies.
+	 */
+	public static function object_cache_url( ?array $settings = null ): string {
+		$settings = $settings ?? self::object_cache_settings();
+		if ( empty( $settings['persistent'] ) || ! empty( $settings['cluster'] ) ) {
+			return '';
+		}
+		$scheme = (string) ( $settings['scheme'] ?? 'tcp' );
+		if ( 'unix' === $scheme ) {
+			$path = (string) ( $settings['path'] ?? $settings['host'] ?? '' );
+			return '' === $path ? '' : 'unix://' . $path;
+		}
+		$host = (string) ( $settings['host'] ?? '' );
+		if ( '' === $host ) {
+			return '';
+		}
+		$password = $settings['password'] ?? '';
+		$userinfo = '';
+		if ( is_array( $password ) && 2 === count( $password ) ) {
+			$userinfo = rawurlencode( (string) $password[0] ) . ':' . rawurlencode( (string) $password[1] ) . '@';
+		} elseif ( is_string( $password ) && '' !== $password ) {
+			$userinfo = ':' . rawurlencode( $password ) . '@';
+		}
+		return ( 'tls' === $scheme ? 'rediss' : 'redis' ) . '://' . $userinfo . $host . ':' . (int) ( $settings['port'] ?? 6379 );
+	}
+
+	/**
+	 * The Redis object cache drop-in's settings as this site defines them.
+	 *
+	 * @return array Settings for object_cache_url().
+	 */
+	public static function object_cache_settings(): array {
+		$constant = static function ( string $name ) {
+			return defined( $name ) ? constant( $name ) : null;
+		};
+		return array(
+			'persistent' => (bool) wp_using_ext_object_cache(),
+			'cluster'    => defined( 'WP_REDIS_CLUSTER' ) || defined( 'WP_REDIS_SERVERS' ) || defined( 'WP_REDIS_SENTINEL' ),
+			'scheme'     => $constant( 'WP_REDIS_SCHEME' ) ?? 'tcp',
+			'host'       => $constant( 'WP_REDIS_HOST' ),
+			'port'       => $constant( 'WP_REDIS_PORT' ) ?? 6379,
+			'path'       => $constant( 'WP_REDIS_PATH' ),
+			'password'   => $constant( 'WP_REDIS_PASSWORD' ),
+		);
 	}
 
 	/** Register storage notices and publish after request work is complete. */
