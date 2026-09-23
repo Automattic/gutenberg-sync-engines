@@ -2542,9 +2542,11 @@ describe( 'polling-manager', () => {
 				onStatusChange: jest.fn(),
 			} );
 
-			// Let polling settle into a parked pure-receive exchange (the
-			// stream reissue is 50 ms; update-carrying calls resolve).
-			await jest.advanceTimersByTimeAsync( 120 );
+			// Let polling settle into a parked pure-receive exchange: the
+			// first second after the room registered is the settling
+			// window (ordinary requests), then the stream reissues every
+			// 50 ms; update-carrying calls resolve.
+			await jest.advanceTimersByTimeAsync( 1100 );
 			const parkedCalls = mockPostSyncUpdate.mock.calls.length;
 			expect( parkedCalls ).toBeGreaterThan( 0 );
 			expect( signals[ parkedCalls - 1 ] ).toBeDefined();

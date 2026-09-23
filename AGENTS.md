@@ -74,7 +74,10 @@ This plugin provides:
   head cursor) when every peer is reachable. SSE turns it off while its
   stream is up (its handshake signals ride the heartbeat, never a poll),
   and a solo SSE tab goes quiet like short polling, closing its stream.
-  Rules and failure cases: `docs/plan/advisory-channel.md`.
+  For the first second after a room registers the tab receives over
+  ordinary requests (`SSE_SETTLE_MS`), so the rooms registering one by
+  one at load open ONE stream, not one per room. Rules and failure
+  cases: `docs/plan/advisory-channel.md`.
   The websocket link can end at a host's OWN relay instead of the
   daemon: with a `WP_SYNC_WEBSOCKET_ACCESS_TOKEN_SECRET` configured
   (constant, env, or the `wp_sync_websocket_access_token_secret` filter),

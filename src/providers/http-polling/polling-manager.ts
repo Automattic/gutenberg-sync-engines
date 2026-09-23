@@ -577,14 +577,10 @@ function nextScheduledDelay(): number | null {
 		if ( Date.now() >= fastDiscoveryUntil ) {
 			return null;
 		}
-		return sseMode && sseExchange.available
-			? STREAM_REISSUE_MS
-			: POLLING_INTERVAL_IN_MS;
+		return sseMode ? sseDelay() : POLLING_INTERVAL_IN_MS;
 	}
 	if ( sseMode ) {
-		return sseExchange.available
-			? STREAM_REISSUE_MS
-			: POLLING_INTERVAL_IN_MS;
+		return sseDelay();
 	}
 	if ( advisoryCoversEveryone() ) {
 		return null;
@@ -902,6 +898,38 @@ function installAdvisoryHooks(): void {
  */
 let sseMode = false;
 const sseExchange = new SseExchange();
+
+/*
+ * After a room registers, the tab receives over ordinary requests for a
+ * moment instead of opening a stream. The editor registers its rooms one
+ * by one at load and its presence fills in right after, and each of those
+ * would otherwise close and reopen the stream (two or three throwaway
+ * streams per tab, each costing the server a worker, a subscription, and
+ * a full read). Once the room set has been still for this long, one
+ * stream opens with all of it; the bootstrap reads ride the requests.
+ */
+const SSE_SETTLE_MS = 1000;
+let sseSettleUntil = 0;
+
+/**
+ * Whether the next pure receive should open (or read from) the stream.
+ */
+function sseStreamReady(): boolean {
+	return sseMode && sseExchange.available && Date.now() >= sseSettleUntil;
+}
+
+/**
+ * The delay before the next exchange under SSE: right behind each stream
+ * event; the rest of the settling window when one is open; the polling
+ * interval while receiving runs on requests because no stream could be
+ * opened.
+ */
+function sseDelay(): number {
+	if ( ! sseExchange.available ) {
+		return POLLING_INTERVAL_IN_MS;
+	}
+	return Math.max( STREAM_REISSUE_MS, sseSettleUntil - Date.now() );
+}
 
 /**
  * Select SSE receiving with ordinary REST sends.
@@ -1243,7 +1271,7 @@ function poll(): void {
 			parkSignal = inFlightParkController.signal;
 		}
 		try {
-			const { rooms, advisory } = sseMode
+			const { rooms, advisory } = sseStreamReady()
 				? await sseExchange.exchange( payload, parkSignal )
 				: await postSyncUpdate( payload, parkSignal );
 			inFlightParkController = null;
@@ -1857,7 +1885,12 @@ function registerRoom( {
 	session.onLocalUpdate( onLocalUpdate );
 	roomStates.set( room, roomState );
 	if ( sseMode ) {
+		// Let the room set settle before a stream (re)opens: the new
+		// room's bootstrap rides an ordinary request meanwhile, and an
+		// open stream would not cover it.
+		sseSettleUntil = Date.now() + SSE_SETTLE_MS;
 		abortParkedStream();
+		sseExchange.close();
 	}
 
 	if ( ! areListenersRegistered ) {

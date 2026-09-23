@@ -237,8 +237,12 @@ Redis publish. Redis restart, deploy, and truncated SSE events cannot remove
 stored edits. A disconnected browser's unsent edits retain the existing
 engine recovery rules; a page reload can still lose unsent local edits.
 
-Local edits close the receive stream, use the normal `/updates` request, and
-resume the stream after that response is applied. This prevents overlapping
+For the first second after a tab joins a room it receives over ordinary
+requests: the editor registers its rooms one by one at load and the tab's
+presence fills in right after, and each would otherwise close and reopen
+the stream. Once the room set has been still for a second, one stream opens
+covering all of it. Local edits close the receive stream, use the normal
+`/updates` request, and resume the stream after that response is applied. This prevents overlapping
 responses from moving a room's cursor backward. Redis failures switch receiving
 to polling (only a stream that cannot be opened at all does this; a Redis
 outage is handled server-side by the storage checks); the browser retries
