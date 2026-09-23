@@ -301,3 +301,51 @@ jobs:
           name: e2e-websocket-artifacts
           path: artifacts/
           retention-days: 7
+
+  e2e-sse:
+    name: End-to-end server-sent events (Redis)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            gutenberg/package-lock.json
+
+      - name: Install plugin dependencies
+        run: npm ci
+
+      - name: Install and build the vendored Gutenberg subtree
+        run: |
+          cd gutenberg
+          npm ci --ignore-scripts
+          npm run build
+
+      - name: Build the plugin bundle
+        run: npm run build
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      # The tests config's afterStart hook starts Redis beside the site.
+      - name: Start wp-env (tests)
+        run: npm run env:tests start
+
+      # The sse-only suite selects the SSE transport on the tests site for
+      # its duration (global setup) and restores the previous one after
+      # (global teardown); it refuses to start without the Redis container.
+      - name: Playwright (sse-only)
+        run: npm run test:e2e:sse
+
+      - name: Upload test artifacts
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-sse-artifacts
+          path: artifacts/
+          retention-days: 7

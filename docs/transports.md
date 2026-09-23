@@ -181,3 +181,8 @@ end before a held request is logged at shutdown.
 Add `--recovery` to the transport benchmark to interrupt the receiving tab,
 accept an edit while it is offline, and require it to catch up without a reload.
 The JSON report includes the recovery time separately from normal edit latency.
+
+The sse-only e2e suite (`npm run test:e2e:sse`) selects this transport on the
+tests site for its duration and restores the previous one afterwards. It needs
+the Redis container the tests env starts, and refuses to run without it. The
+fuzzer sweeps `sse` with the same rule.

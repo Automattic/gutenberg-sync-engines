@@ -972,6 +972,10 @@ function handleBeforeUnload(): void {
 function handlePageHide(): void {
 	cancelHiddenFlush();
 	if ( sseMode ) {
+		// Drop the stream on purpose: through the park signal, so the
+		// exchange in flight sees a deliberate abort (no failure backoff,
+		// no "will retry" error logged as the page goes away).
+		abortParkedLongPoll();
 		sseExchange.close();
 	}
 	const rooms = Array.from( roomStates.entries() ).map(

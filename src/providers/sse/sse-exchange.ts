@@ -72,6 +72,17 @@ const RETRY_MAX_MS = 60000;
 const INACTIVITY_MS = 25000;
 
 /**
+ * What the e2e suite and a curious developer can read off the page:
+ * whether a stream is open, how many sync events it has delivered, and
+ * the last applied cursor per room.
+ */
+interface SseDebugState {
+	open: boolean;
+	events: number;
+	rooms: Record< string, number >;
+}
+
+/**
  * A receive stream shared by the polling manager's sequential exchanges.
  * Sending closes it first, so a POST and a stream never apply overlapping
  * cursor ranges. Normal polling remains available while Redis is down.
@@ -83,7 +94,18 @@ export class SseExchange {
 	private cursors = new Map< string, number >();
 	private retryAfter = 0;
 	private failures = 0;
+	private eventCount = 0;
 	private deadline?: ReturnType< typeof setTimeout >;
+
+	private publishState(): void {
+		(
+			window as Window & { __wpSyncSseState?: SseDebugState }
+		 ).__wpSyncSseState = {
+			open: !! this.events,
+			events: this.eventCount,
+			rooms: Object.fromEntries( this.cursors ),
+		};
+	}
 
 	private resetTimeout = (): void => {
 		clearTimeout( this.deadline );
@@ -105,6 +127,7 @@ export class SseExchange {
 		this.events = undefined;
 		this.signature = '';
 		this.cursors.clear();
+		this.publishState();
 	}
 
 	public async exchange(
@@ -175,6 +198,7 @@ export class SseExchange {
 						this.resetTimeout
 					);
 					this.signature = signature;
+					this.publishState();
 				}
 				const next = await this.events.next();
 				if ( signal?.aborted ) {
@@ -185,6 +209,8 @@ export class SseExchange {
 						this.cursors.set( room.room, room.end_cursor );
 					}
 					this.failures = 0;
+					this.eventCount++;
+					this.publishState();
 					return next.value;
 				}
 				this.close();

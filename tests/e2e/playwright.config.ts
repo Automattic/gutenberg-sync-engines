@@ -46,9 +46,10 @@ export default defineConfig( {
 		// failing call.
 		navigationTimeout: 30_000,
 	},
-	// WebSocket-transport specs need the test WS provider + sync server and
-	// run only under playwright.rtc-websocket.config.ts.
-	testIgnore: '**/specs/websocket-only/**',
+	// The transport-specific suites select their transport on the tests
+	// site themselves: websocket-only under playwright.rtc-websocket.config.ts
+	// (which also runs the daemon), sse-only under playwright.rtc-sse.config.ts.
+	testIgnore: [ '**/specs/websocket-only/**', '**/specs/sse-only/**' ],
 	webServer: {
 		...baseConfig.webServer,
 		// Start this plugin's TESTS wp-env (Gutenberg subtree + this

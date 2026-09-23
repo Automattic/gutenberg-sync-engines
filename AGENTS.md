@@ -415,6 +415,8 @@ npm run test:php            # PHPUnit in the wp-env tests container
 npm run test:e2e            # Playwright: two-browser collaboration (+ http-only)
 npm run test:e2e:websocket  # Playwright: websocket-only suite (test WS provider
                             # plugin + y-websocket daemon, auto-started)
+npm run test:e2e:sse        # Playwright: sse-only suite (selects the SSE
+                            # transport on the tests site; needs its Redis)
 ```
 
 **Iterate at the cheapest layer that can catch the change.** The ladder,
@@ -502,6 +504,15 @@ secret; `collaboration-websocket-advisory-relay.spec.ts` activates
 the `tests/e2e/plugins/advisory-relay-access-token.php` fixture (same
 secret, socket URL aimed at the relay) for its duration, so the
 relay lane never touches the daemon's auth path.
+`tests/e2e/specs/sse-only/` runs only under `test:e2e:sse`
+(`playwright.rtc-sse.config.ts`): its global setup runs the default one
+and then `tests/e2e/bin/rtc-sse-transport.mjs --select`, which refuses
+to run without the tests env's Redis container and selects the SSE
+transport on the tests site; the global teardown restores the previous
+transport from the same state file. The specs read the exchange's
+`window.__wpSyncSseState` (open, events, rooms) the way the websocket
+specs read `__wpSyncWsState`. The fuzzer sweeps `sse` by default and
+refuses an sse combo without Redis.
 (The old y-websocket PEER-relay fixture lane — the test WS provider
 plugin plus `rtc-test-ws-sync-server.mjs` — only demonstrated
 client-merging engines and none remains; the fixture files are kept

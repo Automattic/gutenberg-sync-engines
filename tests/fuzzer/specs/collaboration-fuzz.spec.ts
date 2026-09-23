@@ -1265,8 +1265,10 @@ async function waitForDiscovery(
 				.waitFor( { timeout: DISCOVERY_TIMEOUT_MS } )
 		)
 	);
-	if ( TRANSPORT === 'websocket' ) {
-		// Sync rides WS frames; waitForConvergence covers document sync.
+	if ( TRANSPORT === 'websocket' || TRANSPORT === 'sse' ) {
+		// Sync rides WS frames, or one long-lived stream response per tab
+		// that answers only when it ends; waitForConvergence covers
+		// document sync.
 		return;
 	}
 	// The fixture's waitForMutualDiscovery iterates ITS page list, which can

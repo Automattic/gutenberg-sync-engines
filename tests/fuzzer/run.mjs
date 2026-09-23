@@ -73,7 +73,12 @@ const DEFAULT_ENGINES = [ 'intent-log', 'yjs-server', 'de-rtc' ];
  * doc that documents the gap.
  */
 const ENGINE_CAPABILITIES = {};
-const DEFAULT_TRANSPORTS = [ 'http-polling', 'http-long-polling', 'websocket' ];
+const DEFAULT_TRANSPORTS = [
+	'http-polling',
+	'http-long-polling',
+	'sse',
+	'websocket',
+];
 
 const CLI_OPTIONS = {
 	engines: { type: 'string' },
@@ -150,7 +155,7 @@ function printUsage() {
 			'Usage: npm run fuzz -- [options]',
 			'',
 			'  --engines=a,b        Engines to sweep (default: intent-log,yjs-server,de-rtc)',
-			'  --transports=a,b     Transports to sweep (default: http-polling,http-long-polling,websocket)',
+			'  --transports=a,b     Transports to sweep (default: http-polling,http-long-polling,sse,websocket)',
 			'  --combos=e/t,...     Explicit engine/transport pairs (overrides the cross product)',
 			'  --seeds=N            Seeds per combo (default: 5)',
 			'  --seed-start=N       First seed (default: 1)',
@@ -421,6 +426,30 @@ async function wipeSyncRooms() {
 	const count = Number.parseInt( stdout.trim(), 10 ) || 0;
 	await runWpCli( [ 'collaboration', 'storage', 'reset', '--yes' ] );
 	return count;
+}
+
+/**
+ * The SSE transport wakes its streams through Redis, which the tests
+ * config's afterStart hook runs as a sibling container of the env
+ * (`<work directory name>-redis`). Without it every tab silently
+ * receives over polling, and an sse combo would certify nothing.
+ *
+ * @param {string} workDirectory The tests env's wp-env work directory.
+ */
+function assertRedisRunning( workDirectory ) {
+	const container = `${ path.basename( workDirectory ) }-redis`;
+	const state = spawnSync(
+		'docker',
+		[ 'inspect', '-f', '{{.State.Running}}', container ],
+		{ encoding: 'utf8' }
+	);
+	if ( 0 !== state.status || 'true' !== state.stdout.trim() ) {
+		throw new Error(
+			`sse combos need Redis, but container ${ container } is ${
+				0 === state.status ? 'stopped' : 'absent'
+			} — npm run env:tests start (its afterStart hook runs npm run redis:start)`
+		);
+	}
 }
 
 function stopWsDaemon() {
@@ -741,6 +770,10 @@ async function main() {
 			const wiped = await wipeSyncRooms();
 			if ( wiped ) {
 				log( `Emptied ${ wiped } sync-storage room(s).` );
+			}
+
+			if ( combo.transport === 'sse' ) {
+				assertRedisRunning( workDirectory );
 			}
 
 			// The daemon caches options at boot: start it AFTER the engine
