@@ -22,7 +22,9 @@ edit-to-visible latency as a user experiences it.
   typing). The idle phase is the steady-state carrying cost per collaborator
   that hosts should size for. Byte counts are message bodies only; HTTP
   headers add roughly another 0.5–1 KB per request on top.
-- **Observed transport** — self-labeled from the traffic actually seen
+- **Observed transport** — advisory WebSocket frames count toward traffic
+  but do not establish a WebSocket content transport. Content `sync` frames
+  are required. The transport is self-labeled from the traffic actually seen
   (websocket frames / `/sse` streams / `/updates`), and compared against the
   requested transport. A mismatch usually means a
   `WP_COLLABORATION_TRANSPORT` constant/env override on the site, or a

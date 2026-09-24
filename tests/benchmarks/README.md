@@ -6,13 +6,14 @@ One command runs everything here:
 npm run bench
 ```
 
-By default that prints **the host cost report** — the small set of
-numbers someone hosting this plugin actually needs, each measured as
-the difference against the workflow the plugin replaces:
+By default that prints **the host cost report** — the small set of numbers
+someone hosting this plugin actually needs, each measured as the difference
+against the workflow the plugin replaces:
 
 - extra requests per minute, per person editing (and per idle open tab);
-- extra network traffic (KB/min);
-- extra server CPU per minute;
+- HTTP body, SSE, and WebSocket payload traffic (KiB/min), excluding
+  headers, protocol overhead, compression effects, and WebRTC traffic;
+- extra PHP CPU time per minute (not database, Redis, or relay CPU);
 - the extra share of one PHP worker held;
 - peak PHP memory per request;
 - options-cache invalidations per minute (every options-API write
@@ -20,12 +21,12 @@ the difference against the workflow the plugin replaces:
   object cache — the plugin's lock and counter primitives deliberately
   bypass that API, and this row proves it);
 - database queries per minute — every query the tagged requests ran,
-  WordPress load included, per person;
+  from mu-plugin load onward, per person;
 - database disk I/O per minute — data-file reads, writes, and fsyncs,
   sampled from the database server's own InnoDB counters at span
-  boundaries. Fsyncs are the number that dominates real-world burst
-  IOPS (every write transaction forces at least one) — hold fsyncs/min
-  against a hosting plan's IOPS ceiling. The counters are
+  boundaries. Fsyncs measure database durability work; group commit and database
+  settings affect how transactions share that work — hold fsyncs/min
+  against the host's storage telemetry, not as a direct device IOPS count. The counters are
   server-global, so the rows are trustworthy only when the run is the
   database's only traffic; data-file reads/writes can honestly read 0
   over short spans (reads of 0 mean the working set fit in memory,
@@ -36,92 +37,99 @@ the difference against the workflow the plugin replaces:
   (`php_io_reads`/`php_io_writes`) — ~0 with a warm opcache, which is
   exactly the column that spikes in the cold-opcache-after-deploy
   scenario;
-- storage held per collaborative post at rest, and a derived
+- logical row storage held per collaborative post at rest, and a derived
   editors-per-worker capacity estimate (whole-job totals for producing
   the same final document land in the `json=` report as `engine.job`).
 
-The workload model follows the lowest-common-denominator assumptions
-the plugin itself makes: HTTP short-polling is the default transport
-because it works everywhere, every request is an authenticated POST
-(nothing is HTTP-cacheable), no object cache is assumed, and the load
-scales per editor. Nothing here depends on wp-cron: history is bounded
-on the write path, so a quiet site with a cron that never fires holds
-exactly what the disk-per-room line reports.
+The workload model follows the lowest-common-denominator assumptions the
+plugin itself makes: HTTP short-polling is the default transport because it
+works everywhere, every request is an authenticated POST (nothing is HTTP-
+cacheable), no object cache is assumed, and the load scales per editor.
+Nothing here depends on wp-cron: history is bounded on the write path, so a
+quiet site with a cron that never fires holds exactly what the logical room-
+storage line reports. This is row payload size, not allocated disk space
+including indexes and database overhead.
 
-Reading the report: server-side rows cover every tagged PHP request
-the editor windows make — page loads, heartbeat, autosaves, sync —
-while static files never reach PHP and appear only in the client-side
-requests and network rows. Compare runs only across identical
-environments; the report's environment block names the versions to
-quote. The report measures ONE engine per run (`engine=`) so its
-baseline/sync comparison stays a single readable pair — comparing
-engines against each other is the engines suite's job.
+Reading the report: the editing and idle tables start after editor setup, so
+they exclude initial page-load and session-join costs. Tagged setup requests
+remain in the raw log. CPU and query measurements start when the measurement
+mu-plugin loads; earlier WordPress bootstrap work is excluded. HTTP requests
+and WebSocket frames have separate rows. Socket payload bytes include
+advisory messages, but only content-sync frames establish that the content
+transport is WebSocket.
 
-Fleet math: the load scales with open editor tabs, so capacity
-planning starts from the per-tab request rate. With the plugin active,
-an open editor polls every 4 seconds while its person edits alone
-(the solo cadence exists only to notice a second person arriving —
-`src/providers/http-polling/config.ts`), every second while
-collaborators are present, and every 25 seconds from a backgrounded
-tab. Per day that is roughly 21,600 requests for a focused solo tab,
-86,400 for a collaborating one, and 3,500 backgrounded; WordPress's
-own editor heartbeat — present with or without this plugin — is one
-request per 15 seconds focused, about 5,800 per day. For figures from
-your own run, multiply the idle table's requests/min by 1,440, then by
-your fleet's typical count of open editor tabs for the platform total.
-The Settings → Collaboration polling interval (or a
-`polling-interval=` run) stretches the with-collaborators term
-proportionally. Editing alone is the overwhelmingly common case, so
-the solo term dominates fleet totals: measure it directly with
-`windows=1`, where the delta is what the plugin costs an editor who is
-alone. Issue [#72](https://github.com/Automattic/gutenberg-sync-engines/issues/72)
-(presence detection through the existing heartbeat) would collapse
-that solo term to the heartbeat baseline — this report is the
-before/after measurement for it.
+Server totals are **unavailable**, not zero, when the baseline was not
+measured, an SSE stream was used, or a WebSocket was used (including an
+advisory socket). SSE shutdown logs cannot divide a request's CPU, queries,
+or occupied worker time between phases; persistent socket servers run
+outside those logs. Raw request rows are retained for inspection, but the
+report suppresses server comparisons, whole-job CPU totals, and capacity
+estimates in these cases. Database I/O counters remain separate server-
+global measurements; they are not attributed request-log costs. They also
+include the measurement logger's own database writes. Use an isolated
+database and keep the same measurement setup in both phases.
 
-It runs two real-browser phases against a live site (the tests env:
-`npm run env:tests start`). The **baseline** is the same number of
-people producing the same document the old way — editing in series
-with the plugin deactivated: each person types their part, saves, and
-hands off (the post lock forces exactly this turn-taking today). Then
-the **sync** phase: the plugin active and the same `windows=` people
-collaborating live on the chosen engine, typing the same scripts — so
-both phases end with a document of the same size and shape, and the
-delta isolates what real-time collaboration itself costs. The RESULTS
-section prints two markdown tables (editing, then idle), columns
-baseline/sync/delta/delta-%, followed by the summary stats (room
-storage, derived capacity).
-The run opens by stating the configuration it resolved (engine,
-transport, durations, polling), marking defaults. Arguments target
-what you need: `--engine=` (one per run — comparing engines is
-`--suite=engines`), `--transport=`, `--windows=`, `--edit-seconds=`/`--idle-seconds=`,
-`--polling-interval=` to override the HTTP short-polling interval for
-the run (restored afterwards), `--metrics=` to print only some rows, `--json=` for the full
-data — `npm run bench -- --help` prints the complete list. The server-side
-columns come from the whole-request measurement mu-plugin
-(`tests/benchmarks/host/mu-bench-log.php`, mapped into mu-plugins by
-this repo's wp-env configs),
-which measures every tagged request even with the plugin deactivated;
-that is what makes CPU, worker, and memory true over-baseline deltas.
-One trap: it is a single-FILE mount, and Docker file mounts go stale
-when git deletes or recreates the file (checking out an older commit,
-rebasing) — if the report says the mu-plugin recorded nothing, restart
-the env.
+The JSON report (`schemaVersion: 2`) records content verification, coverage
+limits, delivery choice, and polling setting alongside the raw data. Compare
+runs only across identical environments. The report measures ONE engine per
+run (`engine=`); comparing engines is the engines suite's job.
 
-Two honest limits on where the numbers come from. Runs against wp-env
-are a BEST case — warm opcache, local disk, a database one socket
-away; real shared hosting has cold opcache after deploys, slower disk,
-and noisy neighbors. The lane is portable by design: point
-`WP_BASE_URL` (with `WP_USERNAME`/`WP_PASSWORD`) at a staging copy of
-the real hosting, install the mu-plugin there, define
-`GUTENBERG_SYNC_ENGINES_DIAGNOSTICS`, and the same command measures
-that environment — cold-cache and slow-disk behavior are properties of
-the host, measured there rather than simulated here. And the
-editors-per-worker capacity line is DERIVED from the measured worker
-share, which assumes requests do not queue; the measured check for the
-queueing knee is `npm run bench -- --suite=engines --concurrency=N`. Two honest limits, printed with the report: server rows cover
-requests that reach PHP (static files appear only in the client-side
-rows), and runs are only comparable across identical environments.
+Fleet planning must use measured rates for the current configuration. The
+advisory channel can stop scheduled polling when an editor is alone and
+trigger reads on demand when peers are reachable. A missing peer link uses
+the configured polling interval instead. The site default is 5 seconds; the
+e2e test setup sets 1 second. Do not project daily traffic from the old
+fixed 4-second solo / 1-second collaborative cadence.
+
+Run `windows=1` to measure solo editing and idle cost, then measure several
+collaborators. Record the delivery choice and configured polling setting from
+the JSON report. Multiply each scenario's measured rate by the time and
+open-tab count for that scenario across your platform. The host runner does
+not yet provide a separate background-tab workload.
+
+It runs two real-browser phases against a live site (the tests env: `npm run
+env:tests start`). The **baseline** is the same number of people producing
+the same document the old way — editing in series with the plugin
+deactivated: each person completes a fixed typing script, saves, and hands
+off (the post lock forces exactly this turn-taking today). Then the **sync**
+phase: the plugin active and the same `windows=` people collaborating live
+on the chosen engine, typing the same scripts — so both phases must finish
+with the same paragraph text. The script is built before typing: a slower
+browser takes longer rather than producing fewer edits. Before each save,
+every open editor must contain the expected text; a REST read then verifies
+the saved post. Missing, duplicate, reordered, or extra text, typing errors,
+and failed saves abort the run without a cost report. Engine-specific block
+metadata is excluded from this text check. The measured editing duration
+includes catch-up and save verification. The RESULTS section prints two
+markdown tables (editing, then idle), columns baseline/sync/delta/delta-%,
+followed by the summary stats (room storage, derived capacity). The run
+opens by stating the configuration it resolved (engine, transport,
+durations, polling), marking defaults. Arguments target what you need:
+`--engine=` (one per run — comparing engines is `--suite=engines`),
+`--transport=`, `--windows=`, `--edit-seconds=`/`--idle-seconds=`,
+`--polling-interval=` to override the HTTP short-polling interval for the
+run (restored afterwards), `--metrics=` to print only some rows, `--json=`
+for the full data — `npm run bench -- --help` prints the complete list. The
+server-side columns come from the whole-request measurement mu-plugin
+(`tests/benchmarks/host/mu-bench-log.php`, mapped into mu-plugins by this
+repo's wp-env configs), which measures every tagged request even with the
+plugin deactivated; that is what makes CPU, worker, and memory true over-
+baseline deltas. One trap: it is a single-FILE mount, and Docker file mounts
+go stale when git deletes or recreates the file (checking out an older
+commit, rebasing) — if the report says the mu-plugin recorded nothing,
+restart the env.
+
+Local wp-env results describe that environment only. Point `WP_BASE_URL`
+(with `WP_USERNAME`/`WP_PASSWORD`) at a staging copy of the real hosting,
+install the mu-plugin, and define `GUTENBERG_SYNC_ENGINES_DIAGNOSTICS` to
+measure that environment. The baseline temporarily deactivates the plugin;
+use a disposable site or staging copy.
+
+The editors-per-worker line is an estimate from measured request duration.
+It assumes no queueing and reserves no spare capacity.
+`npm run bench -- --suite=engines --concurrency=N` measures engine and
+database contention through parallel CLI processes. It does not test the web server or PHP
+worker queue. Neither number is a tested hosting limit.
 
 Two more **benchmarks** live behind `--suite=` — measurements that inform
 a real decision (which engine, which transport):

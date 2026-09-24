@@ -14,7 +14,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import os from 'node:os';
-import path from 'node:path';
+import nodePath from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const BASE = process.env.WP_BASE_URL ?? 'http://localhost:8889';
@@ -71,6 +71,8 @@ export function attachCounters( page ) {
 		// What the last stream slept on, from the X-WP-Sync-SSE-Wait
 		// response header: redis | version-cache | version-table | reads.
 		sseWait: null,
+		wsSyncFramesSent: 0,
+		wsSyncFramesReceived: 0,
 		wsFramesSent: 0,
 		wsFramesReceived: 0,
 		wsBytesSent: 0,
@@ -125,12 +127,21 @@ export function attachCounters( page ) {
 			typeof frame.payload === 'string'
 				? Buffer.byteLength( frame.payload )
 				: frame.payload.length;
+		const isSyncFrame = ( frame ) => {
+			try {
+				return JSON.parse( frame.payload.toString() ).type === 'sync';
+			} catch {
+				return false;
+			}
+		};
 		socket.on( 'framesent', ( frame ) => {
 			c.wsFramesSent += 1;
+			c.wsSyncFramesSent += Number( isSyncFrame( frame ) );
 			c.wsBytesSent += frameBytes( frame );
 		} );
 		socket.on( 'framereceived', ( frame ) => {
 			c.wsFramesReceived += 1;
+			c.wsSyncFramesReceived += Number( isSyncFrame( frame ) );
 			c.wsBytesReceived += frameBytes( frame );
 		} );
 	} );
@@ -331,7 +342,17 @@ export async function configureSettings( page, engine, transport ) {
 		await page.click( '#submit' );
 		await page.waitForURL( /settings-updated=true/ );
 	}
-	return { previous, active: wanted };
+	return {
+		previous,
+		active: {
+			...wanted,
+			delivery: await page
+				.locator(
+					'input[name="gutenberg_sync_engines_delivery"]:checked'
+				)
+				.inputValue(),
+		},
+	};
 }
 
 /**
@@ -669,7 +690,7 @@ export async function waitForSyncTraffic( page, counters, label ) {
 		return (
 			c.dataRequests >= 2 ||
 			( c.sseStreams > 0 && c.sseBytesReceived > 0 ) ||
-			c.wsFramesSent + c.wsFramesReceived >= 2
+			c.wsSyncFramesSent + c.wsSyncFramesReceived >= 2
 		);
 	};
 	while ( ! live() ) {
@@ -698,8 +719,8 @@ export function observeSseWait( counters ) {
 	return counters.snapshot().sseWait ?? 'none';
 }
 
-const REPO_ROOT = path.resolve(
-	path.dirname( fileURLToPath( import.meta.url ) ),
+const REPO_ROOT = nodePath.resolve(
+	nodePath.dirname( fileURLToPath( import.meta.url ) ),
 	'../../..'
 );
 const SSE_WAKE_OPTION = 'gutenberg_sync_engines_bench_sse_wake';
@@ -715,17 +736,20 @@ const SSE_WAKE_OPTION = 'gutenberg_sync_engines_bench_sse_wake';
 function wpEnvWorkDirectory( configBasename ) {
 	const home =
 		process.env.WP_ENV_HOME ||
-		path.join( os.homedir(), existsSync( '/snap' ) ? 'wp-env' : '.wp-env' );
-	const configFilePath = path.join( REPO_ROOT, configBasename );
+		nodePath.join(
+			os.homedir(),
+			existsSync( '/snap' ) ? 'wp-env' : '.wp-env'
+		);
+	const configFilePath = nodePath.join( REPO_ROOT, configBasename );
 	const hash = createHash( 'md5' ).update( configFilePath ).digest( 'hex' );
-	const legacy = path.join( home, hash );
+	const legacy = nodePath.join( home, hash );
 	if ( existsSync( legacy ) ) {
 		return legacy;
 	}
 	const variant = '.wp-env.tests.json' === configBasename ? '-tests' : '';
-	const descriptive = path.join(
+	const descriptive = nodePath.join(
 		home,
-		`wp-env-${ path.basename( REPO_ROOT ) }${ variant }-${ hash.slice(
+		`wp-env-${ nodePath.basename( REPO_ROOT ) }${ variant }-${ hash.slice(
 			0,
 			8
 		) }`
@@ -736,14 +760,18 @@ function wpEnvWorkDirectory( configBasename ) {
 	const needle = `${ REPO_ROOT }:`;
 	try {
 		for ( const entry of readdirSync( home ) ) {
-			const composeFile = path.join( home, entry, 'docker-compose.yml' );
+			const composeFile = nodePath.join(
+				home,
+				entry,
+				'docker-compose.yml'
+			);
 			try {
 				const compose = readFileSync( composeFile, 'utf8' );
 				if (
 					compose.includes( needle ) &&
 					compose.includes( configBasename )
 				) {
-					return path.join( home, entry );
+					return nodePath.join( home, entry );
 				}
 			} catch {
 				// Not a work directory; keep scanning.
@@ -771,7 +799,7 @@ export function wpEnvConfigForBase( base = BASE ) {
 		}
 		try {
 			const match = readFileSync(
-				path.join( dir, 'docker-compose.yml' ),
+				nodePath.join( dir, 'docker-compose.yml' ),
 				'utf8'
 			).match( /\$\{WP_ENV(?:_TESTS)?_PORT:-(\d+)\}:80/ );
 			if ( match && Number( match[ 1 ] ) === port ) {
@@ -787,9 +815,9 @@ export function wpEnvConfigForBase( base = BASE ) {
 /**
  * Runs a wp-cli command in the env that serves BASE.
  *
- * @param {string}   config     wp-env config basename.
- * @param {string[]} wpArgs     Arguments after `wp`.
- * @param {Object}   options    Options.
+ * @param {string}   config               wp-env config basename.
+ * @param {string[]} wpArgs               Arguments after `wp`.
+ * @param {Object}   options              Options.
  * @param {boolean}  options.allowFailure Return null instead of throwing.
  * @return {string|null} Trimmed stdout.
  */
@@ -805,14 +833,20 @@ export function wpCli( config, wpArgs, { allowFailure = false } = {} ) {
 				'wp',
 				...wpArgs,
 			],
-			{ cwd: REPO_ROOT, encoding: 'utf8', stdio: [ 'ignore', 'pipe', 'pipe' ] }
+			{
+				cwd: REPO_ROOT,
+				encoding: 'utf8',
+				stdio: [ 'ignore', 'pipe', 'pipe' ],
+			}
 		).trim();
 	} catch ( error ) {
 		if ( allowFailure ) {
 			return null;
 		}
 		throw new Error(
-			`wp ${ wpArgs.join( ' ' ) } failed: ${ error.stderr || error.message }`
+			`wp ${ wpArgs.join( ' ' ) } failed: ${
+				error.stderr || error.message
+			}`
 		);
 	}
 }
@@ -849,16 +883,24 @@ function currentHostCache( config ) {
  */
 export function configureHostCache( { cache = 'current', wake = 'auto' } ) {
 	if ( ! [ 'none', 'redis', 'current' ].includes( cache ) ) {
-		throw new Error( `cache= must be none, redis, or current (got ${ cache })` );
+		throw new Error(
+			`cache= must be none, redis, or current (got ${ cache })`
+		);
 	}
 	if ( ! [ 'auto', 'redis', 'cache', 'table' ].includes( wake ) ) {
-		throw new Error( `wake= must be auto, redis, cache, or table (got ${ wake })` );
+		throw new Error(
+			`wake= must be auto, redis, cache, or table (got ${ wake })`
+		);
 	}
 	if ( 'cache' === wake && 'redis' !== cache ) {
-		throw new Error( 'wake=cache measures the version counter in the object cache: it needs cache=redis' );
+		throw new Error(
+			'wake=cache measures the version counter in the object cache: it needs cache=redis'
+		);
 	}
 	if ( 'table' === wake && 'none' !== cache ) {
-		throw new Error( 'wake=table measures the version counter in the room-meta table: it needs cache=none' );
+		throw new Error(
+			'wake=table measures the version counter in the room-meta table: it needs cache=none'
+		);
 	}
 	if ( 'current' === cache && 'auto' === wake ) {
 		return null;
@@ -871,7 +913,10 @@ export function configureHostCache( { cache = 'current', wake = 'auto' } ) {
 	}
 	const previous = {
 		cache: currentHostCache( config ),
-		wake: wpCli( config, [ 'option', 'get', SSE_WAKE_OPTION ], { allowFailure: true } ) || 'auto',
+		wake:
+			wpCli( config, [ 'option', 'get', SSE_WAKE_OPTION ], {
+				allowFailure: true,
+			} ) || 'auto',
 	};
 	if ( 'current' !== cache && cache !== previous.cache ) {
 		setHostCache( config, cache );
@@ -897,19 +942,27 @@ export function restoreHostCache( state ) {
 
 function setHostCache( config, cache ) {
 	if ( 'redis' === cache ) {
-		wpCli( config, [ 'plugin', 'activate', 'redis-cache' ], { allowFailure: true } );
+		wpCli( config, [ 'plugin', 'activate', 'redis-cache' ], {
+			allowFailure: true,
+		} );
 	}
-	wpCli( config, [ 'redis', 'redis' === cache ? 'enable' : 'disable' ], { allowFailure: true } );
+	wpCli( config, [ 'redis', 'redis' === cache ? 'enable' : 'disable' ], {
+		allowFailure: true,
+	} );
 	if ( currentHostCache( config ) !== cache ) {
 		throw new Error(
-			`could not turn the Redis object cache drop-in ${ 'redis' === cache ? 'on' : 'off' } (is the redis-cache plugin installed and Redis running? npm run doctor)`
+			`could not turn the Redis object cache drop-in ${
+				'redis' === cache ? 'on' : 'off'
+			} (is the redis-cache plugin installed and Redis running? npm run doctor)`
 		);
 	}
 }
 
 function setSseWake( config, wake ) {
 	if ( 'auto' === wake ) {
-		wpCli( config, [ 'option', 'delete', SSE_WAKE_OPTION ], { allowFailure: true } );
+		wpCli( config, [ 'option', 'delete', SSE_WAKE_OPTION ], {
+			allowFailure: true,
+		} );
 		return;
 	}
 	wpCli( config, [ 'option', 'update', SSE_WAKE_OPTION, wake ] );
@@ -926,7 +979,7 @@ export function observeTransport( counters ) {
 	if ( c.sseStreams > 0 && c.sseBytesReceived > 0 ) {
 		return 'sse';
 	}
-	if ( c.wsFramesSent + c.wsFramesReceived > 0 ) {
+	if ( c.wsSyncFramesSent + c.wsSyncFramesReceived > 0 ) {
 		return 'websocket';
 	}
 	if ( c.dataRequests > 0 ) {
