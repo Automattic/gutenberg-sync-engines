@@ -85,6 +85,12 @@ repository is to measure it: run `npm run bench` for a report of what the
 plugin adds to a server on your own hardware, and `npm run bench -- --suite=engines`
 for the full engine-decision numbers.
 
+## Maintainers
+
+This plugin is maintained by the WordPress Core team, with contributions from
+the community. See the [CODEOWNERS](.github/CODEOWNERS) file for the current list
+of maintainers.
+
 ## Feedback
 
 Open GitHub issues or discuss in `#feature-realtime-collaboration` channel in
