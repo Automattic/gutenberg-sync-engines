@@ -757,6 +757,21 @@ class Tests_Collaboration_WpHttpPollingSyncServer extends WP_Test_REST_Controlle
 		remove_filter( 'wp_sync_awareness_timestamp_granularity', $wide );
 	}
 
+	public function test_a_check_in_reads_the_room_awareness_once() {
+		global $wpdb;
+		wp_set_current_user( self::$editor_id );
+
+		$queries = $this->record_queries( fn() => $this->dispatch_sync( array( $this->build_room( $this->get_post_room(), 1, 0, array( 'user' => 'one' ) ) ) ) );
+		$reads   = array_filter(
+			$this->queries_touching( $queries, $wpdb->sync_room_meta ),
+			static function ( string $query ) {
+				return 0 === stripos( ltrim( $query ), 'SELECT' ) && false !== strpos( $query, "'" . WP_Sync_Table_Storage::AWARENESS_KEY . "'" );
+			}
+		);
+
+		$this->assertCount( 1, $reads, 'The permission check and the awareness write share one read.' );
+	}
+
 	public function test_awareness_timestamps_round_up_to_the_bucket() {
 		$this->assertSame( 100, WP_HTTP_Polling_Sync_Server::awareness_timestamp( 100 ) );
 		$this->assertSame( 110, WP_HTTP_Polling_Sync_Server::awareness_timestamp( 101 ) );

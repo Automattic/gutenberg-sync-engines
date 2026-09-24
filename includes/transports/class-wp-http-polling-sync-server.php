@@ -151,6 +151,16 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		protected WP_Sync_Awareness $awareness;
 
 		/**
+		 * Each room's entries as the permission check read them, handed to
+		 * that room's awareness write in the same request so it does not
+		 * read them again, and dropped once used.
+		 *
+		 * @since n.e.x.t
+		 * @var array<string, array<int, array<string, mixed>>>
+		 */
+		private array $permission_reads = array();
+
+		/**
 		 * The presence lane deciding room lifetime (join/leave resets), or
 		 * null when the plugin's presence class is unavailable.
 		 *
@@ -329,16 +339,18 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 				);
 			}
 
-			$rooms           = $request['rooms'];
-			$wp_user_id      = get_current_user_id();
-			$forbidden_rooms = array();
+			$rooms                  = $request['rooms'];
+			$wp_user_id             = get_current_user_id();
+			$forbidden_rooms        = array();
+			$this->permission_reads = array();
 
 			foreach ( $rooms as $room ) {
 				$client_id = $room['client_id'];
 				$room      = $room['room'];
 
 				// Check that the client_id is not already owned by another user.
-				$existing_awareness = $this->awareness->entries( $room, self::AWARENESS_TIMEOUT );
+				$existing_awareness              = $this->awareness->entries( $room, self::AWARENESS_TIMEOUT );
+				$this->permission_reads[ $room ] = $existing_awareness;
 				foreach ( $existing_awareness as $entry ) {
 					if ( $client_id === $entry['client_id'] && $wp_user_id !== $entry['wp_user_id'] ) {
 						return new WP_Error(
@@ -851,10 +863,13 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		 * @return array<int, array<string, mixed>> Map of client ID to awareness state.
 		 */
 		private function process_awareness_update( string $room, int $client_id, ?array $awareness_update ): array {
+			$read = $this->permission_reads[ $room ] ?? null;
+			unset( $this->permission_reads[ $room ] );
+
 			// A null update is this client leaving the room.
 			$updated_awareness = null === $awareness_update
-				? $this->awareness->forget( $room, $client_id, self::AWARENESS_TIMEOUT )
-				: $this->awareness->put( $room, $client_id, $awareness_update, get_current_user_id(), self::AWARENESS_TIMEOUT );
+				? $this->awareness->forget( $room, $client_id, self::AWARENESS_TIMEOUT, $read )
+				: $this->awareness->put( $room, $client_id, $awareness_update, get_current_user_id(), self::AWARENESS_TIMEOUT, $read );
 
 			// Convert to client_id => state map for response.
 			$response = array();

@@ -132,15 +132,25 @@ if ( ! class_exists( 'WP_Sync_Awareness' ) ) {
 		 * @param int                  $user_id   The WordPress user behind it.
 		 * @param int                  $timeout   Age in seconds past which an
 		 *                                        entry is gone.
+		 * @param array|null           $read      What entries() returned for
+		 *                                        this room earlier in the same
+		 *                                        request, to save reading it
+		 *                                        again. Since n.e.x.t.
 		 * @return array<int, array<string, mixed>> The room's live entries.
 		 */
-		public function put( string $room, int $client_id, array $state, int $user_id, int $timeout ): array {
+		public function put( string $room, int $client_id, array $state, int $user_id, int $timeout, ?array $read = null ): array {
 			$backend = self::backend();
+			if ( $backend instanceof WP_Sync_Presence_API_Awareness_Backend ) {
+				return $backend->put( $room, $client_id, $state, $user_id, $timeout, $read );
+			}
 			if ( null !== $backend ) {
 				return $backend->put( $room, $client_id, $state, $user_id, $timeout );
 			}
 
-			$stored = $this->storage->get_awareness_state( $room );
+			// An earlier read has already dropped expired entries, so an
+			// unchanged room still compares equal and skips the write; the
+			// expired ones go with the next write that does happen.
+			$stored = $read ?? $this->storage->get_awareness_state( $room );
 			$live   = self::live( $stored, $timeout, $client_id );
 			$live[] = array(
 				'client_id'  => $client_id,
@@ -157,18 +167,21 @@ if ( ! class_exists( 'WP_Sync_Awareness' ) ) {
 		 *
 		 * @since 0.0.2
 		 *
-		 * @param string $room      Room identifier.
-		 * @param int    $client_id The client's sync id.
-		 * @param int    $timeout   Age in seconds past which an entry is gone.
+		 * @param string     $room      Room identifier.
+		 * @param int        $client_id The client's sync id.
+		 * @param int        $timeout   Age in seconds past which an entry is gone.
+		 * @param array|null $read      What entries() returned for this room
+		 *                              earlier in the same request. Since
+		 *                              n.e.x.t.
 		 * @return array<int, array<string, mixed>> The room's live entries.
 		 */
-		public function forget( string $room, int $client_id, int $timeout ): array {
+		public function forget( string $room, int $client_id, int $timeout, ?array $read = null ): array {
 			$backend = self::backend();
 			if ( null !== $backend ) {
 				return $backend->forget( $room, $client_id, $timeout );
 			}
 
-			$stored = $this->storage->get_awareness_state( $room );
+			$stored = $read ?? $this->storage->get_awareness_state( $room );
 
 			return $this->store( $room, $stored, self::live( $stored, $timeout, $client_id ) );
 		}

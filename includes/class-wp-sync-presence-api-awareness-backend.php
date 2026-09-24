@@ -127,11 +127,15 @@ if ( ! class_exists( 'WP_Sync_Presence_API_Awareness_Backend' ) ) {
 		 * @param int                  $user_id   The WordPress user behind it.
 		 * @param int                  $timeout   Age in seconds past which an
 		 *                                        entry is gone.
+		 * @param array|null           $read      What entries() returned for
+		 *                                        this room earlier in the same
+		 *                                        request, to save reading it
+		 *                                        again. Since n.e.x.t.
 		 * @return array<int, array<string, mixed>> The room's live entries.
 		 */
-		public function put( string $room, int $client_id, array $state, int $user_id, int $timeout ): array {
+		public function put( string $room, int $client_id, array $state, int $user_id, int $timeout, ?array $read = null ): array {
 			$now     = time();
-			$entries = $this->entries( $room, $timeout );
+			$entries = $read ?? $this->entries( $room, $timeout );
 			$refresh = max( 1, intdiv( $timeout, self::REFRESH_FRACTION ) );
 
 			foreach ( $entries as $index => $entry ) {

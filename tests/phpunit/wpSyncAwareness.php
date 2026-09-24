@@ -270,6 +270,34 @@ class Tests_Collaboration_WpSyncAwareness extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A check-in reads who is in the post once: the permission check's read
+	 * serves the awareness write that follows it.
+	 */
+	public function test_a_check_in_reads_the_presence_table_once(): void {
+		Fake_Presence_API::$enabled = true;
+
+		$request = new WP_REST_Request( 'POST', '/wp-sync/v1/updates' );
+		$request->set_body_params(
+			array(
+				'rooms' => array(
+					array(
+						'after'     => 0,
+						'awareness' => array( 'name' => 'Ada' ),
+						'client_id' => 7,
+						'room'      => $this->room(),
+						'updates'   => array(),
+					),
+				),
+			)
+		);
+		$response = rest_get_server()->dispatch( $request );
+
+		$this->assertSame( 200, $response->get_status() );
+		$this->assertSame( 1, Fake_Presence_API::$reads );
+		$this->assertArrayHasKey( 'gse-7', Fake_Presence_API::$rows[ $this->room() ] );
+	}
+
+	/**
 	 * Without the presence table the Presence API can neither read nor
 	 * write, so the backend stands down and the room array serves.
 	 */
@@ -427,11 +455,19 @@ class Fake_Presence_API {
 	 */
 	public static int $writes = 0;
 
+	/**
+	 * How many times the stand-in's rows have been read.
+	 *
+	 * @var int
+	 */
+	public static int $reads = 0;
+
 	public static function reset(): void {
 		self::$enabled   = false;
 		self::$has_table = true;
 		self::$rows      = array();
 		self::$writes    = 0;
+		self::$reads     = 0;
 	}
 
 	/**
@@ -476,6 +512,7 @@ if ( ! function_exists( 'wp_set_presence' ) ) {
 		if ( ! Fake_Presence_API::$has_table ) {
 			return array();
 		}
+		++Fake_Presence_API::$reads;
 		$cutoff  = time() - Fake_Presence_API::timeout( $timeout );
 		$entries = array();
 		foreach ( Fake_Presence_API::$rows[ $room ] ?? array() as $row ) {

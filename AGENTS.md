@@ -137,8 +137,8 @@ This plugin provides:
   (`wp_sync_awareness_timestamp_granularity`) and skips the write when a
   poll changes nothing, so an idle poll is read-only: with a persistent
   cache it runs the cursor snapshot plus the engine's own floor read
-  (two queries; six without a cache, seven before the skip). To
-  re-measure, dispatch a poll under the `query` filter as
+  (two queries; five without a cache, because the permission check's
+  awareness read also serves the write). To re-measure, dispatch a poll under the `query` filter as
   `tests/phpunit/wpHttpPollingSyncServer.php` does. `WP_Sync_Table_Schema` owns
   the lifecycle: activation creates the tables (dbDelta), a bumped
   `DB_VERSION` upgrades them on the next load, deactivation leaves them
