@@ -183,6 +183,19 @@ describe( 'polling-manager cadence', () => {
 	} );
 
 	afterEach( () => {
+		// Each test gets a fresh module, but the document is shared: drop
+		// the rooms so the module's visibilitychange listener goes with
+		// them, or a later test's dispatch would poll through every earlier
+		// module too.
+		for ( const room of [ 'test-room', 'test-room-2' ] ) {
+			pollingManager.unregisterRoom( room, {
+				sendDisconnectSignal: false,
+			} );
+		}
+		Object.defineProperty( document, 'visibilityState', {
+			configurable: true,
+			get: () => 'visible',
+		} );
 		jest.clearAllTimers();
 		jest.useRealTimers();
 	} );
@@ -675,6 +688,86 @@ describe( 'polling-manager cadence', () => {
 		expect( mockSseExchange.exchange ).toHaveBeenCalledTimes(
 			afterWindow + 1
 		);
+	} );
+
+	function setVisibility( state: 'hidden' | 'visible' ) {
+		Object.defineProperty( document, 'visibilityState', {
+			configurable: true,
+			get: () => state,
+		} );
+		document.dispatchEvent( new Event( 'visibilitychange' ) );
+	}
+
+	// A stream exchange that parks until the manager aborts it, the way a
+	// real stream waits for its next event.
+	function parkUntilAborted() {
+		mockSseExchange.exchange.mockImplementation(
+			( _payload, signal ) =>
+				new Promise( ( _resolve, reject ) => {
+					signal?.addEventListener( 'abort', () =>
+						reject( new DOMException( 'Aborted', 'AbortError' ) )
+					);
+				} )
+		);
+	}
+
+	it( 'SSE: a hidden tab drops its stream and receives at the background cadence; visible again reopens it at once', async () => {
+		setSseMode( true );
+		mockOthers = true;
+		mockPostSyncUpdate.mockResolvedValue( response( [ 1, 2 ] ) );
+		parkUntilAborted();
+		register();
+		await jest.advanceTimersByTimeAsync( 1000 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
+		expect( mockSseExchange.exchange ).toHaveBeenCalledTimes( 1 );
+		mockSseExchange.close.mockClear();
+
+		// Hidden: the parked stream is dropped on purpose (no failure, no
+		// backoff) and the tab receives over ordinary requests instead.
+		setVisibility( 'hidden' );
+		expect( mockSseExchange.close ).toHaveBeenCalled();
+		await jest.advanceTimersByTimeAsync( 0 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+		expect( mockSseExchange.exchange ).toHaveBeenCalledTimes( 1 );
+		// The background cadence, not the stream re-issue.
+		await jest.advanceTimersByTimeAsync( 24999 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+		await jest.advanceTimersByTimeAsync( 1 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 3 );
+		await jest.advanceTimersByTimeAsync( 25000 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 4 );
+		expect( mockSseExchange.exchange ).toHaveBeenCalledTimes( 1 );
+
+		// Visible again: the stream reopens at once.
+		setVisibility( 'visible' );
+		await jest.advanceTimersByTimeAsync( 0 );
+		expect( mockSseExchange.exchange ).toHaveBeenCalledTimes( 2 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 4 );
+	} );
+
+	it( 'SSE: a tab hidden while alone polls like short polling through the discovery window, then goes quiet', async () => {
+		setSseMode( true );
+		mockPostSyncUpdate.mockResolvedValue( response( [ 1 ] ) );
+		parkUntilAborted();
+		register();
+		await jest.advanceTimersByTimeAsync( 1000 );
+		expect( mockSseExchange.exchange ).toHaveBeenCalledTimes( 1 );
+		mockSseExchange.close.mockClear();
+
+		setVisibility( 'hidden' );
+		expect( mockSseExchange.close ).toHaveBeenCalled();
+		await jest.advanceTimersByTimeAsync( 0 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+		// Not streaming, so short polling's own rules: alone inside the
+		// discovery window is the solo interval, past it nothing at all —
+		// no stream, no timer.
+		await jest.advanceTimersByTimeAsync( 4000 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 3 );
+		await jest.advanceTimersByTimeAsync( 30000 );
+		const afterWindow = mockPostSyncUpdate.mock.calls.length;
+		await jest.advanceTimersByTimeAsync( 120000 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( afterWindow );
+		expect( mockSseExchange.exchange ).toHaveBeenCalledTimes( 1 );
 	} );
 
 	it( 'SSE: handshake signals ride the heartbeat, never a poll', async () => {

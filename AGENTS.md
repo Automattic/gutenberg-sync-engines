@@ -74,6 +74,15 @@ This plugin provides:
   head cursor) when every peer is reachable. SSE turns it off while its
   stream is up (its handshake signals ride the heartbeat, never a poll),
   and a solo SSE tab goes quiet like short polling, closing its stream.
+  A HIDDEN tab holds no stream either: `sseStreaming()` is false
+  while `document.visibilityState` is hidden, so the tab receives over
+  ordinary requests under short polling's own rules (the background
+  cadence, `POLLING_INTERVAL_BACKGROUND_TAB_IN_MS`, with the channel
+  left off), and `handleVisibilityChange`
+  drops the stream on hide through the deliberate-abort path
+  (`abortParkedStream()` then `sseExchange.close()`, as `handlePageHide`
+  does, so no failure is logged or backed off) and polls at once on
+  return, which reopens it.
   For the first second after a room registers the tab receives over
   ordinary requests (`SSE_SETTLE_MS`), so the rooms registering one by
   one at load open ONE stream, not one per room. Rules and failure
