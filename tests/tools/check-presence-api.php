@@ -1,7 +1,7 @@
 <?php
 /**
- * Drives this plugin's awareness and the advisory channel's tab list against
- * the REAL Presence API plugin, the other half of a PHPUnit suite that can
+ * Drives this plugin's awareness and the advisory channel's tab list and
+ * mailboxes against the REAL Presence API plugin, the other half of a PHPUnit suite that can
  * only use a stand-in.
  *
  * Usage (tests env, with the Presence API installed and active):
@@ -189,6 +189,119 @@ gse_presence_check( ! isset( $gse_tabs['9'] ) && 2 === count( $gse_tabs ), 'the 
 $gse_tab_list->forget( $gse_room, 'tok-b' );
 gse_presence_check( array( 'tok-a' ) === array_keys( $gse_tab_list->tabs( $gse_room, $gse_ttl ) ), 'leaving removes one tab' );
 
+// The mailboxes go through their own seam into the same table, one row per
+// message.
+$gse_mailbox = apply_filters( 'wp_sync_mailbox_backend', null );
+gse_presence_check( $gse_mailbox instanceof WP_Sync_Presence_API_Mailbox_Backend, 'the seam picked the Presence API mailbox' );
+
+$gse_expiry = Gutenberg_Sync_Engines_Advisory_Presence::MAILBOX_EXPIRY;
+$gse_offer  = array(
+	'id'   => 's1',
+	'from' => 'tok-a',
+	'kind' => 'offer',
+	'data' => str_repeat( 'x', Gutenberg_Sync_Engines_Advisory_Presence::MAX_SIGNAL_DATA_BYTES ),
+);
+$gse_mailbox->send(
+	$gse_room,
+	'tok-b',
+	array(
+		$gse_offer,
+		array(
+			'id'   => 's2',
+			'from' => 'tok-a',
+			'kind' => 'ice',
+			'data' => 'candidate',
+		),
+	),
+	$gse_user_id,
+	$gse_expiry
+);
+$gse_mailbox->send(
+	$gse_room,
+	'tok-b',
+	array(
+		array(
+			'id'   => 's3',
+			'from' => 'tok-c',
+			'kind' => 'offer',
+			'data' => 'other',
+		),
+	),
+	$gse_user_id,
+	$gse_expiry
+);
+$gse_mailbox->send(
+	$gse_room,
+	'tok-a',
+	array(
+		array(
+			'id'   => 's4',
+			'from' => 'tok-c',
+			'kind' => 'offer',
+			'data' => 'for a',
+		),
+	),
+	$gse_user_id,
+	$gse_expiry
+);
+
+// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+$gse_mail_rows = $wpdb->get_results(
+	$wpdb->prepare( "SELECT * FROM {$wpdb->presence} WHERE room = %s AND client_id LIKE %s", $gse_room, $wpdb->esc_like( 'gsemail-' ) . '%' )
+);
+gse_presence_check( 4 === count( $gse_mail_rows ), 'each message is its own row', 'rows=' . count( $gse_mail_rows ) );
+$gse_lifetime = strtotime( $gse_mail_rows[0]->expires_gmt . ' UTC' ) - strtotime( $gse_mail_rows[0]->date_gmt . ' UTC' );
+gse_presence_check( $gse_expiry === $gse_lifetime, 'a message row lasts as long as asked', "lifetime={$gse_lifetime}s" );
+
+// Message rows read as neither collaborators nor tabs.
+gse_presence_check( array( 9 ) === array_column( $gse_awareness->entries( $gse_room, 30 ), 'client_id' ), 'awareness ignores message rows' );
+gse_presence_check( array( 'tok-a' ) === array_keys( $gse_tab_list->tabs( $gse_room, $gse_ttl ) ), 'the tab list ignores message rows' );
+
+$gse_mail = $gse_mailbox->take( $gse_room, 'tok-b', $gse_expiry );
+gse_presence_check( array( 's1', 's2', 's3' ) === array_column( $gse_mail, 'id' ), 'a take returns one mailbox, oldest first', wp_json_encode( array_column( $gse_mail, 'id' ) ) );
+gse_presence_check( $gse_offer === $gse_mail[0], 'a full-size message round trips' );
+gse_presence_check( array() === $gse_mailbox->take( $gse_room, 'tok-b', $gse_expiry ), 'a message is delivered once' );
+
+$gse_mailbox->clear( $gse_room, 'tok-a' );
+gse_presence_check( array() === $gse_mailbox->take( $gse_room, 'tok-a', $gse_expiry ), 'leaving drops waiting mail' );
+gse_presence_check( array( 'tok-a' ) === array_keys( $gse_tab_list->tabs( $gse_room, $gse_ttl ) ), 'dropping mail leaves the tab alone' );
+
+// Two tabs meeting through the channel itself write no transient and no
+// options row.
+$gse_advisory = new Gutenberg_Sync_Engines_Advisory_Presence();
+$gse_beat     = static function ( $token, $signals = array() ) use ( $gse_advisory, $gse_room ) {
+	$key      = Gutenberg_Sync_Engines_Advisory_Presence::HEARTBEAT_KEY;
+	$response = $gse_advisory->answer_heartbeat(
+		array(),
+		array(
+			$key => array(
+				'room'    => $gse_room,
+				'token'   => $token,
+				'signals' => $signals,
+			),
+		)
+	);
+	return $response[ $key ] ?? array();
+};
+$gse_beat( 'tok-x' );
+$gse_beat( 'tok-y' );
+$gse_beat(
+	'tok-x',
+	array(
+		array(
+			'id'   => 'hello',
+			'to'   => 'tok-y',
+			'kind' => 'offer',
+			'data' => 'sdp',
+		),
+	)
+);
+$gse_answer = $gse_beat( 'tok-y' );
+gse_presence_check( array( 'hello' ) === array_column( $gse_answer['signals'] ?? array(), 'id' ), 'the channel delivers a message through the table' );
+// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+$gse_options = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->options} WHERE option_name LIKE %s", '%' . $wpdb->esc_like( 'gse_adv_' ) . '%' ) );
+gse_presence_check( 0 === $gse_options, 'the channel writes no transient and no options row', "rows={$gse_options}" );
+
 // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 $wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->presence} WHERE room = %s", $gse_room ) );
 wp_delete_post( $gse_post_id, true );
@@ -197,4 +310,4 @@ if ( $gse_failures > 0 ) {
 	WP_CLI::error( $gse_failures . ' check(s) failed.' );
 }
 
-WP_CLI::success( 'Awareness and the tab list work against the real Presence API.' );
+WP_CLI::success( 'Awareness, the tab list and the mailboxes work against the real Presence API.' );

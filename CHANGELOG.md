@@ -35,6 +35,13 @@ release, which the release script generates from the commit history.
     tabs checking in at once can no longer drop each other. One transient
     per room remains the default
     ([#113](https://github.com/Automattic/gutenberg-sync-engines/issues/113)).
+-   The advisory channel's mailboxes, where tabs leave each other the
+    messages that set up a direct connection, gained the same kind of
+    seam: implement `WP_Sync_Mailbox_Backend` and return it from the
+    `wp_sync_mailbox_backend` filter. On a site running the Presence API
+    plugin, each message is now its own row in that plugin's table and
+    expires by itself, so the channel writes no transients and no options
+    rows. One options row per tab remains the default.
 -   On a site running the Presence API feature plugin, that plugin's
     shared `wp_presence` table now holds awareness. Each client is one row
     upserted in place, so two clients polling in the same instant cannot

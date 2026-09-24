@@ -224,7 +224,11 @@ Server (`includes/class-gutenberg-sync-engines-advisory-presence.php`):
     stores outgoing handshake messages in per-recipient mailboxes (size
     and count capped, short expiry), and answers with the other tokens in
     the room, whether anyone else is present (tokens plus live sync
-    awareness), and this tab's mailbox.
+    awareness), and this tab's mailbox. A mailbox is an options row, or
+    lives in the backend the `wp_sync_mailbox_backend` filter returns:
+    with the Presence API plugin installed, one `gsemail-` row per
+    message in its table (`WP_Sync_Presence_API_Mailbox_Backend`), which
+    expires by itself, so no sweep runs.
 -   Page-render settings under `window._gutenbergSyncEnginesSettings
 .advisory`: room, token, whether others are present, the STUN list
     (filterable), the peer cap, and the enabled flag.

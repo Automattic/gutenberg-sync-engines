@@ -129,6 +129,8 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/class-wp-sync-presence-api-awareness-backend.php';
 			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/interface-wp-sync-tab-list-backend.php';
 			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/class-wp-sync-presence-api-tab-list-backend.php';
+			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/interface-wp-sync-mailbox-backend.php';
+			require_once GUTENBERG_SYNC_ENGINES_PATH . 'includes/class-wp-sync-presence-api-mailbox-backend.php';
 
 			$engines = GUTENBERG_SYNC_ENGINES_PATH . 'includes/engines/';
 			require_once $engines . 'class-wp-sync-post-genesis-props.php';
@@ -209,6 +211,7 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 			add_filter( '__unstable_wp_sync_storage', array( $this, 'filter_sync_storage' ) );
 			add_filter( 'wp_sync_awareness_backend', array( $this, 'filter_awareness_backend' ) );
 			add_filter( 'wp_sync_tab_list_backend', array( $this, 'filter_tab_list_backend' ) );
+			add_filter( 'wp_sync_mailbox_backend', array( $this, 'filter_mailbox_backend' ) );
 			add_filter( 'wp_sync_engines', array( $this, 'register_engines' ), 10, 2 );
 			WP_De_RTC_Sync_Meta_Colocation::register();
 			WP_De_RTC_Base_Version_Preflight::register();
@@ -277,6 +280,23 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Plugin' ) ) {
 		public function filter_tab_list_backend( $backend ) {
 			if ( null === $backend && WP_Sync_Presence_API_Tab_List_Backend::is_available() ) {
 				return new WP_Sync_Presence_API_Tab_List_Backend();
+			}
+			return $backend;
+		}
+
+		/**
+		 * Hands the advisory channel's mailboxes to the Presence API plugin
+		 * when that plugin is active and recording, replacing only the
+		 * default the way the tab list does.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param WP_Sync_Mailbox_Backend|null $backend The backend so far.
+		 * @return WP_Sync_Mailbox_Backend|null Backend to use.
+		 */
+		public function filter_mailbox_backend( $backend ) {
+			if ( null === $backend && WP_Sync_Presence_API_Mailbox_Backend::is_available() ) {
+				return new WP_Sync_Presence_API_Mailbox_Backend();
 			}
 			return $backend;
 		}

@@ -33,11 +33,11 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 	 * and expired tokens). Under the "keep" policy rooms live on as a
 	 * shared working copy and nothing here resets them.
 	 *
-	 * Tokens live in a transient keyed by the room (or the
-	 * `wp_sync_tab_list_backend` filter's backend) and mailboxes in options
-	 * rows updated by compare-and-swap, both outside the sync storage on
-	 * purpose: a presence read must never create a room's storage post
-	 * (the storage API's own room lookup does).
+	 * Tokens and mailboxes live in a transient and options rows (or the
+	 * `wp_sync_tab_list_backend` and `wp_sync_mailbox_backend` filters'
+	 * backends), both outside the sync storage on purpose: a presence read
+	 * must never create a room's storage post (the storage API's own room
+	 * lookup does).
 	 *
 	 * @since 0.0.1
 	 */
@@ -175,6 +175,15 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * @var WP_Sync_Tab_List_Backend|null|false
 		 */
 		private $tab_list_backend = false;
+
+		/**
+		 * The resolved mailbox backend, null for the built-in options rows,
+		 * false before the filter has run.
+		 *
+		 * @since n.e.x.t
+		 * @var WP_Sync_Mailbox_Backend|null|false
+		 */
+		private $mailbox_backend = false;
 
 		/**
 		 * Constructor.
@@ -923,6 +932,12 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * @return void
 		 */
 		private function append_mail( string $room, string $to, array $messages ): void {
+			$backend = $this->mailbox_backend();
+			if ( null !== $backend ) {
+				$backend->send( $room, $to, array_map( array( self::class, 'mail_message' ), $messages ), get_current_user_id(), self::MAILBOX_EXPIRY );
+				return;
+			}
+
 			$name = $this->mailbox_key( $room, $to );
 			for ( $attempt = 0; $attempt < self::CAS_ATTEMPTS; $attempt++ ) {
 				$current = WP_Sync_Atomic_Option::read( $name );
@@ -948,6 +963,12 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * @return array<int, array<string, mixed>> Messages, oldest first.
 		 */
 		private function take_mailbox( string $room, string $token ): array {
+			$backend = $this->mailbox_backend();
+			if ( null !== $backend ) {
+				$mail = array_map( array( self::class, 'mail_message' ), $backend->take( $room, $token, self::MAILBOX_EXPIRY ) );
+				return array_slice( $mail, -self::MAX_MAILBOX_ENTRIES );
+			}
+
 			$name = $this->mailbox_key( $room, $token );
 			for ( $attempt = 0; $attempt < self::CAS_ATTEMPTS; $attempt++ ) {
 				$current = WP_Sync_Atomic_Option::read( $name );
@@ -958,18 +979,26 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 				if ( ! WP_Sync_Atomic_Option::swap( $name, (string) $current, '[]' ) ) {
 					continue;
 				}
-				$out = array();
-				foreach ( $mail as $entry ) {
-					$out[] = array(
-						'id'   => (string) ( $entry['id'] ?? '' ),
-						'from' => (string) $entry['from'],
-						'kind' => (string) $entry['kind'],
-						'data' => (string) $entry['data'],
-					);
-				}
-				return $out;
+				return array_map( array( self::class, 'mail_message' ), $mail );
 			}
 			return array();
+		}
+
+		/**
+		 * One message as a tab receives it.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param array<string, mixed> $entry A stored message.
+		 * @return array<string, string> The message: id, from, kind, data.
+		 */
+		private static function mail_message( array $entry ): array {
+			return array(
+				'id'   => (string) ( $entry['id'] ?? '' ),
+				'from' => (string) ( $entry['from'] ?? '' ),
+				'kind' => (string) ( $entry['kind'] ?? '' ),
+				'data' => (string) ( $entry['data'] ?? '' ),
+			);
 		}
 
 		/**
@@ -1006,6 +1035,12 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 * @return void
 		 */
 		private function delete_mailbox( string $room, string $token ): void {
+			$backend = $this->mailbox_backend();
+			if ( null !== $backend ) {
+				$backend->clear( $room, $token );
+				return;
+			}
+
 			WP_Sync_Atomic_Option::delete( $this->mailbox_key( $room, $token ) );
 		}
 
@@ -1104,6 +1139,39 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 				$this->tab_list_backend = $backend instanceof WP_Sync_Tab_List_Backend ? $backend : null;
 			}
 			return $this->tab_list_backend;
+		}
+
+		/**
+		 * Resolves the mailbox backend once per instance.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @return WP_Sync_Mailbox_Backend|null Substitute backend, or null
+		 *                                      for the built-in options rows.
+		 */
+		private function mailbox_backend(): ?WP_Sync_Mailbox_Backend {
+			if ( false === $this->mailbox_backend ) {
+				/**
+				 * Filters the store holding the advisory channel's
+				 * mailboxes, the WebRTC handshake messages waiting for a tab.
+				 *
+				 * Return a WP_Sync_Mailbox_Backend to hold them somewhere
+				 * other than one options row per tab, or null to keep the
+				 * options rows; the contract is on the interface. This
+				 * plugin registers the Presence API backend here at the
+				 * default priority, so
+				 * `remove_all_filters( 'wp_sync_mailbox_backend' )` forces
+				 * the options rows back.
+				 *
+				 * @since n.e.x.t
+				 *
+				 * @param WP_Sync_Mailbox_Backend|null $backend Substitute
+				 *        backend, or null for the built-in options rows.
+				 */
+				$backend               = apply_filters( 'wp_sync_mailbox_backend', null );
+				$this->mailbox_backend = $backend instanceof WP_Sync_Mailbox_Backend ? $backend : null;
+			}
+			return $this->mailbox_backend;
 		}
 
 		/**
@@ -1237,6 +1305,11 @@ if ( ! class_exists( 'Gutenberg_Sync_Engines_Advisory_Presence' ) ) {
 		 */
 		private function sweep_expired( string $room ): void {
 			global $wpdb;
+
+			// A substitute backend's messages expire by themselves.
+			if ( null !== $this->mailbox_backend() ) {
+				return;
+			}
 
 			$flag = self::SWEEP_TRANSIENT_PREFIX . md5( $room );
 			if ( false !== get_transient( $flag ) ) {
