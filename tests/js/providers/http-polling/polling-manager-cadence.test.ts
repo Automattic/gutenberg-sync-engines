@@ -707,6 +707,40 @@ describe( 'polling-manager cadence', () => {
 		expect( mockSseExchange.exchange ).toHaveBeenCalledTimes( 1 );
 	} );
 
+	it( 'SSE: while no stream can be opened, receiving follows the short-polling cadence rules', async () => {
+		setSseMode( true );
+		mockOthers = true;
+		mockPostSyncUpdate.mockResolvedValue( response( [ 1, 2 ] ) );
+		// A stream failed a moment ago: the exchange refuses to open one
+		// for a while, and every receive is an ordinary request.
+		mockSseExchange.available = false;
+		register();
+		await jest.advanceTimersByTimeAsync( 0 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
+		expect( mockSseExchange.exchange ).not.toHaveBeenCalled();
+		// With company: the collaborator interval (1 s), not the solo one.
+		await jest.advanceTimersByTimeAsync( 1000 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+		await jest.advanceTimersByTimeAsync( 1000 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 3 );
+		// Every peer reachable over the channel: no timer at all, and a
+		// peer's announcement polls on demand.
+		mockCoverage = true;
+		mockCallbacks.coverage.forEach( ( cb ) => cb() );
+		await jest.advanceTimersByTimeAsync( 10000 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 3 );
+		mockCallbacks.announce.forEach( ( cb ) => cb( 'test-room' ) );
+		await jest.advanceTimersByTimeAsync( 150 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 4 );
+		// The exchange willing again: the next receive reopens a stream.
+		mockSseExchange.available = true;
+		mockSseExchange.exchange.mockResolvedValue( response( [ 1, 2 ] ) );
+		mockCallbacks.announce.forEach( ( cb ) => cb( 'test-room' ) );
+		await jest.advanceTimersByTimeAsync( 300 );
+		expect( mockSseExchange.exchange ).toHaveBeenCalled();
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 4 );
+	} );
+
 	it( 'overlays channel presence on the poll response and re-applies it when it changes', async () => {
 		mockPostSyncUpdate.mockResolvedValue( response( [ 1, 2 ] ) );
 		mockChannelPresence = { 2: { name: 'live' }, 3: { name: 'new' } };
