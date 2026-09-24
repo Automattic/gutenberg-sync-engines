@@ -41,7 +41,8 @@ release, which the release script generates from the commit history.
     `wp_sync_mailbox_backend` filter. On a site running the Presence API
     plugin, each message is now its own row in that plugin's table and
     expires by itself, so the channel writes no transients and no options
-    rows. One options row per tab remains the default.
+    rows. One options row per tab remains the default
+    ([#117](https://github.com/Automattic/gutenberg-sync-engines/pull/117)).
 -   On a site running the Presence API feature plugin, that plugin's
     shared `wp_presence` table now holds awareness. Each client is one row
     upserted in place, so two clients polling in the same instant cannot
