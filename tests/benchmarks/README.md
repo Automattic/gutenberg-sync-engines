@@ -536,6 +536,14 @@ npm run bench -- --transport=sse --cache=redis --wake=cache
                                      # detected Redis wake the streams.
                                      # The report records the wait the
                                      # streams actually got.
+npm run bench -- --presence=on       # the host report with the Presence
+                                     # API plugin holding awareness
+                                     # (installed from its latest release
+                                     # if missing, removed after); run
+                                     # --presence=off for the other side.
+                                     # The report prints what the
+                                     # plugin's own check says, not what
+                                     # was asked for.
 ```
 
 Multi-process concurrency measurement is OPT-IN behind one flag:

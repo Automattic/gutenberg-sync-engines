@@ -96,6 +96,9 @@ Suites (--suite=; default: host):
                --wake=       auto | redis | cache | table: what an SSE
                              stream sleeps on (cache needs --cache=redis,
                              table needs --cache=none)
+               --presence=   on | off | current: the Presence API plugin
+                             for the run (on installs its latest release
+                             if missing; wp-env sites only; restored)
                --windows=    collaborator windows per engine phase
                              (default 2)
                --edit-seconds=      editing seconds per person (default

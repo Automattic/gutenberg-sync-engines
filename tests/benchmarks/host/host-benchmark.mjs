@@ -58,6 +58,9 @@
  *   wake=       auto | redis | cache | table: what an SSE stream sleeps
  *               on (auto = whatever the site has; cache needs
  *               cache=redis, table needs cache=none)
+ *   presence=   on | off | current: the Presence API plugin for the run
+ *               (on installs its latest release if missing; wp-env sites
+ *               only; restored). It stays active in the baseline phase.
  *   windows=    people per phase: collaborator windows, and the same
  *               number of one-after-the-other baseline turns (default 2)
  *   edit-seconds=      script duration per person (default 120, min 30; slow runs take longer)
@@ -88,6 +91,7 @@ import {
 	attachCounters,
 	canvasOf,
 	configureHostCache,
+	configurePresence,
 	configureSettings,
 	dismissWelcomeGuide,
 	ensureCollaborationEnabled,
@@ -97,6 +101,7 @@ import {
 	observeTransport,
 	parseCliOptions,
 	restoreHostCache,
+	restorePresence,
 	restoreSettings,
 	waitForSyncTraffic,
 } from '../transport/lib.mjs';
@@ -123,6 +128,9 @@ const HELP = `node tests/benchmarks/host/host-benchmark.mjs [key=value …]
               Redis; this checkout's wp-env sites only; restored after)
   wake=       auto | redis | cache | table: what an SSE stream sleeps on
               (cache needs cache=redis, table needs cache=none)
+  presence=   on | off | current: the Presence API plugin for the run
+              (on installs its latest release if missing; this checkout's
+              wp-env sites only; restored after)
   windows=    people per phase: collaborator windows, and the same
               number of one-after-the-other baseline turns (default 2)
   edit-seconds=      script duration per person (default 120, min 30; slow runs take longer)
@@ -152,6 +160,7 @@ const KNOWN_ARGS = [
 	'transport',
 	'cache',
 	'wake',
+	'presence',
 	'windows',
 	'edit-seconds',
 	'idle-seconds',
@@ -185,6 +194,7 @@ if ( ENGINE.includes( ',' ) ) {
 const TRANSPORT = String( opts.transport ?? 'current' );
 const CACHE = String( opts.cache ?? 'current' );
 const WAKE = String( opts.wake ?? 'auto' );
+const PRESENCE = String( opts.presence ?? 'current' );
 const WINDOWS = Number( opts.windows ?? 2 );
 const EDIT_SECONDS = Number( opts[ 'edit-seconds' ] ?? 120 );
 const IDLE_SECONDS = Number( opts[ 'idle-seconds' ] ?? 120 );
@@ -851,6 +861,7 @@ async function main() {
 	// The object cache and the SSE wait are site-wide: set them before
 	// any window opens (the baseline phase runs under them too).
 	let hostCache = null;
+	let presence = null;
 	const browser = await chromium.launch( {
 		headless: ! HEADED,
 		handleSIGINT: false,
@@ -933,6 +944,13 @@ async function main() {
 				`WARNING: failed to restore the object cache: ${ error }`
 			);
 		}
+		try {
+			restorePresence( presence?.restore );
+		} catch ( error ) {
+			console.warn(
+				`WARNING: failed to restore the Presence API: ${ error }`
+			);
+		}
 		await browser.close().catch( () => null );
 	};
 	const onSignal = ( signal ) => {
@@ -996,6 +1014,9 @@ async function main() {
 			);
 		}
 
+		// After the activation above: the check reads this plugin's class.
+		presence = configurePresence( { presence: PRESENCE } );
+
 		// Choose the engine/transport up front (recording what to restore
 		// at the end), and whether the collaboration experiment was on.
 		originalSettings = await configureSettings(
@@ -1039,6 +1060,15 @@ async function main() {
 				hostCache
 					? ` (was cache=${ hostCache.previous.cache } wake=${ hostCache.previous.wake })`
 					: ''
+			}`
+		);
+		// What the plugin's own check answers, not what was asked for.
+		const presenceLabel = { true: 'on', false: 'off', null: 'unknown' }[
+			presence.serves
+		];
+		console.log(
+			`  presence=${ presenceLabel }${
+				'current' === PRESENCE ? '' : ` (asked ${ PRESENCE })`
 			}`
 		);
 		console.log( `  edit-seconds=${ EDIT_SECONDS }` );
@@ -1257,6 +1287,7 @@ async function main() {
 				server: serverEnv,
 				cache: CACHE,
 				wake: WAKE,
+				presence: presence.serves,
 				delivery: originalSettings.active.delivery,
 				transportRequested: selectedTransport,
 				pollingIntervalSeconds: POLL_OVERRIDE ?? originalPoll,

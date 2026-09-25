@@ -968,6 +968,115 @@ function setSseWake( config, wake ) {
 	wpCli( config, [ 'option', 'update', SSE_WAKE_OPTION, wake ] );
 }
 
+const PRESENCE_API_PLUGIN = 'presence-api';
+const PRESENCE_API_ZIP =
+	'https://github.com/WordPress/presence-api/releases/latest/download/presence-api.zip';
+
+/**
+ * Whether this plugin's awareness goes through the Presence API on the
+ * site: the plugin's own check, not merely whether that plugin is active
+ * (an active Presence API without its table or with recording off does
+ * not count).
+ *
+ * @param {string} config wp-env config basename.
+ * @return {boolean} Whether the Presence API backend serves.
+ */
+function presenceApiServes( config ) {
+	return (
+		'1' ===
+		wpCli( config, [
+			'eval',
+			"echo (int) ( class_exists( 'WP_Sync_Presence_API_Awareness_Backend' ) && WP_Sync_Presence_API_Awareness_Backend::is_available() );",
+		] )
+	);
+}
+
+/**
+ * Turns the Presence API plugin on or off for a run and returns what to
+ * restore. `presence` is on (installed from its latest release when
+ * missing, then activated), off (deactivated), or current (left alone).
+ * Only a wp-env site of this checkout can be switched.
+ *
+ * @param {Object} wanted          Arrangement.
+ * @param {string} wanted.presence on | off | current.
+ * @return {Object} `serves` (what the run measures) and, when something
+ *                  changed, `restore` for restorePresence().
+ */
+export function configurePresence( { presence = 'current' } ) {
+	if ( ! [ 'on', 'off', 'current' ].includes( presence ) ) {
+		throw new Error(
+			`presence= must be on, off, or current (got ${ presence })`
+		);
+	}
+	const config = wpEnvConfigForBase();
+	if ( ! config ) {
+		if ( 'current' !== presence ) {
+			throw new Error(
+				`presence= switches the site through wp-cli, which works only for this checkout's wp-env sites; ${ BASE } is not one`
+			);
+		}
+		return { serves: null, restore: null };
+	}
+	const status =
+		wpCli(
+			config,
+			[ 'plugin', 'get', PRESENCE_API_PLUGIN, '--field=status' ],
+			{ allowFailure: true }
+		) || 'missing';
+	let restore = null;
+	if ( 'on' === presence && 'active' !== status ) {
+		if ( 'missing' === status ) {
+			wpCli( config, [
+				'plugin',
+				'install',
+				PRESENCE_API_ZIP,
+				'--activate',
+			] );
+		} else {
+			wpCli( config, [ 'plugin', 'activate', PRESENCE_API_PLUGIN ] );
+		}
+		restore = { config, status };
+	} else if ( 'off' === presence && 'active' === status ) {
+		wpCli( config, [ 'plugin', 'deactivate', PRESENCE_API_PLUGIN ] );
+		restore = { config, status };
+	}
+	const serves = presenceApiServes( config );
+	if ( 'on' === presence && ! serves ) {
+		restorePresence( restore );
+		throw new Error(
+			'presence=on: the Presence API is active but this plugin does not use it (is its table missing, or recording off?)'
+		);
+	}
+	return { serves, restore };
+}
+
+/**
+ * Puts the Presence API back the way configurePresence() found it.
+ *
+ * @param {Object|null} restore The `restore` configurePresence() returned.
+ */
+export function restorePresence( restore ) {
+	if ( ! restore ) {
+		return;
+	}
+	if ( 'missing' === restore.status ) {
+		wpCli( restore.config, [
+			'plugin',
+			'uninstall',
+			PRESENCE_API_PLUGIN,
+			'--deactivate',
+		] );
+	} else if ( 'active' === restore.status ) {
+		wpCli( restore.config, [ 'plugin', 'activate', PRESENCE_API_PLUGIN ] );
+	} else {
+		wpCli( restore.config, [
+			'plugin',
+			'deactivate',
+			PRESENCE_API_PLUGIN,
+		] );
+	}
+}
+
 /**
  * Identifies the transport a counter set has actually used.
  *
