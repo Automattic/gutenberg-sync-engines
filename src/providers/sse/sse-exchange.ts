@@ -84,8 +84,11 @@ interface SseDebugState {
 
 /**
  * A receive stream shared by the polling manager's sequential exchanges.
- * Sending closes it first, so a POST and a stream never apply overlapping
- * cursor ranges. Normal polling remains available while Redis is down.
+ * It only ever opens and reads streams: the manager sends through the
+ * updates request beside it, marked `rows_received_separately: true`, so a send never
+ * closes the stream and the stream stays the only path that delivers
+ * stored rows and moves a room's cursor. Normal polling remains available
+ * while Redis is down.
  */
 export class SseExchange {
 	private controller?: AbortController;
@@ -119,6 +122,14 @@ export class SseExchange {
 		return Date.now() >= this.retryAfter;
 	}
 
+	/**
+	 * Whether a stream response is live right now (opened and not yet
+	 * ended or closed).
+	 */
+	public isOpen(): boolean {
+		return !! this.events;
+	}
+
 	public close(): void {
 		clearTimeout( this.deadline );
 		this.controller?.abort();
@@ -134,22 +145,23 @@ export class SseExchange {
 		payload: SyncPayload,
 		signal?: AbortSignal
 	): Promise< SyncResponse > {
-		if (
-			payload.rooms.some(
-				( room ) => room.updates.length > 0 || room.awareness === null
-			) ||
-			! this.available
-		) {
-			this.close();
-			return apiFetch( {
-				path: '/wp-sync/v1/updates',
-				method: 'POST',
-				data: payload,
-				signal,
-			} );
+		if ( payload.rooms.some( ( room ) => room.updates.length > 0 ) ) {
+			// The manager sends beside the stream; see the class comment.
+			throw new Error( 'A stream exchange never carries updates' );
 		}
+		/*
+		 * The stream's identity: which rooms, as which client, under which
+		 * engine. Awareness is left out on purpose: a cursor move changes
+		 * the tab's awareness many times a minute, and each change rides
+		 * the updates request instead (the manager's awareness check), so
+		 * the stream stays open across them. `after` is compared against
+		 * the delivered cursors below instead.
+		 */
 		const signature = JSON.stringify(
-			payload.rooms.map( ( { after, ...room } ) => room )
+			payload.rooms.map( ( { after, awareness, updates, ...room } ) => ( {
+				...room,
+				rows_received_separately: undefined,
+			} ) )
 		);
 		if (
 			signature !== this.signature ||

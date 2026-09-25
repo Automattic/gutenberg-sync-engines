@@ -144,6 +144,46 @@ class Tests_Collaboration_WpDeRtcAnnounce extends WP_UnitTestCase {
 		$this->assertSame( array(), $caught_up['updates'] );
 	}
 
+	public function test_a_fetch_sent_beside_an_open_stream_is_answered_with_the_snapshot_and_nothing_stored() {
+		// The client's send lane under SSE: `rows_received_separately: true`. The stored
+		// rows (genesis, announces) are the stream's to deliver; the
+		// never-stored fetch answer rides the send's own response.
+		update_option( 'wp_sync_engine', WP_De_RTC_Engine::SLUG );
+		try {
+			$engine   = $this->engine();
+			$proposed = str_replace( 'Beta block original text.', 'Beta advanced.', (string) $engine->materialize( $this->room() ) );
+			$engine->handle_updates( $this->room(), 101, 0, array( $this->proposal( 'p-3', 'v1', $proposed ) ), array() );
+
+			$request = new WP_REST_Request( 'POST', '/wp-sync/v1/updates' );
+			$request->set_body_params(
+				array(
+					'rooms' => array(
+						array(
+							'after'                    => 0,
+							'awareness'                => array( 'name' => 'b' ),
+							'client_id'                => 202,
+							'rows_received_separately' => true,
+							'room'                     => $this->room(),
+							'updates'                  => array( $this->fetch_row( 'v1' ) ),
+						),
+					),
+				)
+			);
+			$response = rest_get_server()->dispatch( $request );
+			$this->assertSame( 200, $response->get_status() );
+			$data = $response->get_data()['rooms'][0];
+
+			$this->assertCount( 1, $data['updates'], 'Exactly the synthesized answer, no stored rows.' );
+			$this->assertSame( WP_De_RTC_Engine::UPDATE_TYPE_SNAPSHOT, $data['updates'][0]['type'] );
+			$snapshot = json_decode( $data['updates'][0]['data'], true );
+			$this->assertSame( 'v2', $snapshot['version'] );
+			$this->assertTrue( $snapshot['ephemeral'] );
+			$this->assertGreaterThan( 0, $data['end_cursor'], 'The head the stream must reach before the answer applies.' );
+		} finally {
+			delete_option( 'wp_sync_engine' );
+		}
+	}
+
 	public function test_announce_rows_stay_small_as_the_document_grows() {
 		$engine  = $this->engine();
 		$content = (string) $engine->materialize( $this->room() );

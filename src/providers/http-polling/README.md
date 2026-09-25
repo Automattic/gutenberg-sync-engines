@@ -47,7 +47,10 @@ third-party engine) on the server.
 
 The sse transport reuses this entire client (and subclasses the server):
 `providers/sse` swaps the receive half for one long-lived stream response per
-tab (`SseExchange`) and keeps sends on `/wp-sync/v1/updates`.
+tab (`SseExchange`) and keeps sends on `/wp-sync/v1/updates`, issued beside
+the open stream and marked `rows_received_separately: true` (the answer carries verdicts and
+the head cursor, no stored rows, and is held until the stream reaches that
+head).
 
 ## Polling cadence
 
