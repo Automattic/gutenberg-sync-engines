@@ -486,7 +486,14 @@ npm run test:js -- sync-id                    # Jest files matching a pattern
 npm run test:js -- -t 'name substring'        # single Jest test by name
 npm run test:php -- --filter Test_Class_Name  # single PHPUnit class/method
 npm run test:e2e -- collaboration-intent-log  # single e2e spec by filename
+RTC_E2E_ENGINE=de-rtc npm run test:e2e        # one engine's e2e slice
 ```
+
+CI runs the default e2e suite as one job per engine. A spec that
+belongs to an engine puts `@engine-<slug>` in its describe title;
+`RTC_E2E_ENGINE=<slug>` runs only those, and `RTC_E2E_ENGINE=none` runs
+every spec without the tag. A new engine spec without the tag lands in
+the `none` slice, so it still runs, only in the wrong job.
 
 Never run `test:php` while an e2e run is in flight against the same env:
 PHPUnit wipes the tests-env database, killing every in-flight spec
