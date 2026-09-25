@@ -270,6 +270,24 @@ class Tests_Collaboration_WpSyncAwareness extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A presence-table write bumps the room's version so waiting streams wake.
+	 */
+	public function test_presence_api_writes_wake_waiting_streams(): void {
+		Fake_Presence_API::$enabled = true;
+		$room                       = $this->room();
+		$storage                    = new WP_Sync_Table_Storage();
+		$state                      = array( 'name' => 'Ada' );
+
+		$before = $storage->get_room_versions( array( $room ) );
+		$this->awareness()->put( $room, 7, $state, self::$editor_id, 30 );
+		$joined = $storage->get_room_versions( array( $room ) );
+		$this->assertNotSame( $before, $joined, 'A put should bump the version.' );
+
+		$this->awareness()->forget( $room, 7, 30 );
+		$this->assertNotSame( $joined, $storage->get_room_versions( array( $room ) ), 'A forget should bump the version.' );
+	}
+
+	/**
 	 * Without the presence table the Presence API can neither read nor
 	 * write, so the backend stands down and the room array serves.
 	 */

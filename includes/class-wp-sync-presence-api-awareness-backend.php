@@ -155,7 +155,9 @@ if ( ! class_exists( 'WP_Sync_Presence_API_Awareness_Backend' ) ) {
 			// The explicit timestamp turns off the Presence API's own write
 			// skip, which runs as long as the caller's whole window and so
 			// would let a live client reach the edge of it unwritten.
-			wp_set_presence( $room, self::CLIENT_PREFIX . $client_id, $state, $user_id, gmdate( 'Y-m-d H:i:s', $now ) );
+			if ( wp_set_presence( $room, self::CLIENT_PREFIX . $client_id, $state, $user_id, gmdate( 'Y-m-d H:i:s', $now ) ) ) {
+				self::changed( $room );
+			}
 
 			// The room as it now stands, without reading it a second time.
 			$entries[] = array(
@@ -179,9 +181,26 @@ if ( ! class_exists( 'WP_Sync_Presence_API_Awareness_Backend' ) ) {
 		 * @return array<int, array<string, mixed>> The room's live entries.
 		 */
 		public function forget( string $room, int $client_id, int $timeout ): array {
-			wp_remove_presence( $room, self::CLIENT_PREFIX . $client_id );
+			if ( wp_remove_presence( $room, self::CLIENT_PREFIX . $client_id ) ) {
+				self::changed( $room );
+			}
 
 			return $this->entries( $room, $timeout );
+		}
+
+		/**
+		 * Wakes streams waiting on the room, since the storage cannot see these writes.
+		 *
+		 * @since n.e.x.t
+		 *
+		 * @param string $room Room identifier.
+		 * @return void
+		 */
+		private static function changed( string $room ): void {
+			$storage = wp_get_sync_storage();
+			if ( $storage instanceof WP_Sync_Table_Storage ) {
+				$storage->note_room_changed( $room );
+			}
 		}
 	}
 }
