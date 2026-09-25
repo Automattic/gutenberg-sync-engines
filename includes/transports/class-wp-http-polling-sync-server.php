@@ -105,6 +105,14 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 		const MAX_UPDATE_DATA_SIZE = MB_IN_BYTES;
 
 		/**
+		 * The cursor a request whose rows arrive separately reads from: past every row,
+		 * so the read returns no stored rows but still reports the head.
+		 *
+		 * @since n.e.x.t
+		 */
+		const READ_FROM_HEAD = PHP_INT_MAX;
+
+		/**
 		 * Storage backend for sync updates.
 		 *
 		 * @since 7.0.0
@@ -239,32 +247,40 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 			);
 
 			$room_args = array(
-				'after'           => array(
+				'after'                    => array(
 					'minimum'  => 0,
 					'required' => true,
 					'type'     => 'integer',
 				),
-				'awareness'       => array(
+				'awareness'                => array(
 					'required' => true,
 					'type'     => array( 'object', 'null' ),
 				),
-				'client_id'       => array(
+				'client_id'                => array(
 					'minimum'  => 1,
 					'required' => true,
 					'type'     => 'integer',
 				),
 				// Optional engine handshake stamp: when present, the request
 				// fails with 409 unless it matches the room's engine.
-				'engine'          => array(
+				'engine'                   => array(
 					'required' => false,
 					'type'     => 'string',
 				),
 				// Debug envelope opt-in (see the sync inspector).
-				'debug'           => array(
+				'debug'                    => array(
 					'required' => false,
 					'type'     => 'boolean',
 				),
-				'engine_protocol' => array(
+				// A send made beside an open stream (the SSE transport): the
+				// request stores its updates and is answered with the verdicts
+				// and the room's head cursor, but no stored rows. See
+				// process_room_request().
+				'rows_received_separately' => array(
+					'required' => false,
+					'type'     => 'boolean',
+				),
+				'engine_protocol'          => array(
 					'minimum'  => 1,
 					'required' => false,
 					'type'     => 'integer',
@@ -272,17 +288,17 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 				// The tab's presence token (Gutenberg_Sync_Engines_Advisory_Presence):
 				// a tab's first request with it is its join, which under the
 				// default policy resets a per-post room nobody else is in.
-				'presence_token'  => array(
+				'presence_token'           => array(
 					'required'  => false,
 					'type'      => 'string',
 					'maxLength' => 64,
 				),
-				'room'            => array(
+				'room'                     => array(
 					'required' => true,
 					'type'     => 'string',
 					'pattern'  => '^[^/]+/[^/:]+(?::\\S+)?$',
 				),
-				'updates'         => array(
+				'updates'                  => array(
 					'items'    => $typed_update_args,
 					'minItems' => 0,
 					'required' => true,
@@ -497,8 +513,21 @@ if ( ! class_exists( 'WP_HTTP_Polling_Sync_Server' ) ) {
 				return $ingest;
 			}
 
-			// Engine produces the catch-up payload for this client.
-			$room_response              = $engine->get_updates_since( $room, $client_id, $cursor, $context );
+			/*
+			 * Engine produces the catch-up payload for this client. A
+			 * client receiving over an open stream (`rows_received_separately: true`) gets
+			 * no stored rows here: the stream is the only path that
+			 * delivers them and moves its cursor, so nothing is delivered
+			 * twice or skipped. Reading from past the head still refreshes
+			 * the storage's cursor cache (`end_cursor` is the head this
+			 * write produced, which the client waits for on the stream) and
+			 * still returns what an engine synthesizes for this client and
+			 * never stores (de-rtc's fetch answer). The same far-cursor read
+			 * is what WP_De_RTC_Autosave_Commits uses to mark a cursor.
+			 */
+			$read_cursor = ! empty( $room_request['rows_received_separately'] ) ? self::READ_FROM_HEAD : $cursor;
+
+			$room_response              = $engine->get_updates_since( $room, $client_id, $read_cursor, $context );
 			$room_response['awareness'] = $merged_awareness;
 
 			$generation = $this->room_generation( $room, (int) ( $room_response['end_cursor'] ?? 0 ) );
