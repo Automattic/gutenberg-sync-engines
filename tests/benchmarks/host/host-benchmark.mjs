@@ -1068,7 +1068,7 @@ async function main() {
 		];
 		console.log(
 			`  presence=${ presenceLabel }${
-				presence.version ? ` (Presence API ${ presence.version })` : ''
+				presence.version ? ` (${ presence.version })` : ''
 			}${ 'current' === PRESENCE ? '' : ` (asked ${ PRESENCE })` }`
 		);
 		console.log( `  edit-seconds=${ EDIT_SECONDS }` );
