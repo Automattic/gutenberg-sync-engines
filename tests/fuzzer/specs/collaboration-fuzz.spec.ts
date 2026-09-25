@@ -50,6 +50,7 @@ import {
 } from '../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures';
 import type CollaborationUtils from '../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures/collaboration-utils';
 import { SECOND_USER } from '../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures/collaboration-utils';
+import { waitForSyncQuiet } from '../../e2e/config/collaboration-fixtures';
 
 type Random = () => number;
 
@@ -1402,19 +1403,18 @@ async function waitForConvergence(
 }
 
 /**
- * Wait for all participants to discover each other. The fixture's
- * waitForMutualDiscovery waits on wp-sync HTTP responses, which never occur
- * over the websocket transport (sync rides WS frames) — there, wait on the
- * awareness-driven Collaborators list instead and let waitForConvergence
- * cover document sync.
+ * Wait for all participants to discover each other: the awareness-driven
+ * Collaborators list shows on every page, and then (HTTP transports) each
+ * page's sync traffic goes quiet for a beat. The subtree fixture's wait
+ * for three FUTURE poll responses per page cannot be used: with the
+ * advisory channel, tabs that have found each other poll only on demand
+ * plus a slow safety timer, so those polls may never come — the plugin's
+ * e2e fixtures replaced it for the same reason. waitForConvergence covers
+ * document sync.
  *
- * @param collaborationUtils Fixture utils.
- * @param pages              All participant pages.
+ * @param pages All participant pages.
  */
-async function waitForDiscovery(
-	collaborationUtils: CollaborationUtils,
-	pages: Page[]
-) {
+async function waitForDiscovery( pages: Page[] ) {
 	await Promise.all(
 		pages.map( ( pg ) =>
 			pg
@@ -1424,20 +1424,10 @@ async function waitForDiscovery(
 	);
 	if ( TRANSPORT === 'websocket' || TRANSPORT === 'sse' ) {
 		// Sync rides WS frames, or one long-lived stream response per tab
-		// that answers only when it ends; waitForConvergence covers
-		// document sync.
+		// that answers only when it ends.
 		return;
 	}
-	// The fixture's waitForMutualDiscovery iterates ITS page list, which can
-	// contain closed pages after a leave — run its per-page sync-cycle wait
-	// on the active pages only.
-	await Promise.all(
-		pages.map( ( pg ) =>
-			collaborationUtils.waitForSyncCycle( pg, 3, {
-				timeout: DISCOVERY_TIMEOUT_MS,
-			} )
-		)
-	);
+	await Promise.all( pages.map( ( pg ) => waitForSyncQuiet( pg ) ) );
 }
 
 /**
@@ -1695,7 +1685,7 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 				await maybeThrottlePage( participants[ 1 ].page );
 				const activePages = () =>
 					participants.map( ( entry ) => entry.page );
-				await waitForDiscovery( collaborationUtils, activePages() );
+				await waitForDiscovery( activePages() );
 				await waitForConvergence(
 					activePages(),
 					CONVERGENCE_TIMEOUT_MS
@@ -1863,10 +1853,7 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 						tapConsole( third.page, participants.length - 1 );
 						tapSyncWire( third.page, participants.length - 1 );
 						await maybeThrottlePage( third.page );
-						await waitForDiscovery(
-							collaborationUtils,
-							activePages()
-						);
+						await waitForDiscovery( activePages() );
 						await waitForConvergence(
 							activePages(),
 							CONVERGENCE_TIMEOUT_MS
@@ -1925,10 +1912,7 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 						tapSyncWire( rejoined.page, 1 );
 						await maybeThrottlePage( rejoined.page );
 						departed = false;
-						await waitForDiscovery(
-							collaborationUtils,
-							activePages()
-						);
+						await waitForDiscovery( activePages() );
 						await waitForConvergence(
 							activePages(),
 							CONVERGENCE_TIMEOUT_MS
