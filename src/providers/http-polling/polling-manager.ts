@@ -59,7 +59,11 @@ import {
 	setSyncClientId,
 } from '../advisory/signaling';
 import { registerSaveFlush } from './save-flush';
-import type { ConnectionStatus, EngineSessionCodec } from '@wordpress/sync';
+import type {
+	ConnectionStatus,
+	EngineDisposition,
+	EngineSessionCodec,
+} from '@wordpress/sync';
 import type { TransportSessionCodec } from '../session-extensions';
 import {
 	installSyncDebug,
@@ -71,6 +75,7 @@ import {
 import type {
 	AwarenessState,
 	SyncPayload,
+	SyncResponse,
 	SyncUpdate,
 	UpdateQueue,
 } from './types';
@@ -123,10 +128,23 @@ export interface ReleasedRoom {
 	unsent: SyncUpdate[];
 }
 
+/**
+ * What a send's answer carries, waiting for the receive lane to bring the
+ * room's cursor up to the head the write saw (see the send lane).
+ */
+interface HeldTail {
+	endCursor: number;
+	updates: SyncUpdate[];
+	dispositions?: EngineDisposition[];
+	shouldCompact?: boolean;
+}
+
 interface RoomState {
 	endCursor: number;
 	/** The room generation this session bootstrapped under (see types). */
 	generation?: string;
+	/** Answers to sends made beside the stream, oldest first. */
+	heldTails: HeldTail[];
 	isPrimaryRoom: boolean;
 	/** The awareness map the last poll response carried for this room. */
 	lastServerAwareness: AwarenessState;
@@ -441,10 +459,15 @@ let hiddenFlushTimer: ReturnType< typeof setTimeout > | null = null;
  * turns up — it polls at the solo cadence instead (4 s by default).
  */
 let fastDiscoveryUntil = 0;
-let pollsStarted = 0;
-let pollsFinished = 0;
-/** Flush waiters: resolve once poll number `target` has finished. */
-const pollDoneResolvers: Array< { target: number; resolve: () => void } > = [];
+/*
+ * Requests that could carry updates (a poll off the stream, or a send on
+ * the send lane), started and finished: what a flush waits for. A stream
+ * receive never carries updates and is not counted.
+ */
+let sendsStarted = 0;
+let sendsFinished = 0;
+/** Flush waiters: resolve once request number `target` has finished. */
+const sendDoneResolvers: Array< { target: number; resolve: () => void } > = [];
 let localUpdatePollTimer: ReturnType< typeof setTimeout > | null = null;
 let announcePollTimer: ReturnType< typeof setTimeout > | null = null;
 let lastAnnouncePollAt = 0;
@@ -489,7 +512,7 @@ function isAlone(): boolean {
 function applyHolds(): void {
 	// A pending flush has released the queues for the poll that will carry
 	// them; a poll finishing meanwhile must not pause them again.
-	const alone = isAlone() && 0 === pollDoneResolvers.length;
+	const alone = isAlone() && 0 === sendDoneResolvers.length;
 	roomStates.forEach( ( state ) => {
 		if ( alone && state.holdWhileAlone ) {
 			state.updateQueue.pause();
@@ -509,7 +532,7 @@ function hasHeldUpdates(): boolean {
 }
 
 /**
- * Releases the held queues, polls, and resolves once that poll has
+ * Releases the held queues, sends, and resolves once that request has
  * returned (or failed); the holds are then re-applied for a tab still
  * alone. Used before a save and when the tab goes hidden.
  */
@@ -520,20 +543,25 @@ export function flushHeldUpdates(): Promise< void > {
 	roomStates.forEach( ( state ) => state.updateQueue.resume() );
 	return new Promise< void >( ( resolve ) => {
 		/*
-		 * Wait for a poll that STARTS after this call: a request already
-		 * in flight was built before the queues were released, so its
-		 * successor is the one that carries the held work. Re-applying
-		 * the holds any earlier would pause the queues before that
-		 * successor takes from them.
+		 * Wait for a request that STARTS after this call: a request
+		 * already in flight was built before the queues were released,
+		 * so its successor is the one that carries the held work.
+		 * Re-applying the holds any earlier would pause the queues
+		 * before that successor takes from them. On the stream the
+		 * successor is a send; off it, the next poll.
 		 */
-		pollDoneResolvers.push( {
-			target: pollsStarted + 1,
+		sendDoneResolvers.push( {
+			target: sendsStarted + 1,
 			resolve: () => {
 				applyHolds();
 				resolve();
 			},
 		} );
-		pollNow();
+		if ( streamReceiving() ) {
+			scheduleSend();
+		} else {
+			pollNow();
+		}
 	} );
 }
 
@@ -608,14 +636,6 @@ function nextScheduledDelay(): number | null {
  * @param delay Milliseconds until the next poll, or null to stop.
  */
 function scheduleNext( delay: number | null ): void {
-	pollsFinished++;
-	for ( const waiter of pollDoneResolvers.splice( 0 ) ) {
-		if ( waiter.target <= pollsFinished ) {
-			waiter.resolve();
-		} else {
-			pollDoneResolvers.push( waiter );
-		}
-	}
 	if ( pollAgainRequested ) {
 		// A wake arrived while the last request was in flight.
 		pollAgainRequested = false;
@@ -685,23 +705,30 @@ function reschedule(): void {
 }
 
 /**
- * Local work is waiting (a queued update, or a changed awareness state):
- * send it on demand when no timer will pick it up soon. That is when the
+ * Local work is waiting (a queued update): send it on demand when no
+ * timer will pick it up soon. On the stream that is the send lane, at
+ * once, beside the stream (which stays open). Off it, that is when the
  * loop is quiet (alone), a request is in flight with nothing scheduled
  * behind it (alone, mid-poll), or the pending timer is the slow safety
  * cadence (every peer on the channel). A scheduled timer at the normal
- * cadence, or a stream re-issue, needs no help. A parked stream is
- * woken either way: local work must not wait for the next event.
+ * cadence needs no help. A stream still parked while the loop is off
+ * the stream (the exchange just became unwilling) is woken so the work
+ * does not wait for its next event.
  *
  * @param held Whether the work sits in a held queue (alone, holdable
  *             codec), which waits for company or a flush instead.
  */
 function wakeForLocalWork( held = false ): void {
-	const needsWake =
-		! held &&
-		( sseMode
-			? ! isPolling
-			: ! pollingTimeoutId || isAlone() || advisoryCoversEveryone() );
+	if ( held ) {
+		return;
+	}
+	if ( streamReceiving() ) {
+		scheduleSend();
+		return;
+	}
+	const needsWake = sseMode
+		? ! isPolling
+		: ! pollingTimeoutId || isAlone() || advisoryCoversEveryone();
 	if ( needsWake ) {
 		pollSoonForLocalUpdate();
 	}
@@ -709,14 +736,16 @@ function wakeForLocalWork( held = false ): void {
 }
 
 /**
- * Wakes a parked stream exchange so local work does not wait for the
- * next event. Under short polling nothing is ever parked.
+ * Drops a parked stream exchange on purpose (the tab went hidden, the
+ * room set changed, the page is going away): the exchange sees a
+ * deliberate abort, not a failure, and the loop re-polls at once. Under
+ * short polling nothing is ever parked.
  */
 function abortParkedStream(): void {
 	if ( ! sseMode || ! inFlightParkController ) {
 		return;
 	}
-	parkAbortedForLocalUpdate = true;
+	parkAbortedOnPurpose = true;
 	const controller = inFlightParkController;
 	inFlightParkController = null;
 	controller.abort();
@@ -727,9 +756,13 @@ function abortParkedStream(): void {
  * short polling the advisory channel's presence lane carries the field
  * to reachable peers, and the timer polls carry it to the rest, so
  * nothing needs to happen here. Under SSE the channel is off and the
- * value rides the next request: reissue the parked exchange now.
+ * value rides the send lane: send it now, beside the stream.
  */
 function onLocalAwarenessChanged(): void {
+	if ( streamReceiving() ) {
+		scheduleSend();
+		return;
+	}
 	abortParkedStream();
 }
 
@@ -832,6 +865,11 @@ function installAdvisoryHooks(): void {
 		applyHolds();
 		if ( others ) {
 			pollNow();
+			if ( streamReceiving() && hasQueuedUpdates() ) {
+				// Company released the held queues: on the stream the
+				// send lane carries them, not the next event.
+				scheduleSend();
+			}
 		} else {
 			reschedule();
 		}
@@ -898,8 +936,9 @@ function installAdvisoryHooks(): void {
  * SSE mode: receiving rides one long-lived stream response per tab (the
  * SseExchange), each exchange returning the next stream event, so on a
  * successful exchange the client re-issues almost immediately rather than
- * waiting out a fixed interval. Sends still go through the updates
- * request. Failure backoff is unchanged. After a failed stream the
+ * waiting out a fixed interval. Sends go through the updates request
+ * BESIDE the stream, which stays open across them (see the send lane,
+ * sendNow). Failure backoff is unchanged. After a failed stream the
  * exchange refuses to open one for a while (growing with each failure in
  * a row); receiving then runs on short polling under ITS cadence rules —
  * the collaborator interval, quiet under channel coverage, the background
@@ -966,14 +1005,13 @@ export function setSseMode( enabled: boolean ): void {
 
 /*
  * A parked stream exchange in flight (a pure receive, waiting for the next
- * stream event). Local updates ABORT it so outgoing work never waits for
- * that event: the server answers senders immediately, but only if the
- * client actually sends. Without the abort (found under the retired
- * long-polling transport), an edit made right after a quiet exchange sat
- * queued for up to the full wait.
+ * stream event). Local work never waits for that event: it goes out on
+ * the send lane beside the stream. The park is aborted only on purpose —
+ * the tab went hidden, the room set changed, the page is going away —
+ * and the loop then re-polls at once without recording a failure.
  */
 let inFlightParkController: AbortController | null = null;
-let parkAbortedForLocalUpdate = false;
+let parkAbortedOnPurpose = false;
 
 // Small delay between a delivered stream event and the next exchange, to
 // yield to the event loop without idling.
@@ -1186,7 +1224,21 @@ function getUpdatePayloadSizeDelta(
 	return commaSize + getJsonByteLength( update );
 }
 
-function buildPayloadForRequest( selectedRoomStates: RoomState[] ): {
+/**
+ * Builds the request for the given rooms, packing queued updates into it
+ * under the body-size limit.
+ *
+ * @param selectedRoomStates The rooms, in send order.
+ * @param takeUpdates        Whether to take queued updates out of the
+ *                           room queues into the request. A stream
+ *                           receive never carries updates (the send lane
+ *                           owns them), nor does a poll while a send is
+ *                           in flight.
+ */
+function buildPayloadForRequest(
+	selectedRoomStates: RoomState[],
+	takeUpdates = true
+): {
 	payload: SyncPayload;
 	roomsInRequest: RoomState[];
 } {
@@ -1209,6 +1261,10 @@ function buildPayloadForRequest( selectedRoomStates: RoomState[] ): {
 
 		payload.rooms.push( room );
 		roomsInRequest.push( state );
+	}
+
+	if ( ! takeUpdates ) {
+		return { payload, roomsInRequest };
 	}
 
 	const pendingUpdates = roomsInRequest.map( ( state ) =>
@@ -1262,10 +1318,691 @@ function restoreExactUpdates( payload: SyncPayload ): void {
 	}
 }
 
+/**
+ * Which lane a response came from. A RECEIVE (a poll, or a stream event)
+ * delivers stored rows and moves the room's cursor. A SEND (the updates
+ * request marked `rows_received_separately: true`, issued beside an open stream) carries
+ * no stored rows: its verdicts and any never-stored rows are HELD until
+ * the stream has moved the cursor to the head the server saw at that
+ * write, then applied in the usual order. See sendNow.
+ */
+type ResponseLane = 'receive' | 'send';
+
+/**
+ * Applies one room's rows, then its dispositions, then a compaction
+ * request, in that order. Rows already settle the pending state they
+ * supersede, so the ack covers only outcomes without a row and the
+ * session's state never regresses mid-response.
+ *
+ * @param state         The room.
+ * @param updates       The rows to apply.
+ * @param dispositions  The server's verdicts on rows this client sent.
+ * @param shouldCompact Whether the server nominated this client to compact.
+ */
+function applyRoomRows(
+	state: RoomState,
+	updates: SyncUpdate[],
+	dispositions: EngineDisposition[] | undefined,
+	shouldCompact: boolean | undefined
+): void {
+	// Process each incoming update and collect any responses.
+	const responseUpdates: SyncUpdate[] = [];
+	for ( const update of updates ) {
+		try {
+			const response = state.session.receiveUpdate( update );
+			if ( response ) {
+				responseUpdates.push( response );
+			}
+		} catch ( error ) {
+			state.log(
+				'Failed to apply sync update',
+				{ error, update },
+				'error',
+				true // force
+			);
+		}
+	}
+
+	state.updateQueue.addBulk( responseUpdates );
+
+	/*
+	 * Deliver per-update dispositions (the server's ack for the batch
+	 * this client sent) AFTER the updates above: rows already settle the
+	 * pending state they supersede, so the ack covers only outcomes
+	 * without a row and the session's state never regresses mid-response.
+	 */
+	if ( dispositions && state.session.receiveDispositions ) {
+		try {
+			state.session.receiveDispositions( dispositions );
+		} catch ( error ) {
+			state.log(
+				'Failed to apply dispositions',
+				{ error },
+				'error',
+				true // force
+			);
+		}
+	}
+
+	// Respond to compaction requests from server. The server asks only one
+	// client at a time to compact (lowest active client ID). We encode our
+	// full document state to replace all prior updates on the server.
+	// (No current engine nominates a client — they all compact
+	// server-side — so codecs without the optional method are
+	// simply never asked, and a request to one is ignored.)
+	if ( shouldCompact ) {
+		state.log( 'Server requested compaction update' );
+		try {
+			// Create BEFORE clearing: a failed creation must not
+			// destroy the queued updates for nothing.
+			const compactionUpdate = state.session.createCompactionUpdate?.();
+			if ( compactionUpdate ) {
+				state.updateQueue.clear();
+				state.updateQueue.add( compactionUpdate );
+			}
+		} catch ( error ) {
+			state.log(
+				'Failed to create compaction update',
+				{ error },
+				'error',
+				true // force
+			);
+		}
+	}
+}
+
+/**
+ * Applies the tails the send lane left behind, oldest first, as far as
+ * the room's cursor has come: a tail waits until the receive lane has
+ * delivered every stored row up to the head its write saw.
+ *
+ * @param state The room.
+ */
+function drainHeldTails( state: RoomState ): void {
+	while (
+		state.heldTails.length > 0 &&
+		state.heldTails[ 0 ].endCursor <= state.endCursor
+	) {
+		const tail = state.heldTails.shift()!;
+		applyRoomRows(
+			state,
+			tail.updates,
+			tail.dispositions,
+			tail.shouldCompact
+		);
+	}
+}
+
+function hasHeldTails(): boolean {
+	for ( const state of roomStates.values() ) {
+		if ( state.heldTails.length > 0 ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * Applies one room's response envelope.
+ *
+ * @param state       The room.
+ * @param room        Its envelope in the response.
+ * @param lane        Which lane the response came from.
+ * @param sentUpdates How many updates the request carried for this room.
+ */
+function applyRoomResponse(
+	state: RoomState,
+	room: SyncResponse[ 'rooms' ][ number ],
+	lane: ResponseLane,
+	sentUpdates: number
+): void {
+	if ( 'receive' === lane ) {
+		/*
+		 * Room generation: the server restarted this room (reset to
+		 * a fresh genesis from the saved post) if the token differs
+		 * from the one we bootstrapped under. Nothing else in this
+		 * response is ours to apply — its rows belong to the new
+		 * room and are re-fetched from cursor 0 by the immediate
+		 * re-poll (or the room is dropped, per the session).
+		 */
+		if ( 'string' === typeof room.generation ) {
+			if ( undefined === state.generation ) {
+				state.generation = room.generation;
+			} else if ( state.generation !== room.generation ) {
+				restartRoom( state, room.generation, room.updates );
+				return;
+			}
+		}
+
+		if ( room.end_cursor < state.endCursor ) {
+			// The room went back (a reset with no genesis yet reports
+			// cursor 0 and no token): tails waiting for the old head
+			// could never drain.
+			state.heldTails.length = 0;
+		}
+		state.endCursor = room.end_cursor;
+
+		// If a limit is exceeded, disconnect immediately without processing updates.
+		if ( checkConnectionLimit( room.awareness, state ) ) {
+			state.onStatusChange( {
+				status: 'disconnected',
+				error: new ConnectionError(
+					ConnectionErrorCode.CONNECTION_LIMIT_EXCEEDED,
+					'Connection limit exceeded'
+				),
+			} );
+			unregisterRoom( room.room );
+			return;
+		}
+	}
+
+	// Process awareness update: the server's copy, with the
+	// fresher channel copy overlaid for peers on the channel.
+	state.lastServerAwareness = room.awareness ?? {};
+	state.session.applyRemoteAwareness( mergedAwareness( state ) );
+
+	// Another collaborator on the primary entity means company:
+	// the loop keeps its timer cadence (or the safety cadence
+	// under full channel coverage). Only the primary room is
+	// checked to avoid false positives from shared collection
+	// rooms (e.g. taxonomy/category).
+	if ( state.isPrimaryRoom && Object.keys( room.awareness ).length > 1 ) {
+		hasCollaborators = true;
+	}
+
+	// Rows this tab just landed: tell the peers on the channel
+	// to poll. A rumor only — the poll is what delivers them.
+	if ( sentUpdates ) {
+		announceLocalWrite( room.room );
+	}
+
+	if ( 'send' === lane ) {
+		/*
+		 * A send's answer carries no stored rows, and the cursor is the
+		 * receive lane's to move. Hold what it does carry (verdicts, a
+		 * never-stored row an engine synthesized for us) until the
+		 * stream has delivered the head this write saw; its own notice
+		 * wakes the stream, so that is one round trip. An answer from a
+		 * room the server restarted meanwhile belongs to the old room:
+		 * the receive lane restarts the session, which re-derives its
+		 * pending work.
+		 */
+		if (
+			'string' === typeof room.generation &&
+			undefined !== state.generation &&
+			state.generation !== room.generation
+		) {
+			return;
+		}
+		if (
+			room.updates.length > 0 ||
+			( room.dispositions && room.dispositions.length > 0 ) ||
+			room.should_compact
+		) {
+			state.heldTails.push( {
+				endCursor: room.end_cursor,
+				updates: room.updates,
+				dispositions: room.dispositions,
+				shouldCompact: room.should_compact,
+			} );
+		}
+	} else {
+		applyRoomRows(
+			state,
+			room.updates,
+			room.dispositions,
+			room.should_compact
+		);
+	}
+
+	drainHeldTails( state );
+}
+
+/**
+ * Applies a whole response: every room still registered, in order, with
+ * the inspector's wire tap.
+ *
+ * @param rooms     The response envelopes.
+ * @param payload   The request they answer.
+ * @param lane      Which lane the response came from.
+ * @param startedAt When the request started (for the inspector).
+ */
+function applyResponseRooms(
+	rooms: SyncResponse[ 'rooms' ],
+	payload: SyncPayload,
+	lane: ResponseLane,
+	startedAt: number
+): void {
+	// Reset before checking each room
+	hasCollaborators = false;
+
+	rooms.forEach( ( room ) => {
+		const state = roomStates.get( room.room );
+		if ( ! state ) {
+			return;
+		}
+
+		const requested = payload.rooms.find(
+			( sent ) => sent.room === room.room
+		);
+
+		// The inspector's wire tap: decoded traffic, both ways.
+		if ( isSyncDebugEnabled() ) {
+			recordPoll( {
+				room: room.room,
+				sent: requested?.updates ?? [],
+				received: room.updates,
+				dispositions: room.dispositions as
+					| Array< Record< string, unknown > >
+					| undefined,
+				cursorBefore: requested?.after,
+				cursorAfter: room.end_cursor,
+				durationMs: Date.now() - startedAt,
+				serverDebug: (
+					room as {
+						_debug?: Record< string, unknown >;
+					}
+				 )._debug,
+			} );
+		}
+
+		applyRoomResponse( state, room, lane, requested?.updates.length ?? 0 );
+	} );
+}
+
+/**
+ * A request came back: the rooms it carried are connected.
+ *
+ * @param roomsInRequest The rooms the request carried.
+ */
+function markConnected( roomsInRequest: RoomState[] ): void {
+	consecutiveFailures = 0;
+	isManualRetry = false;
+	syncRequestBodySizeLimit = MAX_SYNC_REQUEST_BODY_SIZE_IN_BYTES;
+	roomsInRequest.forEach( ( state ) => {
+		// Skip rooms unregistered during the await (e.g. the
+		// size-limit handler in onDocUpdate). Their terminal
+		// status was already set by whatever unregistered them.
+		if ( roomStates.get( state.room ) !== state ) {
+			return;
+		}
+
+		state.onStatusChange( { status: 'connected' } );
+	} );
+}
+
+/**
+ * Handles a failed request on either lane: permission and engine fences
+ * drop the affected rooms, a too-large body shrinks the next one, a
+ * protocol mismatch ends everything, and anything else backs off with
+ * the sent updates restored (or replaced by the codec's recovery update).
+ *
+ * @param error          What the request threw.
+ * @param payload        The request.
+ * @param roomsInRequest The rooms it carried.
+ * @param lane           Which lane it was on.
+ * @param startedAt      When it started (for the inspector).
+ * @return Whether the loop must stop: every room is gone, or the server
+ *         cannot speak our protocol.
+ */
+function handleRequestFailure(
+	error: unknown,
+	payload: SyncPayload,
+	roomsInRequest: RoomState[],
+	lane: ResponseLane,
+	startedAt: number
+): boolean {
+	if ( isSyncDebugEnabled() ) {
+		for ( const requested of payload.rooms ) {
+			recordPoll( {
+				room: requested.room,
+				sent: requested.updates,
+				received: [],
+				durationMs: Date.now() - startedAt,
+				error: String( error ),
+			} );
+		}
+	}
+
+	// A 403 response means the user does not have permission to
+	// sync a specific entity. Silently unregister the affected
+	// room(s) and let polling continue for the rest.
+	if ( isForbiddenError( error ) ) {
+		handleForbiddenError( error, payload.rooms );
+		// If every room was unregistered, stop the poll loop instead of
+		// scheduling another tick.
+		return roomStates.size === 0;
+	}
+
+	if ( isEngineMismatchError( error ) ) {
+		// A 409 means the room is bound to a different sync engine.
+		// Retrying can never succeed — drop the affected room into
+		// the lock posture and keep polling for the rest.
+		handleEngineMismatchError( error, payload.rooms );
+		return roomStates.size === 0;
+	}
+
+	if ( isRequestBodyTooLargeError( error ) ) {
+		syncRequestBodySizeLimit = Math.max(
+			MIN_SYNC_REQUEST_BODY_SIZE_LIMIT_IN_BYTES,
+			Math.floor( syncRequestBodySizeLimit / 2 )
+		);
+		pollInterval = hasCollaborators
+			? ERROR_RETRY_DELAYS_WITH_COLLABORATORS_MS[ 0 ]
+			: ERROR_RETRY_DELAYS_SOLO_MS[ 0 ];
+		restoreExactUpdates( payload );
+
+		for ( const room of payload.rooms ) {
+			if ( ! roomStates.has( room.room ) ) {
+				continue;
+			}
+
+			roomStates.get( room.room )!.log(
+				'Sync request body too large, retrying with smaller batches',
+				{
+					error,
+					nextPoll: pollInterval,
+					syncRequestBodySizeLimit,
+				},
+				'error',
+				true // force
+			);
+		}
+		return false;
+	}
+
+	if ( isProtocolMismatchError( error ) ) {
+		// The server explicitly signaled a protocol mismatch, so we fail
+		// gracefully instead of retrying indefinitely. This can happen if
+		// the client is running an outdated version of the code that is
+		// incompatible with the server.
+		const affectedRooms = [ ...roomStates.entries() ];
+
+		for ( const [ , state ] of affectedRooms ) {
+			state.onStatusChange( {
+				status: 'disconnected',
+				error: new ConnectionError(
+					ConnectionErrorCode.PROTOCOL_MISMATCH,
+					'Protocol mismatch between client and server'
+				),
+			} );
+		}
+
+		// Skip the server-side disconnect signal: by definition the
+		// server can't speak our protocol, so sending one is pointless.
+		for ( const [ room ] of affectedRooms ) {
+			unregisterRoom( room, { sendDisconnectSignal: false } );
+		}
+
+		return true;
+	}
+
+	// A disconnected transport has no wake of its own: let the
+	// advisory channel back in (a no-op unless a stream had
+	// switched it off). A failed SEND says nothing about the stream.
+	if ( 'receive' === lane ) {
+		setAdvisoryDisabledByTransport( false );
+	}
+
+	// Use the explicit retry delay schedule for backoff.
+	consecutiveFailures++;
+	const retrySchedule = hasCollaborators
+		? ERROR_RETRY_DELAYS_WITH_COLLABORATORS_MS
+		: ERROR_RETRY_DELAYS_SOLO_MS;
+	if ( consecutiveFailures <= retrySchedule.length ) {
+		pollInterval = retrySchedule[ consecutiveFailures - 1 ];
+	} else {
+		pollInterval = DISCONNECT_DIALOG_RETRY_MS;
+	}
+
+	// After a manual retry, use a shorter interval for one cycle.
+	if ( isManualRetry ) {
+		pollInterval = MANUAL_RETRY_INTERVAL_MS;
+		isManualRetry = false;
+	}
+
+	// Recover from the failed request. We don't know whether the
+	// server stored our updates before the error occurred (e.g. a
+	// network timeout after a successful write). Recovery is
+	// CODEC-DRIVEN: an engine whose updates are not idempotent on
+	// the server (Yjs deltas) provides createRecoveryUpdate — a
+	// full-state update that safely supersedes either outcome.
+	// Engines without it (the intent log dedupes ingest by
+	// intentId) get their exact updates restored and re-sent.
+	// The recovery update is created BEFORE the queue is cleared
+	// so a throwing codec can never lose queued work.
+	for ( const room of payload.rooms ) {
+		if ( ! roomStates.has( room.room ) ) {
+			continue;
+		}
+
+		const state = roomStates.get( room.room )!;
+
+		if ( room.updates.length > 0 ) {
+			let recoveryUpdate: SyncUpdate | null = null;
+			if ( state.session.createRecoveryUpdate && state.endCursor > 0 ) {
+				try {
+					recoveryUpdate = state.session.createRecoveryUpdate();
+				} catch ( recoveryError ) {
+					state.log(
+						'Recovery update failed; restoring original updates',
+						{ error: recoveryError },
+						'error',
+						true // force
+					);
+				}
+			}
+			if ( recoveryUpdate ) {
+				state.updateQueue.clear();
+				state.updateQueue.add( recoveryUpdate );
+			} else {
+				state.updateQueue.restore( room.updates );
+			}
+		}
+
+		state.log(
+			'Error posting sync update, will retry with backoff',
+			{ error, nextPoll: pollInterval },
+			'error',
+			true // force
+		);
+	}
+
+	// Don't report disconnected status when the request was aborted
+	// due to page unload (e.g. during a refresh) to avoid briefly
+	// flashing the disconnect dialog before the new page loads.
+	if ( ! isUnloadPending ) {
+		const backgroundRetriesFailed =
+			consecutiveFailures > retrySchedule.length;
+
+		roomsInRequest.forEach( ( state ) => {
+			// Skip rooms unregistered during the await so
+			// their terminal status isn't overwritten.
+			if ( roomStates.get( state.room ) !== state ) {
+				return;
+			}
+
+			state.onStatusChange( {
+				status: 'disconnected',
+				canManuallyRetry: true,
+				consecutiveFailures,
+				backgroundRetriesFailed,
+				willAutoRetryInMs: pollInterval,
+			} );
+		} );
+	}
+
+	return false;
+}
+
+/*
+ * THE SEND LANE (SSE). While the receive lane is on the stream, local
+ * work does not wait for the stream and does not close it: it goes out
+ * on the updates request beside the stream, marked `rows_received_separately: true`.
+ * The server stores the updates and answers with its verdicts, any
+ * never-stored row an engine synthesizes for this client (de-rtc's
+ * fetch answer), and the room's head cursor — but no stored rows, and
+ * the answer moves no cursor. The stream stays the only path that
+ * delivers stored rows, so nothing is delivered twice or skipped, and
+ * the answer is held (see applyRoomResponse) until the stream has
+ * carried the cursor to that head: rows first, verdicts after, the
+ * order every engine relies on. The tab's awareness state (its cursor,
+ * its selection) rides the same lane on change (checkAwareness), so a
+ * cursor move never reopens the stream either.
+ *
+ * One send at a time: two requests carrying updates must never be in
+ * flight together (an engine's rows have an order), so a poll takes no
+ * updates while a send is in flight, and a send is never built while
+ * one is. Outside the stream (the settling window, a hidden tab, a
+ * failed stream's backoff, a stopped loop) nothing here runs: sends ride
+ * the polls as under short polling.
+ */
+let updatesInFlight = false;
+let pollInFlightCounted = false;
+let sendTimer: ReturnType< typeof setTimeout > | null = null;
+/** Per room, the awareness state (serialized) the server last got. */
+const lastSentAwareness = new Map< string, string >();
+// How often a streaming tab compares its awareness state with the copy
+// the server has (the framework already throttles cursor moves).
+const AWARENESS_SEND_CHECK_MS = 1000;
+let awarenessCheckTimer: ReturnType< typeof setInterval > | null = null;
+
+/**
+ * Whether the receive lane is on the stream, so sends go beside it.
+ */
+function streamReceiving(): boolean {
+	return sseStreamReady() && isPolling;
+}
+
+/**
+ * Sends soon: at once by default (a burst coalesces behind the request
+ * in flight), or after a backoff delay when the last send failed.
+ *
+ * @param delay Milliseconds to wait.
+ */
+function scheduleSend( delay = 0 ): void {
+	if ( sendTimer ) {
+		return;
+	}
+	sendTimer = setTimeout( () => {
+		sendTimer = null;
+		void sendNow();
+	}, delay );
+}
+
+/**
+ * Notes the awareness state a request carries to the server.
+ *
+ * @param payload The request.
+ */
+function recordAwarenessSent( payload: SyncPayload ): void {
+	for ( const room of payload.rooms ) {
+		lastSentAwareness.set( room.room, JSON.stringify( room.awareness ) );
+	}
+}
+
+function awarenessChanged(): boolean {
+	for ( const state of roomStates.values() ) {
+		if (
+			lastSentAwareness.get( state.room ) !==
+			JSON.stringify( state.session.getLocalAwareness() )
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * A streaming tab with company sends its awareness state when it
+ * changed since the server last got it (a solo tab has nobody to tell).
+ */
+function checkAwareness(): void {
+	if ( streamReceiving() && hasCompany() && awarenessChanged() ) {
+		scheduleSend();
+	}
+}
+
+/**
+ * Finishes a request that could carry updates (a poll off the stream,
+ * or a send): the flush waiters count these.
+ */
+function finishSend(): void {
+	sendsFinished++;
+	for ( const waiter of sendDoneResolvers.splice( 0 ) ) {
+		if ( waiter.target <= sendsFinished ) {
+			waiter.resolve();
+		} else {
+			sendDoneResolvers.push( waiter );
+		}
+	}
+}
+
+async function sendNow(): Promise< void > {
+	if ( 0 === roomStates.size || updatesInFlight ) {
+		// The send in flight re-checks the queues when it returns.
+		return;
+	}
+	if ( ! streamReceiving() ) {
+		// The receive lane is off the stream: the polls carry sends.
+		if ( hasQueuedUpdates() ) {
+			pollNow();
+		}
+		return;
+	}
+	if ( ! hasQueuedUpdates() && ! awarenessChanged() ) {
+		return;
+	}
+
+	const { payload, roomsInRequest } = buildPayloadForRequest(
+		selectRoomsForRequest(),
+		true
+	);
+	for ( const room of payload.rooms ) {
+		room.rows_received_separately = true;
+	}
+	recordAwarenessSent( payload );
+	updatesInFlight = true;
+	sendsStarted++;
+	const startedAt = Date.now();
+	let stopped = false;
+	try {
+		const { rooms } = await postSyncUpdate( payload );
+		markConnected( roomsInRequest );
+		applyResponseRooms( rooms, payload, 'send', startedAt );
+		applyHolds();
+		if ( hasHeldTails() && ! isPolling ) {
+			// The loop stopped meanwhile (the tab is alone now): nothing
+			// would carry the cursor to the held tails. One receive does.
+			pollNow();
+		}
+	} catch ( error ) {
+		stopped = handleRequestFailure(
+			error,
+			payload,
+			roomsInRequest,
+			'send',
+			startedAt
+		);
+		if ( ! stopped && hasQueuedUpdates() ) {
+			scheduleSend( pollInterval );
+		}
+	}
+	updatesInFlight = false;
+	finishSend();
+	if (
+		! stopped &&
+		! sendTimer &&
+		( hasQueuedUpdates() || awarenessChanged() )
+	) {
+		// Work that arrived while this send was in flight.
+		scheduleSend();
+	}
+}
+
 function poll(): void {
 	isPolling = true;
 	pollingTimeoutId = null;
-	pollsStarted++;
 
 	async function start(): Promise< void > {
 		if ( 0 === roomStates.size ) {
@@ -1278,12 +2015,31 @@ function poll(): void {
 		// cancels a beforeunload dialog.
 		isUnloadPending = false;
 
+		/*
+		 * Decided once, before the payload is built: a stream receive
+		 * takes no updates (the send lane owns them, see sendNow), and
+		 * neither does a poll while a send is in flight (two requests
+		 * carrying updates must never overlap: an engine's rows have an
+		 * order).
+		 */
+		const streamReceive = sseStreamReady();
+		const takeUpdates = ! streamReceive && ! updatesInFlight;
+
 		// Create a payload with queued updates. We include rooms even if they
 		// have no updates to ensure we receive any incoming updates, while keeping
 		// the serialized body below the server's aggregate request-size limit.
 		const { payload, roomsInRequest } = buildPayloadForRequest(
-			selectRoomsForRequest()
+			selectRoomsForRequest(),
+			takeUpdates
 		);
+		pollInFlightCounted = takeUpdates;
+		if ( takeUpdates ) {
+			sendsStarted++;
+		} else if ( streamReceive && hasQueuedUpdates() ) {
+			// Queued work this receive leaves behind (the loop restarting
+			// onto the stream with edits waiting): the send lane's.
+			scheduleSend();
+		}
 
 		// Emit 'connecting' status only for rooms in this request. Rooms
 		// rotated out of this poll keep their prior status.
@@ -1302,196 +2058,23 @@ function poll(): void {
 			inFlightParkController = new AbortController();
 			parkSignal = inFlightParkController.signal;
 		}
+		if ( ! streamReceive || ! sseExchange.isOpen() ) {
+			// This payload reaches the server: as a request, or as the
+			// stream that opens with it. (A reissue on an open stream
+			// sends nothing.)
+			recordAwarenessSent( payload );
+		}
 		try {
-			const { rooms, advisory } = sseStreamReady()
+			const { rooms, advisory } = streamReceive
 				? await sseExchange.exchange( payload, parkSignal )
 				: await postSyncUpdate( payload, parkSignal );
 			inFlightParkController = null;
-			parkAbortedForLocalUpdate = false;
+			parkAbortedOnPurpose = false;
 			// The signaling answer rode this poll: company, peers, mailbox.
 			applyAnswer( advisory, payload.advisory?.seq );
 
-			// Emit 'connected' status.
-			consecutiveFailures = 0;
-			isManualRetry = false;
-			syncRequestBodySizeLimit = MAX_SYNC_REQUEST_BODY_SIZE_IN_BYTES;
-			roomsInRequest.forEach( ( state ) => {
-				// Skip rooms unregistered during the await (e.g. the
-				// size-limit handler in onDocUpdate). Their terminal
-				// status was already set by whatever unregistered them.
-				if ( roomStates.get( state.room ) !== state ) {
-					return;
-				}
-
-				state.onStatusChange( { status: 'connected' } );
-			} );
-
-			// Reset before checking each room
-			hasCollaborators = false;
-
-			rooms.forEach( ( room ) => {
-				if ( ! roomStates.has( room.room ) ) {
-					return;
-				}
-
-				const roomState = roomStates.get( room.room )!;
-
-				// The inspector's wire tap: decoded traffic, both ways.
-				if ( isSyncDebugEnabled() ) {
-					const requested = payload.rooms.find(
-						( sent ) => sent.room === room.room
-					);
-					recordPoll( {
-						room: room.room,
-						sent: requested?.updates ?? [],
-						received: room.updates,
-						dispositions: room.dispositions as
-							| Array< Record< string, unknown > >
-							| undefined,
-						cursorBefore: requested?.after,
-						cursorAfter: room.end_cursor,
-						durationMs: Date.now() - pollStarted,
-						serverDebug: (
-							room as {
-								_debug?: Record< string, unknown >;
-							}
-						 )._debug,
-					} );
-				}
-
-				/*
-				 * Room generation: the server restarted this room (reset to
-				 * a fresh genesis from the saved post) if the token differs
-				 * from the one we bootstrapped under. Nothing else in this
-				 * response is ours to apply — its rows belong to the new
-				 * room and are re-fetched from cursor 0 by the immediate
-				 * re-poll (or the room is dropped, per the session).
-				 */
-				if ( 'string' === typeof room.generation ) {
-					if ( undefined === roomState.generation ) {
-						roomState.generation = room.generation;
-					} else if ( roomState.generation !== room.generation ) {
-						restartRoom( roomState, room.generation, room.updates );
-						return;
-					}
-				}
-
-				roomState.endCursor = room.end_cursor;
-
-				// If a limit is exceeded, disconnect immediately without processing updates.
-				if ( checkConnectionLimit( room.awareness, roomState ) ) {
-					roomState.onStatusChange( {
-						status: 'disconnected',
-						error: new ConnectionError(
-							ConnectionErrorCode.CONNECTION_LIMIT_EXCEEDED,
-							'Connection limit exceeded'
-						),
-					} );
-					unregisterRoom( room.room );
-					return;
-				}
-
-				// Process awareness update: the server's copy, with the
-				// fresher channel copy overlaid for peers on the channel.
-				roomState.lastServerAwareness = room.awareness ?? {};
-				roomState.session.applyRemoteAwareness(
-					mergedAwareness( roomState )
-				);
-
-				// Another collaborator on the primary entity means company:
-				// the loop keeps its timer cadence (or the safety cadence
-				// under full channel coverage). Only the primary room is
-				// checked to avoid false positives from shared collection
-				// rooms (e.g. taxonomy/category).
-				if (
-					roomState.isPrimaryRoom &&
-					Object.keys( room.awareness ).length > 1
-				) {
-					hasCollaborators = true;
-				}
-
-				// Rows this tab just landed: tell the peers on the channel
-				// to poll. A rumor only — the poll is what delivers them.
-				const sentUpdates = payload.rooms.find(
-					( sent ) => sent.room === room.room
-				)?.updates.length;
-				if ( sentUpdates ) {
-					announceLocalWrite( room.room );
-				}
-
-				// Process each incoming update and collect any responses.
-				const responseUpdates: SyncUpdate[] = [];
-				for ( const update of room.updates ) {
-					try {
-						const response =
-							roomState.session.receiveUpdate( update );
-						if ( response ) {
-							responseUpdates.push( response );
-						}
-					} catch ( error ) {
-						roomState.log(
-							'Failed to apply sync update',
-							{ error, update },
-							'error',
-							true // force
-						);
-					}
-				}
-
-				roomState.updateQueue.addBulk( responseUpdates );
-
-				/*
-				 * Deliver per-update dispositions (the server's ack for the
-				 * batch this client sent) AFTER the updates above: rows
-				 * already settle the pending state they supersede, so the
-				 * ack covers only outcomes without a row and the session's
-				 * state never regresses mid-response.
-				 */
-				if (
-					room.dispositions &&
-					roomState.session.receiveDispositions
-				) {
-					try {
-						roomState.session.receiveDispositions(
-							room.dispositions
-						);
-					} catch ( error ) {
-						roomState.log(
-							'Failed to apply dispositions',
-							{ error },
-							'error',
-							true // force
-						);
-					}
-				}
-
-				// Respond to compaction requests from server. The server asks only one
-				// client at a time to compact (lowest active client ID). We encode our
-				// full document state to replace all prior updates on the server.
-				// (No current engine nominates a client — they all compact
-				// server-side — so codecs without the optional method are
-				// simply never asked, and a request to one is ignored.)
-				if ( room.should_compact ) {
-					roomState.log( 'Server requested compaction update' );
-					try {
-						// Create BEFORE clearing: a failed creation must not
-						// destroy the queued updates for nothing.
-						const compactionUpdate =
-							roomState.session.createCompactionUpdate?.();
-						if ( compactionUpdate ) {
-							roomState.updateQueue.clear();
-							roomState.updateQueue.add( compactionUpdate );
-						}
-					} catch ( error ) {
-						roomState.log(
-							'Failed to create compaction update',
-							{ error },
-							'error',
-							true // force
-						);
-					}
-				}
-			} );
+			markConnected( roomsInRequest );
+			applyResponseRooms( rooms, payload, 'receive', pollStarted );
 
 			/*
 			 * A stream delivers its own wake (an event the instant a row
@@ -1519,203 +2102,43 @@ function poll(): void {
 			// Whatever the cause, the probe's signals never arrived: back to
 			// the outbox for the next carrier.
 			probeFailed( payload.advisory?.seq );
-			if ( parkAbortedForLocalUpdate ) {
+			if ( parkAbortedOnPurpose ) {
 				/*
 				 * Deliberate wake: the parked request carried no updates, so
 				 * there is nothing to restore and no failure to record —
-				 * re-poll immediately to send the just-queued local work.
+				 * re-poll immediately (the tab went hidden, or the room
+				 * set changed under the stream).
 				 */
-				parkAbortedForLocalUpdate = false;
+				parkAbortedOnPurpose = false;
 				inFlightParkController = null;
+				if ( pollInFlightCounted ) {
+					pollInFlightCounted = false;
+					finishSend();
+				}
 				pollingTimeoutId = setTimeout( poll, 0 );
 				return;
 			}
 			inFlightParkController = null;
-			if ( isSyncDebugEnabled() ) {
-				for ( const requested of payload.rooms ) {
-					recordPoll( {
-						room: requested.room,
-						sent: requested.updates,
-						received: [],
-						durationMs: Date.now() - pollStarted,
-						error: String( error ),
-					} );
-				}
-			}
-			// A 403 response means the user does not have permission to
-			// sync a specific entity. Silently unregister the affected
-			// room(s) and let polling continue for the rest.
-			if ( isForbiddenError( error ) ) {
-				handleForbiddenError( error, payload.rooms );
-
-				// If every room was unregistered, stop the poll loop
-				// instead of scheduling another tick. Reset isPolling
-				// so a future registerRoom() call can restart it.
-				if ( roomStates.size === 0 ) {
-					isPolling = false;
-					return;
-				}
-			} else if ( isEngineMismatchError( error ) ) {
-				// A 409 means the room is bound to a different sync engine.
-				// Retrying can never succeed — drop the affected room into
-				// the lock posture and keep polling for the rest.
-				handleEngineMismatchError( error, payload.rooms );
-
-				if ( roomStates.size === 0 ) {
-					isPolling = false;
-					return;
-				}
-			} else if ( isRequestBodyTooLargeError( error ) ) {
-				syncRequestBodySizeLimit = Math.max(
-					MIN_SYNC_REQUEST_BODY_SIZE_LIMIT_IN_BYTES,
-					Math.floor( syncRequestBodySizeLimit / 2 )
-				);
-				pollInterval = hasCollaborators
-					? ERROR_RETRY_DELAYS_WITH_COLLABORATORS_MS[ 0 ]
-					: ERROR_RETRY_DELAYS_SOLO_MS[ 0 ];
-				restoreExactUpdates( payload );
-
-				for ( const room of payload.rooms ) {
-					if ( ! roomStates.has( room.room ) ) {
-						continue;
-					}
-
-					roomStates.get( room.room )!.log(
-						'Sync request body too large, retrying with smaller batches',
-						{
-							error,
-							nextPoll: pollInterval,
-							syncRequestBodySizeLimit,
-						},
-						'error',
-						true // force
-					);
-				}
-			} else if ( isProtocolMismatchError( error ) ) {
-				// The server explicitly signaled a protocol mismatch, so we fail
-				// gracefully instead of retrying indefinitely. This can happen if
-				// the client is running an outdated version of the code that is
-				// incompatible with the server.
-				const affectedRooms = [ ...roomStates.entries() ];
-
-				for ( const [ , state ] of affectedRooms ) {
-					state.onStatusChange( {
-						status: 'disconnected',
-						error: new ConnectionError(
-							ConnectionErrorCode.PROTOCOL_MISMATCH,
-							'Protocol mismatch between client and server'
-						),
-					} );
-				}
-
-				// Skip the server-side disconnect signal: by definition the
-				// server can't speak our protocol, so sending one is pointless.
-				for ( const [ room ] of affectedRooms ) {
-					unregisterRoom( room, { sendDisconnectSignal: false } );
-				}
-
+			if (
+				handleRequestFailure(
+					error,
+					payload,
+					roomsInRequest,
+					'receive',
+					pollStarted
+				)
+			) {
+				// Reset isPolling so a future registerRoom() call can
+				// restart the loop.
 				isPolling = false;
 				return;
-			} else {
-				// A disconnected transport has no wake of its own: let the
-				// advisory channel back in (a no-op unless a stream had
-				// switched it off).
-				setAdvisoryDisabledByTransport( false );
-
-				// Use the explicit retry delay schedule for backoff.
-				consecutiveFailures++;
-				const retrySchedule = hasCollaborators
-					? ERROR_RETRY_DELAYS_WITH_COLLABORATORS_MS
-					: ERROR_RETRY_DELAYS_SOLO_MS;
-				if ( consecutiveFailures <= retrySchedule.length ) {
-					pollInterval = retrySchedule[ consecutiveFailures - 1 ];
-				} else {
-					pollInterval = DISCONNECT_DIALOG_RETRY_MS;
-				}
-
-				// After a manual retry, use a shorter interval for one cycle.
-				if ( isManualRetry ) {
-					pollInterval = MANUAL_RETRY_INTERVAL_MS;
-					isManualRetry = false;
-				}
-
-				// Recover from the failed request. We don't know whether the
-				// server stored our updates before the error occurred (e.g. a
-				// network timeout after a successful write). Recovery is
-				// CODEC-DRIVEN: an engine whose updates are not idempotent on
-				// the server (Yjs deltas) provides createRecoveryUpdate — a
-				// full-state update that safely supersedes either outcome.
-				// Engines without it (the intent log dedupes ingest by
-				// intentId) get their exact updates restored and re-sent.
-				// The recovery update is created BEFORE the queue is cleared
-				// so a throwing codec can never lose queued work.
-				for ( const room of payload.rooms ) {
-					if ( ! roomStates.has( room.room ) ) {
-						continue;
-					}
-
-					const state = roomStates.get( room.room )!;
-
-					if ( room.updates.length > 0 ) {
-						let recoveryUpdate: SyncUpdate | null = null;
-						if (
-							state.session.createRecoveryUpdate &&
-							state.endCursor > 0
-						) {
-							try {
-								recoveryUpdate =
-									state.session.createRecoveryUpdate();
-							} catch ( recoveryError ) {
-								state.log(
-									'Recovery update failed; restoring original updates',
-									{ error: recoveryError },
-									'error',
-									true // force
-								);
-							}
-						}
-						if ( recoveryUpdate ) {
-							state.updateQueue.clear();
-							state.updateQueue.add( recoveryUpdate );
-						} else {
-							state.updateQueue.restore( room.updates );
-						}
-					}
-
-					state.log(
-						'Error posting sync update, will retry with backoff',
-						{ error, nextPoll: pollInterval },
-						'error',
-						true // force
-					);
-				}
-
-				// Don't report disconnected status when the request was aborted
-				// due to page unload (e.g. during a refresh) to avoid briefly
-				// flashing the disconnect dialog before the new page loads.
-				if ( ! isUnloadPending ) {
-					const backgroundRetriesFailed =
-						consecutiveFailures > retrySchedule.length;
-
-					roomsInRequest.forEach( ( state ) => {
-						// Skip rooms unregistered during the await so
-						// their terminal status isn't overwritten.
-						if ( roomStates.get( state.room ) !== state ) {
-							return;
-						}
-
-						state.onStatusChange( {
-							status: 'disconnected',
-							canManuallyRetry: true,
-							consecutiveFailures,
-							backgroundRetriesFailed,
-							willAutoRetryInMs: pollInterval,
-						} );
-					} );
-				}
 			}
 		}
 
+		if ( pollInFlightCounted ) {
+			pollInFlightCounted = false;
+			finishSend();
+		}
 		if ( repollImmediately ) {
 			// A room restarted under us during this poll: the next poll
 			// must follow at once (cursor 0) instead of waiting out the
@@ -1782,6 +2205,8 @@ function restartRoom(
 
 	roomState.generation = generation;
 	roomState.endCursor = 0;
+	// Answers to sends against the old room have nothing left to settle.
+	roomState.heldTails.length = 0;
 	// The queue held work written against the old room; the session
 	// re-derives anything still relevant after it re-bootstraps.
 	roomState.updateQueue.clear();
@@ -1903,6 +2328,7 @@ function registerRoom( {
 
 	const roomState: RoomState = {
 		endCursor: initialCursor,
+		heldTails: [],
 		isPrimaryRoom,
 		lastServerAwareness: {},
 		holdWhileAlone,
@@ -1923,6 +2349,12 @@ function registerRoom( {
 		sseSettleUntil = Date.now() + SSE_SETTLE_MS;
 		abortParkedStream();
 		sseExchange.close();
+		if ( ! awarenessCheckTimer ) {
+			awarenessCheckTimer = setInterval(
+				checkAwareness,
+				AWARENESS_SEND_CHECK_MS
+			);
+		}
 	}
 
 	if ( ! areListenersRegistered ) {
@@ -2010,13 +2442,15 @@ function releaseRoom( room: string ): Promise< ReleasedRoom > {
 		dropRoom( room );
 		return released;
 	};
-	const inFlight = isPolling && null === pollingTimeoutId;
+	const inFlight =
+		updatesInFlight ||
+		( isPolling && null === pollingTimeoutId && pollInFlightCounted );
 	if ( ! inFlight ) {
 		return Promise.resolve( finish() );
 	}
 	return new Promise< ReleasedRoom >( ( resolve ) => {
-		pollDoneResolvers.push( {
-			target: pollsStarted,
+		sendDoneResolvers.push( {
+			target: sendsStarted,
 			resolve: () => resolve( finish() ),
 		} );
 	} );
@@ -2048,13 +2482,22 @@ function dropRoom( room: string ): void {
 		hasCollaborators = false;
 		pollAgainRequested = false;
 		cancelHiddenFlush();
-		for ( const waiter of pollDoneResolvers.splice( 0 ) ) {
+		for ( const waiter of sendDoneResolvers.splice( 0 ) ) {
 			waiter.resolve();
 		}
 		if ( localUpdatePollTimer ) {
 			clearTimeout( localUpdatePollTimer );
 			localUpdatePollTimer = null;
 		}
+		if ( sendTimer ) {
+			clearTimeout( sendTimer );
+			sendTimer = null;
+		}
+		if ( awarenessCheckTimer ) {
+			clearInterval( awarenessCheckTimer );
+			awarenessCheckTimer = null;
+		}
+		lastSentAwareness.clear();
 		if ( announcePollTimer ) {
 			clearTimeout( announcePollTimer );
 			announcePollTimer = null;

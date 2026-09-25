@@ -139,6 +139,47 @@ class Tests_Collaboration_WpIntentLogEngine extends WP_Test_REST_TestCase {
 		$this->assertArrayNotHasKey( 'dispositions', $room_response );
 	}
 
+	public function test_a_send_marked_receive_false_is_answered_with_the_verdict_and_head_but_no_stored_rows() {
+		// A tab receiving over an open stream sends beside it: the server
+		// stores the intent and answers with its verdict and the room's
+		// head cursor, but delivers no stored rows (the stream does).
+		$insert        = self::intent_update(
+			array(
+				'intentId' => 'i-1',
+				'baseSeq'  => 0,
+				'type'     => 'insert_text',
+				'payload'  => array(
+					'syncId' => self::paragraph_id(),
+					'field'  => 'content',
+					'offset' => 0,
+					'text'   => 'x',
+				),
+			)
+		);
+		$room_response = $this->poll( array( $insert ), array( 'rows_received_separately' => true ) );
+
+		$this->assertSame( array(), $room_response['updates'], 'No stored rows: the stream delivers them.' );
+		$this->assertSame(
+			array(
+				array(
+					'intentId' => 'i-1',
+					'status'   => 'applied',
+				),
+			),
+			$room_response['dispositions']
+		);
+		$this->assertGreaterThan( 0, $room_response['end_cursor'], 'The head this write produced, for the client to wait for on its stream.' );
+
+		// The rows are there for any reader, the author included.
+		$author = $this->poll();
+		$this->assertSame(
+			array( WP_Intent_Log_Engine::UPDATE_TYPE_SNAPSHOT, WP_Intent_Log_Engine::UPDATE_TYPE_INTENT ),
+			array_column( $author['updates'], 'type' )
+		);
+		$this->assertSame( $room_response['end_cursor'], $author['end_cursor'], 'The send reported the head the ordinary read reaches.' );
+		$this->assertArrayNotHasKey( 'dispositions', $author );
+	}
+
 	public function test_applied_intent_returns_disposition_and_reaches_other_clients_transformed() {
 		$insert        = self::intent_update(
 			array(

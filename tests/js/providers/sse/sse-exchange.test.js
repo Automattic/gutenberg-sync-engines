@@ -105,31 +105,53 @@ it( 'reconnects after a kill with the last applied cursor, not a partial event',
 	exchange.close();
 } );
 
-it( 'closes the stream before sending through REST', async () => {
+it( 'keeps the stream open when only the awareness state changed', async () => {
+	// A cursor move changes the tab's awareness many times a minute; it
+	// rides the updates request beside the stream, never a reopen.
 	serve( [ frame( 1 ), frame( 2 ) ] );
-	fetchMock.mockResolvedValueOnce( response( 3 ) );
 	const exchange = new SseExchange();
 	await exchange.exchange( payload() );
 	const signal = fetchMock.mock.calls[ 0 ][ 0 ].signal;
-	await exchange.exchange( payload( 1, [ { type: 'edit', data: 'x' } ] ) );
-	expect( signal.aborted ).toBe( true );
-	expect( fetchMock.mock.calls[ 1 ][ 0 ].path ).toBe( '/wp-sync/v1/updates' );
+	const moved = payload( 1 );
+	moved.rooms[ 0 ].awareness = { cursor: 7 };
+	expect( await exchange.exchange( moved ) ).toEqual( response( 2 ) );
+	expect( signal.aborted ).toBe( false );
+	expect( fetchMock ).toHaveBeenCalledTimes( 1 );
+	expect( exchange.isOpen() ).toBe( true );
+	exchange.close();
+	expect( exchange.isOpen() ).toBe( false );
 } );
 
-it( 'uses polling during Redis failure, then retries SSE', async () => {
+it( 'refuses a payload carrying updates: sends go beside the stream', async () => {
+	serve( [ frame( 1 ) ] );
+	const exchange = new SseExchange();
+	await exchange.exchange( payload() );
+	const signal = fetchMock.mock.calls[ 0 ][ 0 ].signal;
+	await expect(
+		exchange.exchange( payload( 1, [ { type: 'edit', data: 'x' } ] ) )
+	).rejects.toThrow( 'never carries updates' );
+	// A programming error, not a stream failure: the stream is untouched.
+	expect( signal.aborted ).toBe( false );
+	expect( fetchMock ).toHaveBeenCalledTimes( 1 );
+	exchange.close();
+} );
+
+it( 'is unavailable for a while after a failure, then retries SSE', async () => {
+	// While `available` is false the manager receives over ordinary
+	// requests on its own; the exchange is simply not asked.
 	jest.useFakeTimers();
 	fetchMock.mockRejectedValueOnce( { code: 'rest_sse_unavailable' } );
-	fetchMock.mockResolvedValueOnce( response( 1 ) );
 	serve( [ frame( 2 ) ] );
 	const exchange = new SseExchange();
 	await expect( exchange.exchange( payload() ) ).rejects.toEqual( {
 		code: 'rest_sse_unavailable',
 	} );
-	await exchange.exchange( payload() );
-	expect( fetchMock.mock.calls[ 1 ][ 0 ].path ).toBe( '/wp-sync/v1/updates' );
+	expect( exchange.available ).toBe( false );
+	expect( exchange.isOpen() ).toBe( false );
 	jest.advanceTimersByTime( 5000 );
-	await exchange.exchange( payload( 1 ) );
-	expect( fetchMock.mock.calls[ 2 ][ 0 ].path ).toBe( '/wp-sync/v1/sse' );
+	expect( exchange.available ).toBe( true );
+	expect( await exchange.exchange( payload( 1 ) ) ).toEqual( response( 2 ) );
+	expect( fetchMock.mock.calls[ 1 ][ 0 ].path ).toBe( '/wp-sync/v1/sse' );
 	exchange.close();
 	jest.useRealTimers();
 } );

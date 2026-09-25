@@ -243,9 +243,17 @@ For the first second after a tab joins a room it receives over ordinary
 requests: the editor registers its rooms one by one at load and the tab's
 presence fills in right after, and each would otherwise close and reopen
 the stream. Once the room set has been still for a second, one stream opens
-covering all of it. Local edits close the receive stream, use the normal
-`/updates` request, and resume the stream after that response is applied. This prevents overlapping
-responses from moving a room's cursor backward. Redis failures switch receiving
+covering all of it. Local edits go out on the normal `/updates` request
+BESIDE the stream, which stays open while the tab types. Each such
+request is marked `rows_received_separately: true`: the server stores the edits and
+answers with its verdicts and the room's head cursor, but with no stored
+rows. The stream is the only path that delivers stored rows and moves a
+room's cursor, so nothing is delivered twice or skipped. The browser holds
+the answer until the stream has carried the cursor to that head (the
+write's own storage notice wakes the stream, so that is one round trip)
+and then applies it after the rows, the order every engine relies on. A
+cursor move rides the same request when it changes, checked once a
+second, so it never reopens the stream either. Redis failures switch receiving
 to polling (only a stream that cannot be opened at all does this; a Redis
 outage is handled server-side by the storage checks); the browser retries
 SSE after five seconds, and each further failure in a row doubles that
@@ -275,7 +283,9 @@ WP_BASE_URL=http://localhost:8889 npm run bench -- --suite=transport --transport
 
 The transport and host benchmarks count SSE response bytes as they arrive,
 including streams that later get interrupted. Reports distinguish successful
-SSE streams from attempted requests and polling fallback. Server request
+SSE streams from attempted requests and polling fallback. A trial shows
+few streams (one per tab, renewed at the stream's length) beside many
+small `/updates` posts, one per batch of edits. Server request
 metrics recorded at dispatch do not include the later stream wait; use the
 host benchmark's whole-request measurements for PHP occupancy. Short runs can
 end before a held request is logged at shutdown.

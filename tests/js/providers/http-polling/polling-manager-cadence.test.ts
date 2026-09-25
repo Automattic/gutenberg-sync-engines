@@ -43,6 +43,7 @@ const mockAnnounceLocalWrite = jest.fn();
 const mockSseExchange = {
 	available: true,
 	close: jest.fn(),
+	isOpen: jest.fn( () => false ),
 	exchange:
 		jest.fn<
 			(
@@ -908,5 +909,87 @@ describe( 'polling-manager cadence', () => {
 			await jest.advanceTimersByTimeAsync( 0 );
 			expect( released ).toEqual( { cursor: 3, unsent: [] } );
 		} );
+	} );
+
+	it( 'SSE: a send answered after the loop stopped is settled by one receive', async () => {
+		/*
+		 * A codec that sends while alone (de-rtc). Its send goes out
+		 * beside the stream, marked receive:false, and its answer waits
+		 * for the stream to carry the cursor to the head the write saw.
+		 * If the loop stops meanwhile (a stream event shows the tab alone
+		 * past the discovery window), nobody would carry the cursor
+		 * there: the manager polls once for it.
+		 */
+		setSseMode( true );
+		const parked: Array<
+			( event: ReturnType< typeof response > ) => void
+		> = [];
+		mockSseExchange.exchange.mockImplementation(
+			( _payload, signal ) =>
+				new Promise( ( resolve, reject ) => {
+					parked.push( resolve );
+					signal?.addEventListener( 'abort', () =>
+						reject( new DOMException( 'Aborted', 'AbortError' ) )
+					);
+				} )
+		);
+		mockSseExchange.isOpen.mockReturnValue( true );
+		let answer!: ( response: unknown ) => void;
+		const send = new Promise( ( resolve ) => {
+			answer = resolve;
+		} );
+		mockPostSyncUpdate.mockImplementation(
+			( payload ) =>
+				( true ===
+				(
+					payload as {
+						rooms: Array< { rows_received_separately?: boolean } >;
+					}
+				 ).rooms[ 0 ].rows_received_separately
+					? send
+					: Promise.resolve( response( [ 1 ] ) ) ) as ReturnType<
+					typeof mockPostSyncUpdate
+				>
+		);
+		const dispositions = [ { intentId: 'p-1', status: 'applied' } ];
+		const session = {
+			...createMockSession( 1, true ),
+			receiveDispositions: jest.fn(),
+		};
+		register( session );
+		// Settled onto the stream, then parked past the discovery window
+		// with no event so far.
+		await jest.advanceTimersByTimeAsync( 31000 );
+		expect( parked ).toHaveLength( 1 );
+
+		const onLocalUpdate = session.onLocalUpdate.mock.calls[ 0 ][ 0 ] as (
+			update: unknown,
+			size: number
+		) => void;
+		onLocalUpdate( { data: 'x', type: 'update' }, 1 );
+		await jest.advanceTimersByTimeAsync( 0 );
+		expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+
+		// The event shows the tab alone past the window: the loop stops
+		// and drops its stream, with the send still in flight.
+		mockSseExchange.close.mockClear();
+		parked.shift()!( response( [ 1 ] ) );
+		await jest.advanceTimersByTimeAsync( 50 );
+		expect( mockSseExchange.close ).toHaveBeenCalled();
+		expect( parked ).toHaveLength( 0 );
+
+		answer( {
+			...response( [ 1 ], 2 ),
+			rooms: [ { ...response( [ 1 ], 2 ).rooms[ 0 ], dispositions } ],
+		} );
+		await jest.advanceTimersByTimeAsync( 0 );
+		expect( session.receiveDispositions ).not.toHaveBeenCalled();
+		// One receive for the held answer.
+		expect( parked ).toHaveLength( 1 );
+		parked.shift()!( response( [ 1 ], 2 ) );
+		await jest.advanceTimersByTimeAsync( 50 );
+		expect( session.receiveDispositions ).toHaveBeenCalledWith(
+			dispositions
+		);
 	} );
 } );

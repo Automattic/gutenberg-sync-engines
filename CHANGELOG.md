@@ -19,7 +19,11 @@ release, which the release script generates from the commit history.
     cache is in use, and otherwise by checking a per-room version number
     every half second (in the object cache when there is one, else in the
     room-meta table). A tab that is alone, or hidden behind another tab,
-    holds no stream. Local Redis starts and is removed through wp-env
+    holds no stream. A tab that types keeps its stream open: edits go out
+    on the updates request beside it, marked `rows_received_separately: true` (a new
+    optional request field), and the stream stays the only path that
+    delivers rows ([#106](https://github.com/Automattic/gutenberg-sync-engines/issues/106)).
+    Local Redis starts and is removed through wp-env
     lifecycle hooks. Needs a proxy that passes streams through; see
     `docs/transports.md`.
 -   Awareness gained a drop-in backend seam, the third after the lock and
