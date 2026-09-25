@@ -189,7 +189,7 @@ if ( ! class_exists( 'WP_Sync_Presence_API_Awareness_Backend' ) ) {
 		}
 
 		/**
-		 * Wakes streams waiting on the room, since the storage cannot see these writes.
+		 * Wakes streams waiting on the room without writing to it.
 		 *
 		 * @since n.e.x.t
 		 *
@@ -197,10 +197,8 @@ if ( ! class_exists( 'WP_Sync_Presence_API_Awareness_Backend' ) ) {
 		 * @return void
 		 */
 		private static function changed( string $room ): void {
-			$storage = wp_get_sync_storage();
-			if ( $storage instanceof WP_Sync_Table_Storage ) {
-				$storage->note_room_changed( $room );
-			}
+			/** This action is documented in includes/storage/class-wp-sync-table-storage.php */
+			do_action( 'gutenberg_sync_engines_room_changed', $room );
 		}
 	}
 }

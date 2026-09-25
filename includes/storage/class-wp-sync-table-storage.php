@@ -166,18 +166,6 @@ if ( ! class_exists( 'WP_Sync_Table_Storage' ) ) {
 		}
 
 		/**
-		 * Notifies transports of a change written outside this storage.
-		 *
-		 * @since n.e.x.t
-		 *
-		 * @param string $room Changed room.
-		 * @return void
-		 */
-		public function note_room_changed( string $room ): void {
-			$this->notify_change( $room, true );
-		}
-
-		/**
 		 * Notify transports only after a successful write: bump the room's
 		 * version counter, then fire the action.
 		 *

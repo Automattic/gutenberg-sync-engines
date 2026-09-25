@@ -270,21 +270,19 @@ class Tests_Collaboration_WpSyncAwareness extends WP_UnitTestCase {
 	}
 
 	/**
-	 * A presence-table write bumps the room's version so waiting streams wake.
+	 * A presence-table write wakes waiting streams without creating the room.
 	 */
 	public function test_presence_api_writes_wake_waiting_streams(): void {
 		Fake_Presence_API::$enabled = true;
 		$room                       = $this->room();
-		$storage                    = new WP_Sync_Table_Storage();
-		$state                      = array( 'name' => 'Ada' );
+		$changed                    = new MockAction();
+		add_action( 'gutenberg_sync_engines_room_changed', array( $changed, 'action' ) );
 
-		$before = $storage->get_room_versions( array( $room ) );
-		$this->awareness()->put( $room, 7, $state, self::$editor_id, 30 );
-		$joined = $storage->get_room_versions( array( $room ) );
-		$this->assertNotSame( $before, $joined, 'A put should bump the version.' );
-
+		$this->awareness()->put( $room, 7, array( 'name' => 'Ada' ), self::$editor_id, 30 );
 		$this->awareness()->forget( $room, 7, 30 );
-		$this->assertNotSame( $joined, $storage->get_room_versions( array( $room ) ), 'A forget should bump the version.' );
+
+		$this->assertSame( 2, $changed->get_call_count(), 'A put and a forget should each wake streams.' );
+		$this->assertFalse( ( new WP_Sync_Table_Storage() )->peek_room( $room )['found'], 'Awareness should not create the room.' );
 	}
 
 	/**
