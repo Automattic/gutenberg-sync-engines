@@ -538,7 +538,7 @@ npm run bench -- --transport=sse --cache=redis --wake=cache
                                      # streams actually got.
 npm run bench -- --presence=on       # the host report with the Presence
                                      # API plugin holding awareness
-                                     # (installed from its latest release
+                                     # (installed from WordPress.org
                                      # if missing, removed after); run
                                      # --presence=off for the other side.
                                      # The report prints what the

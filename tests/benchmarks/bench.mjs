@@ -97,7 +97,7 @@ Suites (--suite=; default: host):
                              stream sleeps on (cache needs --cache=redis,
                              table needs --cache=none)
                --presence=   on | off | current: the Presence API plugin
-                             for the run (on installs its latest release
+                             for the run (on installs it from WordPress.org
                              if missing; wp-env sites only; restored)
                --windows=    collaborator windows per engine phase
                              (default 2)

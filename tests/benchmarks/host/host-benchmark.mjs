@@ -59,7 +59,7 @@
  *               on (auto = whatever the site has; cache needs
  *               cache=redis, table needs cache=none)
  *   presence=   on | off | current: the Presence API plugin for the run
- *               (on installs its latest release if missing; wp-env sites
+ *               (on installs it from WordPress.org if missing; wp-env sites
  *               only; restored). It stays active in the baseline phase.
  *   windows=    people per phase: collaborator windows, and the same
  *               number of one-after-the-other baseline turns (default 2)
@@ -129,7 +129,7 @@ const HELP = `node tests/benchmarks/host/host-benchmark.mjs [key=value …]
   wake=       auto | redis | cache | table: what an SSE stream sleeps on
               (cache needs cache=redis, table needs cache=none)
   presence=   on | off | current: the Presence API plugin for the run
-              (on installs its latest release if missing; this checkout's
+              (on installs it from WordPress.org if missing; this checkout's
               wp-env sites only; restored after)
   windows=    people per phase: collaborator windows, and the same
               number of one-after-the-other baseline turns (default 2)
@@ -1068,8 +1068,8 @@ async function main() {
 		];
 		console.log(
 			`  presence=${ presenceLabel }${
-				'current' === PRESENCE ? '' : ` (asked ${ PRESENCE })`
-			}`
+				presence.version ? ` (Presence API ${ presence.version })` : ''
+			}${ 'current' === PRESENCE ? '' : ` (asked ${ PRESENCE })` }`
 		);
 		console.log( `  edit-seconds=${ EDIT_SECONDS }` );
 		console.log( `  idle-seconds=${ IDLE_SECONDS }` );
@@ -1288,6 +1288,7 @@ async function main() {
 				cache: CACHE,
 				wake: WAKE,
 				presence: presence.serves,
+				presenceVersion: presence.version,
 				delivery: originalSettings.active.delivery,
 				transportRequested: selectedTransport,
 				pollingIntervalSeconds: POLL_OVERRIDE ?? originalPoll,
