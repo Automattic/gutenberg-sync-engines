@@ -128,7 +128,7 @@ async function stopCpuProfile(
  *
  * @param page The page to watch.
  */
-async function waitForSyncQuiet( page: Page ): Promise< void > {
+export async function waitForSyncQuiet( page: Page ): Promise< void > {
 	const QUIET_MS = 1500;
 	const MAX_MS = 10000;
 	let lastRequestAt = Date.now();

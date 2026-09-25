@@ -34,7 +34,7 @@
 /**
  * External dependencies
  */
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 
 /**
  * WordPress dependencies
@@ -50,6 +50,7 @@ import {
 } from '../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures';
 import type CollaborationUtils from '../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures/collaboration-utils';
 import { SECOND_USER } from '../../../gutenberg/test/e2e/specs/editor/collaboration/fixtures/collaboration-utils';
+import { waitForSyncQuiet } from '../../e2e/config/collaboration-fixtures';
 
 type Random = () => number;
 
@@ -472,6 +473,136 @@ async function appendToNthParagraph(
 }
 
 /**
+ * The engines' review cards: the pending-edit card on a block whose edit
+ * was set aside, and the approval card for a proposed new block. Both are
+ * popovers drawn over the canvas, so either can sit on top of the block
+ * the next UI action wants to click (issue #109).
+ */
+const REVIEW_CARD_SELECTOR =
+	'.editor-collaboration-pending-card, .editor-collaboration-insertion-card';
+
+// How long a UI click may wait before the harness looks for a review card
+// in its way. The full action timeout still applies to the click that
+// follows.
+const COVERED_CLICK_TIMEOUT_MS = 3000;
+
+interface CardResolution {
+	card: 'insertion' | 'pending';
+	choice: 'adopt' | 'reject';
+}
+
+/**
+ * A choice source for one UI action's review cards, derived from the seed,
+ * step, and acting user. It is separate from the run's RNG on purpose: a
+ * card appears only on some timings, and drawing from the shared RNG would
+ * shift every later seeded choice whenever one does.
+ *
+ * @param seed      Run seed.
+ * @param step      Step (opId) of the action.
+ * @param userIndex Acting user index.
+ */
+function createCardRng( seed: number, step: number, userIndex: number ) {
+	return createRng( seed * 1000003 + step * 101 + userIndex );
+}
+
+/**
+ * The visible review cards whose box overlaps the target's box.
+ *
+ * @param page   Page that draws the cards.
+ * @param target Element the action wants to click.
+ */
+async function findCoveringCards(
+	page: Page,
+	target: Locator
+): Promise< Locator[] > {
+	const box = await target.boundingBox();
+	if ( ! box ) {
+		return [];
+	}
+	const covering: Locator[] = [];
+	const cards = page.locator( REVIEW_CARD_SELECTOR );
+	for ( let i = 0; i < ( await cards.count() ); i++ ) {
+		const card = cards.nth( i );
+		const cardBox = await card.boundingBox();
+		if (
+			cardBox &&
+			cardBox.x < box.x + box.width &&
+			box.x < cardBox.x + cardBox.width &&
+			cardBox.y < box.y + box.height &&
+			box.y < cardBox.y + cardBox.height
+		) {
+			covering.push( card );
+		}
+	}
+	return covering;
+}
+
+/**
+ * Make a seeded Adopt/Reject (Approve/Discard) choice on one review card
+ * and wait for the card to go away. Adopt falls back to Reject when this
+ * user may not adopt (the card shows a hint instead of the button).
+ *
+ * @param card The card to resolve.
+ * @param rng  Choice source.
+ */
+async function resolveReviewCard(
+	card: Locator,
+	rng: Random
+): Promise< CardResolution > {
+	const handle = await card.elementHandle();
+	const kind = ( await card.evaluate( ( element ) =>
+		element.classList.contains( 'editor-collaboration-insertion-card' )
+	) )
+		? 'insertion'
+		: 'pending';
+	const [ adoptName, rejectName ] =
+		kind === 'insertion' ? [ 'Approve', 'Discard' ] : [ 'Adopt', 'Reject' ];
+	const adopt = card.getByRole( 'button', { exact: true, name: adoptName } );
+	const choice =
+		rng() < 0.5 && ( await adopt.count() ) > 0 ? 'adopt' : 'reject';
+	await ( choice === 'adopt'
+		? adopt
+		: card.getByRole( 'button', { exact: true, name: rejectName } )
+	).click();
+	await handle?.waitForElementState( 'hidden', { timeout: 10000 } );
+	return { card: kind, choice };
+}
+
+/**
+ * Click a canvas element the way a person would: when an engine's review
+ * card covers it, deal with the card first (a seeded Adopt or Reject) and
+ * then click. The resolutions are returned so the action records them in
+ * its trace detail. Anything else in the way fails the click as before.
+ *
+ * @param page   Page that owns the target.
+ * @param target Element to click.
+ * @param rng    Choice source for card resolutions.
+ */
+async function clickPastReviewCards(
+	page: Page,
+	target: Locator,
+	rng: Random
+): Promise< CardResolution[] > {
+	const resolutions: CardResolution[] = [];
+	for ( let attempt = 0; attempt < 3; attempt++ ) {
+		try {
+			await target.click( { timeout: COVERED_CLICK_TIMEOUT_MS } );
+			return resolutions;
+		} catch {
+			const covering = await findCoveringCards( page, target );
+			if ( ! covering.length ) {
+				break;
+			}
+			for ( const card of covering ) {
+				resolutions.push( await resolveReviewCard( card, rng ) );
+			}
+		}
+	}
+	await target.click();
+	return resolutions;
+}
+
+/**
  * Click into the Nth paragraph and type at its end — real keystrokes, so
  * the engine's capture path (not the store-update path) is exercised.
  *
@@ -479,23 +610,27 @@ async function appendToNthParagraph(
  * @param page   Acting page.
  * @param nth    Paragraph index (clamped).
  * @param text   Text to type.
+ * @param rng    Choice source for review cards in the way.
+ * @return The review cards resolved on the way, or null when there is no
+ *         paragraph to type into.
  */
 async function typeIntoNthParagraph(
 	editor: Editor,
 	page: Page,
 	nth: number,
-	text: string
-): Promise< boolean > {
+	text: string,
+	rng: Random
+): Promise< CardResolution[] | null > {
 	const paragraphs = editor.canvas.locator( '[data-type="core/paragraph"]' );
 	const count = await paragraphs.count();
 	if ( ! count ) {
-		return false;
+		return null;
 	}
 	const target = paragraphs.nth( Math.min( nth, count - 1 ) );
-	await target.click();
+	const cards = await clickPastReviewCards( page, target, rng );
 	await page.keyboard.press( 'End' );
 	await page.keyboard.type( text );
-	return true;
+	return cards;
 }
 
 /**
@@ -802,10 +937,14 @@ const ACTIONS: Array< {
 			if ( ( await target.count() ) === 0 ) {
 				return { skipped: 'no paragraph to type into' };
 			}
-			await target.click();
+			const cards = await clickPastReviewCards(
+				page,
+				target,
+				createCardRng( seed, step, userIndex )
+			);
 			await page.keyboard.press( 'End' );
 			await page.keyboard.type( text );
-			return { text };
+			return cards.length ? { cards, text } : { text };
 		},
 	},
 	{
@@ -815,10 +954,14 @@ const ACTIONS: Array< {
 			const title = editor.canvas.getByRole( 'textbox', {
 				name: 'Add title',
 			} );
-			await title.click();
+			const cards = await clickPastReviewCards(
+				page,
+				title,
+				createCardRng( seed, step, userIndex )
+			);
 			await page.keyboard.press( 'ControlOrMeta+a' );
 			await page.keyboard.type( text );
-			return { text };
+			return cards.length ? { cards, text } : { text };
 		},
 	},
 	{
@@ -966,20 +1109,23 @@ const ACTIONS: Array< {
 			// this early races unit settling — exactly where "undo did
 			// something unexpected" reports live.
 			const text = ` ${ marker( seed, step, userIndex, 'tuq' ) }`;
-			const typed = await typeIntoNthParagraph(
+			const cards = await typeIntoNthParagraph(
 				editor,
 				page,
 				Number.MAX_SAFE_INTEGER,
-				text
+				text,
+				createCardRng( seed, step, userIndex )
 			);
-			if ( ! typed ) {
+			if ( ! cards ) {
 				return { skipped: 'no paragraph to type into' };
 			}
 			const delayMs = Math.floor( rng() * 900 );
 			await page.waitForTimeout( delayMs );
 			const before = await getHistoryState( page );
 			await dispatchHistory( page, 'undo' );
-			return { before, delayMs, text };
+			return cards.length
+				? { before, cards, delayMs, text }
+				: { before, delayMs, text };
 		},
 	},
 	{
@@ -1055,21 +1201,35 @@ const ACTIONS: Array< {
 				marker( seed, step, 0, 'ctp' ),
 				marker( seed, step, secondIndex, 'ctp' ),
 			];
-			await Promise.all( [
+			const [ firstCards, secondCards ] = await Promise.all( [
 				typeIntoNthParagraph(
 					editors[ 0 ],
 					pages[ 0 ],
 					nth,
-					` ${ texts[ 0 ] }`
+					` ${ texts[ 0 ] }`,
+					createCardRng( seed, step, 0 )
 				),
 				typeIntoNthParagraph(
 					editors[ secondIndex ],
 					pages[ secondIndex ],
 					nth,
-					` ${ texts[ 1 ] }`
+					` ${ texts[ 1 ] }`,
+					createCardRng( seed, step, secondIndex )
 				),
 			] );
-			return { nth, secondIndex, texts };
+			const cards = [
+				...( firstCards ?? [] ).map( ( card ) => ( {
+					...card,
+					userIndex: 0,
+				} ) ),
+				...( secondCards ?? [] ).map( ( card ) => ( {
+					...card,
+					userIndex: secondIndex,
+				} ) ),
+			];
+			return cards.length
+				? { cards, nth, secondIndex, texts }
+				: { nth, secondIndex, texts };
 		},
 	},
 	{
@@ -1243,19 +1403,18 @@ async function waitForConvergence(
 }
 
 /**
- * Wait for all participants to discover each other. The fixture's
- * waitForMutualDiscovery waits on wp-sync HTTP responses, which never occur
- * over the websocket transport (sync rides WS frames) — there, wait on the
- * awareness-driven Collaborators list instead and let waitForConvergence
- * cover document sync.
+ * Wait for all participants to discover each other: the awareness-driven
+ * Collaborators list shows on every page, and then (HTTP transports) each
+ * page's sync traffic goes quiet for a beat. The subtree fixture's wait
+ * for three FUTURE poll responses per page cannot be used: with the
+ * advisory channel, tabs that have found each other poll only on demand
+ * plus a slow safety timer, so those polls may never come — the plugin's
+ * e2e fixtures replaced it for the same reason. waitForConvergence covers
+ * document sync.
  *
- * @param collaborationUtils Fixture utils.
- * @param pages              All participant pages.
+ * @param pages All participant pages.
  */
-async function waitForDiscovery(
-	collaborationUtils: CollaborationUtils,
-	pages: Page[]
-) {
+async function waitForDiscovery( pages: Page[] ) {
 	await Promise.all(
 		pages.map( ( pg ) =>
 			pg
@@ -1265,20 +1424,10 @@ async function waitForDiscovery(
 	);
 	if ( TRANSPORT === 'websocket' || TRANSPORT === 'sse' ) {
 		// Sync rides WS frames, or one long-lived stream response per tab
-		// that answers only when it ends; waitForConvergence covers
-		// document sync.
+		// that answers only when it ends.
 		return;
 	}
-	// The fixture's waitForMutualDiscovery iterates ITS page list, which can
-	// contain closed pages after a leave — run its per-page sync-cycle wait
-	// on the active pages only.
-	await Promise.all(
-		pages.map( ( pg ) =>
-			collaborationUtils.waitForSyncCycle( pg, 3, {
-				timeout: DISCOVERY_TIMEOUT_MS,
-			} )
-		)
-	);
+	await Promise.all( pages.map( ( pg ) => waitForSyncQuiet( pg ) ) );
 }
 
 /**
@@ -1536,7 +1685,7 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 				await maybeThrottlePage( participants[ 1 ].page );
 				const activePages = () =>
 					participants.map( ( entry ) => entry.page );
-				await waitForDiscovery( collaborationUtils, activePages() );
+				await waitForDiscovery( activePages() );
 				await waitForConvergence(
 					activePages(),
 					CONVERGENCE_TIMEOUT_MS
@@ -1704,10 +1853,7 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 						tapConsole( third.page, participants.length - 1 );
 						tapSyncWire( third.page, participants.length - 1 );
 						await maybeThrottlePage( third.page );
-						await waitForDiscovery(
-							collaborationUtils,
-							activePages()
-						);
+						await waitForDiscovery( activePages() );
 						await waitForConvergence(
 							activePages(),
 							CONVERGENCE_TIMEOUT_MS
@@ -1766,10 +1912,7 @@ test.describe( `Collaboration fuzz [${ ENGINE }/${ TRANSPORT }]`, () => {
 						tapSyncWire( rejoined.page, 1 );
 						await maybeThrottlePage( rejoined.page );
 						departed = false;
-						await waitForDiscovery(
-							collaborationUtils,
-							activePages()
-						);
+						await waitForDiscovery( activePages() );
 						await waitForConvergence(
 							activePages(),
 							CONVERGENCE_TIMEOUT_MS
