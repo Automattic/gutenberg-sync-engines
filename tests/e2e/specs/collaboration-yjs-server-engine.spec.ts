@@ -77,7 +77,7 @@ async function waitForSyncQuiet( page: Page ): Promise< void > {
 	}
 }
 
-test.describe( 'Collaboration - yjs-server engine', () => {
+test.describe( 'Collaboration - yjs-server engine @engine-yjs-server', () => {
 	test.beforeEach( async ( { requestUtils } ) => {
 		await setSyncEngine( requestUtils, 'yjs-server' );
 	} );
