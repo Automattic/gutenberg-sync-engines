@@ -98,7 +98,7 @@ the community. The maintainers are:
 
 Open GitHub issues or discuss in `#feature-realtime-collaboration` channel in
 [WordPress Slack](https://make.wordpress.org/chat/). To contribute, see
-[CONTRIBUTING.md](.github/CONTRIBUTING.md).
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Architecture
 
