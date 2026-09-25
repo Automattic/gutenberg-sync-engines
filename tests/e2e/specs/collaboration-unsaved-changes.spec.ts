@@ -65,7 +65,7 @@ async function reloadAccepting( page: Page ) {
 }
 
 for ( const engine of ENGINES ) {
-	test.describe( `Unsaved changes policy (${ engine })`, () => {
+	test.describe( `Unsaved changes policy (${ engine }) @engine-${ engine }`, () => {
 		test.beforeEach( async ( { requestUtils } ) => {
 			await setSettings( requestUtils, { wp_sync_engine: engine } );
 		} );

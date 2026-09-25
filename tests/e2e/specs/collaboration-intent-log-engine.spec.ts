@@ -58,7 +58,7 @@ async function setSyncEngine(
 	} );
 }
 
-test.describe( 'Collaboration - intent-log engine', () => {
+test.describe( 'Collaboration - intent-log engine @engine-intent-log', () => {
 	// Per TEST, after fixture setup: the collaboration fixture's
 	// writing-form toggle must never be able to wipe the engine selection
 	// between the flip and the pages loading.

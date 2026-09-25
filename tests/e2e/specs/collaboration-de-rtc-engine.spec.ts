@@ -94,7 +94,7 @@ async function openSession(
 	await collaborationUtils.waitForMutualDiscovery();
 }
 
-test.describe( 'Collaboration - de-rtc engine', () => {
+test.describe( 'Collaboration - de-rtc engine @engine-de-rtc', () => {
 	test.beforeEach( async ( { requestUtils } ) => {
 		await setSyncEngine( requestUtils, 'de-rtc' );
 	} );
