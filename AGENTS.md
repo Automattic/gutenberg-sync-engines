@@ -83,6 +83,17 @@ This plugin provides:
   (`abortParkedStream()` then `sseExchange.close()`, as `handlePageHide`
   does, so no failure is logged or backed off) and polls at once on
   return, which reopens it.
+  A tab that TYPES keeps its stream: edits (and awareness changes,
+  checked once a second) go out on the updates request BESIDE the
+  stream, marked `rows_received_separately: true`, which the server answers with the
+  verdicts and the room's head cursor but no stored rows
+  (`READ_FROM_HEAD` in `process_room_request`). The stream is the only
+  path that delivers stored rows and moves a room's cursor; the manager
+  holds such an answer (`heldTails`) until the stream has carried the
+  cursor to that head, then applies it rows-first, so no engine had to
+  change (issue #106). One send at a time (`updatesInFlight`): a stream
+  receive never takes updates, and a poll takes none while a send is in
+  flight.
   For the first second after a room registers the tab receives over
   ordinary requests (`SSE_SETTLE_MS`), so the rooms registering one by
   one at load open ONE stream, not one per room. Rules and failure
@@ -664,7 +675,8 @@ they exist so a failure is observable without re-instrumenting:
   a new name reaches every reachable peer with no request at all. A
   new name also raises `announceLocalAwarenessChange`
   (`src/providers/advisory/announce.ts`), which the polling manager
-  uses only under SSE, to reissue a parked stream exchange. The e2e
+  uses only under SSE, to send the changed state on the updates
+  request beside the stream. The e2e
   spec turns the advisory channel off for its duration. Under the
   Heartbeat channel the block name is a field on the advisory channel's
   discovery probe (`block`), kept on the tab's presence token by
