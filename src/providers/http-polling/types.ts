@@ -52,6 +52,15 @@ interface SyncEnvelopeFromClient {
 	 * policy resets a per-post room nobody else is in to the saved post.
 	 */
 	presence_token?: string;
+	/**
+	 * True for a send made beside an open stream: the server then stores
+	 * the updates and answers with the verdicts (dispositions), any
+	 * never-stored rows an engine synthesizes for this client, and the
+	 * room's head cursor, but NO stored rows. The stream stays the only
+	 * path that delivers stored rows and moves the cursor. Omitted on
+	 * every ordinary request, which sends and receives.
+	 */
+	rows_received_separately?: boolean;
 	room: string;
 	updates: SyncUpdate[];
 }

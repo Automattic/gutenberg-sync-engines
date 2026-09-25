@@ -42,6 +42,7 @@ jest.mock( '../../../../src/providers/http-polling/config', () => ( {
 const mockSseExchange = {
 	available: true,
 	close: jest.fn(),
+	isOpen: jest.fn( () => false ),
 	exchange:
 		jest.fn<
 			( payload: unknown, signal?: AbortSignal ) => Promise< unknown >
@@ -182,6 +183,7 @@ describe( 'polling-manager', () => {
 	>;
 	let mockApplyFilters: jest.Mock;
 	let setSseMode: ( enabled: boolean ) => void;
+	let flushHeldUpdates: () => Promise< void >;
 	let inspector: typeof import('../../../../src/providers/http-polling/../../../src/debug/inspector').syncDebugApi;
 
 	beforeEach( () => {
@@ -193,6 +195,7 @@ describe( 'polling-manager', () => {
 			const managerModule = require( '../../../../src/providers/http-polling/polling-manager' );
 			pollingManager = managerModule.pollingManager;
 			setSseMode = managerModule.setSseMode;
+			flushHeldUpdates = managerModule.flushHeldUpdates;
 			mockPostSyncUpdate =
 				require( '../../../../src/providers/http-polling/utils' ).postSyncUpdate;
 			mockPostSyncUpdateNonBlocking =
@@ -2473,101 +2476,403 @@ describe( 'polling-manager', () => {
 			expect( inspector.log() ).toHaveLength( 0 );
 		} );
 	} );
-	describe( 'stream park wake', () => {
-		afterEach( () => {
-			setSseMode( false );
+	describe( 'send lane (SSE)', () => {
+		/*
+		 * Under SSE a tab's receive lane sits parked on the stream, waiting
+		 * for the next event. Local work goes out BESIDE it on the updates
+		 * request, marked `rows_received_separately: true`, and the stream is never
+		 * closed or aborted for it: the server answers such a send with
+		 * its verdicts and the room's head cursor but no stored rows, and
+		 * the manager holds that answer until the stream has carried the
+		 * cursor to that head (rows first, verdicts after).
+		 */
+		const ROOM = 'test-room';
+		const collabResponse = ( endCursor = 1, extra: object = {} ) => ( {
+			rooms: [
+				{
+					room: ROOM,
+					end_cursor: endCursor,
+					awareness: { 1: {}, 2: {} },
+					updates: [],
+					...extra,
+				},
+			],
 		} );
+		type Envelope = {
+			rooms: Array< {
+				room: string;
+				after: number;
+				awareness: unknown;
+				updates: Array< { data: string; type: string } >;
+				rows_received_separately?: boolean;
+			} >;
+		};
+		interface Parked {
+			payload: Envelope;
+			signal?: AbortSignal;
+			resolve: ( response: unknown ) => void;
+		}
 
-		it( 'aborts a parked pure-receive exchange when local work arrives, then re-sends immediately', async () => {
-			/*
-			 * REGRESSION (fuzzer, found under the retired long-polling
-			 * transport): once the server hold actually worked, an edit
-			 * made right after a quiet exchange sat queued behind the
-			 * client's own parked request for up to the full wait,
-			 * blowing every convergence window. A local update must abort
-			 * the park and go out at once. The SSE exchange is mocked to
-			 * behave like that hold: it delegates to postSyncUpdate.
-			 */
-			setSseMode( true );
+		// The stream: every exchange parks until the test delivers an
+		// event to it (or the manager aborts it on purpose).
+		function streamHarness() {
+			const parked: Parked[] = [];
 			mockSseExchange.exchange.mockImplementation(
 				( payload: unknown, signal?: AbortSignal ) =>
-					mockPostSyncUpdate(
-						payload as Parameters< typeof mockPostSyncUpdate >[ 0 ],
-						signal
-					)
-			);
-			const session = createMockSession( 1 );
-			const signals: Array< AbortSignal | undefined > = [];
-			// Collaborators present: room queues resume (paused while solo).
-			const collabResponse = {
-				rooms: [
-					{
-						room: 'test-room',
-						end_cursor: 1,
-						awareness: { 1: {}, 2: {} },
-						updates: [],
-					},
-				],
-			};
-			let callCount = 0;
-			mockPostSyncUpdate.mockImplementation(
-				(
-					payload: { rooms: Array< { updates: unknown[] } > },
-					signal?: AbortSignal
-				) => {
-					callCount++;
-					signals.push( signal );
-					const carriesUpdates = payload.rooms.some(
-						( room ) => room.updates.length > 0
-					);
-					if ( carriesUpdates || 1 === callCount ) {
-						return Promise.resolve( collabResponse );
-					}
-					// Pure receive: emulate the server hold — resolve never,
-					// reject on abort.
-					return new Promise( ( _resolve, reject ) => {
+					new Promise( ( resolve, reject ) => {
+						parked.push( {
+							payload: payload as Envelope,
+							signal,
+							resolve,
+						} );
 						signal?.addEventListener( 'abort', () =>
 							reject(
 								new DOMException( 'Aborted', 'AbortError' )
 							)
 						);
-					} );
-				}
+					} )
 			);
+			mockSseExchange.isOpen.mockReturnValue( true );
+			return {
+				parked,
+				async deliver( response: unknown ) {
+					const entry = parked.shift();
+					if ( ! entry ) {
+						throw new Error( 'no parked exchange' );
+					}
+					entry.resolve( response );
+					// Apply, then the 50 ms reissue parks again.
+					await jest.advanceTimersByTimeAsync( 50 );
+				},
+			};
+		}
 
+		function sentPayloads(): Envelope[] {
+			return mockPostSyncUpdate.mock.calls.map(
+				( call ) => call[ 0 ] as unknown as Envelope
+			);
+		}
+
+		beforeEach( () => {
+			setSseMode( true );
+			mockSseExchange.close.mockClear();
+			mockSseExchange.isOpen.mockReset();
+			mockSseExchange.isOpen.mockReturnValue( false );
+		} );
+
+		afterEach( () => {
+			pollingManager.unregisterRoom( ROOM, {
+				sendDisconnectSignal: false,
+			} );
+			mockSseExchange.exchange.mockReset();
+			setSseMode( false );
+		} );
+
+		// Registers the room and lets it settle onto a parked stream: the
+		// bootstrap rides an ordinary request during the settling window,
+		// then the stream opens.
+		async function streamingSession(
+			session: object,
+			onStatusChange = jest.fn()
+		) {
 			pollingManager.registerRoom( {
-				room: 'test-room',
+				room: ROOM,
 				session,
 				log: jest.fn(),
-				onStatusChange: jest.fn(),
+				onStatusChange,
 			} );
-
-			// Let polling settle into a parked pure-receive exchange: the
-			// first second after the room registered is the settling
-			// window (ordinary requests), then the stream reissues every
-			// 50 ms; update-carrying calls resolve.
 			await jest.advanceTimersByTimeAsync( 1100 );
-			const parkedCalls = mockPostSyncUpdate.mock.calls.length;
-			expect( parkedCalls ).toBeGreaterThan( 0 );
-			expect( signals[ parkedCalls - 1 ] ).toBeDefined();
+			// Registering closed any stream (the settling window); from
+			// here on nothing may.
+			mockSseExchange.close.mockClear();
+		}
 
-			// A local update arrives while parked: the park aborts and the
-			// immediate re-poll carries it.
+		it( 'a local update goes out beside the parked stream, marked rows_received_separately:true, without aborting it', async () => {
+			/*
+			 * REGRESSION (issue #106): sends used to close the stream and
+			 * reopen it afterwards, so a typing tab never held one for
+			 * long and each reopen cost the server a worker, a
+			 * subscription, and a full read.
+			 */
+			const stream = streamHarness();
+			mockPostSyncUpdate.mockResolvedValue( collabResponse() );
+			const session = createMockSession( 1 );
+			await streamingSession( session );
+			expect( stream.parked ).toHaveLength( 1 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
+
 			const update = createMockUpdate( 4 );
 			getOnLocalUpdate( session )( update, 4 );
 			await jest.advanceTimersByTimeAsync( 0 );
 
-			expect( mockPostSyncUpdate.mock.calls.length ).toBe(
-				parkedCalls + 1
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+			const sent = sentPayloads()[ 1 ].rooms[ 0 ];
+			expect( sent.updates.map( ( entry ) => entry.data ) ).toEqual( [
+				update.data,
+			] );
+			expect( sent.rows_received_separately ).toBe( true );
+			// The stream is untouched: still parked, never aborted.
+			expect( stream.parked ).toHaveLength( 1 );
+			expect( stream.parked[ 0 ].signal?.aborted ).toBe( false );
+			expect( mockSseExchange.close ).not.toHaveBeenCalled();
+		} );
+
+		it( "holds a send's verdicts until the stream reaches the head the write saw, rows first", async () => {
+			const stream = streamHarness();
+			const dispositions = [ { intentId: 'i-1', status: 'applied' } ];
+			mockPostSyncUpdate.mockImplementation( ( payload ) =>
+				Promise.resolve(
+					true ===
+						( payload as unknown as Envelope ).rooms[ 0 ]
+							.rows_received_separately
+						? // The write landed as row 5; the tab is at 1.
+						  collabResponse( 5, { dispositions } )
+						: collabResponse()
+				)
 			);
-			const resent = mockPostSyncUpdate.mock.calls[
-				parkedCalls
-			][ 0 ] as unknown as {
-				rooms: Array< { updates: Array< { data: string } > } >;
+			const session = {
+				...createMockSession( 1 ),
+				receiveDispositions: jest.fn(),
 			};
+			await streamingSession( session );
+
+			getOnLocalUpdate( session )( createMockUpdate( 4 ), 4 );
+			await jest.advanceTimersByTimeAsync( 0 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+			// Answered, but the stream has not delivered up to row 5 yet.
+			expect( session.receiveDispositions ).not.toHaveBeenCalled();
+
+			const rowA = { data: 'a', type: 'intent' };
+			const rowB = { data: 'b', type: 'intent' };
+			await stream.deliver( collabResponse( 3, { updates: [ rowA ] } ) );
+			expect( session.receiveUpdate ).toHaveBeenCalledWith( rowA );
+			expect( session.receiveDispositions ).not.toHaveBeenCalled();
+
+			await stream.deliver( collabResponse( 5, { updates: [ rowB ] } ) );
+			expect( session.receiveUpdate ).toHaveBeenCalledWith( rowB );
+			expect( session.receiveDispositions ).toHaveBeenCalledWith(
+				dispositions
+			);
+			// Rows settle the state they supersede before the ack arrives.
 			expect(
-				resent.rooms[ 0 ].updates.map( ( entry ) => entry.data )
-			).toContain( update.data );
+				session.receiveUpdate.mock.invocationCallOrder[ 1 ]
+			).toBeLessThan(
+				session.receiveDispositions.mock.invocationCallOrder[ 0 ]
+			);
+			// The next request resumes from the stream's cursor, not the
+			// send's answer (which moved nothing).
+			expect( stream.parked[ 0 ].payload.rooms[ 0 ].after ).toBe( 5 );
+		} );
+
+		it( "applies a send's answer at once when the stream is already at that head", async () => {
+			// A never-stored row (de-rtc's fetch answer) and the verdicts
+			// ride the answer; the head is where the tab already is.
+			streamHarness();
+			const snapshot = { data: 'snap', type: 'snapshot' };
+			const dispositions = [ { intentId: 'i-1', status: 'voided' } ];
+			mockPostSyncUpdate.mockImplementation( ( payload ) =>
+				Promise.resolve(
+					true ===
+						( payload as unknown as Envelope ).rooms[ 0 ]
+							.rows_received_separately
+						? collabResponse( 1, {
+								updates: [ snapshot ],
+								dispositions,
+						  } )
+						: collabResponse()
+				)
+			);
+			const session = {
+				...createMockSession( 1 ),
+				receiveDispositions: jest.fn(),
+			};
+			await streamingSession( session );
+
+			getOnLocalUpdate( session )( createMockUpdate( 4 ), 4 );
+			await jest.advanceTimersByTimeAsync( 0 );
+			expect( session.receiveUpdate ).toHaveBeenCalledWith( snapshot );
+			expect( session.receiveDispositions ).toHaveBeenCalledWith(
+				dispositions
+			);
+			expect(
+				session.receiveUpdate.mock.invocationCallOrder[ 0 ]
+			).toBeLessThan(
+				session.receiveDispositions.mock.invocationCallOrder[ 0 ]
+			);
+		} );
+
+		it( 'a room that went back (reset, no genesis yet) drops the tails waiting for its old head', async () => {
+			const stream = streamHarness();
+			const dispositions = [ { intentId: 'i-1', status: 'applied' } ];
+			mockPostSyncUpdate.mockImplementation( ( payload ) =>
+				Promise.resolve(
+					true ===
+						( payload as unknown as Envelope ).rooms[ 0 ]
+							.rows_received_separately
+						? collabResponse( 5, { dispositions } )
+						: collabResponse()
+				)
+			);
+			const session = {
+				...createMockSession( 1 ),
+				receiveDispositions: jest.fn(),
+			};
+			await streamingSession( session );
+			getOnLocalUpdate( session )( createMockUpdate( 4 ), 4 );
+			await jest.advanceTimersByTimeAsync( 0 );
+
+			await stream.deliver( collabResponse( 0 ) );
+			await stream.deliver( collabResponse( 5 ) );
+			expect( session.receiveDispositions ).not.toHaveBeenCalled();
+		} );
+
+		it( 'a failed send restores the updates, backs off, and leaves the stream alone', async () => {
+			const stream = streamHarness();
+			let sends = 0;
+			mockPostSyncUpdate.mockImplementation( ( payload ) => {
+				if (
+					true ===
+						( payload as unknown as Envelope ).rooms[ 0 ]
+							.rows_received_separately &&
+					1 === ++sends
+				) {
+					return Promise.reject( new Error( 'network' ) );
+				}
+				return Promise.resolve( collabResponse() );
+			} );
+			// No recovery update: the exact updates are re-sent.
+			const session = Object.assign( createMockSession( 1 ), {
+				createRecoveryUpdate: undefined,
+			} );
+			const onStatusChange = jest.fn();
+			await streamingSession( session, onStatusChange );
+
+			const update = createMockUpdate( 4 );
+			getOnLocalUpdate( session )( update, 4 );
+			await jest.advanceTimersByTimeAsync( 0 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+			expect( onStatusChange ).toHaveBeenLastCalledWith(
+				expect.objectContaining( {
+					status: 'disconnected',
+					willAutoRetryInMs: 1000,
+				} )
+			);
+			expect( stream.parked[ 0 ].signal?.aborted ).toBe( false );
+			expect( mockSseExchange.close ).not.toHaveBeenCalled();
+
+			// The retry, after the with-collaborators backoff.
+			await jest.advanceTimersByTimeAsync( 999 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+			await jest.advanceTimersByTimeAsync( 1 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 3 );
+			const resent = sentPayloads()[ 2 ].rooms[ 0 ];
+			expect( resent.updates.map( ( entry ) => entry.data ) ).toEqual( [
+				update.data,
+			] );
+			expect( resent.rows_received_separately ).toBe( true );
+			expect( onStatusChange ).toHaveBeenLastCalledWith( {
+				status: 'connected',
+			} );
+		} );
+
+		it( 'never has two requests carrying updates in flight', async () => {
+			streamHarness();
+			const first = createDeferred< unknown >();
+			let sends = 0;
+			mockPostSyncUpdate.mockImplementation( ( payload ) => {
+				if (
+					true ===
+					( payload as unknown as Envelope ).rooms[ 0 ]
+						.rows_received_separately
+				) {
+					sends++;
+					return (
+						1 === sends
+							? first.promise
+							: Promise.resolve( collabResponse() )
+					) as ReturnType< typeof mockPostSyncUpdate >;
+				}
+				return Promise.resolve( collabResponse() );
+			} );
+			const session = createMockSession( 1 );
+			await streamingSession( session );
+
+			const one = createMockUpdate( 4 );
+			const two = createMockUpdate( 5 );
+			getOnLocalUpdate( session )( one, 4 );
+			await jest.advanceTimersByTimeAsync( 0 );
+			expect( sends ).toBe( 1 );
+			// A second update while the first send is in flight waits.
+			getOnLocalUpdate( session )( two, 5 );
+			await jest.advanceTimersByTimeAsync( 100 );
+			expect( sends ).toBe( 1 );
+			first.resolve( collabResponse() );
+			await jest.advanceTimersByTimeAsync( 0 );
+			expect( sends ).toBe( 2 );
+			expect(
+				sentPayloads()[ 2 ].rooms[ 0 ].updates.map(
+					( entry ) => entry.data
+				)
+			).toEqual( [ two.data ] );
+		} );
+
+		it( 'the save flush resolves once the send that carried the work returns', async () => {
+			streamHarness();
+			const send = createDeferred< unknown >();
+			mockPostSyncUpdate.mockImplementation(
+				( payload ) =>
+					( true ===
+					( payload as unknown as Envelope ).rooms[ 0 ]
+						.rows_received_separately
+						? send.promise
+						: Promise.resolve( collabResponse() ) ) as ReturnType<
+						typeof mockPostSyncUpdate
+					>
+			);
+			const session = createMockSession( 1 );
+			await streamingSession( session );
+
+			getOnLocalUpdate( session )( createMockUpdate( 4 ), 4 );
+			let flushed = false;
+			const flush = flushHeldUpdates().then( () => {
+				flushed = true;
+			} );
+			await jest.advanceTimersByTimeAsync( 100 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+			expect( flushed ).toBe( false );
+			send.resolve( collabResponse() );
+			await jest.advanceTimersByTimeAsync( 0 );
+			await flush;
+			expect( flushed ).toBe( true );
+		} );
+
+		it( 'an awareness change rides the send lane instead of reopening the stream', async () => {
+			const stream = streamHarness();
+			mockPostSyncUpdate.mockResolvedValue( collabResponse() );
+			const awareness: Record< string, unknown > = { user: 1 };
+			const session = {
+				...createMockSession( 1 ),
+				getLocalAwareness: jest.fn( () => awareness ),
+			};
+			await streamingSession( session );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
+
+			// Unchanged: nothing to send.
+			await jest.advanceTimersByTimeAsync( 2000 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 1 );
+
+			awareness.cursor = 7;
+			await jest.advanceTimersByTimeAsync( 1000 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
+			const sent = sentPayloads()[ 1 ].rooms[ 0 ];
+			expect( sent.awareness ).toEqual( { user: 1, cursor: 7 } );
+			expect( sent.updates ).toEqual( [] );
+			expect( sent.rows_received_separately ).toBe( true );
+			expect( mockSseExchange.exchange ).toHaveBeenCalledTimes( 1 );
+			expect( stream.parked[ 0 ].signal?.aborted ).toBe( false );
+			// Sent once, not on every check.
+			await jest.advanceTimersByTimeAsync( 3000 );
+			expect( mockPostSyncUpdate ).toHaveBeenCalledTimes( 2 );
 		} );
 	} );
 

@@ -135,6 +135,68 @@ class Tests_Collaboration_WpSseSyncServer extends WP_Test_REST_TestCase {
 		$this->assertGreaterThan( $cursor, $next['rooms'][0]['end_cursor'] );
 	}
 
+	public function test_a_send_beside_the_stream_is_answered_without_rows_and_the_stream_carries_them() {
+		// The stream's own client sends an intent on the updates request
+		// marked `rows_received_separately: true` (the client's send lane): the answer has
+		// the verdict and the head but no rows, and the row reaches the
+		// tab over its stream, whose cursor advances to that head.
+		$request              = $this->request();
+		$initial              = $this->server->handle_request( $request )->get_data();
+		$sent                 = null;
+		$this->redis->waiting = function () use ( &$sent ) {
+			$post = new WP_REST_Request( 'POST', '/wp-sync/v1/updates' );
+			$post->set_body_params(
+				array(
+					'rooms' => array(
+						array(
+							'after'                    => 0,
+							'awareness'                => array( 'name' => 'editor' ),
+							'client_id'                => 17,
+							'rows_received_separately' => true,
+							'room'                     => 'postType/post:' . $this->post_id,
+							'updates'                  => array(
+								array(
+									'type' => WP_Intent_Log_Engine::UPDATE_TYPE_INTENT,
+									'data' => wp_json_encode(
+										array(
+											'actorId'  => 'ignored',
+											'txnId'    => null,
+											'intentId' => 'i-1',
+											'baseSeq'  => 0,
+											'type'     => 'insert_text',
+											'payload'  => array(
+												'syncId' => WP_Intent_Log_Planner::genesis_sync_id( $this->post_id, 0, array( 0 ) ),
+												'field'  => 'content',
+												'offset' => 0,
+												'text'   => 'x',
+											),
+										)
+									),
+								),
+							),
+						),
+					),
+				)
+			);
+			$response = rest_get_server()->dispatch( $post );
+			$this->assertSame( 200, $response->get_status() );
+			$sent = $response->get_data()['rooms'][0];
+		};
+		$this->server->stream(
+			$request,
+			$initial,
+			function ( $frame ) {
+				$this->frames[] = $frame;
+			}
+		);
+
+		$this->assertSame( array(), $sent['updates'], 'A send beside the stream delivers no stored rows.' );
+		$this->assertSame( 'applied', $sent['dispositions'][0]['status'] );
+		$event = json_decode( explode( 'data: ', $this->frames[1], 2 )[1], true )['rooms'][0];
+		$this->assertSame( array( WP_Intent_Log_Engine::UPDATE_TYPE_INTENT ), array_column( $event['updates'], 'type' ), 'The stream carries the row the send stored.' );
+		$this->assertSame( $sent['end_cursor'], $event['end_cursor'], 'The stream reaches the head the send reported.' );
+	}
+
 	/**
 	 * @dataProvider version_or_reading
 	 */

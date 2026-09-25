@@ -12,7 +12,9 @@ import { test, expect } from '../../config/collaboration-fixtures';
  * Runs with the SSE transport selected on the tests site (see
  * playwright.rtc-sse.config.ts): each tab holds one long-lived stream
  * response that the server writes to when Redis announces a change, and
- * sends its own edits through the ordinary updates request.
+ * sends its own edits through the ordinary updates request BESIDE the
+ * stream, marked `rows_received_separately: true`, so the stream stays open while it
+ * types.
  */
 
 interface SseDebugState {
@@ -30,13 +32,39 @@ async function sseState( page: Page ): Promise< SseDebugState > {
 	} );
 }
 
+interface UpdatesRequestBody {
+	rooms?: Array< {
+		updates?: unknown[];
+		rows_received_separately?: boolean;
+	} >;
+}
+
 function countRequests( page: Page, needle: string ) {
-	const counter = { count: 0 };
+	// `count` is every matching request; the other two describe the
+	// updates requests among them: how many carried updates, and how
+	// many were NOT marked as sends beside an open stream.
+	const counter = { count: 0, withUpdates: 0, receiving: 0 };
 	page.on( 'request', ( request ) => {
 		// Matched on the decoded URL: without pretty permalinks the route
 		// is URL-encoded inside `?rest_route=`.
-		if ( decodeURIComponent( request.url() ).includes( needle ) ) {
-			counter.count++;
+		if ( ! decodeURIComponent( request.url() ).includes( needle ) ) {
+			return;
+		}
+		counter.count++;
+		let body: UpdatesRequestBody | null = null;
+		try {
+			body = request.postDataJSON() as UpdatesRequestBody | null;
+		} catch {
+			body = null;
+		}
+		const rooms = body?.rooms ?? [];
+		if ( rooms.some( ( room ) => ( room.updates?.length ?? 0 ) > 0 ) ) {
+			counter.withUpdates++;
+		}
+		if (
+			rooms.some( ( room ) => true !== room.rows_received_separately )
+		) {
+			counter.receiving++;
 		}
 	} );
 	return counter;
@@ -110,12 +138,76 @@ test.describe( 'Collaboration - server-sent events transport', () => {
 				.first()
 		).toContainText( 'Streamed over sse', { timeout: 20000 } );
 
-		// The edit arrived as stream events; the receiver had nothing to
-		// send, so it never used the updates request.
+		// The edit arrived as stream events; the receiver had no edit to
+		// send. Its awareness may have changed (rides the updates request
+		// beside the stream, never a reopen), but nothing else did.
 		expect( ( await sseState( page2 ) ).events ).toBeGreaterThan(
 			eventsBefore
 		);
-		expect( receiverUpdates.count ).toBe( 0 );
+		expect( receiverUpdates.withUpdates ).toBe( 0 );
+		expect( receiverUpdates.receiving ).toBe( 0 );
+	} );
+
+	test( 'a typing tab keeps its stream open and sends beside it', async ( {
+		collaborationUtils,
+		requestUtils,
+		editor,
+		page,
+	} ) => {
+		/*
+		 * Issue #106: sends used to close the stream and reopen it after
+		 * the response, so a typing tab never held a stream for long.
+		 * Now the stream is the only path that delivers rows; edits go
+		 * out on the updates request marked `rows_received_separately: true`, and their
+		 * verdicts wait for the stream.
+		 */
+		const post = await requestUtils.createPost( {
+			title: 'SSE typing keeps the stream',
+			content: paragraph( 'Typed' ),
+			status: 'draft',
+		} );
+
+		await collaborationUtils.openCollaborativeSession( post.id );
+		const { editor2, page2 } = collaborationUtils;
+
+		for ( const target of [ page, page2 ] ) {
+			await expect
+				.poll( () => sseState( target ), { timeout: 20000 } )
+				.toMatchObject( { open: true } );
+		}
+
+		const streams = countRequests( page, '/wp-sync/v1/sse' );
+		const sends = countRequests( page, '/wp-sync/v1/updates' );
+		const eventsBefore = ( await sseState( page ) ).events;
+
+		await editor.canvas
+			.getByRole( 'document', { name: /Block: Paragraph/ } )
+			.first()
+			.click();
+		await page.keyboard.press( 'End' );
+		// A sentence at a human pace: several send batches.
+		await page.keyboard.type( ' while the stream stays open', {
+			delay: 40,
+		} );
+
+		await expect(
+			editor2.canvas
+				.getByRole( 'document', { name: /Block: Paragraph/ } )
+				.first()
+		).toContainText( 'Typed while the stream stays open', {
+			timeout: 20000,
+		} );
+
+		// The typing tab never reopened its stream: no new stream request,
+		// the same stream still open, and it delivered the tab's own rows.
+		expect( streams.count ).toBe( 0 );
+		expect( ( await sseState( page ) ).open ).toBe( true );
+		expect( ( await sseState( page ) ).events ).toBeGreaterThan(
+			eventsBefore
+		);
+		// Every send went beside the stream.
+		expect( sends.withUpdates ).toBeGreaterThan( 0 );
+		expect( sends.receiving ).toBe( 0 );
 	} );
 
 	test( 'does not lose characters when two users rapidly type in different paragraphs', async ( {

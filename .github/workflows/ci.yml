@@ -204,10 +204,27 @@ jobs:
       - name: Certify sweep
         run: npm run bench -- --certify=3
 
+  # One job per engine, run side by side. Each engine's specs carry an
+  # `@engine-<slug>` tag; RTC_E2E_ENGINE picks one slice (see
+  # tests/e2e/playwright.config.ts). The `none` slice runs the specs that
+  # belong to no engine, so the four slices together are the whole suite.
   e2e:
-    name: End-to-end (Playwright)
+    name: End-to-end (${{ matrix.label }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      # One engine failing must not cancel the others.
+      fail-fast: false
+      matrix:
+        include:
+          - engine: intent-log
+            label: intent-log
+          - engine: yjs-server
+            label: yjs-server
+          - engine: de-rtc
+            label: de-rtc
+          - engine: none
+            label: engine-neutral
     steps:
       - uses: actions/checkout@v4
 
@@ -242,6 +259,8 @@ jobs:
       # navigation can time out in a full run; every spec is green solo —
       # see AGENTS.md).
       - name: Playwright
+        env:
+          RTC_E2E_ENGINE: ${{ matrix.engine }}
         run: npm run test:e2e
 
       # cancelled() covers timed-out runs, where we also want artifacts
@@ -249,7 +268,7 @@ jobs:
         if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-artifacts
+          name: e2e-${{ matrix.label }}-artifacts
           path: artifacts/
           retention-days: 7
 
