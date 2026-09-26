@@ -55,6 +55,12 @@ release, which the release script generates from the commit history.
 
 ### Changed
 
+-   The plugin now requires the
+    [Presence API](https://wordpress.org/plugins/presence-api/) plugin and
+    WordPress 7.0, so who is in a room is kept in its `wp_presence` table
+    by default. When presence recording is turned off, awareness falls
+    back to the built-in store and the editor keeps showing collaborators.
+
 -   Every awareness read and write in the plugin now goes through one
     `WP_Sync_Awareness` class, where the transports, the advisory channel
     and the rooms CLI each carried their own copy. Reads now exclude
